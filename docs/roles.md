@@ -16,12 +16,23 @@ gishra role set reviewer     --harness claude --model claude-opus-5-5
 gishra role set small        --harness codex  --profile luna
 ```
 
+A role is `{ "harness", "model" | "profile", "provider", "effort", "args" }`. `harness` is `claude`, `codex`, `opencode`, `agy`, `pi` or `command`. `effort` maps to each CLI's reasoning setting (`--effort` for agy, `--thinking` for pi, `model_reasoning_effort` for Codex). `args` are extra CLI arguments appended as given.
+
+| Harness | Command gishra runs |
+|---|---|
+| `claude` | `claude -p <prompt> --model <model>` |
+| `codex` | `codex exec -p <profile> <prompt>` (or `-m <model>`) |
+| `opencode` | `opencode run <prompt> -m <model>` |
+| `agy` | `agy -p <prompt> --mode accept-edits --model <model> --effort <effort>` |
+| `pi` | `pi -p <prompt> --model <provider/id> --thinking <effort> --skill <gishra skill>` |
+| `command` | the `command` array, with `{prompt}`, `{brief}`, `{task}` and `{cwd}` substituted |
+
 ## How each harness dispatches
 
 The orchestrator uses what its harness has.
 
 - **Claude Code.** Workers and reviewers run as subagents (`gishra:gishra-worker`, `gishra:gishra-reviewer`), each with a fresh context; pass the role's model when it is a Claude model. When the role names another harness, the orchestrator runs `gishra spawn`.
-- **Codex, OpenCode, Gemini CLI.** The orchestrator runs `gishra spawn --role <role> --task <id>`, which starts the configured CLI in the task's worktree with the brief as its prompt and `GISHRA_STATE`, `GISHRA_TASK` and `GISHRA_AGENT` set.
+- **Codex, OpenCode, Antigravity (`agy`), pi.** The orchestrator runs `gishra spawn --role <role> --task <id>`, which starts the configured CLI in the task's worktree with the brief as its prompt and `GISHRA_STATE`, `GISHRA_TASK` and `GISHRA_AGENT` set. pi workers and reviewers also load the matching gishra skill (`--skill`).
 - **Anything else.** A role with `"harness": "command"` and a `command` array runs any CLI; `{prompt}`, `{brief}`, `{task}` and `{cwd}` are substituted.
 
 `gishra spawn --dry-run` prints the command without running it.
