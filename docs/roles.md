@@ -31,8 +31,8 @@ A role is `{ "harness", "model" | "profile", "provider", "effort", "args" }`. `h
 
 The orchestrator uses what its harness has.
 
-- **Claude Code.** Workers and reviewers run as subagents (`gishra:gishra-worker`, `gishra:gishra-reviewer`), each with a fresh context; pass the role's model when it is a Claude model. When the role names another harness, the orchestrator runs `gishra spawn`.
-- **Codex, OpenCode, Antigravity (`agy`), pi.** The orchestrator runs `gishra spawn --role <role> --task <id>`, which starts the configured CLI in the task's worktree with the brief as its prompt and `GISHRA_STATE`, `GISHRA_TASK` and `GISHRA_AGENT` set. pi workers and reviewers also load the matching gishra skill (`--skill`).
+- **Claude Code.** Workers and reviewers run as subagents (`gishra:gishra-worker`, `gishra:gishra-reviewer`), each with a fresh context; pass the role's model when it is a Claude model. Choose a unique name per attempt, claim native workers with that exact name, and pass each subagent its name, task, worktree and state directory. Every subagent gishra call passes `--agent <name>` and, without `GISHRA_STATE`, `--state <dir>`. When the role names another harness, the orchestrator runs `gishra spawn`.
+- **Codex, OpenCode, Antigravity (`agy`), pi.** The orchestrator runs `gishra spawn --role <role> --task <id>` without pre-claiming. It starts the configured CLI in the task's worktree with the brief as its prompt and `GISHRA_STATE`, `GISHRA_TASK` and `GISHRA_AGENT` set; the worker claims with that generated identity (`worker-T1-1`, then `worker-T1-2`, for example). pi workers and reviewers also load the matching gishra skill (`--skill`).
 - **Anything else.** A role with `"harness": "command"` and a `command` array runs any CLI; `{prompt}`, `{brief}`, `{task}` and `{cwd}` are substituted.
 
 `gishra spawn --dry-run` prints the command without running it.

@@ -25,7 +25,7 @@ The way gishra works unless the project names its own profile in `project.json`.
 
 ## Tests
 
-- A test proves something only if it fails before the change and passes after it. `gishra check tests` enforces this.
+- For code changes, a test proves something only if it fails before the change and passes after it. `gishra check tests` enforces this. Other task kinds use the verification in their brief and independent review, per `docs/state.md`.
 - Prefer one integration test that exercises the behavior over many unit tests. Keep a unit test only for pure logic nothing else reaches.
 - Run the tests the change touches, not the whole suite, while working. CI stays thin: lint, build and the checks that guard a merge.
 - When the same mistake shows up twice in review or CI, add a lint rule or check for it.

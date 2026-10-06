@@ -33,12 +33,12 @@ All state goes through the `gishra` CLI (`gishra --help`). Never edit `.gishra/`
 
 Loop until every task is accepted or cancelled, or the only open work is waiting on the owner.
 
-- **Dispatch.** `gishra ready`. For each ready task, up to `limits.workers` in progress: `gishra worktree ID`, `gishra claim ID --agent worker-ID`, then start a worker with the `gishra-work` skill:
-  - in a harness with subagents (Claude Code), spawn one with the task id, the agent name, the worktree path and the brief; pass the worker role's model if it is a Claude model;
-  - otherwise, or when the worker role is another harness, `gishra spawn --role worker --task ID`.
-- **Gate submitted work.** For each `submitted` task, in order: `gishra check tests ID --cmd "<scoped test command>"`, `gishra check clean ID`. A failing gate is a `gishra rework ID --reason ...` with the gate summary.
-- **Review.** When the software gates pass, start a reviewer with the `gishra-review` skill in a clean context: a new subagent that has seen none of the work, or `gishra spawn --role reviewer --task ID`. Never the worker's own session. The reviewer records `review` evidence.
-- **Merge.** With review ok: `gishra check ci ID`, then `gishra accept ID`, then `gishra merge ID`. Any refusal names what is missing; fix that, do not work around it.
+- **Dispatch.** `gishra ready`. For each ready task, up to `limits.workers` in progress: `gishra worktree ID`, then start a worker with the `gishra-work` skill:
+  - for a Claude role in a harness with native subagents, choose a unique agent name for this attempt, `gishra claim ID --agent <name>`, and pass that exact name, task id, worktree path, state directory and brief to the subagent; pass the role's model;
+  - otherwise, `gishra spawn --role worker --task ID` without pre-claiming. The worker claims with the generated `GISHRA_AGENT`, such as `worker-T1-1`.
+- **Gate submitted work.** Read the task's kind with `gishra task show ID`. For `code`, run `gishra check tests ID --cmd "<scoped test command>"`, then `gishra check clean ID`. Other kinds need independent review only, per `docs/state.md`; verify what their briefs require without forcing code gates. A failing gate is a `gishra rework ID --reason "<gate summary>"`.
+- **Review.** Start a reviewer with the `gishra-review` skill in a clean context: a new native subagent with a unique name different from the submitter, task id, worktree path and state directory, or `gishra spawn --role reviewer --task ID`. Native workers and reviewers must pass `--agent <name>` on every gishra call and `--state <dir>` when the state environment is absent.
+- **Merge.** With review ok, run `gishra check ci ID` for `code` tasks with a PR, then `gishra accept ID`. Run `gishra merge ID` when the task has a PR. Any refusal names what is missing; fix that, do not work around it.
 - **Rework.** Review or CI findings go back with `gishra rework ID --reason "<findings>"` and the brief updated with what the next attempt must change. When the same area fails review twice, stop patching it: send it back with a simpler design, removing the mechanism if the task can live without it. Each patch on a fragile design opens the next finding.
 - **Carry results forward.** After an accept, update the briefs of tasks that depend on it with what they now need to know (an interface, a decision, a path). Keep them short.
 - **Decisions.** When something needs the owner, `gishra ask --question ... --option ... --recommend ... --why ... --blocks ID` and keep the rest moving. Check `gishra decisions --open` every loop; record an answer the owner gives in chat with `gishra answer`.
