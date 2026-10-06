@@ -156,12 +156,24 @@ if (env.HOOK_SPAWN_FAIL) {
   cp.spawn = function failingSpawn(file) {
     const child = new EventEmitter();
     child.pid = undefined;
-    child.unref = () => {};
     process.nextTick(() => {
       const e = new Error(`spawn ${file} ENOENT`);
       e.code = 'ENOENT';
       child.emit('error', e);
     });
     return child;
+  };
+}
+
+// Real CLI dispatch with an offline harness that emits captured telemetry.
+if (env.HOOK_USAGE_HARNESS) {
+  const original = cp.spawn;
+  cp.spawn = function usageHarness(file, args, options) {
+    if (file === env.HOOK_USAGE_HARNESS) {
+      return original.call(this, process.execPath, [
+        require('node:path').join(__dirname, 'usage-harness.js'), env.HOOK_USAGE_FILE,
+      ], options);
+    }
+    return original.call(this, file, args, options);
   };
 }

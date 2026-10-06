@@ -47,7 +47,8 @@ These options also work with `init`. Omitted options leave their fields unchange
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `ci` and `merge` for every agent and either verdict; use the gate commands |
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
 | `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
-| `spend ID [--minutes N] [--tokens N]` | add spend |
+| `spend ID [--minutes N] [--tokens N] [--input N] [--cached N] [--output N] [--rung R] [--harness H] [--model M]` | add spend, with optional native-agent usage breakdown and metadata; rung defaults the harness, model and profile from the current ladder |
+| `spend ID --from-spawn AGENT` | collect an exited spawn's captured usage once; retry a failed monitor or replace an unknown entry when telemetry arrives. Refuses a live process or an unknown spawn; cannot be mixed with manual spend |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Requires explicit `--agent owner` or `GISHRA_AGENT=owner` |
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
@@ -162,7 +163,7 @@ Before creating a new task branch, `worktree` fetches `base` from `origin` into 
 
 Concurrent fetches that fail while updating `origin/<base>` or unpacking objects continue only after a fresh read of origin confirms that the tracking ref matches its tip. Fetch and verification each time out after 60 s to bound dispatch stalls when origin is unreachable; the error names the operation and timeout. Other fetch failures refuse before a task branch is created or recorded. An existing task branch or worktree is reused without fetching, so it remains usable offline. `spawn` uses the same worktree creation behavior.
 
-`spawn` checks the rung, the brief (`brief set`) and the harness program (on `PATH`, or at the path the rung gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<job>-<task>-<n>`, where the job is `worker` for the four tiers, `reviewer` for `review`, and the rung's name otherwise, numbered from earlier spawns of that job on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It says `you are not the owner; never pass --agent owner`. Its closing instruction says `run gishra with --agent <name> if GISHRA_AGENT is missing`, using the same name passed in the environment. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
+`spawn` checks the rung, the brief (`brief set`) and the harness program (on `PATH`, or at the path the rung gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<job>-<task>-<n>`, where the job is `worker` for the four tiers, `reviewer` for `review`, and the rung's name otherwise, numbered from earlier spawns of that job on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It says `you are not the owner; never pass --agent owner`. Its closing instruction says `run gishra with --agent <name> if GISHRA_AGENT is missing`, using the same name passed in the environment. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. Both streams go to `logs/<task>-<agent>.log`; the `spawn` event records the harness pid and dispatch metadata. In the background the agent is detached and a monitor collects usage after exit. With `--wait` output is also streamed to the terminal (stdout goes to stderr under `--json`), usage is collected after stream closure, and gishra exits with the agent code.
 
 `spawn` also records the host and, on Linux when available, the process start time in clock ticks. `status` and `ready` match the most recent spawn to the current claim's agent, including workers that claim after starting. An exited process is reported as `exited without submit`, with the pid, log path, the last 20 log lines within the final 8192 bytes, and guidance to release with a reason. Neither view prints a command that supplies owner identity. The engine rechecks exit under the lock before another agent can recover it. A live or unverified process still requires the claimant or an explicit owner. The tail is bounded so a large harness log cannot overwhelm a status check. A missing or unreadable log is reported without hiding the exit. A foreground spawn has no log file; its recorded exit is reported with `foreground output; no log`.
 
@@ -174,12 +175,29 @@ Local process checks ignore a spawn recorded on another host and treat permissio
 |---|---|
 | `claude` | `claude -p <prompt> [--model M] [--effort E] --output-format json` |
 | `codex` | `codex exec [-p PROFILE] [-m M] [-c model_reasoning_effort=E] <prompt>` |
-| `opencode` | `opencode run [-m M] [--variant E] <prompt>` |
-| `agy` | `agy -p <prompt> --mode accept-edits [--model M] [--effort E]` |
-| `pi` | `pi -p <prompt> [--model M] [--provider P] [--thinking E] [--skill DIR]` |
+| `opencode` | `opencode run --format json [-m M] [--variant E] <prompt>` |
+| `agy` | `agy -p <prompt> --mode accept-edits --output-format json [--model M] [--effort E]` |
+| `pi` | `pi -p <prompt> --mode json [--model M] [--provider P] [--thinking E] [--skill DIR]` |
 | `command` | the rung's `command` array with `{task}`, `{brief}`, `{prompt}` and `{cwd}` substituted |
 
 The rung's `args` follow every command. A pi worker (any tier) gets `--skill <root>/skills/gishra-work` and a pi reviewer `--skill <root>/skills/gishra-review`, where `<root>` is `GISHRA_PLUGIN_ROOT` or the gishra package itself, when that directory exists. A prompt that would start with `-` gets a leading newline so no harness reads it as an option.
+
+### Usage sources and limits
+
+`lib/usage.js` exports pure `parseUsage(harness, log, sessionText)` for exit handling. File access is in `lib/usage-files.js`; no parser reads credentials. Both streams have a durable log, including foreground output. Foreground collection waits for stream closure; a detached monitor collects background usage through the CLI. The original harness pid remains the job identity.
+
+| Harness | Captured usage |
+|---|---|
+| `codex` | The last cumulative `token_count.info.total_token_usage` in the exact session named by `session id` or JSON `thread.started` supplies input, cached input, output and total. Only matching `rollout-*-<id>.jsonl` files under the recorded `CODEX_HOME/sessions` are opened. Repeated totals are counted once. JSON `turn.completed.usage` is supported. A `tokens used` footer supplies total only when session detail is unavailable. |
+| `claude` | JSON result `usage`; streaming/session assistant messages are also supported and deduplicated by message id. Cache creation and reads join fresh input; cache reads are the cached subset. Result usage takes precedence over messages, so they are never added twice. |
+| `opencode` | JSON `step_finish.part.tokens`, summed across steps and deduplicated by part id. Cache reads/writes join fresh input; reasoning joins output. Text mode has no usage footer. Missing step-finish events are unknown; this implementation does not open OpenCode's session database. |
+| `agy` | JSON result `usage`: `input_tokens`, `cache_read_tokens`, `output_tokens`, `thinking_tokens`, `total_tokens`. Input includes cache reads. The configured model supplies metadata when the result does not name it. Text mode omits counts. |
+| `pi` | JSON `message_end.message.usage` (or captured session `message` records), summed across assistant messages. `input`, `cacheRead` and `cacheWrite` form input; `output` and `totalTokens` supply the rest. Text mode has no usage footer. |
+| `command` | No standard usage format. Usage is unknown unless the command or orchestrator records it with `spend`. |
+
+Avoid arguments that override the JSON modes when usage is needed. A truncated log, disabled session persistence, unavailable session file or harness version without telemetry may leave total or breakdown unknown. Collection does not infer counters from message lengths.
+
+Native agents use one call, for example `gishra spend T1 --tokens 100 --input 80 --cached 60 --output 20 --rung easy --harness claude --model opus --agent native-T1-1`. `cached` is part of `input`, not added to total again. Components are optional; supplied counts must fit total, and cached cannot exceed input when supplied. Record native usage once per completed dispatch. Do not record spawned tokens manually as well as automatically. An unavailable native counter is a task note, not an invented zero.
 
 ## Gates
 

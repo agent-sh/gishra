@@ -1,0 +1,1 @@
+{"type": "step_finish", "part": {"reason": "stop", "type": "step-finish", "tokens": {"total": 288768, "input": 5628, "output": 516, "reasoning": 0, "cache": {"write": 0, "read": 282624}}, "cost": 0, "id": "captured-cache-step"}}

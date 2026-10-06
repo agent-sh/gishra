@@ -51,12 +51,12 @@ test('spawn --dry-run builds each harness command', (t) => {
     [['--harness', 'claude', '--model', 'opus', '--effort', 'high'], (p) => ['claude', '-p', p, '--model', 'opus', '--effort', 'high', '--output-format', 'json']],
     [['--harness', 'codex', '--profile', 'sol'], (p) => ['codex', 'exec', '-p', 'sol', p]],
     [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p) => ['codex', 'exec', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', p, '--skip-git-repo-check']],
-    [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '-m', 'anthropic/claude', p]],
-    [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '-m', 'openai/gpt-x', '--variant', 'high', p]],
-    [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--model', 'gemini-3-pro']],
-    [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--output-format","json"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--model', 'gemini-3-pro', '--effort', 'max', '--output-format', 'json']],
-    [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p) => ['pi', '-p', p, '--model', 'openai/gpt-5.5']],
-    [['--harness', 'pi', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p) => ['pi', '-p', p, '--model', 'openai/gpt-5.5', '--provider', 'openai', '--thinking', 'xhigh', '--no-session']],
+    [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', p]],
+    [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', p]],
+    [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro']],
+    [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--output-format","json"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--output-format', 'json']],
+    [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5']],
+    [['--harness', 'pi', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--thinking', 'xhigh', '--no-session']],
   ];
   const empty = path.join(h.base, 'no-plugin');
   fs.mkdirSync(empty);
@@ -81,7 +81,7 @@ test('spawn --dry-run builds each harness command', (t) => {
 test('the prompt is the brief, then the task, then how to use gishra', (t) => {
   const h = setup(t);
   setRung(h, 'medium', ['--harness', 'opencode', '--model', 'a/b']);
-  const p = dry(h).argv[4];
+  const p = dry(h).argv.find((a) => a.includes('## Task'));
   assert.ok(p.startsWith('\n- start from the webhook handler'), 'a leading dash is not read as a flag');
   const iBrief = p.indexOf('start from the webhook handler');
   const iTask = p.indexOf('"acceptance": [');
