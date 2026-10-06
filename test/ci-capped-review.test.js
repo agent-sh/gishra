@@ -46,6 +46,7 @@ function fixture(t) {
       assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.at(-1), {
         type: evidence.type, ok: evidence.ok, sha: evidence.sha, agent: evidence.agent,
         at: evidence.at, summary: evidence.summary, ref: evidence.ref, revision: evidence.revision,
+        source: 'check ci', commands: evidence.commands,
       });
       return { code: r.status, ...evidence };
     },

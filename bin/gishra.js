@@ -31,6 +31,8 @@ const SETTINGS = {
   'budget-hours': num('H', 'hours budget'),
   'budget-tokens': int('N', 'token budget'),
   standards: str('S', '"default" or a path to a standards Markdown file'),
+  'tests-paths': str('JSON', 'non-empty array of test path globs; null restores default layouts'),
+  'ci-ignore-apps': str('JSON', 'array of GitHub app slugs to skip; [] or null clears the list'),
 };
 
 const TASK_FIELDS = {
@@ -59,7 +61,7 @@ const gate = (name) => (ctx) => require('../lib/check').runGate(ctx, name);
 
 const COMMANDS = [
   { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], run: P.init },
-  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
+  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--ci-ignore-apps JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
   { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', run: P.projectShow },
   { section: 'Plan', name: 'ladder show', summary: 'print each rung as it resolves, and where it comes from (project, user file or built-in)', run: P.ladderShow },
   { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
