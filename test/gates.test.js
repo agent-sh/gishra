@@ -88,6 +88,28 @@ test('a gate gets its context and its result is recorded as evidence', (t) => {
   assert.match(merge.stderr, /T1 is submitted; merge needs an accepted task/);
 });
 
+test('merge refuses a task of any kind whose PR has no passing ci at the submitted sha', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--pr', '9', '--agent', 'w-1']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--agent', 'r-1']);
+  h.ok(['evidence', 'T1', '--type', 'ci', '--ok', '--agent', 'ci']);
+  h.ok(['accept', 'T1']);
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates);
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+  const out = path.join(h.base, 'gate.json');
+
+  // CI re-run on the same commit after the accept, and it failed.
+  h.ok(['evidence', 'T1', '--type', 'ci', '--fail', '--summary', 'e2e (failure)', '--agent', 'ci']);
+  const refused = cli.run(['merge', 'T1'], { GATE_OUT: out, GATE_OK: '1' });
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stderr, /its gates no longer pass: ci: latest ci at abcdef1 failed: e2e \(failure\)/);
+  assert.ok(!fs.existsSync(out), 'the merge gate did not run');
+});
+
 test('merge checks the gates as they stand, not only the accepted status', (t) => {
   const h = makeRepo(t);
   submittedTask(h);

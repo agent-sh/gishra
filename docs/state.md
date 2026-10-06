@@ -129,8 +129,9 @@ Ready tasks come in priority order: most outstanding dependents (direct or trans
 
 `gishra accept` refuses unless the task's current revision has, at the submitted `sha`:
 
-- `code` tasks: `tests` ok, `clean` ok, `review` ok from an agent other than the one that submitted, and `ci` ok when the task has a PR
+- `code` tasks: `tests` ok, `clean` ok, and `review` ok from an agent other than the one that submitted
 - other kinds: `review` ok from another agent
+- any task with a PR, whatever its kind: `ci` ok as well
 
 A gate passes when the latest evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `review`, entries by the submitter are ignored.
 
