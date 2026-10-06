@@ -62,7 +62,7 @@ Pass the commit actually reviewed or checked to `evidence --sha S`. A submitted 
 | `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html` (self-contained, no network) from the state as it stands under the lock |
 | `serve [--port P]` | serve the sketch and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and reload open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use |
 
-The Settings view (`/settings`) edits the default harness, every rung and each task's tier. While a form has unsaved edits, a change on disk shows a notice instead of reloading the page.
+The Settings view (`/settings`) edits the default harness, every rung and each task's tier. While a form has unsaved edits, a change on disk shows a notice instead of reloading the page. Saving a form reloads the page only when the other form has nothing unsaved; otherwise the saved form is updated in place and the other keeps its edits. A save sends the values its edit was based on, so one made against a rung, default harness or tier that changed since the page loaded is refused, and the page says to reload.
 
 ### serve endpoints
 
@@ -70,7 +70,7 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 |---|---|
 | `GET /`, `GET /sketch.html` | the sketch, rendered from the state on each request, with links to the views |
 | `GET /settings` | the Settings view; carries the run's token in `<meta name="gishra-token">` |
-| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes |
+| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
 | `POST /api/ladder` | change the default harness and rungs, as `ladder harness` and `ladder set` do |
 | `POST /api/tiers` | change task tiers, as `task update --tier` does |
 
@@ -82,29 +82,34 @@ Every POST needs:
 
 serve answers any request only when its `Host` is `127.0.0.1:<port>` or `localhost:<port>`, so a page on another site cannot reach it through a name rebound to 127.0.0.1 and read the token.
 
-`POST /api/ladder` body, with both keys optional but at least one change:
+`POST /api/ladder` body, with `harness` and `rungs` optional but at least one change, and `base` required:
 
 ```json
 {
   "harness": "pi",
   "rungs": {
     "easy": { "harness": "", "model": "openai/gpt-5.5", "profile": "", "effort": "low", "args": "[\"--no-session\"]" }
-  }
+  },
+  "base": { "harness": "codex", "rungs": { "easy": { "profile": "luna", "effort": "medium" } } }
 }
 ```
 
+`base` is what the edit was made against: the default harness, and the own fields of each rung in `rungs` (as `ladder show` prints them, without `harness_from` and `from`, and with `harness` only when the rung names its own). If any of them differs from the state under the lock, the request is refused with 409 and writes nothing, so a form cannot undo a change made elsewhere with fields nobody touched.
+
 Each rung lists the fields to change, as strings. An empty string clears the field; a field left out keeps its value. `args` and `command` are JSON array text, as on the command line. The whole request is one write: if it leaves a rung unable to run that could run before, nothing is written. The reply is `{ "ok": true, ... }` plus what `ladder show --json` prints (`harness`, `harness_from`, `user_file`, `user_file_exists`, `ladder`).
 
-`POST /api/tiers` body: `{ "tiers": { "T1": "hard", "T4": "research" } }`. All tiers are written in one write, or none. The reply is `{ "ok": true, "tiers": [{ "id": "T1", "tier": "hard" }, ...] }`.
+`POST /api/tiers` body: `{ "tiers": { "T1": "hard", "T4": "research" }, "base": { "T1": "medium", "T4": "medium" } }`, where `base` holds each task's tier as the edit saw it; a task whose tier differs now is refused with 409. All tiers are written in one write, or none. The reply is `{ "ok": true, "tiers": [{ "id": "T1", "tier": "hard" }, ...] }`.
 
-Both write under the lock, validate, log events (`ladder harness`, `ladder set` per rung, `task update` per task) with `"via": "serve"` and the agent serve runs as, and re-render the sketch. Refusals reply `{ "error": "<reason>" }`: 400 for a refused or malformed change (the reason is the one the CLI gives, prefixed with the rung or task it is about), 403 for a missing or wrong token, a foreign origin or a foreign host, 404 for an unknown POST path, 405 for a method other than GET or POST, 413 for an oversize body, 415 for a body that is not JSON, 503 when the state lock is busy, 500 for anything else.
+Every successful reply also carries `version`, the state's version after the write, the same token the `reload` event for that write carries; the page uses it to tell its own write from one made elsewhere.
+
+Both write under the lock, validate, log events (`ladder harness`, `ladder set` per rung, `task update` per task) with `"via": "serve"` and the agent serve runs as, and re-render the sketch. Refusals reply `{ "error": "<reason>" }`: 400 for a refused or malformed change (the reason is the one the CLI gives, prefixed with the rung or task it is about), 409 when `base` no longer matches the state, 403 for a missing or wrong token, a foreign origin or a foreign host, 404 for an unknown POST path, 405 for a method other than GET or POST, 413 for an oversize body, 415 for a body that is not JSON, 503 when the state lock is busy, 500 for anything else.
 
 ## Agents and worktrees
 
 | Command | Does |
 |---|---|
 | `worktree ID` | create (or print) a git worktree and branch `gishra/<id>-<slug>` from the freshest base for the task, at `<repo-parent>/<repo>-worktrees/<id>-<slug>`; records the branch on the task. Once the task has a branch, its worktree is found by branch, so renaming the task does not move it |
-| `spawn --task ID [--role RUNG] [--dry-run] [--wait]` | start a rung's harness in the task's worktree with the brief and task as the prompt: the rung of the task's tier, or the rung `--role` names (`--role review` for a review); sets `GISHRA_STATE`, `GISHRA_TASK`, `GISHRA_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command |
+| `spawn --task ID [--role RUNG] [--dry-run] [--wait]` | start a rung's harness in the task's worktree with the brief and task as the prompt: the rung of the task's tier, or the rung `--role` names (`--role review` for a review); sets `GISHRA_STATE`, `GISHRA_TASK`, `GISHRA_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command. The rung is resolved again from the state read under the lock, so a tier or ladder change made while spawn created the worktree is the one that runs |
 
 Before creating a new task branch, `worktree` fetches `base` from `origin` into `origin/<base>`, even when the remote's fetch configuration excludes that branch. It starts from the fetched commit when the local base is missing or is an ancestor of it. A local base that is ahead of or diverges from origin remains the starting point, with both commit SHAs reported on stderr; the local base branch is never moved. If origin has no such branch, it uses the local base and reports that fallback on stderr, or refuses if the local base is missing too. Without an origin remote, it uses the available local base or `origin/<base>`.
 
