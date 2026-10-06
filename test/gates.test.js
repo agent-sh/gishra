@@ -7,6 +7,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const { makeRepo, ROOT, real } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { shellQuote } = require('../lib/gates/common');
 
 // Gate internals live in lib/gates/ and ship separately, so these tests run a
 // copy of the CLI whose lib/gates/ holds only what each test puts there.
@@ -44,6 +45,118 @@ function submittedTask(h) {
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'w-1']);
+}
+
+const BUILD_MANIFEST_FIXTURES = [
+  ['npm', {
+    base: {
+      'package.json': '{"name":"fixture-base","version":"0.1.0","private":true}\n',
+      'package-lock.json': '{"name":"fixture-base","version":"0.1.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fixture-base","version":"0.1.0"}}}\n',
+    },
+    submitted: {
+      'package.json': '{"name":"fixture-task-head","version":"1.0.0","private":true}\n',
+      'package-lock.json': '{"name":"fixture-task-head","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fixture-task-head","version":"1.0.0"}}}\n',
+    },
+  }],
+  ['Rust', { submitted: {
+    'Cargo.toml': '[package]\nname = "fixture-task-head"\nversion = "0.1.0"\nedition = "2021"\n',
+    'Cargo.lock': 'version = 3\n\n[[package]]\nname = "fixture-task-head"\nversion = "0.1.0"\n',
+  } }],
+  ['Go', { submitted: {
+    'go.mod': 'module example.com/fixture-task-head\n\ngo 1.20\n',
+    'go.sum': 'example.com/fixture-task-head v0.1.0/go.mod h1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=\n',
+  } }],
+  ['Python', { submitted: {
+    'pyproject.toml': '[project]\nname = "fixture-task-head"\nversion = "0.1.0"\n',
+    'requirements-dev.txt': '# fixture-task-head requirements\n',
+  } }],
+  ['Make', { submitted: {
+    Makefile: '# fixture-task-head\n.PHONY: test\ntest:\n\t@true\n',
+  } }],
+];
+
+const VERIFY_BUILD = `const fs = require('node:fs');
+const path = require('node:path');
+for (const file of process.argv.slice(2)) {
+  if (!fs.existsSync(path.join(__dirname, file))) {
+    console.error('missing build file: ' + file);
+    process.exit(2);
+  }
+  if (!fs.readFileSync(path.join(__dirname, file), 'utf8').includes('fixture-task-head')) {
+    console.error('stale build file: ' + file);
+    process.exit(2);
+  }
+}
+try {
+  require('./test/value.test.js');
+  console.log('ok value.test.js');
+} catch (error) {
+  console.error('not ok value.test.js: ' + error.message);
+  process.exitCode = 1;
+}
+`;
+
+function writeFiles(root, files) {
+  for (const [name, contents] of Object.entries(files)) {
+    const file = path.join(root, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, contents);
+  }
+}
+
+function manifestTask(h, { base = {}, submitted }) {
+  writeFiles(h.repo, {
+    'value.js': 'module.exports = 0;\n',
+    'verify-build.js': VERIFY_BUILD,
+    'test/value.test.js': "require('node:assert/strict').equal(require('../value'), 0);\n",
+    ...base,
+  });
+  h.git(['add', 'value.js', 'verify-build.js', 'test/value.test.js']);
+  h.git(['commit', '-qm', 'fixture base']);
+  h.git(['switch', '-qc', 'fixture-change']);
+  writeFiles(h.repo, {
+    'value.js': 'module.exports = 1;\n',
+    'test/value.test.js': "require('node:assert/strict').equal(require('../value'), 1);\n",
+    ...submitted,
+  });
+  h.git(['add', '-A']);
+  h.git(['commit', '-qm', 'fixture change and build files']);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.git(['switch', '-q', 'main']);
+  return sha;
+}
+
+function installTestsGate(cli) {
+  fs.mkdirSync(cli.gates, { recursive: true });
+  for (const name of ['common.js', 'tests.js']) {
+    fs.copyFileSync(path.join(ROOT, 'lib', 'gates', name), path.join(cli.gates, name));
+  }
+}
+
+for (const [ecosystem, manifests] of BUILD_MANIFEST_FIXTURES) {
+  test(`check tests keeps ${ecosystem} build files and fails on the reverted code`, (t) => {
+    const h = makeRepo(t);
+    const sha = manifestTask(h, manifests);
+    h.init(['--repo', 'acme/demo', '--base', 'main']);
+    h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'test the behavior']);
+    h.ok(['claim', 'T1', '--agent', 'w-1']);
+    h.ok(['submit', 'T1', '--sha', sha, '--branch', 'fixture-change', '--agent', 'w-1']);
+
+    h.env.TOWER_CRANE_TMP = path.join(h.base, 'gate-tmp');
+    const cli = cliCopy(h);
+    installTestsGate(cli);
+    const required = Object.keys(manifests.submitted).map(shellQuote).join(' ');
+    const cmd = `${shellQuote(process.execPath)} verify-build.js ${required}`;
+    const result = cli.run(['check', 'tests', 'T1', '--cmd', cmd, '--agent', 'checker']);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    assert.equal(result.code, 0, output);
+    assert.match(output, /tests pass with the change and fail without it/);
+    assert.match(output, /with \d+ non-test files? reverted .*value\.js.*build files kept at submitted sha .*: exit 1/i);
+    assert.doesNotMatch(output, /missing build file:|stale build file:/);
+    assert.match(output, /build files kept at submitted sha/i);
+    for (const file of Object.keys(manifests.submitted)) assert.ok(output.includes(file), `summary omitted kept build file ${file}`);
+  });
 }
 
 test('gate commands exit 1 when the gate module is not installed', (t) => {
