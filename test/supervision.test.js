@@ -43,8 +43,12 @@ ${busy ? "cp.spawn(process.execPath, ['-e', 'const end = Date.now() + 2200; whil
 setTimeout(() => {
   if (attempts.length <= ${failures}) {
     ${['signal', 'interrupt'].includes(error) ? `process.kill(process.pid, '${error === 'signal' ? 'SIGTERM' : 'SIGINT'}');`
-      : ['outage', 'server', 'status-json'].includes(error) ? `console.error(${JSON.stringify(error === 'server' ? '500 Internal Server Error'
-        : error === 'status-json' ? '{"status_code":502}' : 'API Error: 503 service unavailable')}); process.exit(1);` : `process.exit(${error});`}
+      : ['claude-error', 'codex-error', 'codex-failed'].includes(error)
+        ? `console.log(${JSON.stringify(JSON.stringify(error === 'claude-error' ? { type: 'result', is_error: true, api_error_status: 503 }
+          : error === 'codex-error' ? { type: 'error', message: 'HTTP 502 bad gateway' }
+            : { type: 'turn.failed', error: { message: 'provider outage' } }))}); process.exit(1);`
+        : ['outage', 'server', 'status-json'].includes(error) ? `console.error(${JSON.stringify(error === 'server' ? '500 Internal Server Error'
+          : error === 'status-json' ? '{"status_code":502}' : 'API Error: 503 service unavailable')}); process.exit(1);` : `process.exit(${error});`}
   } else process.exit(0);
 }, ${hold});
 `;
@@ -56,7 +60,7 @@ setTimeout(() => {
   return h;
 }
 
-for (const error of ['75', 'outage', 'server', 'status-json', 'signal', 'interrupt']) {
+for (const error of ['75', 'outage', 'server', 'status-json', 'claude-error', 'codex-error', 'codex-failed', 'signal', 'interrupt']) {
   test(`transient ${error} reruns the same session, preserving the claim until success`, {
     skip: process.platform === 'win32' && ['signal', 'interrupt'].includes(error) && 'POSIX signal observations',
   }, (t) => {
@@ -93,6 +97,9 @@ test('repeated transient exits exhaust bounded retries with exponential backoff 
   assert.match(h.ok(['status']), /blocked: transient exit after 2 retries/);
   assert.equal(log(h).filter((e) => e.cmd === 'worker-exited').length, 1);
   assert.equal(h.json(['status']).exited_claims.length, 1);
+  h.ok(['release', 'T1', '--agent', 'recovery-worker', '--reason', 'retry budget exhausted']);
+  assert.equal(h.json(['task', 'show', 'T1']).claim, null);
+  assert.equal(h.json(['task', 'show', 'T1']).status, 'todo');
 });
 
 test('detached supervision renews a short lease during backoff and does not allow premature recovery', async (t) => {
@@ -175,7 +182,7 @@ test('a permanent exit is blocked without retrying and submit clears its phase',
 });
 
 test('progress paths and CPU detect a stalled process without dropping its live claim', { skip: process.platform !== 'linux' }, async (t) => {
-  const h = setup(t, { failures: 0, hold: 2500, config: { stall_ms: 250, progress_paths: ['progress.txt'] } });
+  const h = setup(t, { failures: 0, hold: 5000, config: { stall_ms: 250, progress_paths: ['progress.txt'] } });
   const spawned = h.json(['spawn', '--task', 'T1']);
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'blocked', 'idle process did not stall');
   assert.match(h.ok(['task', 'show', 'T1']), /blocked: no progress paths or CPU activity/);
@@ -279,7 +286,7 @@ test('serve shows the recorded run phase on the board', async (t) => {
 });
 
 for (const harness of ['claude', 'codex']) {
-  test(`${harness} transient reruns use its exact session and route arguments`, (t) => {
+  test(`${harness} transient reruns follow the shared session policy and preserve route arguments`, (t) => {
     const h = setup(t);
     const bin = path.join(h.base, 'bin');
     fs.mkdirSync(bin);
@@ -301,18 +308,132 @@ for (const harness of ['claude', 'codex']) {
     if (harness === 'claude') {
       const id = first.args[first.args.indexOf('--session-id') + 1];
       assert.match(id, /^[a-f0-9-]{36}$/);
-      assert.equal(second.args[second.args.indexOf('--resume') + 1], id);
+      assert.equal(second.args.includes('--resume'), false);
+      const nextId = second.args[second.args.indexOf('--session-id') + 1];
+      assert.match(nextId, /^[a-f0-9-]{36}$/);
+      assert.notEqual(nextId, id);
+      const prompt = second.args[second.args.indexOf('-p') + 1];
+      assert.match(prompt, /Finish the task/);
+      assert.match(prompt, /Previous attempt exited with (SIGTERM|exit 75); continue/);
       assert.equal(second.args[second.args.indexOf('--model') + 1], 'chosen-model');
       assert.equal(second.args.includes('--fork-session'), false);
     } else {
       assert.ok(second.args.includes('resume'));
       assert.ok(second.args.includes('01a11297-1067-7831-a3bc-2c04eac9aaef'));
       assert.equal(second.args[second.args.indexOf('-p') + 1], 'chosen-profile');
+      assert.ok(second.args.includes('Previous attempt exited with exit 75; continue.'));
+      assert.equal(second.args.some((arg) => arg.includes('Finish the task')), false);
     }
     assert.equal(log(h).filter((e) => e.cmd === 'spawn').length, 1);
     assert.equal(log(h).filter((e) => e.cmd === 'claim').length, 1);
   });
 }
+
+for (const stream of ['stdout', 'stderr']) {
+  test(`provider errors quoted in agent JSON on ${stream} do not trigger a rerun`, (t) => {
+    const h = setup(t, { failures: 0 });
+    const script = `
+const cp = require('node:child_process');
+cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']);
+const text = 'API Error: 503 service unavailable; provider outage';
+console.${stream === 'stdout' ? 'log' : 'error'}(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', aggregated_output: text } }));
+console.${stream === 'stdout' ? 'log' : 'error'}(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }));
+console.${stream === 'stdout' ? 'log' : 'error'}(JSON.stringify({ type: 'result', is_error: false, result: text }));
+process.exit(1);
+`;
+    h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN])]);
+    const result = h.spawn();
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
+    assert.equal(h.json(['task', 'show', 'T1']).run.reason, 'exit 1');
+  });
+}
+
+test('quiet supervision samples state and progress paths on a seconds-scale interval', async (t) => {
+  const h = setup(t, { failures: 0, hold: 3600, config: { progress_paths: ['progress.txt'] } });
+  const audit = path.join(h.base, 'samples.jsonl');
+  const hook = path.join(__dirname, 'fixtures', 'supervision-samples.js').replace(/\\/g, '/');
+  h.json(['spawn', '--task', 'T1'], { env: {
+    NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_SAMPLES: audit,
+  } });
+  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'quiet worker did not finish');
+  const samples = fs.readFileSync(audit, 'utf8').trim().split('\n').map(JSON.parse);
+  const walks = samples.filter((sample) => sample.kind === 'path');
+  assert.ok(walks.length >= 2, JSON.stringify(samples));
+  assert.ok(walks.length <= 6, `${walks.length} progress walks for a 3.6-second run`);
+  assert.ok(samples.filter((sample) => sample.kind === 'state').length <= 8, 'quiet monitor repeatedly reloads state');
+  for (let i = 1; i < walks.length; i++) assert.ok(walks[i].at - walks[i - 1].at >= 900, JSON.stringify(walks));
+});
+
+test('stopping the monitor terminates the process group and kills children that ignore SIGTERM', {
+  skip: process.platform === 'win32' && 'POSIX process groups',
+}, async (t) => {
+  const h = setup(t, { failures: 0 });
+  const pids = path.join(h.base, 'group.json');
+  const terminated = path.join(h.base, 'terminated');
+  const script = `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']);
+process.on('SIGTERM', () => fs.writeFileSync(process.argv[3] + '.parent', 'parent'));
+const descendant = cp.spawn(process.execPath, ['-e', "process.on('SIGTERM', () => require('node:fs').writeFileSync(process.argv[1], 'child')); console.log('ready'); setInterval(() => {}, 1000);", process.argv[3] + '.child'], { stdio: ['ignore', 'pipe', 'inherit'] });
+descendant.stdout.once('data', () => fs.writeFileSync(process.argv[2], JSON.stringify([process.pid, descendant.pid])));
+setInterval(() => {}, 1000);
+`;
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, pids, terminated])]);
+  const spawned = h.json(['spawn', '--task', 'T1']);
+  await until(() => fs.existsSync(pids), 'process group did not start');
+  const group = JSON.parse(fs.readFileSync(pids, 'utf8'));
+  t.after(() => {
+    try { process.kill(-group[0], 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+  });
+  process.kill(spawned.monitor_pid, 'SIGTERM');
+  await until(() => fs.existsSync(terminated + '.parent') && fs.existsSync(terminated + '.child'), 'stop did not send SIGTERM before SIGKILL');
+  await until(() => group.every((pid) => !detachedAlive({ pid })), 'stop left a process group member alive');
+  await until(() => !detachedAlive({ pid: spawned.monitor_pid }), 'stopped monitor survived');
+  assert.equal(fs.readFileSync(terminated + '.parent', 'utf8'), 'parent');
+  assert.equal(fs.readFileSync(terminated + '.child', 'utf8'), 'child');
+  assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
+  assert.equal(h.json(['task', 'show', 'T1']).run.reason, 'supervisor stopped by SIGTERM');
+});
+
+test('a rerun waits for previous descendants even when they close their output pipes', {
+  skip: process.platform !== 'linux' && 'Linux process state',
+}, (t) => {
+  const h = setup(t, { failures: 0 });
+  const groupFile = path.join(h.base, 'previous-group.json');
+  const script = `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+const file = process.argv[2];
+if (!fs.existsSync(file)) {
+  cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']);
+  const child = cp.spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000);"], { stdio: ['ignore', 'pipe', 'ignore'] });
+  child.stdout.once('data', () => {
+    child.stdout.destroy();
+    fs.writeFileSync(file, JSON.stringify({ parent: process.pid, child: child.pid }));
+    process.exit(75);
+  });
+} else {
+  const prior = JSON.parse(fs.readFileSync(file, 'utf8'));
+  try {
+    const stat = fs.readFileSync('/proc/' + prior.child + '/stat', 'utf8');
+    if (!['Z', 'X'].includes(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0])) process.exit(2);
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  process.exit(0);
+}
+`;
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, groupFile])]);
+  let group;
+  t.after(() => {
+    if (!group) return;
+    try { process.kill(-group.parent, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+  });
+  const result = h.spawn();
+  group = JSON.parse(fs.readFileSync(groupFile, 'utf8'));
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 1);
+});
 
 test('foreground output is durable while the dispatch CLI is blocked rendering', async (t) => {
   const h = setup(t, { error: 'outage', claim: false });
