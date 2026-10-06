@@ -25,7 +25,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `task show ID`, `task list [--status S]` | read; `S` is a status, `ready` or `blocked` |
 | `plan import FILE` | add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `size`, `tier`, `depends_on`, `needs_owner`. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file |
 | `brief set ID (--file F \| -)`, `brief get ID` | write or read the task's brief |
-| `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It also reports every ladder rung that cannot run, and warns, without failing, when the `review` rung runs the same harness and model (or codex profile) as a tier that open tasks use, since such a review shares the author's blind spots |
+| `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It also reports every ladder rung that cannot run, and warns, without failing, when the `review` rung runs the same harness and model as a tier (on codex the `--model` when given, else the profile) that open tasks use, since such a review shares the author's blind spots |
 
 ## Run
 
