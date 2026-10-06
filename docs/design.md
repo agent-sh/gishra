@@ -56,7 +56,7 @@ The last question matters most at hand-off and least during a run. A dependency 
 
 ### Time
 
-- **Since you looked.** The browser remembers the newest event the person saw on this board (local storage, never the state directory) and the board opens with a digest of what happened after it: accepted, sent back, submitted, decisions opened and answered, messages. Changed items carry a marker until the next visit. Without a stored mark, the digest covers the last day.
+- **Since you looked.** The browser remembers the newest event the person saw on this board (local storage, never the state directory) and the board opens with a digest of what happened after it: accepted, sent back, submitted, decisions opened and answered, messages. Changed items carry a marker until the next visit. Without a stored mark, it shows the newest events.
 - **Stuck.** An expired lease, a `stall` or `worker-exited` event, a claim whose spawned process exited without submitting, a submitted task whose latest gate failed, a task sent back three or more times. Each is shown with the CLI command that resolves it.
 - **About to need me.** A decision that blocks a task whose dependencies are all accepted is blocking real work now and ranks above one that blocks distant work; the same holds for owner tasks. A lease ending within ten minutes is flagged on its card.
 

@@ -64,6 +64,21 @@ test('the snapshot names no network resource and carries no token or owner forms
   assert.match(page, /answer D1 --choice postgres/, 'a snapshot shows the command for what it cannot do');
 });
 
+test('the board escapes every text the state holds', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  populate(h);
+  const sha = h.git(['rev-parse', 'HEAD']).trim();
+  h.ok(['ask', '--question', 'Pick <script>alert(1)</script>?', '--option', '<b>a</b>', '--option', 'b', '--why', 'why <i>', '--blocks', 'T2']);
+  h.ok(['msg', '--to', 'owner', '--task', 'T1', 'look <img src=x onerror=alert(1)>', '--agent', 'w-1']);
+  h.ok(['evidence', 'T5', '--type', 'note', '--ok', '--sha', sha, '--summary', 'note <svg onload=alert(1)>', '--ref', 'https://example.com/x"onmouseover="alert(1)', '--agent', 'rev-2']);
+  const page = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
+  for (const raw of ['<script>alert(1)', '<b>a</b>', 'why <i>', '<img src=x', '<svg onload', '"onmouseover="']) assert.ok(!page.includes(raw), `${raw} is escaped`);
+  assert.match(page, /Pick &lt;script&gt;alert\(1\)&lt;\/script&gt;\?/);
+  assert.match(page, /look &lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(page, /href="https:\/\/example\.com\/x&quot;onmouseover=&quot;alert\(1\)"/);
+});
+
 test('the snapshot opens offline in a browser, with and without scripts, and requests nothing but itself', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
   const h = makeRepo(t);
   h.init();
@@ -187,6 +202,13 @@ test('in a browser, a change elsewhere updates the board in place and waits whil
   h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'rebased, CI running', '--agent', 'w-1']);
   await b.until(`document.querySelector('.card[data-key="T1"] .last p').textContent === 'rebased, CI running'`, 'the card to show the new message');
   assert.equal(await b.inPage('window.firstLoad === true && document.querySelector(\'.card[data-key="T1"]\').classList.contains(\'changed\')'), true, 'updated in place, and the card marks the change');
+
+  // History keeps its filters across an update.
+  await b.inPage(`(() => { location.hash = 'history'; document.getElementById('hf-messages').click(); const q = document.getElementById('hf-task'); q.value = 'T1'; q.dispatchEvent(new Event('input', { bubbles: true })); q.blur(); })()`);
+  h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'CI green', '--agent', 'w-1']);
+  await b.until(`document.querySelector('#history').textContent.includes('CI green')`, 'History to show the new message');
+  assert.deepEqual(await b.inPage(`[document.getElementById('hf-messages').checked, document.getElementById('hf-task').value, [...document.querySelectorAll('#history .ev')].filter((li) => getComputedStyle(li).display !== 'none' && !li.hidden).every((li) => li.dataset.kind === 'messages' && li.dataset.task === 'T1')]`), [true, 'T1', true]);
+  await b.inPage(`location.hash = 'board'`);
 
   // Typed text holds its column: the owner's draft is never replaced.
   await b.inPage(`(() => { const d = document.querySelector('.col-need article[data-key="D1"] > details.more'); d.open = true; const ta = d.querySelector('textarea'); ta.focus(); })()`);
