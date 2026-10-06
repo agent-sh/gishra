@@ -119,6 +119,10 @@ test('native usage uses one CLI call and preserves rung metadata across ladder c
     ['--tokens', '10', '--rung', 'unknown'], ['--tokens', '9007199254740992'],
   ]) assert.equal(h.run(['spend', 'T1', ...args]).code, 2, args.join(' '));
   assert.equal(spends(h).tokens, 100, 'refused usage writes nothing');
+  const time = h.json(['spend', 'T1', '--minutes', '5']).spend;
+  assert.equal(time.entries.at(-1).tokens, null, 'time-only spend does not claim measured zero tokens');
+  assert.equal(time.tokens, 100);
+  assert.equal(h.json(['status']).spend.missing_usage, 0);
 });
 
 test('foreground spawn captures usage after stderr and stdout close, including failed agents', (t) => {
