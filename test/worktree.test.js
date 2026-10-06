@@ -386,7 +386,8 @@ test('a registration interrupted before HEAD exists is refused without deleting 
   for (let i = 0; i < 2; i++) {
     const retry = h.run(['worktree', 'T1']);
     assert.equal(retry.code, 1, retry.stderr);
-    assert.match(retry.stderr, /unfinished|incomplete|exists and is not a worktree/);
+    assert.match(retry.stderr, /git worktree unlock <path>/);
+    assert.match(retry.stderr, /git worktree remove --force <path>/);
   }
   assert.ok(fs.existsSync(path.join(admin, 'locked')));
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
