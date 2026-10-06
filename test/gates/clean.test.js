@@ -31,7 +31,8 @@ const logFile = path.join(tmp, 'fake-clean.log');
 const reportFile = path.join(tmp, 'report.json');
 const fakeCmd = `${quote(process.execPath)} ${quote(fake)}`;
 
-const saved = { ...process.env };
+// Read one by one: process.env matches names case-insensitively on Windows (Path), a copy does not.
+const saved = { PATH: process.env.PATH, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
 function restore(...keys) {
   for (const k of keys) {
     if (saved[k] === undefined) delete process.env[k];
