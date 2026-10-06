@@ -74,6 +74,8 @@ docs/cli.md lists the command each harness gets.
 
 `standards` is `default` (the profile shipped with gishra) or a path to a Markdown file. A path is checked for readability and recorded relative to the repository root; only the default gates apply for now.
 
+`ci` is optional. `ci.ignore_apps` is an array of GitHub app slugs, for example `{ "ci": { "ignore_apps": ["claude", "cursor"] } }`, whose check suites and check runs `gishra check ci` skips. It is for apps that open a check suite on every push and never report on it, such as review bots; their suites stay queued and would otherwise hold the gate forever. It defaults to empty: every other suite or run that is not complete and green fails the gate, and gishra never infers which apps to skip. No `gishra project set` flag sets it yet; add it to project.json by hand while no gishra command is writing.
+
 ## tasks.json
 
 ```json

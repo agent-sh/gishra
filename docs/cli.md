@@ -78,6 +78,6 @@ Each gate runs software, then records evidence on the task. The gate itself live
 | Command | Does |
 |---|---|
 | `check tests ID --cmd CMD` | run CMD in the worktree at the submitted sha (must pass), then with the task's changes to non-test files reverted (must fail when the task added or changed tests); records `tests` |
-| `check clean ID` | run the cleanup tool on the task branch against `base`; records `clean`, ok when it reports no HIGH finding |
-| `check ci ID` | read GitHub check runs on the submitted sha; ok only when all completed and none failed, cancelled, timed out or skipped-required; records `ci` |
+| `check clean ID` | run the cleanup tool on the task branch against `base`; records `clean`, ok when every check ran and none reported a HIGH finding |
+| `check ci ID` | read GitHub check runs and check suites on the submitted sha; ok only when at least one run exists and every run and suite completed as success, neutral or skipped, skipping only apps in project.json `ci.ignore_apps`; records `ci` |
 | `merge ID` | merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise); records `merge` |

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const gate = require('../../lib/gates/clean');
-const { scratch, isolateGit, git, commit, initRepo, worktrees } = require('./helpers');
+const { scratch, isolateGit, git, commit, initRepo, worktrees, quote } = require('./helpers');
 
 const tmp = scratch('gates-clean');
 isolateGit(tmp);
@@ -29,7 +29,7 @@ process.stdout.write(fs.readFileSync(process.env.FAKE_CLEAN_REPORT, 'utf8'));
 `);
 const logFile = path.join(tmp, 'fake-clean.log');
 const reportFile = path.join(tmp, 'report.json');
-const fakeCmd = `${JSON.stringify(process.execPath)} ${JSON.stringify(fake)}`;
+const fakeCmd = `${quote(process.execPath)} ${quote(fake)}`;
 
 const saved = { ...process.env };
 function restore(...keys) {
@@ -50,8 +50,8 @@ test.after(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-function report(items) {
-  fs.writeFileSync(reportFile, JSON.stringify({ scope: 'diff', total: items.length, shown: items.length, items, errors: [] }));
+function report(items, extra = {}) {
+  fs.writeFileSync(reportFile, JSON.stringify({ scope: 'diff', total: items.length, shown: items.length, items, errors: [], ...extra }));
 }
 
 function ctx() {
@@ -97,6 +97,25 @@ test('only review and verify findings: ok', async () => {
   const r = await gate.run(ctx());
   assert.equal(r.ok, true, r.summary);
   assert.match(r.summary, /review 1, verify 1/);
+  assertCleanedUp();
+});
+
+test('a scan with checks that did not run: not ok, naming them', async () => {
+  process.env.GISHRA_CLEAN_CMD = fakeCmd;
+  const cases = [
+    [{ errors: ['secrets: could not read tracked files'] }, /secrets: could not read tracked files/],
+    [{ detectorErrors: [{ check: 'refs', error: 'git grep failed' }] }, /git grep failed/],
+    [{ failedChecks: ['unwired'] }, /unwired/],
+  ];
+  for (const [extra, named] of cases) {
+    report([], extra);
+    const r = await gate.run(ctx());
+    assert.equal(r.ok, false, JSON.stringify(extra));
+    assert.match(r.summary, /The scan is incomplete/);
+    assert.match(r.summary, named);
+  }
+  report([item('review', 'no-caller', 'lib/b.js', 7, 'nothing calls b')], { errors: [], detectorErrors: [], failedChecks: [] });
+  assert.equal((await gate.run(ctx())).ok, true);
   assertCleanedUp();
 });
 

@@ -4,9 +4,9 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const gate = require('../../lib/gates/tests');
-const { scratch, isolateGit, git, commit, initRepo, worktrees } = require('./helpers');
+const { scratch, isolateGit, git, commit, initRepo, worktrees, quote } = require('./helpers');
 
-const NODE = JSON.stringify(process.execPath);
+const NODE = quote(process.execPath);
 const CMD = `${NODE} run-tests.js`;
 
 // A tiny project whose runner requires every test/*.test.js and exits 1 if any throws.
@@ -149,7 +149,7 @@ test('a timeout stops the command and everything it started', { skip: process.pl
   const sha = task({ 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST });
   const marker = path.join(tmp, 'late-write');
   // `; true` keeps the shell alive, so the writer is a grandchild, not the shell itself.
-  const cmd = `${NODE} -e "setTimeout(() => require('fs').writeFileSync(process.argv[1], 'x'), 3000)" ${JSON.stringify(marker)}; true`;
+  const cmd = `${NODE} -e "setTimeout(() => require('fs').writeFileSync(process.argv[1], 'x'), 3000)" ${quote(marker)}; true`;
   const started = Date.now();
   const r = await gate.run(ctx(sha, { args: { cmd, timeout: 0.01 } }));
   assert.equal(r.ok, false);
@@ -158,6 +158,25 @@ test('a timeout stops the command and everything it started', { skip: process.pl
   await new Promise((resolve) => setTimeout(resolve, 4000 - (Date.now() - started)));
   assert.equal(fs.existsSync(marker), false, 'a process the command started outlived the timeout');
   assertCleanedUp();
+});
+
+test('a worktree add that fails after registering leaves no registration behind', async () => {
+  // git registers the worktree, checks it out, then runs post-checkout; a failing hook makes
+  // the add exit non-zero with the registration already written.
+  const hooked = path.join(tmp, 'hooked');
+  initRepo(hooked, BASE);
+  git(hooked, 'checkout', '-q', '-b', 'task');
+  const sha = commit(hooked, { 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST });
+  git(hooked, 'checkout', '-q', 'main');
+  const hooks = path.join(tmp, 'hooks');
+  fs.mkdirSync(hooks, { recursive: true });
+  fs.writeFileSync(path.join(hooks, 'post-checkout'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  git(hooked, 'config', 'core.hooksPath', hooks);
+  const r = await gate.run({ ...ctx(sha), root: hooked });
+  assert.equal(r.ok, false);
+  assert.match(r.summary, /could not create a worktree/);
+  assert.equal(worktrees(hooked), 1);
+  assert.deepEqual(fs.readdirSync(process.env.GISHRA_TMP), []);
 });
 
 test('a commit that is not in the repository: not ok', async () => {

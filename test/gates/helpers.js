@@ -59,6 +59,12 @@ function worktrees(root) {
   return git(root, 'worktree', 'list', '--porcelain').split('\n').filter((l) => l.startsWith('worktree ')).length;
 }
 
+// Double quotes read the same in sh and cmd.exe for the plain paths these tests use;
+// JSON.stringify would double Windows backslashes.
+function quote(p) {
+  return `"${p}"`;
+}
+
 function result(stdout = '', status = 0, stderr = '') {
   return { status, stdout, stderr };
 }
@@ -76,4 +82,4 @@ function fakeExec(handler) {
   return { exec, calls };
 }
 
-module.exports = { scratch, isolateGit, git, commit, initRepo, worktrees, result, fakeExec };
+module.exports = { scratch, isolateGit, git, commit, initRepo, worktrees, quote, result, fakeExec };

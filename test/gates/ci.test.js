@@ -25,8 +25,8 @@ function github({ runs = [], suites = [], head = SHA, apiError = null } = {}) {
   });
 }
 
-function ctx(gh, task = {}) {
-  return { root: '/repo', worktree: null, task: { id: 'T3', kind: 'code', sha: SHA, pr: null, ...task }, project: { repo: REPO, base: 'main' }, args: {}, exec: gh.exec, log() {} };
+function ctx(gh, task = {}, project = {}) {
+  return { root: '/repo', worktree: null, task: { id: 'T3', kind: 'code', sha: SHA, pr: null, ...task }, project: { repo: REPO, base: 'main', ...project }, args: {}, exec: gh.exec, log() {} };
 }
 
 const GREEN_RUNS = [run('build'), run('lint'), run('docs', 'skipped'), run('bench', 'neutral')];
@@ -73,14 +73,41 @@ test('a suite that is queued or failed: not ok even when the listed runs are gre
   assert.match(failed.summary, /github-actions \(failure, 1 runs\)/);
 });
 
-test('a queued suite with no runs from an app that reports nothing on the commit is not CI', async () => {
-  const suites = [...GREEN_SUITES, suite('claude', null, 'queued', 0), suite('cursor', null, 'queued', 0)];
-  const r = await gate.run(ctx(github({ runs: GREEN_RUNS, suites })));
+test('a suite with no runs from another app is never inferred away', async () => {
+  // Green Actions runs next to another provider whose suite has no runs yet: CI is still going.
+  for (const status of ['queued', 'in_progress']) {
+    const r = await gate.run(ctx(github({ runs: GREEN_RUNS, suites: [...GREEN_SUITES, suite('external-ci', null, status, 0)] })));
+    assert.equal(r.ok, false, status);
+    assert.match(r.summary, new RegExp(`external-ci \\(${status}, 0 runs\\)`));
+    assert.match(r.summary, /ci\.ignore_apps/);
+  }
+});
+
+test('apps listed in project.json ci.ignore_apps are skipped, and only those', async () => {
+  const project = { ci: { ignore_apps: ['claude', 'cursor'] } };
+  const suites = [...GREEN_SUITES, suite('claude', null, 'queued', 0), suite('cursor', null, 'in_progress', 1)];
+  const runs = [...GREEN_RUNS, run('cursor review', 'failure', 'completed', 'cursor')];
+  const r = await gate.run(ctx(github({ runs, suites }), {}, project));
   assert.equal(r.ok, true, r.summary);
-  assert.match(r.summary, /Ignored 2 queued suites with no runs .*: claude, cursor/);
-  // The same app with a run still going is CI in progress.
-  const busy = await gate.run(ctx(github({ runs: [...GREEN_RUNS, run('review', null, 'queued', 'claude')], suites })));
-  assert.equal(busy.ok, false);
+  assert.match(r.summary, /4 check runs/);
+  assert.match(r.summary, /Ignored as listed in project\.json ci\.ignore_apps: claude \(1 suite, 0 runs\), cursor \(1 suite, 1 run\)/);
+  const other = await gate.run(ctx(github({ runs, suites: [...suites, suite('external-ci', null, 'queued', 0)] }), {}, project));
+  assert.equal(other.ok, false);
+  assert.match(other.summary, /external-ci \(queued, 0 runs\)/);
+  // Runs only from ignored apps are no CI at all.
+  const none = await gate.run(ctx(github({ runs: [run('cursor review', 'success', 'completed', 'cursor')], suites }), {}, project));
+  assert.equal(none.ok, false);
+  assert.match(none.summary, /no check runs/);
+});
+
+test('a malformed ci.ignore_apps: not ok, naming the field', async () => {
+  for (const ci of [{ ignore_apps: 'claude' }, { ignore_apps: [''] }, 'claude', [1]]) {
+    const gh = github({ runs: GREEN_RUNS, suites: GREEN_SUITES });
+    const r = await gate.run(ctx(gh, {}, { ci }));
+    assert.equal(r.ok, false, JSON.stringify(ci));
+    assert.match(r.summary, /ci\.ignore_apps must be an array/);
+    assert.equal(gh.calls.length, 0);
+  }
 });
 
 test('no check runs at all: not ok', async () => {
