@@ -17,7 +17,9 @@ test('init creates the state files and excludes them from git', (t) => {
   assert.equal(p.version, 1);
   assert.equal(p.name, 'demo');
   assert.equal(p.base, 'main');
-  assert.deepEqual(Object.keys(p.roles).sort(), ['orchestrator', 'reviewer', 'small', 'worker']);
+  assert.equal(p.roles, undefined);
+  assert.equal(p.harness, 'codex');
+  assert.deepEqual(Object.keys(p.ladder), ['orchestrator', 'easy', 'medium', 'hard', 'research', 'review', 'small']);
   assert.deepEqual(p.limits, { workers: 6, lease_minutes: 60 });
   assert.deepEqual(h.readState('tasks.json'), { version: 1, next: 1, tasks: [] });
   const exclude = fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8');

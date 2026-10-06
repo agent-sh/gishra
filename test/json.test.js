@@ -31,7 +31,9 @@ test('--json output parses for every reading and writing command', (t) => {
   assert.equal(parse(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'w']).status, 'submitted');
   assert.equal(parse(['evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1', '--agent', 'r']).type, 'review');
   assert.equal(parse(['rework', 'T1', '--reason', 'r']).status, 'rework');
-  assert.equal(parse(['role', 'set', 'small', '--harness', 'pi']).harness, 'pi');
+  assert.equal(parse(['ladder', 'set', 'small', '--harness', 'pi', '--model', 'm', '--clear', 'profile']).harness, 'pi');
+  assert.equal(parse(['ladder', 'show']).ladder.small.model, 'm');
+  assert.equal(parse(['ladder', 'harness', 'codex']).harness, 'codex');
   assert.equal(parse(['project', 'set', '--workers', '3']).limits.workers, 3);
   assert.equal(parse(['project', 'show']).limits.workers, 3);
   assert.equal(parse(['status']).counts.rework, 1);

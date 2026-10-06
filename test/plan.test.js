@@ -12,8 +12,8 @@ test('task add stores the task with defaults and refuses bad input', (t) => {
   assert.equal(h.ok(['task', 'add', '--title', 'Schema', '--acceptance', 'table exists', '--acceptance', 'migration runs']), 'T1');
   const t1 = h.readState('tasks.json').tasks[0];
   assert.deepEqual(
-    { kind: t1.kind, size: t1.size, role: t1.role, status: t1.status, revision: t1.revision, acceptance: t1.acceptance },
-    { kind: 'code', size: 'M', role: 'worker', status: 'todo', revision: 1, acceptance: ['table exists', 'migration runs'] },
+    { kind: t1.kind, size: t1.size, tier: t1.tier, status: t1.status, revision: t1.revision, acceptance: t1.acceptance },
+    { kind: 'code', size: 'M', tier: 'medium', status: 'todo', revision: 1, acceptance: ['table exists', 'migration runs'] },
   );
 
   const noAcc = h.run(['task', 'add', '--title', 'x']);
@@ -26,9 +26,9 @@ test('task add stores the task with defaults and refuses bad input', (t) => {
 
   const badSize = h.run(['task', 'add', '--title', 'x', '--acceptance', 'a', '--size', 'XL']);
   assert.equal(badSize.code, 2);
-  const badRole = h.run(['task', 'add', '--title', 'x', '--acceptance', 'a', '--role', 'ghost']);
-  assert.equal(badRole.code, 1);
-  assert.match(badRole.stderr, /role ghost is not in project.json/);
+  const badTier = h.run(['task', 'add', '--title', 'x', '--acceptance', 'a', '--tier', 'ghost']);
+  assert.equal(badTier.code, 2);
+  assert.match(badTier.stderr, /--tier must be one of easy, medium, hard, research/);
   assert.equal(h.readState('tasks.json').tasks.length, 1, 'refused adds wrote nothing');
 });
 
