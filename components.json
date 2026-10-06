@@ -1,0 +1,5 @@
+{
+  "agents": ["gishra-worker", "gishra-reviewer"],
+  "skills": ["gishra", "gishra-work", "gishra-review"],
+  "commands": []
+}

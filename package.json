@@ -7,6 +7,6 @@
   "repository": { "type": "git", "url": "https://github.com/agent-sh/gishra.git" },
   "bin": { "gishra": "bin/gishra.js" },
   "engines": { "node": ">=20" },
-  "files": ["bin/", "lib/", "standards/", "docs/"],
+  "files": ["bin/", "lib/", "skills/", "agents/", "standards/", "docs/", ".claude-plugin/", "components.json"],
   "scripts": { "test": "node --test test/*.test.js test/gates/*.test.js" }
 }

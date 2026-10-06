@@ -1,0 +1,51 @@
+# Default standards
+
+The way gishra works unless the project names its own profile in `project.json`. The orchestrator plans by it, workers build by it, reviewers check against it. A repository's own `AGENTS.md` wins where it says something different.
+
+## Scope and autonomy
+
+- Once the owner hands over a goal, work through it without asking at each step. Ask only at a real safety boundary or a material change of scope, and ask through `gishra ask` so only the affected tasks wait.
+- Do every item the owner asked for, or get an explicit answer to drop one. Offer a better idea next to the work, not instead of it.
+- Do not invent limits, thresholds or defaults without a reason you can state. If no number can be justified, ask.
+- A failing test or a bug in the repository is the project's to fix, not to label pre-existing and skip.
+
+## Changes and pull requests
+
+- Every change reaches the base branch through a pull request. Keep branches short-lived and rebased on the current base.
+- One task, one branch, one PR. A PR that depends on another open PR is stacked, not hand-rebased.
+- The PR body says what changed, why, how it was verified, and the limits. Keep it current when the change moves.
+- Merge only when CI is green on the exact head, review passed, and the merge names that head (`--match-head-commit`). A cancelled, timed-out or never-started check is a failure, not a pass.
+- On repositories the project does not own, the PR stays clean: motivation, design, limits and measurements in the body; no self-review or status comments.
+
+## Review
+
+- Nobody reviews their own work. Review comes from an agent with a clean context that did not write the change, ideally on a different model.
+- The review is posted where the repository keeps reviews (a PR comment by default) and recorded as evidence.
+- An external review bot, when the repository has one, is addressed like any reviewer. When it is capped or down, the clean-context review is enough; say so in the PR body.
+
+## Tests
+
+- For code changes, a test proves something only if it fails before the change and passes after it. `gishra check tests` enforces this. Other task kinds use the verification in their brief and independent review, per `docs/state.md`.
+- Prefer one integration test that exercises the behavior over many unit tests. Keep a unit test only for pure logic nothing else reaches.
+- Run the tests the change touches, not the whole suite, while working. CI stays thin: lint, build and the checks that guard a merge.
+- When the same mistake shows up twice in review or CI, add a lint rule or check for it.
+
+## Measurement
+
+- Benchmarks and performance claims report the median of three runs, with min and max. For long runs, one run plus a validation run; if they disagree, three; if still unstable, five; if five do not settle, find out why before reporting.
+- Never claim a win from a single run.
+- Ship positive results; delete the code of negative ones unless there is a reason to keep it.
+- Avoid feature flags. Use one only for a transition or a special case, and remove the off path afterwards.
+
+## Writing
+
+- Plain words, the fact first, short sentences, no hedging. No em dashes and no generic assistant phrasing in code, comments, docs, commit messages or PR text.
+- Comments say why the code is the way it is. They never record review history; that belongs in the PR.
+- Reports are short: what changed, what is next, what needs the owner.
+
+## Resources
+
+- Cap every wait with a deadline and a failure exit; a broken check should be noticed within minutes, not hours.
+- Run no more workers than `limits.workers`. Check machine load before heavy work.
+- Scratch files and worktrees are removed by the task that created them when it closes.
+- Spend tokens on the work: give each agent its brief, not the whole history. Software checks run before any model reads the result.
