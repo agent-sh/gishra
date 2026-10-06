@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const cp = require('node:child_process');
 const { makeRepo } = require('./helpers');
 
 const fixture = (name) => path.join(__dirname, 'fixtures', 'usage', name);
@@ -265,4 +266,47 @@ test('foreground accounting errors retain the harness exit code and exit event',
   assert.match(r.stderr, /usage not recorded: usage log unavailable; retry spend/);
   assert.equal(events(h).find((e) => e.cmd === 'spawn exit').detail.code, 7);
   assert.equal(spends(h).tokens, 0);
+});
+
+test('a full usage disk still drains output and preserves the foreground result', (t) => {
+  const h = setup(t);
+  const r = h.run(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: { ...h.usageEnv, USAGE_EXIT: '7' }, hooks: { ...h.usageHooks, HOOK_USAGE_WRITE_FAIL: '1' },
+  });
+  assert.equal(r.code, 7, r.stderr);
+  assert.equal(JSON.parse(r.stdout).code, 7);
+  assert.match(r.stderr, /turn.completed/);
+  assert.match(r.stderr, /usage log capture failed: usage disk full/);
+  assert.equal(events(h).find((e) => e.cmd === 'spawn exit').detail.code, 7);
+  assert.equal(spends(h).entries[0].tokens, null);
+});
+
+test('spawn refuses an existing log and never follows its symlink', { skip: process.platform === 'win32' }, (t) => {
+  const h = setup(t);
+  const planned = h.json(['spawn', '--task', 'T1', '--dry-run']);
+  const target = path.join(h.base, 'protected.txt');
+  fs.writeFileSync(target, 'keep\n');
+  fs.mkdirSync(path.dirname(planned.log), { recursive: true });
+  fs.symlinkSync(target, planned.log);
+  const r = h.run(['spawn', '--task', 'T1', '--wait'], { env: h.usageEnv, hooks: h.usageHooks });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /EEXIST/);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'keep\n');
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn').length, 0);
+});
+
+test('an accounting monitor exits when its project is removed', async (t) => {
+  const h = setup(t);
+  fs.rmSync(h.state, { recursive: true, force: true });
+  const child = cp.spawn(process.execPath, [
+    path.join(__dirname, '..', 'lib', 'spawn-monitor.js'),
+    JSON.stringify({ state: h.state, task: 'T1', agent: 'worker-T1-1', pid: 0 }),
+  ], { env: h.env, stdio: 'ignore' });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  const code = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill(); resolve('timeout'); }, 3000);
+    child.on('close', (n) => { clearTimeout(timer); resolve(n); });
+  });
+  assert.equal(code, 0);
+  assert.equal(fs.existsSync(h.state), false, 'cleanup does not recreate the project');
 });
