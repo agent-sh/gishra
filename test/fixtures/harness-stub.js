@@ -73,6 +73,15 @@ module.exports = function stub(harness) {
     report.mcp = Object.fromEntries(Object.keys(config.mcp_servers || {}).map((k) => [k, true]));
     report.auth = read(path.join(dir, 'auth.json'));
     report.env = read(path.join(dir, '.env'));
+    // codex keeps sessions under its home; a resume must find the first one.
+    const sessions = path.join(dir, 'sessions');
+    report.resumed = args.includes('resume');
+    if (!report.resumed) {
+      fs.mkdirSync(sessions, { recursive: true });
+      fs.writeFileSync(path.join(sessions, `rollout-${process.env.TOWER_CRANE_AGENT}.jsonl`), '{}\n');
+      process.stdout.write(`${JSON.stringify({ type: 'thread.started', thread_id: 'stub-thread' })}\n`);
+    }
+    report.sessions = fs.existsSync(sessions) ? fs.readdirSync(sessions) : [];
   }
   for (const argv of JSON.parse(process.env.STUB_RUN || '[]')) {
     const r = cp.spawnSync(argv[0], argv.slice(1), { encoding: 'utf8' });

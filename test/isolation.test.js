@@ -204,12 +204,12 @@ test('a codex agent writes only where its agent file says; reviewer and small ch
     isolated(h, rung, 'codex');
     spawn(h, u, rung);
     const { config } = u.report();
-    const rules = config.permissions.tower-crane.filesystem;
+    const rules = config.permissions['tower-crane'].filesystem;
     assert.deepEqual(rules[':workspace_roots'], { '.': worktree }, rung);
     assert.equal(rules[':root'], 'read', rung);
     assert.equal(rules[h.state], 'write', `${rung}: state through the CLI`);
     assert.equal(rules[path.join(h.state, 'homes')], 'read', `${rung}: agent homes are not writable`);
-    assert.equal(config.permissions.tower-crane.network.enabled, true);
+    assert.equal(config.permissions['tower-crane'].network.enabled, true);
   }
 });
 
@@ -247,6 +247,26 @@ test('git and gh allow reads and the role\'s own writes, and refuse everything e
     }
   }
   for (const b of ['forced', 'alias']) assert.equal(h.git(['--git-dir', remote, 'branch', '--list', b]), '', `no ${b} push landed`);
+});
+
+test('a codex rework resumes in a fresh isolated home and finds its first session', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  isolated(h, 'medium', 'codex');
+  const first = spawn(h, u, 'medium');
+  const home = path.join(h.state, 'homes', first.agent);
+  fs.writeFileSync(path.join(home, 'AGENTS.md'), 'PLANTED-BY-AGENT\n');
+  h.ok(['claim', 'T1', '--agent', first.agent]);
+  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', first.agent]);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer-T1-1', '--summary', 'redo']);
+  h.ok(['rework', 'T1', '--reason', 'redo']);
+  const next = spawn(h, u, 'medium');
+  assert.equal(next.resumed, true);
+  assert.equal(next.agent, first.agent);
+  const seen = u.report();
+  assert.ok(seen.resumed, 'codex runs exec resume');
+  assert.equal(seen.home, path.join(home, 'home'), 'the resume runs in the agent\'s isolated home');
+  assert.deepEqual(seen.sessions, [`rollout-${first.agent}.jsonl`], 'the first session is there');
+  assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'the home was rebuilt');
 });
 
 test('a spawn started inside another agent links to the user\'s own files, so removing the parent home breaks nothing', { skip: NO_STUBS }, (t) => {
