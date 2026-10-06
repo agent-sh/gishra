@@ -85,6 +85,14 @@ test('ladder save-user makes the project ladder the default for new projects', (
   const other = path.join(h.base, 'second-state');
   h.ok(['init', '--name', 'second', '--goal', 'g', '--state', other]);
   assert.equal(JSON.parse(fs.readFileSync(path.join(other, 'project.json'), 'utf8')).ladder.hard.model, 'fable');
+
+  // A ladder that cannot run is not saved over the user file.
+  const saved1 = fs.readFileSync(h.userConfig, 'utf8');
+  h.writeState('project.json', { ...h.readState('project.json'), harness: 'pi' });
+  const refused = h.run(['ladder', 'save-user']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /ladder easy \(pi, the default harness\): profile applies only to codex, needs a model;.*before saving it as the default/);
+  assert.equal(fs.readFileSync(h.userConfig, 'utf8'), saved1);
 });
 
 test('ladder harness moves every rung without its own harness, and spawn runs each tier there', (t) => {
