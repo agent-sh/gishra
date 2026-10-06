@@ -173,7 +173,7 @@ test('a spawned codex agent loads none of the user memory, instructions, MCP ser
   assert.deepEqual(seen.skills, [], 'no user skill from ~/.agents/skills, and the small role has none of its own');
   assert.equal(fs.readlinkSync(path.join(home, 'home', '.gitconfig')), path.join(u.home, '.gitconfig'), 'git config is linked into its HOME');
   spawn(h, u, 'review');
-  assert.deepEqual(u.report().skills, ['gishra-review'], 'the reviewer gets its own skill only');
+  assert.deepEqual(u.report().skills, ['tower-crane-review'], 'the reviewer gets its own skill only');
   noSecretsCopied(h);
 });
 
