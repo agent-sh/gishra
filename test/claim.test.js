@@ -117,5 +117,6 @@ test('the owner can release any claim', (t) => {
   h.ok(['release', 'T1', '--reason', 'worker is stuck']);
   const task = h.readState('tasks.json').tasks[0];
   assert.equal(task.status, 'todo');
-  assert.match(task.notes[0].text, /released by w-1: worker is stuck/);
+  assert.equal(task.notes[0].agent, 'owner');
+  assert.match(task.notes[0].text, /released claim held by w-1: worker is stuck/);
 });

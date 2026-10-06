@@ -69,6 +69,7 @@ test('a killed spawned claimant is reported with its log tail and released for r
   assert.equal(spawned.rung, 'easy');
   assert.doesNotMatch(h.ok(['status']), /exited without submit/);
   assert.doesNotMatch(h.ok(['ready']), /exited without submit/);
+  assert.equal(h.run(['release', 'T1', '--reason', 'recover live worker', '--agent', 'another-worker']).code, 1);
 
   spawned.kill();
   await until(() => (h.json(['status']).exited_claims || []).length === 1, 'killed spawned claimant was not reported');
@@ -87,18 +88,16 @@ test('a killed spawned claimant is reported with its log tail and released for r
     assert.match(text, /exited without submit/);
     assert.ok(text.includes(spawned.log), text);
     assert.match(text, /last diagnostic before exit/);
-    assert.match(text, /release T1 with --reason using the claimant identity/);
+    assert.match(text, /gishra release T1 --reason/);
     assert.doesNotMatch(text, /--agent owner/);
     const workerText = h.ok([...args, '--agent', 'orchestrator']);
-    assert.match(workerText, /request owner action/);
+    assert.match(workerText, /gishra release T1 --reason/);
     assert.doesNotMatch(workerText, /--agent owner/);
     assert.deepEqual(data.ready, [], 'the claim stays held until release or lease expiry');
   }
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before, 'views do not change state');
 
-  const refused = h.run(['release', 'T1', '--reason', 'recover killed worker', '--agent', 'another-worker']);
-  assert.equal(refused.code, 1);
-  const released = h.json(['release', 'T1', '--reason', 'recover killed worker']);
+  const released = h.json(['release', 'T1', '--reason', 'recover killed worker', '--agent', 'another-worker']);
   assert.equal(released.status, 'todo');
   assert.equal(released.claim, null);
   assert.ok(released.notes.some((n) => n.text.includes('recover killed worker')));
@@ -167,12 +166,10 @@ test('a spawn on another host is not inferred dead from a local PID', async (t) 
   assert.deepEqual(h.json(['ready']).exited_claims, []);
 });
 
-test('terminal owner recovery requires explicit identity', { skip: !PTY_AVAILABLE }, async (t) => {
+test('terminal fallback cannot release another live claim', { skip: !PTY_AVAILABLE }, async (t) => {
   const h = setup(t);
   const spawned = await start(t, h);
-  spawned.kill();
-  await until(() => (h.json(['status']).exited_claims || []).length === 1, 'exit was not reported');
-  const args = ['release', 'T1', '--reason', 'spawned process exited without submit'];
+  const args = ['release', 'T1', '--reason', 'cancel live worker'];
   const env = { ...h.env };
   delete env.GISHRA_AGENT;
   const refused = runPty(args, { cwd: h.repo, env });
@@ -180,6 +177,7 @@ test('terminal owner recovery requires explicit identity', { skip: !PTY_AVAILABL
   const result = runPty([...args, '--agent', 'owner'], { cwd: h.repo, env });
   assert.equal(result.code, 0, result.stdout + result.stderr);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'todo');
+  spawned.kill();
 });
 
 test('Linux zombie and reused pid diagnostics do not mistake the process for a live worker', { skip: process.platform !== 'linux' }, async (t) => {

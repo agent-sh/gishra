@@ -1,6 +1,6 @@
 # State
 
-gishra keeps a project's plan and progress in plain files. People and dashboards read them; only the `gishra` CLI writes them, under a lock, after validation. An agent that needs to change state runs a command.
+gishra keeps a project's plan and progress in plain files. People and dashboards read them; the `gishra` CLI and serve's owner forms write through the same locked, validated functions. An agent that needs to change state runs a command.
 
 ## Where
 
@@ -20,7 +20,7 @@ The identity recorded in state and events comes from `--agent NAME`, then `GISHR
 
 `spawn` passes the name `<job>-<task>-<n>` (`worker-T1-1`, `reviewer-T1-1`) in `GISHRA_AGENT`. Its prompt says `you are not the owner; never pass --agent owner` and closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
 
-`accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers. An agent requests owner action with `gishra ask` or a task note. Set `GISHRA_AGENT=owner` per command, never in a shell profile, where it could override a spawned agent's identity.
+`accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's live or unverified claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers. Any agent may recover a spawned claim when the shared process detector verifies its exit under the state lock. An agent requests other owner action with `gishra ask` or a task note. Set `GISHRA_AGENT=owner` per command, never in a shell profile, where it could override a spawned agent's identity.
 
 ## Files
 
@@ -183,7 +183,7 @@ Only the current claimant's most recent spawn counts. A worker can claim after i
 
 The host recorded by `spawn` bounds local pid checks to that host; older events without it are assumed local. Permission errors and processes on another host do not establish an exit. Linux checks recognize zombie processes and compare the recorded process start time to catch a reused pid. Other platforms use missing pids and recorded foreground exits.
 
-The claimant or an explicit owner recovers the task with `release ID --reason R`. The usual prior `todo` or `rework` status is restored. The supplied reason stays in the release note; the observed pid, log and tail are preserved in an additional note and the release event's `detail.exited_spawn`. Releasing clears the diagnostic; a new claim does not inherit the old process.
+Any agent recovers a verified exited task with `release ID --reason R`. The detector rechecks the current claim under the lock; a live or unverified process still requires the claimant or an explicit owner. The usual prior `todo` or `rework` status is restored. The supplied reason stays in the release note; the observed pid, log and tail are preserved in an additional note and the release event's `detail.exited_spawn`. Releasing clears the diagnostic; a new claim does not inherit the old process.
 
 ### Acceptance gates
 
@@ -229,11 +229,27 @@ The standards profile may add gates. `--waive TYPE --reason TEXT` records an own
 }
 ```
 
-A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. Answering adds a note with the answer to every task the decision blocked.
+A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
 
 ## events.jsonl
 
-One JSON object per line: `{ "at", "agent", "cmd", "task", "detail" }`. `cmd` is the command name (`task add`, `claim`, `spawn`, `check tests` and so on); a ladder change logs `ladder harness` and one `ladder set` per rung it changed, with the rung's new fields. A write made from the serve Settings view carries `"via": "serve"` in `detail`. `gishra spawn` also counts its earlier `spawn` events to number agents. Gate events have `{ "type", "ok", "sha", "ref", "revision", "source", "commands" }` in `detail`. Acceptance, merge, task views and the sketch match software evidence against these events; a missing or unreadable log supplies no gate proof, while malformed lines are skipped. A write inserts a newline after an unterminated log tail before appending events, so a torn record cannot hide the next gate receipt. `gishra status` and the sketch read time and token spend from tasks. Keep the log with tasks.json when copying or restoring state.
+The append-only log is the event source of truth. One JSON object per line: `{ "id", "type", "to", "at", "agent", "cmd", "task", "detail" }`. Every append occurs under the state lock after validation and state writes. Refused commands append nothing. Each new event has a unique `E<uuid>` id. `cmd` preserves the command name (`task add`, `claim`, `spawn`, `check tests` and so on); `gishra spawn` counts its earlier `spawn` events to number agents. Older audit lines without ids remain readable; `wait` exposes their byte offsets for resuming.
+
+A ladder change logs `ladder harness` and one `ladder set` per rung it changed, with the rung's new fields. A ladder or tier write made from the serve Settings view carries `"via": "serve"` in `detail`.
+
+Gate events have `{ "type", "ok", "sha", "ref", "revision", "source", "commands" }` in `detail`. Acceptance, merge, task views and the sketch match software evidence against these events; a missing or unreadable log supplies no gate proof, while malformed lines are skipped. Keep the log with tasks.json when copying or restoring state.
+
+`type` identifies the event and `to` names the recipient. Every state change goes to `orchestrator` unless a message supplies an explicit `--to`. Commands map to notifications: submit to `submitted`, accept to `accepted`, rework to `rework`, successful merge evidence to `merged`, msg to `worker-message`, owner task or decision notes to `owner-comment`, ask to `decision-opened`, answer to `decision-answer`, release to `released`, and owner-done to `owner-done`. Review and other gate evidence wakes as `evidence`; other changes keep their command name as the type. There is no separate notification allowlist to hide a new state change.
+
+`gishra wait` watches this log from an exclusive id or byte cursor and returns the first matching notification as one JSON line. Its `offset` is computed when reading and counts UTF-8 bytes through the newline; it is not stored in the log. Default `now` skips complete historical lines. Save the returned id or offset and pass it to the next wait so events during handling are not missed. Filters combine recipient, task (including a decision's `detail.blocks`) and event types. Writes by the waiter's agent are skipped, except events recorded as `owner` and `worker-exited` and `stall` observations. Owner input remains visible when the waiter also runs as `owner`; observations reach the waiter that appends them. Timeout is a separate `{"type":"timeout","offset":N}` result, not an event. Its cursor includes complete lines skipped by filters. See docs/cli.md for options.
+
+Startup and resume without a saved cursor use `wait --timeout 0` to take the current complete-line offset before reading state once. This snapshot emits no observations. The next blocking wait starts from that offset and observes current exits and stalls, keeping events that arrived during reconciliation without replaying history. Owner POST routes preserve serve's identity and require it to be explicitly `owner`; non-owner serve renders no owner forms and refuses those writes.
+
+`spawn` records the job in `role`, the ladder `rung`, generated agent, pid, host, Linux process start ticks when available, and log in its event. The wait engine uses the shared `lib/processes.js` detector for a worker's exit without submission, including failure before claiming, and appends `worker-exited` with diagnostics. It also appends `stall` when both the lease and claimant progress are stale (no progress within the most recently granted claim or renew lease interval). Other claimant writes advance progress; claim and renew do not. Submitted tasks do not produce these events.
+
+Exit and stall observations are rechecked and deduplicated under the lock, using a `detail.source` key for the current claim and pid or lease/progress deadline. Concurrent waits see the same event. Detection reports the condition without clearing the claim or changing task status. Recovery uses `release --reason`, followed by a new claim or spawn. Directory watching plus an internal one-second stat and process check keeps callers blocked until an event or their deadline. The engine closes all watchers and timers when a wait ends.
+
+An incomplete final line remains unread until a subsequent append; after a crash, that append starts a fresh line without deleting the damaged bytes. Readers skip the damaged record and continue. The log must never be truncated or replaced; a cursor beyond its end is refused.
 
 A `spawn` event records `{ role, rung, agent, harness, pid, host, cwd, log }`, plus `start_ticks` on Linux when available. `role` is the job (`worker` for a task tier); `rung` names the selected ladder rung. `log` is the background output path, or null with `--wait`. A foreground completion adds `spawn exit` with `{ role, rung, agent, pid, code }`. Exits of detached processes are discovered by the views, without adding an event. A release of an exited spawned claim records `{ reason, holder, status, exited_spawn }`, where `exited_spawn` is the diagnostic `{ id, agent, pid, log, tail }` observed at release.
 

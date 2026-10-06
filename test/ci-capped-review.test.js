@@ -48,6 +48,8 @@ function fixture(t) {
         at: evidence.at, summary: evidence.summary, ref: evidence.ref, revision: evidence.revision,
         source: 'check ci', commands: evidence.commands,
       });
+      assert.equal(evidence.source, 'check ci');
+      assert.ok(Array.isArray(evidence.commands));
       return { code: r.status, ...evidence };
     },
   };
