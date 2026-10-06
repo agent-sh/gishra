@@ -73,7 +73,7 @@ const COMMANDS = [
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', run: T.planImport },
   { section: 'Plan', name: 'brief set', pos: ['ID', '[-]'], usage: 'ID (--file F | -)', summary: "write the task's brief", flags: { file: str('F', 'read the brief from F') }, run: T.briefSet },
   { section: 'Plan', name: 'brief get', pos: ['ID'], usage: 'ID', summary: "print the task's brief", run: T.briefGet },
-  { section: 'Plan', name: 'validate', summary: 'report cycles, unknown dependencies, tasks without acceptance, unsplit L tasks and oversize budgets (exit 1 if any); warn when review runs the same model as a tier in use', run: T.validate },
+  { section: 'Plan', name: 'validate', summary: 'report cycles, unknown dependencies, tasks without acceptance, unsplit L tasks, oversize budgets and rungs that cannot run (exit 1 if any); warn when review runs the same model as a tier in use', run: T.validate },
 
   { section: 'Run', name: 'ready', usage: '[--all]', summary: 'ready tasks, those that unblock the most first; --all adds blocked ones with the reason', flags: { all: bool('also list blocked tasks and why') }, run: T.ready },
   { section: 'Run', name: 'claim', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'take a ready task for --agent', flags: { lease: int('MIN', 'lease length (default limits.lease_minutes)') }, run: T.claim },

@@ -15,8 +15,8 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `init --name N --goal G [--repo O/R] [--base B] [settings]` | create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid |
 | `project set [--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S]` | change settings, limits and budget |
 | `project show` | print settings and the resolved ladder |
-| `ladder show` | print each rung as it resolves: harness (and whether it is the default), model, profile, provider, effort, args, and where the rung comes from (project, user file or built-in); also the default harness, its source and the user file path |
-| `ladder set RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--clear FIELD]...` | change the named fields of one rung and keep the rest; `--clear` removes a field (a cleared harness follows the default). A rung the project left out starts from the one it fell back to. Refused if any rung could not run afterwards (state.md lists the checks) |
+| `ladder show` | print each rung as it resolves: harness (and whether it is the default), model, profile, provider, effort, args, and where the rung comes from (project, user file or built-in); also the default harness, its source, the user file path, and every rung that cannot run (`problems` under `--json`) |
+| `ladder set RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--clear FIELD]...` | change the named fields of one rung and keep the rest; `--clear` removes a field (a cleared harness follows the default). A rung the project left out starts from the one it fell back to. Refused if it leaves a rung unable to run that could run before (state.md lists the checks); rungs already broken do not block it |
 | `ladder harness H` | set the default harness; every rung without its own moves to it. Refused, naming the rungs, if one of them cannot run there (a codex profile on pi, a missing model) |
 | `ladder save-user` | write the project's resolved ladder and default harness to the user file (`GISHRA_CONFIG`, else `~/.config/gishra/config.json`), the defaults for new projects |
 | `task add --title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--tier T] [--dep ID] [--needs-owner REASON]` | add a task; prints its id. `T` is `easy`, `medium`, `hard` or `research`; without it the tier comes from kind and size (state.md). Refused for an unknown dependency |
@@ -25,7 +25,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `task show ID`, `task list [--status S]` | read; `S` is a status, `ready` or `blocked` |
 | `plan import FILE` | add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `size`, `tier`, `depends_on`, `needs_owner`. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file |
 | `brief set ID (--file F \| -)`, `brief get ID` | write or read the task's brief |
-| `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It also warns, without failing, when the `review` rung runs the same harness and model (or codex profile) as a tier that open tasks use, since such a review shares the author's blind spots |
+| `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It also reports every ladder rung that cannot run, and warns, without failing, when the `review` rung runs the same harness and model (or codex profile) as a tier that open tasks use, since such a review shares the author's blind spots |
 
 ## Run
 
@@ -93,7 +93,7 @@ serve answers any request only when its `Host` is `127.0.0.1:<port>` or `localho
 }
 ```
 
-Each rung lists the fields to change, as strings. An empty string clears the field; a field left out keeps its value. `args` and `command` are JSON array text, as on the command line. The whole request is one write: if any rung could not run afterwards, nothing is written. The reply is `{ "ok": true, ... }` plus what `ladder show --json` prints (`harness`, `harness_from`, `user_file`, `user_file_exists`, `ladder`).
+Each rung lists the fields to change, as strings. An empty string clears the field; a field left out keeps its value. `args` and `command` are JSON array text, as on the command line. The whole request is one write: if it leaves a rung unable to run that could run before, nothing is written. The reply is `{ "ok": true, ... }` plus what `ladder show --json` prints (`harness`, `harness_from`, `user_file`, `user_file_exists`, `ladder`).
 
 `POST /api/tiers` body: `{ "tiers": { "T1": "hard", "T4": "research" } }`. All tiers are written in one write, or none. The reply is `{ "ok": true, "tiers": [{ "id": "T1", "tier": "hard" }, ...] }`.
 

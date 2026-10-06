@@ -167,6 +167,36 @@ test('ladder writes are validated, and a refused one leaves project.json as it w
   assert.match(h.run(['init', '--name', 'n', '--goal', 'g', '--state', path.join(h.base, 'fresh')]).stderr, /config\.json is not valid JSON/);
 });
 
+test('a ladder broken by a changed user file still loads, and ladder set repairs it one rung at a time', (t) => {
+  const h = makeRepo(t);
+  writeUser(h, { harness: 'pi', ladder: { easy: { model: 'p/easy' }, medium: { model: 'p/medium' }, review: { model: 'p/review' }, small: { model: 'p/small' } } });
+  h.init();
+  h.ok(['task', 'add', '--title', 'x', '--acceptance', 'a', '--size', 'S']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'brief\n' });
+  // The project keeps its default harness and its orchestrator rung, and
+  // follows the user file for the rest.
+  const p = h.readState('project.json');
+  h.writeState('project.json', { ...p, ladder: { orchestrator: p.ladder.orchestrator } });
+  // Another project saves a codex ladder over the user file.
+  writeUser(h, { harness: 'codex', ladder: { easy: { profile: 'luna' }, medium: { profile: 'sol' }, review: { profile: 'sol' }, small: { profile: 'luna' } } });
+
+  assert.equal(h.run(['status']).code, 0, 'the project still loads');
+  assert.equal(h.ok(['task', 'add', '--title', 'y', '--acceptance', 'a']), 'T2', 'other writes still work');
+  const v = h.run(['validate']);
+  assert.equal(v.code, 1);
+  assert.ok(v.stdout.includes(`ladder easy (pi, the default harness, from the user file ${h.userConfig}): profile applies only to codex, needs a model`), v.stdout);
+  const spawn = h.run(['spawn', '--task', 'T1', '--dry-run']);
+  assert.equal(spawn.code, 1);
+  assert.match(spawn.stderr, /ladder easy \(pi.*profile applies only to codex, needs a model; fix it with gishra ladder set easy/);
+  assert.match(h.ok(['ladder', 'show']), /^cannot run: ladder medium \(pi/m);
+
+  h.ok(['ladder', 'set', 'easy', '--model', 'p/easy', '--clear', 'profile']);
+  assert.equal(h.json(['spawn', '--task', 'T1', '--dry-run']).argv[0], 'pi', 'the repaired rung runs while others are still broken');
+  const worse = h.run(['ladder', 'set', 'orchestrator', '--effort', 'ultra']);
+  assert.equal(worse.code, 1, 'a change that breaks a working rung is still refused');
+  assert.match(worse.stderr, /^gishra: ladder orchestrator \(claude\): effort must be one of/);
+});
+
 test('a ladder write is evented and re-renders the sketch with the ladder and each task tier', (t) => {
   const h = makeRepo(t);
   h.init();
