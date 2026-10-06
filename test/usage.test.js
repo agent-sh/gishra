@@ -178,6 +178,42 @@ test('detached exits record both spawns exactly once and keep dispatch metadata'
   assert.ok(monitors.every((c) => !detachedAlive(c)), 'collectors exit after recording usage');
 });
 
+test('collectors and concurrent waiters share one private exit event and usage entry', async (t) => {
+  const h = setup(t);
+  const privateText = 'prompt: private task text\ncredential: synthetic-private-token';
+  const sample = path.join(h.base, 'usage-with-private-text.log');
+  fs.writeFileSync(sample, privateText + '\n' + fs.readFileSync(fixture('codex-stream.jsonl'), 'utf8'));
+  const waits = ['observer-a', 'observer-b'].map((agent) => h.runAsync([
+    'wait', '--agent', agent, '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '8',
+  ]));
+  const started = h.json(['spawn', '--task', 'T1'], {
+    env: { ...h.usageEnv, USAGE_DELAY: '900', USAGE_CLAIM: '1' },
+    hooks: { ...h.usageHooks, HOOK_USAGE_FILE: sample },
+  });
+  const results = await Promise.all(waits);
+  for (const r of results) assert.equal(r.code, 0, r.stderr);
+  const [a, b] = results.map((r) => JSON.parse(r.stdout));
+  assert.equal(a.id, b.id, 'all observers consume the same exit');
+  assert.equal(a.detail.agent, started.agent);
+  assert.equal(a.detail.pid, started.pid);
+  assert.equal(a.detail.log, started.log);
+  assert.equal(a.detail.tail, undefined);
+  const spend = await collected(h, 1);
+  assert.equal(spend.tokens, 24816);
+  assert.equal(spend.entries[0].rung, 'easy');
+  assert.equal(spend.entries[0].model, 'dispatch-model');
+  h.ok(['spend', 'T1', '--from-spawn', started.agent]);
+  h.ok(['spend', 'T1', '--from-spawn', started.agent]);
+  assert.equal(events(h).filter((e) => e.type === 'worker-exited').length, 1);
+  assert.equal(events(h).filter((e) => e.cmd === 'spend').length, 1);
+  assert.match(h.json(['status']).exited_claims[0].tail, /private task text/);
+  h.ok(['release', 'T1', '--agent', 'recovery-agent', '--reason', 'worker exited']);
+  for (const file of ['tasks.json', 'events.jsonl']) {
+    const text = fs.readFileSync(path.join(h.state, file), 'utf8');
+    for (const line of privateText.split('\n')) assert.ok(!text.includes(line), `${file} contains harness text`);
+  }
+});
+
 test('codex session fallback opens only the exact session and counts cached input once', (t) => {
   const h = setup(t);
   const codexHome = path.join(h.base, 'codex');

@@ -86,6 +86,7 @@ test('a killed spawned claimant is reported with its log tail and released for r
 
   spawned.kill();
   await until(() => (h.json(['status']).exited_claims || []).length === 1, 'killed spawned claimant was not reported');
+  await until(() => events().some((e) => e.cmd === 'spend' && e.detail.source === `spawn:${spawned.agent}`), 'exit usage was not collected');
   const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
   for (const args of [['status'], ['ready'], ['ready', '--all']]) {
     const data = h.json(args);
@@ -158,8 +159,8 @@ test('foreground exits without submit are reported from their recorded exit', as
     const exits = h.json(args).exited_claims;
     assert.equal(exits.length, 1);
     assert.equal(exits[0].agent, 'worker-T1-1');
-    assert.equal(exits[0].log, null);
-    assert.match(h.ok(args), /foreground output/);
+    assert.equal(exits[0].log, events.find((e) => e.cmd === 'spawn').detail.log);
+    assert.match(h.ok(args), /last diagnostic before exit/);
   }
   const spawned = events.find((e) => e.cmd === 'spawn').detail;
   h.ok(['release', 'T1', '--reason', 'recover foreground worker']);
