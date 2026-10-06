@@ -6,13 +6,23 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
 
+const PRIVATE_LOG = 'prompt: synthetic private instruction\ncredential: synthetic-secret-for-recovery-test';
+
+function assertNoLogText(h) {
+  for (const file of ['tasks.json', 'events.jsonl']) {
+    const text = fs.readFileSync(path.join(h.state, file), 'utf8');
+    for (const line of PRIVATE_LOG.split('\n')) assert.ok(!text.includes(line), `${file} contains log text`);
+    assert.ok(!text.includes('last diagnostic before exit'), `${file} contains a log diagnostic`);
+  }
+}
+
 function setup(t) {
   const h = makeRepo();
   h.stopWorkers = [];
   // Windows holds directories open while a worker still uses them.
-  t.after(() => {
+  t.after(async () => {
     for (const stop of h.stopWorkers) stop();
-    fs.rmSync(h.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await h.cleanup();
   });
   h.init();
   h.ok(['task', 'add', '--title', 'Recover a worker', '--tier', 'easy', '--acceptance', 'exit is reported']);
@@ -30,18 +40,21 @@ async function until(fn, message) {
 
 async function start(t, h, { claim = true, submit = false, wait = false, env = {} } = {}) {
   const marker = path.join(h.base, `started-${Date.now()}.json`);
+  const worker = path.join(h.base, 'worker.js');
   const script = `
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const task = process.env.GISHRA_TASK;
-${claim ? "cp.execFileSync(process.execPath, [process.argv[1], 'claim', task]);" : ''}
+${claim ? "cp.execFileSync(process.execPath, [process.argv[2], 'claim', task]);" : ''}
 fs.writeSync(1, Array.from({ length: 30 }, (_, i) => 'progress ' + i).join('\\n') + '\\n');
 fs.writeSync(2, 'last diagnostic before exit\\n');
-${submit ? "cp.execFileSync(process.execPath, [process.argv[1], 'submit', task, '--sha', 'abcdef1']);" : ''}
-fs.writeFileSync(process.argv[2], JSON.stringify({ agent: process.env.GISHRA_AGENT, pid: process.pid }));
+fs.writeSync(2, ${JSON.stringify(PRIVATE_LOG + '\n')});
+${submit ? "cp.execFileSync(process.execPath, [process.argv[2], 'submit', task, '--sha', 'abcdef1']);" : ''}
+fs.writeFileSync(process.argv[3], JSON.stringify({ agent: process.env.GISHRA_AGENT, pid: process.pid }));
 ${wait ? 'process.exit(7);' : 'setInterval(() => {}, 1000);'}
 `;
-  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, marker]),
+  fs.writeFileSync(worker, script);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, worker, BIN, marker]),
     '--clear', 'profile', '--clear', 'effort']);
   if (wait) return h.run(['spawn', '--role', 'easy', '--task', 'T1', '--wait']);
   const spawned = h.json(['spawn', '--task', 'T1'], { env });
@@ -73,6 +86,7 @@ test('a killed spawned claimant is reported with its log tail and released for r
 
   spawned.kill();
   await until(() => (h.json(['status']).exited_claims || []).length === 1, 'killed spawned claimant was not reported');
+  await until(() => events().some((e) => e.cmd === 'spend' && e.detail.source === `spawn:${spawned.agent}`), 'exit usage was not collected');
   const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
   for (const args of [['status'], ['ready'], ['ready', '--all']]) {
     const data = h.json(args);
@@ -81,6 +95,7 @@ test('a killed spawned claimant is reported with its log tail and released for r
     assert.deepEqual({ id: exit.id, agent: exit.agent, pid: exit.pid, log: exit.log },
       { id: 'T1', agent: spawned.agent, pid: spawned.pid, log: spawned.log });
     assert.match(exit.tail, /last diagnostic before exit/);
+    assert.ok(exit.tail.includes(PRIVATE_LOG));
     assert.match(exit.tail, /progress 29/);
     assert.doesNotMatch(exit.tail, /progress 0\n/);
     assert.ok(exit.tail.split('\n').length <= 20);
@@ -96,13 +111,17 @@ test('a killed spawned claimant is reported with its log tail and released for r
     assert.deepEqual(data.ready, [], 'the claim stays held until release or lease expiry');
   }
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before, 'views do not change state');
+  assertNoLogText(h);
 
   const released = h.json(['release', 'T1', '--reason', 'recover killed worker', '--agent', 'another-worker']);
   assert.equal(released.status, 'todo');
   assert.equal(released.claim, null);
   assert.ok(released.notes.some((n) => n.text.includes('recover killed worker')));
-  assert.ok(released.notes.some((n) => n.text.includes(spawned.log) && n.text.includes('last diagnostic before exit')));
-  assert.equal(events().find((e) => e.cmd === 'release').detail.exited_spawn.pid, spawned.pid);
+  assert.ok(released.notes.some((n) => n.text.includes(spawned.log) && n.text.includes(String(spawned.pid))));
+  assert.deepEqual(events().find((e) => e.cmd === 'release').detail.exited_spawn, {
+    pid: spawned.pid, log: spawned.log, code: null, size: fs.statSync(spawned.log).size,
+  });
+  assertNoLogText(h);
   assert.deepEqual(h.json(['status']).exited_claims, []);
   assert.deepEqual(h.json(['ready']).ready.map((x) => x.id), ['T1']);
 
@@ -140,9 +159,17 @@ test('foreground exits without submit are reported from their recorded exit', as
     const exits = h.json(args).exited_claims;
     assert.equal(exits.length, 1);
     assert.equal(exits[0].agent, 'worker-T1-1');
-    assert.equal(exits[0].log, null);
-    assert.match(h.ok(args), /foreground output/);
+    assert.equal(exits[0].log, events.find((e) => e.cmd === 'spawn').detail.log);
+    assert.match(h.ok(args), /last diagnostic before exit/);
   }
+  const spawned = events.find((e) => e.cmd === 'spawn').detail;
+  h.ok(['release', 'T1', '--reason', 'recover foreground worker']);
+  const release = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    .find((e) => e.cmd === 'release');
+  assert.deepEqual(release.detail.exited_spawn, {
+    pid: spawned.pid, log: spawned.log, code: 7, size: fs.statSync(spawned.log).size,
+  });
+  assertNoLogText(h);
 });
 
 test('a missing log does not hide an exited claimant', async (t) => {
@@ -154,6 +181,13 @@ test('a missing log does not hide an exited claimant', async (t) => {
   const exit = h.json(['status']).exited_claims[0];
   assert.equal(exit.log, spawned.log);
   assert.match(exit.tail, /log unavailable.*ENOENT/);
+  h.ok(['release', 'T1', '--reason', 'recover worker with missing log']);
+  const release = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    .find((e) => e.cmd === 'release');
+  assert.deepEqual(release.detail.exited_spawn, {
+    pid: spawned.pid, log: spawned.log, code: null, size: null,
+  });
+  assertNoLogText(h);
 });
 
 test('a spawn on another host is not inferred dead from a local PID', async (t) => {

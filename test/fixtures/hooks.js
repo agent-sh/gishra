@@ -235,12 +235,86 @@ if (env.HOOK_SPAWN_FAIL) {
   cp.spawn = function failingSpawn(file) {
     const child = new EventEmitter();
     child.pid = undefined;
-    child.unref = () => {};
     process.nextTick(() => {
       const e = new Error(`spawn ${file} ENOENT`);
       e.code = 'ENOENT';
       child.emit('error', e);
     });
+    return child;
+  };
+}
+
+// Real CLI dispatch with an offline harness that emits captured telemetry.
+if (env.HOOK_USAGE_HARNESS) {
+  const original = cp.spawn;
+  cp.spawn = function usageHarness(file, args, options) {
+    if (file === env.HOOK_USAGE_HARNESS) {
+      return original.call(this, process.execPath, [
+        require('node:path').join(__dirname, 'usage-harness.js'), env.HOOK_USAGE_FILE,
+      ], options);
+    }
+    return original.call(this, file, args, options);
+  };
+}
+
+if (env.HOOK_USAGE_READ_FAIL) {
+  const original = fs.readFileSync;
+  fs.readFileSync = function unreadableUsage(file, ...args) {
+    if (typeof file === 'string' && file.startsWith(path.join(env.HOOK_STATE, 'logs') + path.sep)) {
+      throw Object.assign(new Error('usage log unavailable'), { code: 'EACCES' });
+    }
+    return original.call(this, file, ...args);
+  };
+}
+
+if (env.HOOK_USAGE_WRITE_FAIL) {
+  const logFds = new Set();
+  const open = fs.openSync;
+  const close = fs.closeSync;
+  const isLog = (file) => typeof file === 'string' && file.startsWith(path.join(env.HOOK_STATE, 'logs') + path.sep);
+  fs.openSync = function captureFd(file, ...args) {
+    const fd = open.call(this, file, ...args);
+    if (isLog(file)) logFds.add(fd);
+    return fd;
+  };
+  fs.closeSync = function releaseCaptureFd(fd) {
+    logFds.delete(fd);
+    return close.call(this, fd);
+  };
+  for (const name of ['writeFileSync', 'appendFileSync']) {
+    const original = fs[name];
+    fs[name] = function fullUsageDisk(file, data, ...args) {
+      const log = logFds.has(file) || isLog(file);
+      if (log && data?.length) throw Object.assign(new Error('usage disk full'), { code: 'ENOSPC' });
+      return original.call(this, file, data, ...args);
+    };
+  }
+}
+
+// Track detached children outside state so teardown can await every collector.
+if (env.HOOK_PROCESSES_DIR) {
+  const original = cp.spawn;
+  cp.spawn = function trackDetached(file, args, options) {
+    const monitor = args.some((arg) => path.basename(arg) === 'spawn-monitor.js');
+    if (monitor && env.HOOK_MONITOR_HOST) {
+      args = [...args];
+      args[args.length - 1] = JSON.stringify({ ...JSON.parse(args.at(-1)), host: env.HOOK_MONITOR_HOST });
+    }
+    const child = original.call(this, file, args, options);
+    if (options?.detached && child.pid) {
+      let startTicks;
+      if (process.platform === 'linux') {
+        try {
+          const stat = real.readFileSync(`/proc/${child.pid}/stat`, 'utf8');
+          startTicks = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
+        } catch { /* A short-lived child may have already exited. */ }
+      }
+      real.mkdirSync(env.HOOK_PROCESSES_DIR, { recursive: true });
+      real.writeFileSync(path.join(env.HOOK_PROCESSES_DIR, `${child.pid}.json`), JSON.stringify({
+        pid: child.pid, startTicks,
+        kind: monitor ? 'monitor' : 'worker',
+      }));
+    }
     return child;
   };
 }

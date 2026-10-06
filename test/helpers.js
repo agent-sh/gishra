@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
+const assert = require('node:assert/strict');
 
 const ROOT = path.join(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'gishra.js');
@@ -49,6 +50,14 @@ function makeRepo(t) {
     env,
     userConfig: env.GISHRA_CONFIG,
     state: path.join(repo, '.gishra'),
+    detached: () => {
+      const dir = path.join(base, 'detached');
+      return fs.existsSync(dir) ? fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))) : [];
+    },
+    cleanup: async () => {
+      try { await stopDetached(ctx.detached()); }
+      finally { fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+    },
     run: (args, opts = {}) => run(args, withHooks(ctx, opts)),
     runAsync: (args, opts = {}) => runAsync(args, withHooks(ctx, opts)),
     json: (args, opts) => {
@@ -66,7 +75,7 @@ function makeRepo(t) {
     git: (args, cwd = repo) => git(args, cwd, env),
     init: (extra = []) => ctx.ok(['init', '--name', 'demo', '--goal', 'prove the engine', ...extra]),
   };
-  if (t) t.after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  if (t) t.after(ctx.cleanup);
   return ctx;
 }
 
@@ -74,11 +83,8 @@ function makeRepo(t) {
 // variables, acting on this repository's state directory.
 function withHooks(ctx, opts) {
   const env = { ...ctx.env, ...(opts.env || {}) };
-  let pre = [];
-  if (opts.hooks) {
-    Object.assign(env, { HOOK_STATE: ctx.state }, opts.hooks);
-    pre = ['--require', HOOKS];
-  }
+  Object.assign(env, { HOOK_STATE: ctx.state, HOOK_PROCESSES_DIR: path.join(ctx.base, 'detached') }, opts.hooks);
+  const pre = ['--require', HOOKS];
   return { cwd: ctx.repo, ...opts, env, pre };
 }
 
@@ -110,4 +116,44 @@ function runAsync(args, { cwd, env, pre = [] } = {}) {
 
 const real = (p) => fs.realpathSync.native(p);
 
-module.exports = { makeRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT };
+function detachedAlive(child) {
+  try { process.kill(child.pid, 0); } catch (e) { if (e.code === 'ESRCH') return false; throw e; }
+  if (process.platform === 'linux') {
+    let stat;
+    try { stat = fs.readFileSync(`/proc/${child.pid}/stat`, 'utf8'); }
+    catch (e) { if (['ENOENT', 'ESRCH'].includes(e.code)) return false; throw e; }
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+    if (['Z', 'X'].includes(fields[0]) || (child.startTicks && fields[19] !== child.startTicks)) return false;
+  }
+  return true;
+}
+
+function killDetached(child) {
+  if (!detachedAlive(child)) return;
+  if (process.platform === 'win32') {
+    cp.spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 });
+  } else {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+  }
+}
+
+async function stopDetached(children) {
+  const monitors = children.filter((c) => c.kind === 'monitor');
+  try {
+    for (const child of children.filter((c) => c.kind === 'worker')) killDetached(child);
+    const deadline = Date.now() + 10000;
+    while (monitors.some(detachedAlive) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.deepEqual(monitors.filter(detachedAlive).map((c) => c.pid), [], 'detached usage monitors outlived test teardown');
+  } finally {
+    for (const monitor of monitors) killDetached(monitor);
+    const deadline = Date.now() + 10000;
+    while (monitors.some(detachedAlive) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(monitors.every((c) => !detachedAlive(c)), 'usage monitors survived forced cleanup');
+  }
+}
+
+module.exports = { makeRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };

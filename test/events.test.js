@@ -27,7 +27,7 @@ function setup(t, flags = []) {
     }
     await Promise.all(h.children.map((c) => c.result));
     // Windows keeps a running child's cwd open, so stop children first.
-    fs.rmSync(h.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await h.cleanup();
   });
   h.init(flags);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
@@ -275,7 +275,8 @@ setInterval(() => {}, 1000);\n`);
   const [ea, eb] = await Promise.all([event(a, 'worker-exited'), event(b, 'worker-exited')]);
   assert.equal(ea.id, eb.id);
   assert.equal(ea.detail.pid, spawned.pid);
-  assert.match(ea.detail.tail, /worker alive/);
+  assert.equal(ea.detail.tail, undefined, 'exit events never persist harness output');
+  assert.match(h.json(['status']).exited_claims[0].tail, /worker alive/);
   assert.equal(log(h).filter((e) => e.type === 'worker-exited').length, 1);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'in_progress');
   assert.equal(h.run(['wait', '--agent', 'orchestrator', '--types', 'worker-exited', '--timeout', '0.1']).code, 2);
