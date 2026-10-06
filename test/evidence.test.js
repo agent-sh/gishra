@@ -53,6 +53,109 @@ test('hand-written tests ok stays readable but cannot satisfy accept', (t) => {
   assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
 });
 
+test('forged gate source without an audit event cannot satisfy accept', (t) => {
+  const h = setup(t);
+  gateEvidence(h, 'clean', 'checker');
+  gateEvidence(h, 'ci', 'checker');
+  const doc = h.readState('tasks.json');
+  const task = doc.tasks[0];
+  for (const commands of [[], [{ command: 'npm test', args: [], cwd: h.repo, status: 0, signal: null }]]) {
+    task.evidence.push({ type: 'tests', ok: true, sha: task.sha, agent: 'worker', revision: task.revision, source: 'check tests', commands });
+    h.writeState('tasks.json', doc);
+    const r = h.run(['accept', 'T1', '--agent', 'reviewer']);
+    assert.equal(r.code, 1, r.stdout);
+    assert.match(r.stderr, /tests: no tests evidence/);
+    assert.doesNotMatch(r.stderr, /clean:|ci:|review:/);
+    const shown = h.json(['task', 'show', 'T1']);
+    assert.equal(shown.evidence.at(-1).source, 'check tests');
+    assert.equal(shown.gates.ok, false);
+    h.ok(['render']);
+    assert.match(fs.readFileSync(path.join(h.state, 'sketch.md'), 'utf8'), /missing tests/);
+    task.evidence.pop();
+  }
+});
+
+test('software receipts count only with a matching gate event', (t) => {
+  const h = setup(t);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  const eventsFile = path.join(h.state, 'events.jsonl');
+  const original = fs.readFileSync(eventsFile, 'utf8');
+  const events = original.trim().split('\n').map(JSON.parse);
+  for (const type of ['tests', 'clean', 'ci']) {
+    for (const change of ['missing', 'cmd', 'task', 'agent', 'type', 'source', 'sha', 'ok', 'commands', 'revision']) {
+      const altered = structuredClone(events);
+      const index = altered.findIndex((e) => e.cmd === `check ${type}`);
+      const event = altered[index];
+      if (change === 'missing') altered.splice(index, 1);
+      else if (change === 'cmd') event.cmd = 'evidence';
+      else if (change === 'task') event.task = 'T2';
+      else if (change === 'agent') event.agent = 'another-worker';
+      else if (change === 'type') event.detail.type = 'note';
+      else if (change === 'source') event.detail.source = 'evidence';
+      else if (change === 'sha') event.detail.sha = 'fffffff';
+      else if (change === 'ok') event.detail.ok = false;
+      else if (change === 'commands') event.detail.commands[0].status = 42;
+      else event.detail.revision = 0;
+      // Alter only the audit file to prove the source marker alone is insufficient.
+      fs.writeFileSync(eventsFile, altered.map((e) => JSON.stringify(e) + '\n').join(''));
+      const r = h.run(['accept', 'T1']);
+      assert.equal(r.code, 1, `${type} ${change}: ${r.stdout}`);
+      assert.ok(r.stderr.includes(`${type}: no ${type} evidence`), `${change}: ${r.stderr}`);
+    }
+  }
+  fs.writeFileSync(eventsFile, original + '{"torn":\n');
+  h.ok(['accept', 'T1']);
+});
+
+test('an ok gate result with matching event but no commands cannot satisfy accept', (t) => {
+  const h = setup(t);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  const original = h.readState('tasks.json');
+  const eventsFile = path.join(h.state, 'events.jsonl');
+  const events = fs.readFileSync(eventsFile, 'utf8').trim().split('\n').map(JSON.parse);
+  for (const type of ['tests', 'clean', 'ci']) {
+    const doc = structuredClone(original);
+    doc.tasks[0].evidence.find((e) => e.type === type).commands = [];
+    const altered = structuredClone(events);
+    altered.find((e) => e.cmd === `check ${type}`).detail.commands = [];
+    h.writeState('tasks.json', doc);
+    fs.writeFileSync(eventsFile, altered.map((e) => JSON.stringify(e) + '\n').join(''));
+    const r = h.run(['accept', 'T1']);
+    assert.equal(r.code, 1, r.stdout);
+    assert.ok(r.stderr.includes(`${type}: no ${type} evidence`), r.stderr);
+  }
+});
+
+test('merge rechecks software events after acceptance', (t) => {
+  const h = setup(t);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  h.ok(['accept', 'T1']);
+  const eventsFile = path.join(h.state, 'events.jsonl');
+  const events = fs.readFileSync(eventsFile, 'utf8').trim().split('\n').map(JSON.parse);
+  fs.writeFileSync(eventsFile, events.filter((e) => e.cmd !== 'check tests').map((e) => JSON.stringify(e) + '\n').join(''));
+  const r = h.run(['merge', 'T1']);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /its gates no longer pass: tests: no tests evidence/);
+  assert.ok(!fs.existsSync(h.env.FIXTURE_MERGED), 'the merge command never ran');
+});
+
+test('hand-written waivers require owner identity for review and software gates', (t) => {
+  const h = setup(t);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  const original = h.readState('tasks.json');
+  for (const type of ['tests', 'clean', 'review', 'ci']) {
+    const doc = structuredClone(original);
+    const task = doc.tasks[0];
+    task.evidence = task.evidence.filter((e) => e.type !== type);
+    task.evidence.push({ type, ok: true, waived: true, sha: task.sha, agent: 'worker', revision: task.revision });
+    h.writeState('tasks.json', doc);
+    const r = h.run(['accept', 'T1']);
+    assert.equal(r.code, 1, `${type}: ${r.stdout}`);
+    assert.ok(r.stderr.includes(`${type}:`), r.stderr);
+  }
+  h.ok(['accept', 'T1', '--waive', 'ci', '--reason', 'owner approved', '--agent', 'owner']);
+});
+
 for (const type of ['clean', 'ci']) {
   test(`legacy ${type} ok stays readable but cannot satisfy accept`, (t) => {
     const h = setup(t);
@@ -70,6 +173,7 @@ for (const type of ['clean', 'ci']) {
 test('real gate commands record their source and executed commands, including merge', (t) => {
   const h = setup(t);
   for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  assert.match(fs.readFileSync(path.join(h.state, 'sketch.md'), 'utf8'), /all pass/);
   h.ok(['accept', 'T1', '--agent', 'reviewer']);
   h.ok(['merge', 'T1', '--agent', 'reviewer']);
   const evidence = h.readState('tasks.json').tasks[0].evidence;
@@ -90,9 +194,26 @@ test('real gate commands record their source and executed commands, including me
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   for (const e of evidence.filter((e) => e.source)) {
     const event = events.find((event) => event.cmd === e.source);
+    assert.equal(event.task, 'T1');
+    assert.equal(event.agent, e.agent);
+    assert.equal(event.detail.type, e.type);
+    assert.equal(event.detail.sha, e.sha);
+    assert.equal(event.detail.ok, e.ok);
+    assert.equal(event.detail.revision, e.revision);
     assert.equal(event.detail.source, e.source);
     assert.deepEqual(event.detail.commands, e.commands);
   }
+});
+
+test('a gate failure before running commands still overrides its earlier pass', (t) => {
+  const h = setup(t);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  const fail = h.run(['check', 'tests', 'T1', '--cmd', ' ', '--agent', 'checker']);
+  assert.equal(fail.code, 1);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.at(-1).commands, []);
+  const r = h.run(['accept', 'T1']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /latest tests .* failed: no test command given/);
 });
 
 test('unmarked or mismatched software evidence does not override a gate failure or pass', (t) => {

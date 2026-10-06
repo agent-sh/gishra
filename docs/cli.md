@@ -130,11 +130,13 @@ The rung's `args` follow every command. A pi worker (any tier) gets `--skill <ro
 
 ## Gates
 
-Each gate runs software, then records evidence on the task. Only `check tests`, `check clean`, `check ci` and `merge` record their respective software evidence types. Each result carries `source` naming that command and `commands` listing the processes it ran, with their arguments, working directory, exit status and signal. This includes the test command both with and without the change, the cleanup invocation, GitHub queries and the merge invocation. A precondition failure can have no commands.
+Each gate runs software, then records evidence on the task. Only `check tests`, `check clean`, `check ci` and `merge` record their respective software evidence types. Each result carries `source` naming that command and `commands` listing the processes it ran, with their arguments, working directory, exit status and signal. This includes the test command both with and without the change, the cleanup invocation, GitHub queries and the merge invocation. A precondition failure can have no commands; an ok entry needs at least one command to count. The audit event carries the same receipts and revision.
 
 The gate itself lives in `lib/gates/<name>.js` and exports `async run(ctx)` returning `{ ok, summary, ref?, sha? }`, where `ctx` is `{ root, worktree, task, project, args, log, exec }`. Gates run commands through the shared helpers in `lib/gates/common.js`, which use the CLI's `exec` to capture receipts. The CLI runs the gate without holding the lock, then records the result as evidence of the gate's type by `--agent`, at the returned `sha` or the submitted one, against the revision the gate started on. A gate that reports `ok: false` exits 1 after recording. A missing gate module exits 1 with "gate not installed".
 
-Acceptance ignores software evidence without the matching gate `source`, including older manual passes. Existing entries stay readable; run the gates again for the submitted sha to replace their proof. Explicit owner waivers through `accept --waive` still satisfy their gates.
+Acceptance counts software evidence only when events.jsonl has a matching gate event: `cmd === source`, the same task and agent, and matching type, source, exact evidence sha, verdict, revision and command receipts. It ignores entries without that event and ok entries with no commands. Existing entries stay readable; run the gates again for the submitted sha to replace their proof. Merge and the task views use the same check. Waivers for review and software gates count only when their agent is `owner`.
+
+The CLI refuses manual software verdicts, and software receipts require matching records in tasks.json and events.jsonl. Plain files cannot stop a writer running as the same user from forging those records or an owner waiver. A reviewer still checks whether the caller-supplied test and cleanup commands are appropriate; receipts show what ran.
 
 | Command | Does |
 |---|---|
