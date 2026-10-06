@@ -34,7 +34,14 @@ const hookCommands = (settings) => Object.values(settings.hooks || {}).flat().fl
 module.exports = function stub(harness) {
   const args = process.argv.slice(2);
   const after = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : null);
-  const report = { harness, args, memory: [], hooks: [], mcp: {}, rules: [], auth: null, env: null, ran: [] };
+  const report = { harness, args, home: os.homedir(), memory: [], skills: [], hooks: [], mcp: {}, rules: [], auth: null, env: null, ran: [] };
+  const skillsIn = (dir) => {
+    try {
+      return fs.readdirSync(dir).filter((d) => fs.existsSync(path.join(dir, d, 'SKILL.md')));
+    } catch {
+      return [];
+    }
+  };
   if (harness === 'claude') {
     const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
     const global = process.env.CLAUDE_CONFIG_DIR ? path.join(dir, '.claude.json') : path.join(os.homedir(), '.claude.json');
@@ -59,7 +66,9 @@ module.exports = function stub(harness) {
       ...(disabled.includes('memories') ? [] : files(path.join(dir, 'memories'), '.md')),
     ].filter(Boolean);
     report.rules = files(path.join(dir, 'rules'), '.rules');
-    report.config = config;
+    // codex finds skills in its home and in the user's ~/.agents/skills.
+    report.skills = [...skillsIn(path.join(dir, 'skills')), ...skillsIn(path.join(os.homedir(), '.agents', 'skills'))];
+    report.config = JSON.parse(JSON.stringify(config));
     report.configText = read(path.join(dir, 'config.toml'));
     report.mcp = Object.fromEntries(Object.keys(config.mcp_servers || {}).map((k) => [k, true]));
     report.auth = read(path.join(dir, 'auth.json'));

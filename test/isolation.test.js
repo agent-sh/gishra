@@ -52,6 +52,8 @@ function plant(h) {
   put('.codex/rules/default.rules', 'prefix_rule(pattern = ["planted-rule"], decision = "allow")\n');
   put('.codex/auth.json', `{"token":"${SECRET}-CRED"}`);
   put('.codex/.env', `AWS_BEARER_TOKEN_BEDROCK=${SECRET}-ENV\n`);
+  put('.agents/skills/planted-user-skill/SKILL.md', '---\nname: planted-user-skill\n---\nPLANTED-SKILL\n');
+  put('.gitconfig', '[user]\n\tname = planted user\n');
 
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
@@ -106,11 +108,11 @@ function spawn(h, u, role, env = {}) {
 
 const isolated = (h, rung, harness) => {
   const model = harness === 'claude' ? ['--model', 'opus', '--clear', 'profile'] : ['--profile', 'sol', '--clear', 'model'];
-  h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort']);
+  h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
 
 test('a spawned claude agent loads none of the user memory, settings hooks, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
-  const { h, u } = setup(t);
+  const { h, u, wt } = setup(t);
   isolated(h, 'small', 'claude');
   const dry = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
   assert.ok(!JSON.stringify(dry).includes(SECRET), 'no credential in the command or its env');
@@ -132,6 +134,16 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   assert.equal(fs.statSync(path.join(home, 'settings.json')).mode & 0o777, 0o600);
   assert.ok(seen.args.includes('--strict-mcp-config') && seen.args.includes('--disable-slash-commands'));
   assert.equal(seen.args[seen.args.indexOf('--tools') + 1], 'Bash,Read,Grep,Glob');
+  assert.equal(seen.home, path.join(home, 'home'), 'HOME is the agent\'s own');
+  // Bash is approved only because it runs in claude's sandbox, which stops
+  // the agent when it cannot start; the small role writes the state only.
+  const box = seen.settings.sandbox;
+  assert.equal(seen.args[seen.args.indexOf('--allowedTools') + 1], 'Bash,Read,Grep,Glob');
+  assert.deepEqual([box.enabled, box.failIfUnavailable, box.allowUnsandboxedCommands, box.network.allowAllUnixSockets], [true, true, false, true]);
+  assert.deepEqual(box.filesystem.allowWrite, [h.state]);
+  assert.deepEqual(box.filesystem.denyWrite, [path.join(h.state, 'homes'), wt]);
+  for (const p of ['/var/run/docker.sock', '/run/docker.sock', path.join(u.home, '.ssh'), path.join(u.home, '.aws')]) assert.ok(box.filesystem.denyRead.includes(p), p);
+  assert.match(fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8'), /^\.claude\/\.cc-writes\/$/m, 'the sandbox marker is never committed');
   assert.equal(fs.readFileSync(path.join(h.state, 'homes', '.gitignore'), 'utf8'), '*\n');
   noSecretsCopied(h);
 });
@@ -157,6 +169,11 @@ test('a spawned codex agent loads none of the user memory, instructions, MCP ser
   for (const f of ['auth.json', '.env']) assert.ok(fs.lstatSync(path.join(home, f)).isSymbolicLink(), `${f} is linked`);
   assert.equal(fs.readFileSync(path.join(home, 'sol.config.toml'), 'utf8'), 'model = "s"\n\n[model_providers.r]\nname = "R"\n', 'the profile without its tokens or instructions');
   assert.equal(fs.statSync(path.join(home, 'config.toml')).mode & 0o777, 0o600);
+  assert.equal(seen.home, path.join(home, 'home'), 'HOME is the agent\'s own');
+  assert.deepEqual(seen.skills, [], 'no user skill from ~/.agents/skills, and the small role has none of its own');
+  assert.equal(fs.readlinkSync(path.join(home, 'home', '.gitconfig')), path.join(u.home, '.gitconfig'), 'git config is linked into its HOME');
+  spawn(h, u, 'review');
+  assert.deepEqual(u.report().skills, ['gishra-review'], 'the reviewer gets its own skill only');
   noSecretsCopied(h);
 });
 
@@ -196,29 +213,56 @@ test('a codex agent writes only where its agent file says; reviewer and small ch
   }
 });
 
-test('git and gh refuse denied operations whatever the argument order', { skip: NO_STUBS }, (t) => {
+test('git and gh allow reads and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   const remote = path.join(h.base, 'remote.git');
   h.git(['init', '-q', '--bare', remote]);
   h.git(['remote', 'add', 'origin', remote]);
   h.git(['push', '-q', 'origin', 'main']);
-  const run = [
-    ['git', 'push', 'origin', 'HEAD:refs/heads/ok'],
-    ['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'],
-    ['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'],
-    ['git', 'push', 'origin', '+HEAD:refs/heads/forced'],
-    ['git', '-c', 'alias.p=push', 'p', '-f', 'origin', 'HEAD:refs/heads/forced'],
-    ['gh', '--repo', 'o/r', 'pr', 'merge', '1'],
-    ['gh', 'pr', '-R', 'o/r', 'merge', '1'],
-    ['gh', 'pr', 'view', '1'],
+  const cases = [
+    [['git', 'status'], 0, 0],
+    [['git', '-C', wt, 'log', '-1'], 0, 0],
+    [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 126],
+    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 0, 126],
+    [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
+    [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
+    [['git', 'push', 'origin', '+HEAD:refs/heads/forced'], 126, 126],
+    [['git', '-c', 'alias.p=push', 'p', 'origin', 'HEAD:refs/heads/alias'], 126, 126],
+    [['git', 'p'], 126, 126],
+    [['gh', 'pr', 'view', '1'], 0, 0],
+    [['gh', 'pr', 'create', '--fill'], 0, 126],
+    [['gh', '--repo', 'o/r', 'pr', 'merge', '1'], 126, 126],
+    [['gh', 'pr', '-R', 'o/r', 'merge', '1'], 126, 126],
+    [['gh', 'pr', 'lock', '1'], 126, 126],
+    [['gh', 'pr', 'update-branch', '1'], 126, 126],
+    [['gh', 'cache', 'delete', 'x'], 126, 126],
+    [['gh', 'co', '1'], 126, 126],
   ];
   for (const harness of ['claude', 'codex']) {
-    isolated(h, 'hard', harness);
-    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(run) });
-    const codes = u.report().ran.map((r) => r.code);
-    assert.deepEqual(codes, [0, 126, 126, 126, 126, 126, 126, 0], `${harness}: ${JSON.stringify(u.report().ran.map((r) => r.stderr))}`);
+    for (const [rung, column] of [['hard', 1], ['small', 2]]) {
+      isolated(h, rung, harness);
+      spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
+      const ran = u.report().ran;
+      assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+    }
   }
-  assert.equal(h.git(['--git-dir', remote, 'branch', '--list', 'forced']), '', 'no forced push landed');
+  for (const b of ['forced', 'alias']) assert.equal(h.git(['--git-dir', remote, 'branch', '--list', b]), '', `no ${b} push landed`);
+});
+
+test('a spawn started inside another agent links to the user\'s own files, so removing the parent home breaks nothing', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  isolated(h, 'small', 'claude');
+  const parent = path.join(h.state, 'homes', spawn(h, u, 'small').agent);
+  // A spawned orchestrator runs with its own home in these variables.
+  const inside = { CLAUDE_CONFIG_DIR: parent, HOME: path.join(parent, 'home'), USERPROFILE: path.join(parent, 'home') };
+  const child = path.join(h.state, 'homes', spawn(h, u, 'small', inside).agent);
+  for (const f of ['.credentials.json']) assert.equal(fs.readlinkSync(path.join(child, f)), path.join(u.home, '.claude', f), f);
+  assert.equal(fs.readlinkSync(path.join(child, 'home', '.gitconfig')), path.join(u.home, '.gitconfig'));
+  const helper = JSON.parse(fs.readFileSync(path.join(child, 'settings.json'), 'utf8')).apiKeyHelper;
+  assert.ok(helper.includes(path.join(u.home, '.claude', 'settings.json')), 'the helper reads the user\'s settings');
+  fs.rmSync(parent, { recursive: true, force: true });
+  assert.equal(fs.readFileSync(path.join(child, '.credentials.json'), 'utf8'), `{"token":"${SECRET}-CRED"}`, 'auth still resolves');
+  assert.equal(cp.execSync(helper, { encoding: 'utf8', env: u.env }).trim(), `${SECRET}-HELPER`);
 });
 
 test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-run', (t) => {
@@ -259,7 +303,7 @@ test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-r
   assert.match(pi.stderr, /tools applies only to claude and codex, mcp applies only to claude and codex/);
 });
 
-test('only the owner widens a rung, and args cannot override the agent file', (t) => {
+test('only the owner widens a rung, and args hold only allowlisted flags', (t) => {
   const { h } = setup(t);
   isolated(h, 'small', 'claude');
   const as = (agent, flags) => h.run(['ladder', 'set', 'small', ...flags, '--agent', agent]);
@@ -270,13 +314,28 @@ test('only the owner widens a rung, and args cannot override the agent file', (t
   }
   h.ok(['ladder', 'set', 'small', '--model', 'sonnet', '--agent', 'orchestrator-1']);
   assert.equal(as('owner', ['--tools', '["Agent"]']).code, 0);
-  for (const [harness, args] of [['claude', '["--dangerously-skip-permissions"]'], ['claude', '["--setting-sources=user,project"]'], ['codex', '["--sandbox","danger-full-access"]'], ['codex', '["-c","sandbox_mode=\\"danger-full-access\\""]'], ['codex', '["--ignore-rules"]']]) {
+  assert.equal(as('owner', ['--args', '["--verbose","--max-turns","40"]']).code, 0);
+  const refused = [
+    ['claude', '["--dangerously-skip-permissions"]'], ['claude', '["--settings","{}"]'], ['claude', '["--setting-sources=user,project"]'],
+    ['codex', '["--sandbox","danger-full-access"]'], ['codex', '["-s","danger-full-access"]'], ['codex', '["-cmodel_verbosity=low"]'],
+    ['codex', '["-c","sandbox_mode=\\"danger-full-access\\""]'], ['codex', '["--ignore-rules"]'], ['codex', '["--enable","x"]'],
+  ];
+  for (const [harness, args] of refused) {
     if (harness === 'codex') isolated(h, 'small', 'codex');
     const r = as('owner', ['--args', args]);
     assert.equal(r.code, 1, args);
-    assert.match(r.stderr, /args cannot set .*: the agent file decides it/, args);
+    assert.match(r.stderr, /args may only use .*; refused /, args);
   }
-  assert.equal(as('owner', ['--args', '["-c","model_reasoning_effort=\\"high\\"","--disable","memories"]']).code, 0);
+  assert.equal(as('owner', ['--args', '["-c","model_reasoning_effort=\\"high\\"","--disable","memories","--skip-git-repo-check"]']).code, 0);
+});
+
+test('TOML tables have no prototype, so __proto__ and inherited names are plain keys', () => {
+  const doc = TOML.parse('a.__proto__.polluted = true\nconstructor = 1\ntoString = 2\n[__proto__]\nx = 1\n[[b]]\n__proto__ = 3\n');
+  assert.equal(({}).polluted, undefined, 'Object.prototype is untouched');
+  assert.deepEqual(Object.keys(doc), ['a', 'constructor', 'toString', '__proto__', 'b']);
+  assert.equal(doc.constructor, 1);
+  assert.equal(Object.getPrototypeOf(doc), null);
+  assert.equal(doc.a.__proto__.polluted, true);
 });
 
 test('claude and codex rungs dispatch through spawn, never as native subagents', () => {
@@ -300,9 +359,10 @@ test('each role has an agent file that states its tools, MCP servers, skills, we
     const derived = [
       ...(a.web ? [] : ['WebFetch', 'WebSearch']),
       ...(a.gitPush === 'none' ? ['Bash(git push:*)'] : ['Bash(git push --force:*)', 'Bash(git push -f:*)', 'Bash(git push --force-with-lease:*)']),
-      ...A.policy(a).ghDeny.map((g) => `Bash(gh ${g}:*)`),
     ];
     for (const d of derived) assert.ok(a.disallowedTools.includes(d), `${job}: disallowedTools lacks ${d}`);
+    for (const g of a.ghWrite) assert.ok(!a.disallowedTools.includes(`Bash(gh ${g}:*)`), `${job}: ${g} is both allowed and denied`);
+    assert.ok(A.policy(a).gh.includes('pr view') && a.ghWrite.every((g) => A.policy(a).gh.includes(g)), `${job}: the gh allowlist is reads plus ghWrite`);
   }
   // The parsed config the codex filter works on survives a round trip.
   const doc = TOML.parse('a = 1\n[b]\nc = { d = [1, "x"] }\n');

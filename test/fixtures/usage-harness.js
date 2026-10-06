@@ -10,9 +10,12 @@ if (process.env.USAGE_CLAIM) {
   ], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr);
 }
+// A relative session path lands where codex writes: under the CODEX_HOME
+// spawn gave this process.
 if (process.env.USAGE_SESSION) {
-  fs.mkdirSync(path.dirname(process.env.USAGE_SESSION), { recursive: true });
-  fs.copyFileSync(process.env.USAGE_SESSION_FIXTURE, process.env.USAGE_SESSION);
+  const file = path.resolve(process.env.CODEX_HOME || '', process.env.USAGE_SESSION);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.copyFileSync(process.env.USAGE_SESSION_FIXTURE, file);
 }
 setTimeout(() => {
   process.stdout.write(fs.readFileSync(process.argv[2]));
