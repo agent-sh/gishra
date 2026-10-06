@@ -1,10 +1,10 @@
 # Default standards
 
-The way gishra works unless the project names its own profile in `project.json`. The orchestrator plans by it, workers build by it, reviewers check against it. A repository's own `AGENTS.md` wins where it says something different.
+The way Tower Crane works unless the project names its own profile in `project.json`. The orchestrator plans by it, workers build by it, reviewers check against it. A repository's own `AGENTS.md` wins where it says something different.
 
 ## Scope and autonomy
 
-- Once the owner hands over a goal, work through it without asking at each step. Ask only at a real safety boundary or a material change of scope, and ask through `gishra ask` so only the affected tasks wait.
+- Once the owner hands over a goal, work through it without asking at each step. Ask only at a real safety boundary or a material change of scope, and ask through `tower-crane ask` so only the affected tasks wait.
 - Do every item the owner asked for, or get an explicit answer to drop one. Offer a better idea next to the work, not instead of it.
 - Do not invent limits, thresholds or defaults without a reason you can state. If no number can be justified, ask.
 - A failing test or a bug in the repository is the project's to fix, not to label pre-existing and skip.
@@ -25,7 +25,7 @@ The way gishra works unless the project names its own profile in `project.json`.
 
 ## Tests
 
-- For code changes, a test proves something only if it fails before the change and passes after it. `gishra check tests` enforces this. Other task kinds use the verification in their brief and independent review, per `docs/state.md`.
+- For code changes, a test proves something only if it fails before the change and passes after it. `tower-crane check tests` enforces this. Other task kinds use the verification in their brief and independent review, per `docs/state.md`.
 - Prefer one integration test that exercises the behavior over many unit tests. Keep a unit test only for pure logic nothing else reaches.
 - Run the tests the change touches, not the whole suite, while working. CI stays thin: lint, build and the checks that guard a merge.
 - When the same mistake shows up twice in review or CI, add a lint rule or check for it.

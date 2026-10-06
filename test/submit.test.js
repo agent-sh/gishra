@@ -161,7 +161,7 @@ test('only note evidence can default to the submitted sha', (t) => {
       assert.match(refused.stderr, /review evidence needs --sha/);
     } else {
       assert.equal(refused.code, 1, `${type}: ${refused.stdout}`);
-      assert.match(refused.stderr, /only gishra (check|merge)/);
+      assert.match(refused.stderr, /only tower-crane (check|merge)/);
     }
   }
   assert.deepEqual(h.json(['task', 'show', 'T1']), before);

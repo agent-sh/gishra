@@ -176,7 +176,7 @@ test('confirmed merge gate wakes; a failed gate never produces merged', async (t
   fs.cpSync(path.join(ROOT, 'lib'), path.join(dir, 'lib'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'lib', 'gates', 'merge.js'), 'exports.run = async () => ({ ok: false, summary: "refused merge" });\n');
   const result = await waiting(t, h, ['--types', 'merged']);
-  const r = cp.spawnSync(process.execPath, [path.join(dir, 'bin', 'gishra.js'), 'merge', 'T1'], { cwd: h.repo, env: h.env, encoding: 'utf8', timeout: 10000 });
+  const r = cp.spawnSync(process.execPath, [path.join(dir, 'bin', 'tower-crane.js'), 'merge', 'T1'], { cwd: h.repo, env: h.env, encoding: 'utf8', timeout: 10000 });
   assert.equal(r.status, 1, r.stderr);
   assert.ok(!log(h).some((e) => e.type === 'merged'));
   h.ok(['merge', 'T1']);
@@ -188,7 +188,7 @@ test('worker messages use recipient and task filters, and can resume by id or of
   const result = await waiting(t, h, ['--task', 'T1', '--types', 'worker-message']);
   h.ok(['msg', '--agent', 'worker', '--task', 'T1', '--to', 'another-agent', 'other recipient']);
   h.ok(['msg', '--agent', 'worker', '--to', 'orchestrator', 'other task']);
-  h.ok(['msg', '--agent', 'worker', '--to', 'orchestrator', 'need input\nnext line'], { env: { GISHRA_TASK: 'T1' } });
+  h.ok(['msg', '--agent', 'worker', '--to', 'orchestrator', 'need input\nnext line'], { env: { TOWER_CRANE_TASK: 'T1' } });
   const first = await event(result, 'worker-message');
   assert.equal(first.detail.text, 'need input\nnext line');
   h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'during handling']);
@@ -258,7 +258,7 @@ test('a killed spawned claimant wakes concurrent waiters once, without release',
   const script = path.join(h.base, 'worker.js');
   const claimed = path.join(h.base, 'claimed');
   fs.writeFileSync(script, `const cp = require('node:child_process'); const fs = require('node:fs');
-const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'claim', process.env.GISHRA_TASK], { env: process.env });
+const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'claim', process.env.TOWER_CRANE_TASK], { env: process.env });
 if (r.status !== 0) process.exit(1);
 console.log('worker alive'); fs.writeFileSync(${JSON.stringify(claimed)}, '');
 setInterval(() => {}, 1000);\n`);
@@ -461,7 +461,7 @@ for (const hook of ['HOOK_NO_WATCH', 'HOOK_SILENT_WATCH']) {
 }
 
 async function board(t, h) {
-  const c = child(t, h, ['serve', '--port', '0', '--json'], { GISHRA_AGENT: h.serveAgent || 'owner' });
+  const c = child(t, h, ['serve', '--port', '0', '--json'], { TOWER_CRANE_AGENT: h.serveAgent || 'owner' });
   const [data] = await once(c.p.stdout, 'data');
   return JSON.parse(String(data)).url;
 }
@@ -473,7 +473,7 @@ test('non-owner serve hides owner forms and refuses all owner write routes', asy
   h.serveAgent = 'worker-evil';
   const url = await board(t, h);
   const page = await (await fetch(url)).text();
-  const token = /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec(page)[1];
+  const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
   assert.doesNotMatch(page, /data-api="\/api\/(?:tasks|decisions)\//);
   const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
   for (const [route, body] of [
@@ -484,7 +484,7 @@ test('non-owner serve hides owner forms and refuses all owner write routes', asy
   ]) {
     const response = await fetch(`${url}api/${route}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-gishra-token': token },
+      headers: { 'content-type': 'application/json', 'x-tower-crane-token': token },
       body: JSON.stringify(body),
     });
     assert.equal(response.status, 403, `${route}: ${await response.text()}`);
@@ -501,7 +501,7 @@ for (const agent of ['orchestrator', 'owner']) {
     h.ok(['ask', '--question', 'which?', '--option', 'a', '--option', 'b', '--blocks', 'T1']);
     const url = await board(t, h);
     const page = await (await fetch(url)).text();
-    const token = /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec(page)[1];
+    const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
     assert.match(page, /data-api="\/api\/tasks\/T1\/comments"/);
     assert.match(page, /data-api="\/api\/decisions\/D1\/answer"/);
     for (const [route, body, type, task] of [
@@ -511,7 +511,7 @@ for (const agent of ['orchestrator', 'owner']) {
       ['tasks/T1/owner-done', { note: 'UI done' }, 'owner-done', 'T1'],
     ]) {
       const result = await waiting(t, h, ['--agent', agent, '--task', 'T1', '--types', type]);
-      const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-gishra-token': token }, body: JSON.stringify(body) });
+      const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tower-crane-token': token }, body: JSON.stringify(body) });
       assert.equal(response.status, 200, await response.text());
       assert.equal((await event(result, type, task)).agent, 'owner');
     }
@@ -524,7 +524,7 @@ for (const agent of ['orchestrator', 'owner']) {
     assert.match(await (await fetch(url)).text(), /worker news/);
     const count = log(h).length;
     for (const [route, body] of [['tasks/T99/comments', { text: 'missing' }], ['decisions/D1/answer', { choice: 'a' }], ['tasks/T1/comments', { text: '' }]]) {
-      const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-gishra-token': token }, body: JSON.stringify(body) });
+      const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tower-crane-token': token }, body: JSON.stringify(body) });
       assert.ok(response.status >= 400);
     }
     const crossSite = await fetch(`${url}api/tasks/T1/comments`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://other.invalid' }, body: '{"text":"cross-site"}' });
@@ -537,7 +537,7 @@ test('serve preserves an owner comment fragmented inside UTF-8 bytes', async (t)
   const h = setup(t);
   const url = await board(t, h);
   const page = await (await fetch(url)).text();
-  const token = /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec(page)[1];
+  const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
   const text = 'שלום 😀';
   const body = Buffer.from(JSON.stringify({ text }));
   const split = body.indexOf(Buffer.from('😀')) + 1;
@@ -545,7 +545,7 @@ test('serve preserves an owner comment fragmented inside UTF-8 bytes', async (t)
   const reply = await new Promise((resolve, reject) => {
     const req = http.request(`${url}api/tasks/T1/comments`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-gishra-token': token },
+      headers: { 'content-type': 'application/json', 'x-tower-crane-token': token },
     }, (res) => {
       let raw = '';
       res.on('data', (data) => { raw += data; });

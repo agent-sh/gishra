@@ -80,7 +80,7 @@ test('a suite with no runs from another app is never inferred away', async () =>
     assert.equal(r.ok, false, status);
     assert.match(r.summary, new RegExp(`external-ci \\(${status}, 0 runs\\)`));
     assert.match(r.summary, /ci\.ignore_apps/);
-    assert.match(r.summary, /gishra project set --ci-ignore-apps/);
+    assert.match(r.summary, /tower-crane project set --ci-ignore-apps/);
   }
 });
 
@@ -107,7 +107,7 @@ test('a malformed ci.ignore_apps: not ok, naming the field', async () => {
     const r = await gate.run(ctx(gh, {}, { ci }));
     assert.equal(r.ok, false, JSON.stringify(ci));
     assert.match(r.summary, /ci\.ignore_apps must be an array/);
-    assert.match(r.summary, /gishra project set --ci-ignore-apps/);
+    assert.match(r.summary, /tower-crane project set --ci-ignore-apps/);
     assert.match(r.summary, /--ci-ignore-apps null/);
     assert.equal(gh.calls.length, 0);
   }

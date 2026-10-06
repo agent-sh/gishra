@@ -27,3 +27,5 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm test
+        env:
+          TOWER_CRANE_TEST_TMP: ${{ runner.temp }}/tower-crane-tests

@@ -6,9 +6,9 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-// A scratch directory under GISHRA_TEST_TMP (or the system temp dir), removed by the caller.
+// A scratch directory under TOWER_CRANE_TEST_TMP (or the system temp dir), removed by the caller.
 function scratch(prefix) {
-  const base = process.env.GISHRA_TEST_TMP || os.tmpdir();
+  const base = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
   fs.mkdirSync(base, { recursive: true });
   return fs.mkdtempSync(path.join(base, `${prefix}-`));
 }
@@ -20,9 +20,9 @@ function isolateGit(dir) {
   Object.assign(process.env, {
     GIT_CONFIG_GLOBAL: cfg,
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_AUTHOR_NAME: 'gishra test',
+    GIT_AUTHOR_NAME: 'tower-crane test',
     GIT_AUTHOR_EMAIL: 'test@example.invalid',
-    GIT_COMMITTER_NAME: 'gishra test',
+    GIT_COMMITTER_NAME: 'tower-crane test',
     GIT_COMMITTER_EMAIL: 'test@example.invalid',
   });
 }

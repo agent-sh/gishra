@@ -50,8 +50,8 @@ cp.spawnSync = (command, args, opts) => command === 'gh'
   const pathKey = Object.keys(h.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
   Object.assign(h.env, {
     [pathKey]: tools + path.delimiter + (h.env[pathKey] || ''),
-    GISHRA_TMP: path.join(h.base, 'gate-tmp'),
-    GISHRA_CLEAN_CMD: `${shellQuote(process.execPath)} ${shellQuote(scanner)}`,
+    TOWER_CRANE_TMP: path.join(h.base, 'gate-tmp'),
+    TOWER_CRANE_CLEAN_CMD: `${shellQuote(process.execPath)} ${shellQuote(scanner)}`,
     FIXTURE_SHA: sha,
     FIXTURE_MERGED: path.join(h.base, 'merged'),
   });

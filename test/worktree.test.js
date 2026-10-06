@@ -106,7 +106,7 @@ test('worktree refuses a failed origin fetch without recording or creating a tas
   assert.match(r.stderr, /git fetch origin main failed/);
   assert.equal(h.json(['task', 'show', 'T1']).branch, null);
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
-  assert.equal(h.git(['branch', '--list', 'gishra/*']), '');
+  assert.equal(h.git(['branch', '--list', 'tower-crane/*']), '');
   assert.equal(h.git(['worktree', 'list', '--porcelain']).match(/^worktree /gm).length, 1);
 });
 
@@ -134,7 +134,7 @@ test('worktree refuses a base missing both locally and on origin without writing
   assert.match(r.stderr, /base branch missing is not in this repository/);
   assert.equal(h.json(['task', 'show', 'T1']).branch, null);
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
-  assert.equal(h.git(['branch', '--list', 'gishra/*']), '');
+  assert.equal(h.git(['branch', '--list', 'tower-crane/*']), '');
 });
 
 test('worktree refuses a locked tracking ref that does not match the origin tip', (t) => {
@@ -151,7 +151,7 @@ test('worktree refuses a locked tracking ref that does not match the origin tip'
   assert.equal(h.git(['rev-parse', 'origin/main']), stale);
   assert.equal(h.json(['task', 'show', 'T1']).branch, null);
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
-  assert.equal(h.git(['branch', '--list', 'gishra/*']), '');
+  assert.equal(h.git(['branch', '--list', 'tower-crane/*']), '');
 });
 
 for (const recovered of [true, false]) {
@@ -192,7 +192,7 @@ process.exit(r.status === null ? 1 : r.status);
       assert.equal(h.git(['rev-parse', 'origin/main']), stale);
       assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
       assert.equal(h.json(['task', 'show', 'T1']).branch, null);
-      assert.equal(h.git(['branch', '--list', 'gishra/*']), '');
+      assert.equal(h.git(['branch', '--list', 'tower-crane/*']), '');
     }
   });
 }
@@ -229,7 +229,7 @@ for (const error of ['lock', 'incorrect old value provided', 'fatal: unpack-obje
     assert.equal(fs.readFileSync(attempts, 'utf8'), error.includes('unpack-objects') ? '.' : '..');
     assert.equal(h.json(['task', 'show', 'T1']).branch, null);
     assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
-    assert.equal(h.git(['branch', '--list', 'gishra/*']), '');
+    assert.equal(h.git(['branch', '--list', 'tower-crane/*']), '');
     assert.equal(h.json(['worktree', 'T1']).created, true, 'the failed call permits a later preparation');
   });
 }
