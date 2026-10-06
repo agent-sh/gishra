@@ -74,6 +74,8 @@ A lock is stale when its holder process is gone (same host) or its file is older
 
 `base` names the branch used to create new task branches. `worktree` and `spawn` fetch it from origin into `origin/<base>` before creating a branch, then use the fetched commit if the local base is missing or is its ancestor. A local base that is ahead or has diverged is kept, with both commit SHAs reported on stderr, and the local branch is never moved. Task branches start from the selected commit SHA with no upstream branch. When origin has no such branch, the local base is used with a stderr note; if neither has it, the command refuses. Repositories without origin use the available local base or `origin/<base>`. For a dispatch, the caller runs `worktree ID [ID ...]` once before starting workers. It validates every task id, fetches the base once if any task needs a new branch, and creates all worktrees serially from that SHA. Callers serialize preparation within the repository across worktrees and state directories; parallel workers then reuse the prepared trees without fetching. A later dispatch fetches again even if the tracking ref did not move. A `cannot lock ref` or `incorrect old value` failure retries once after 100 ms before reading the tracking ref. Each fetch and missing-branch verification has a 60 s timeout. An unpack failure is usable only if a fresh origin read proves another caller already imported that exact tip. Other fetch failures, including a second ref-race failure, create no task branch and record no branch or event in state.
 
+`ci.local`, when present, selects local CI instead of hosted checks: `{ "command": ["python3", "tools/check.py"], "timeout": 120 }`. The CLI writes it through `project set --ci-local JSON` or `init --ci-local JSON`; `null` clears it. The command is a nonempty string argv with a nonblank executable and no NUL bytes. Arguments are preserved, including empty strings. The timeout is required in positive seconds and must fit Node's 2147483647-millisecond timer range. No timeout is chosen implicitly. Other fields under `ci` are preserved.
+
 Worktree creation has no added timeout and uses Git's native initialization lock. The CLI unlocks only after checkout and its hooks finish. It refuses to reuse an unfinished locked registration, including one whose CLI died while a Git child survived or before HEAD was written. An unfinished registration for any task refuses the whole batch call; worktrees prepared earlier in the call can remain. There is no automatic recovery by pid or age. After Git and its children finish, inspect the worktree, then run `git worktree unlock <path>` for a complete checkout or `git worktree remove --force <path>` for an incomplete one. Existing branches and completed worktrees are reused offline. If an add later in a batch fails, earlier tasks can remain prepared.
 
 ### Ladder
@@ -199,6 +201,26 @@ Any agent recovers a verified exited task with `release ID --reason R`. The dete
 - any task with a PR, whatever its kind: `ci` ok as well
 
 A gate passes when the latest eligible evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `tests`, `clean` and `ci`, evidence needs the matching gate `source` and an events.jsonl entry with `cmd === source`, the same task id and agent, and matching `type`, `source`, exact evidence `sha`, `ok`, `revision` and `commands` in `detail`. An ok entry also needs a non-empty commands list. Manual, forged and older unmarked entries are ignored, including later entries that would otherwise override a genuine pass or failure. For `review`, entries by the submitter are ignored. A waiver counts only when its agent is `owner`, for both review and software gates.
+
+Local CI adds `receipt` to its evidence and event detail. Both copies must match exactly:
+
+```json
+{
+  "command": ["python3", "tools/check.py"],
+  "timeout": 120,
+  "exit": 0,
+  "signal": null,
+  "head_sha": "<full submitted commit SHA>",
+  "base_sha": "<selected base commit SHA>",
+  "tree_hash": "<Git tree object ID of base merged with head>",
+  "source_digest": "<SHA-256 of git ls-tree -r -z TREE output>",
+  "duration_ms": 1000
+}
+```
+
+`source_digest` is a SHA-256 restatement of the tree for consumers that do not trust SHA-1, computed from its tracked paths, modes and object IDs, including source blob IDs. It is fully determined by `tree_hash`. The runner computes both identities before execution; it refuses tracked-source changes or a merge result that changes while the command runs. HEAD in its temporary worktree names the submitted head, while the index and checkout contain the merge result. A failing execution still records its exit, signal and duration.
+
+With `ci.local` configured, an ok CI gate needs a local receipt with exit 0, no signal, nonnegative duration, the configured argv and timeout, and a matching successful command receipt. The full head SHA, tree hash and source digest must match the current submitted head merged with the selected base. The latest audited evidence is checked by acceptance, merge and task gate reports. A different head fails even if the tree is identical; a changed merge result fails even if the head is unchanged. Changing the command or timeout, or switching CI modes, invalidates its earlier pass. Base selection follows dispatch using existing local and origin refs without fetching during `check ci`, acceptance or task reports; metadata queries each have a 60 s deadline. Before merge validates a local receipt, it fetches origin's base with a 60 s timeout and requires that tip to equal the receipt's `base_sha`. Fetch failures and moved bases refuse before GitHub merge; a moved base needs `gishra check ci ID` again. Without origin, the local base is used. Once the latest audited merge evidence for the current head and revision is successful, reports retain the recorded CI result without validating it against later base changes, and repeated merges skip the fetch. An unaudited merge marker cannot bypass validation. No hosted API is needed for local CI. The existing hosted CI rules apply when local CI is absent.
 
 Resubmitting replaces `sha` without changing `revision` or deleting evidence. Evidence at the older head stays in the audit trail and no longer counts for the new head. Resubmitting the same sha preserves its gates. The task remains `submitted`, with no claim lease; omitted branch and PR values stay unchanged. Accepted tasks must go through `rework` and a new claim before submission, and that claimant becomes the new `submitted_by` agent.
 
