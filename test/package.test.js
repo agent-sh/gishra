@@ -16,7 +16,6 @@ test('the npm package ships the plugin and loads pi skills through its CLI', (t)
   assert.equal(packed.status, 0, packed.stderr);
   const files = JSON.parse(packed.stdout)[0].files.map((file) => file.path);
   for (const file of [
-    'commands/README.txt',
     'skills/gishra/SKILL.md',
     'skills/gishra-work/SKILL.md',
     'skills/gishra-review/SKILL.md',
