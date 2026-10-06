@@ -365,6 +365,17 @@ test('quiet supervision samples state and progress paths on a seconds-scale inte
   for (let i = 1; i < walks.length; i++) assert.ok(walks[i].at - walks[i - 1].at >= 900, JSON.stringify(walks));
 });
 
+test('Windows natural exits do not send taskkill to an exited or reused pid', (t) => {
+  const h = setup(t, { failures: 0 });
+  const audit = path.join(h.base, 'taskkill.jsonl');
+  const hook = path.join(__dirname, 'fixtures', 'windows-supervision.js').replace(/\\/g, '/');
+  const result = h.run(['spawn', '--task', 'T1', '--wait'], { env: {
+    NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_TASKKILL: audit,
+  } });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(fs.existsSync(audit), false, 'taskkill can target a new process after the harness pid is released');
+});
+
 test('stopping the monitor terminates the process group and kills children that ignore SIGTERM', {
   skip: process.platform === 'win32' && 'POSIX process groups',
 }, async (t) => {
