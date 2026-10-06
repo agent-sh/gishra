@@ -4,7 +4,7 @@
 
 Agent identity comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, `owner` is used only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. Otherwise the command exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT` and writes nothing. An empty or whitespace-only identity exits 2 with the same message. Help needs no agent.
 
-`accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers. An agent requests owner action with `gishra ask` or a task note.
+`accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's live or unverified claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers. Any agent may release a spawned claim verified exited under the lock. An agent requests other owner action with `gishra ask` or a task note.
 
 Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. `render` takes the lock too. A refused command writes nothing.
 

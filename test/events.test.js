@@ -212,6 +212,22 @@ test('owner-done wakes and clears the owner request', async (t) => {
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
 });
 
+test('worker progress, decision requests and releases wake without a notification allowlist', async (t) => {
+  const h = setup(t);
+  const progress = await waiting(t, h);
+  h.ok(['task', 'note', 'T1', 'progress', '--agent', 'worker']);
+  assert.equal((await event(progress, 'task note')).agent, 'worker');
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  const request = await waiting(t, h, ['--task', 'T1', '--types', 'decision-opened']);
+  h.ok(['ask', '--question', 'Need owner input', '--option', 'yes', '--option', 'no', '--blocks', 'T1', '--agent', 'worker']);
+  assert.equal((await event(request, 'decision-opened', null)).detail.decision, 'D1');
+  const release = await waiting(t, h, ['--task', 'T1', '--types', 'released']);
+  h.ok(['release', 'T1', '--reason', 'waiting on D1', '--agent', 'worker']);
+  await event(release, 'released');
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'todo');
+  assert.deepEqual(h.json(['ready']).ready, [], 'the unanswered decision still blocks the task');
+});
+
 test('a killed spawned claimant wakes concurrent waiters once, without release', async (t) => {
   const h = setup(t);
   const script = path.join(h.base, 'worker.js');
@@ -227,8 +243,10 @@ setInterval(() => {}, 1000);\n`);
   const spawned = h.json(['spawn', '--task', 'T1']);
   h.workerPids.push(spawned.pid);
   await ready;
+  assert.equal(h.run(['release', 'T1', '--reason', 'recover', '--agent', 'orchestrator']).code, 1, 'another agent cannot release a live worker');
   const [a, b] = await Promise.all([waiting(t, h, ['--types', 'worker-exited']), waiting(t, h, ['--types', 'worker-exited'])]);
   process.kill(spawned.pid, 'SIGKILL');
+  h.workerPids.length = 0;
   const [ea, eb] = await Promise.all([event(a, 'worker-exited'), event(b, 'worker-exited')]);
   assert.equal(ea.id, eb.id);
   assert.equal(ea.detail.pid, spawned.pid);
@@ -236,6 +254,12 @@ setInterval(() => {}, 1000);\n`);
   assert.equal(log(h).filter((e) => e.type === 'worker-exited').length, 1);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'in_progress');
   assert.deepEqual(h.run(['wait', '--types', 'worker-exited', '--timeout', '0.1']).stdout.trim(), '{"type":"timeout"}');
+  const recovery = await waiting(t, h, ['--types', 'released']);
+  h.ok(['release', 'T1', '--reason', 'spawned worker exited', '--agent', 'orchestrator']);
+  assert.equal((await event(recovery, 'released')).detail.exited_spawn.pid, spawned.pid);
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'todo');
+  h.ok(['claim', 'T1', '--agent', 'replacement']);
+  assert.equal(h.run(['wait', '--types', 'worker-exited', '--timeout', '0.1']).code, 2, 'recovery does not report the old spawn against a replacement');
 });
 
 test('submitted spawned workers never emit worker-exited', async (t) => {
