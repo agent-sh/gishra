@@ -108,6 +108,17 @@ async function collected(h, length = 1, timeout = 15000) {
   throw new Error('usage was not collected within 15 s');
 }
 
+async function waitForText(file, text, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  let contents = '';
+  while (Date.now() < deadline) {
+    contents = fs.readFileSync(file, 'utf8');
+    if (contents.includes(text)) return contents;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`${file} did not contain ${text} within ${timeout} ms`);
+}
+
 test('native usage uses one CLI call and preserves rung metadata across ladder changes', (t) => {
   const h = setup(t, 'claude');
   const s = h.json(['spend', 'T1', '--tokens', '100', '--input', '80', '--cached', '60', '--output', '20', '--rung', 'easy'], { env: { TOWER_CRANE_AGENT: 'native-worker' } }).spend;
@@ -256,6 +267,7 @@ test('an exited spawn without telemetry is marked unknown and can be recollected
   // render from the completed receipt before checking the derived file.
   h.ok(['render']);
   assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /Spawns without usage/);
+  await waitForText(path.join(h.state, 'sketch.html'), 'Spawns without usage');
   fs.appendFileSync(a.log, text('codex-stream.jsonl'));
   h.ok(['spend', 'T1', '--from-spawn', a.agent]);
   assert.equal(spends(h).entries.length, 1);

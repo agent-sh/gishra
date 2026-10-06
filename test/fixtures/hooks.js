@@ -47,7 +47,7 @@ if (env.HOOK_WATCH_READY || env.HOOK_NO_WATCH || env.HOOK_SILENT_WATCH) {
 }
 const STATE = env.HOOK_STATE ? path.resolve(env.HOOK_STATE) : null;
 const LOCK = STATE ? path.join(STATE, 'lock') : null;
-const WRAPPED = ['openSync', 'readFileSync', 'writeFileSync', 'appendFileSync', 'renameSync', 'unlinkSync', 'rmdirSync', 'rmSync', 'linkSync', 'statSync', 'readdirSync', 'mkdirSync', 'existsSync', 'utimesSync'];
+const WRAPPED = ['openSync', 'closeSync', 'readFileSync', 'writeFileSync', 'appendFileSync', 'renameSync', 'unlinkSync', 'rmdirSync', 'rmSync', 'linkSync', 'statSync', 'readdirSync', 'mkdirSync', 'existsSync', 'utimesSync'];
 // Calls that remove or move what is at their first argument.
 const CHANGES = ['renameSync', 'unlinkSync', 'rmdirSync', 'rmSync', 'linkSync'];
 const BUSY = ['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EPERM', 'EACCES'];
@@ -81,6 +81,7 @@ function barrier() {
 }
 
 const once = {};
+const descriptors = new Map();
 function first(key) {
   if (once[key]) return false;
   once[key] = true;
@@ -123,16 +124,19 @@ if (STATE) {
     // The lock is taken by creating it (openSync) or by renaming onto it (renameSync).
     const lockArg = { openSync: 0, renameSync: 1 }[name];
     fs[name] = function hooked(...args) {
-      before(name, args);
+      const observed = typeof args[0] === 'number' && descriptors.has(args[0]) ? [descriptors.get(args[0]), ...args.slice(1)] : args;
+      before(name, observed);
       let out;
       try {
         out = orig.apply(this, args);
       } catch (e) {
         if (lockArg !== undefined && path.resolve(String(args[lockArg])) === LOCK && BUSY.includes(e.code)) barrier();
-        after(name, args);
+        after(name, observed);
         throw e;
       }
-      after(name, args);
+      if (name === 'openSync') descriptors.set(out, args[0]);
+      if (name === 'closeSync') descriptors.delete(args[0]);
+      after(name, observed);
       return out;
     };
   }
