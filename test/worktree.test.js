@@ -163,8 +163,8 @@ for (const command of ['worktree', 'spawn']) {
       ids.push(h.ok(['task', 'add', '--title', `Parallel ${i}`, '--acceptance', 'uses fresh base']));
     }
     if (command === 'spawn') {
-      h.ok(['role', 'set', 'worker', '--harness', 'command', '--command',
-        JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]);
+      h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command',
+        JSON.stringify([process.execPath, '-e', 'process.exit(0)']), '--clear', 'profile', '--clear', 'effort']);
       for (const id of ids) h.ok(['brief', 'set', id, '-'], { input: 'Use the fresh base.\n' });
     }
     // Align real upload-pack processes so fetches read the same old tracking ref.
@@ -189,7 +189,7 @@ process.exit(r.status === null ? 1 : r.status);
     h.git(['config', 'remote.origin.uploadpack', `${quote(process.execPath)} ${quote(uploadPack)}`]);
     const results = await Promise.all(ids.map((id) => h.runAsync(command === 'worktree'
       ? ['worktree', id, '--json']
-      : ['spawn', '--role', 'worker', '--task', id, '--wait', '--json'])));
+      : ['spawn', '--role', 'medium', '--task', id, '--wait', '--json'])));
     assert.deepEqual(results.map((r) => r.code), Array(6).fill(0), results.map((r) => r.stderr).join('\n'));
     for (let i = 0; i < results.length; i++) {
       const wt = JSON.parse(results[i].stdout);

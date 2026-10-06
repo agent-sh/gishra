@@ -39,27 +39,41 @@ const TASK_FIELDS = {
   kind: str('K', 'code, docs, research, design or ops (default code)'),
   size: str('S', 'S (under an hour), M (a few hours) or L (a day); default M'),
   dep: many('ID', 'a task this one depends on; repeat for more'),
-  role: str('R', 'role that does it (default worker)'),
+  tier: str('T', 'easy, medium, hard or research: the ladder rung that does it (default: research for kind research, else S easy, M medium, L hard)'),
   'needs-owner': str('REASON', 'what the owner has to do first'),
+};
+
+const RUNG_FLAGS = {
+  harness: str('H', 'claude, codex, opencode, agy, pi or command (default: the ladder\'s default harness)'),
+  model: str('M', 'model id'),
+  profile: str('P', 'codex profile'),
+  provider: str('P', 'pi provider'),
+  effort: str('E', 'reasoning effort, in the harness\'s own terms'),
+  args: str('JSON', 'extra arguments appended to the harness command, as a JSON array'),
+  command: str('JSON', 'for the command harness: argv array; {task} {brief} {prompt} {cwd} are substituted'),
+  clear: many('FIELD', 'remove a field from the rung (a cleared harness follows the default)'),
 };
 
 const run = (mod, fn) => (ctx) => require(mod)[fn](ctx);
 const gate = (name) => (ctx) => require('../lib/check').runGate(ctx, name);
 
 const COMMANDS = [
-  { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default roles', flags: SETTINGS, required: ['name', 'goal'], run: P.init },
+  { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], run: P.init },
   { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
-  { section: 'Plan', name: 'project show', summary: 'print project settings and roles', run: P.projectShow },
-  { section: 'Plan', name: 'role set', pos: ['ROLE'], usage: 'ROLE --harness H [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON]', summary: 'set who plays a role (replaces the whole role)', flags: { harness: str('H', 'claude, codex, opencode, agy, pi or command'), model: str('M', 'model id'), profile: str('P', 'codex profile'), provider: str('P', 'pi provider'), effort: str('E', 'reasoning effort, passed in the form the harness takes'), args: str('JSON', 'extra arguments appended to the harness command, as a JSON array'), command: str('JSON', 'for --harness command: argv array; {task} {brief} {prompt} {cwd} are substituted') }, required: ['harness'], run: P.roleSet },
-  { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--dep ID] [--role R] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
-  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--role R] [--needs-owner REASON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies and kind wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request requires explicit owner identity"), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
+  { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', run: P.projectShow },
+  { section: 'Plan', name: 'ladder show', summary: 'print each rung as it resolves, and where it comes from (project, user file or built-in)', run: P.ladderShow },
+  { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
+  { section: 'Plan', name: 'ladder harness', pos: ['HARNESS'], usage: 'HARNESS', summary: 'set the default harness every rung without its own runs on', run: P.ladderHarness },
+  { section: 'Plan', name: 'ladder save-user', summary: "write this project's ladder to the user file, the default for new projects", run: P.ladderSaveUser },
+  { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--tier T] [--dep ID] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
+  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--tier T] [--needs-owner REASON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies and kind wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request requires explicit owner identity"), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
   { section: 'Plan', name: 'task note', pos: ['ID', 'TEXT...'], usage: 'ID TEXT', summary: 'append a note', run: T.taskNote },
   { section: 'Plan', name: 'task show', pos: ['ID'], usage: 'ID', summary: 'show one task with its gates, evidence and notes', run: T.taskShow },
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, run: T.taskList },
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', run: T.planImport },
   { section: 'Plan', name: 'brief set', pos: ['ID', '[-]'], usage: 'ID (--file F | -)', summary: "write the task's brief", flags: { file: str('F', 'read the brief from F') }, run: T.briefSet },
   { section: 'Plan', name: 'brief get', pos: ['ID'], usage: 'ID', summary: "print the task's brief", run: T.briefGet },
-  { section: 'Plan', name: 'validate', summary: 'report cycles, unknown dependencies, tasks without acceptance, unsplit L tasks and oversize budgets; exit 1 if any', run: T.validate },
+  { section: 'Plan', name: 'validate', summary: 'report cycles, unknown dependencies, tasks without acceptance, unsplit L tasks, oversize budgets and rungs that cannot run (exit 1 if any); warn when review runs the same model as a tier in use', run: T.validate },
 
   { section: 'Run', name: 'ready', usage: '[--all]', summary: 'ready tasks, those that unblock the most first; --all adds blocked ones with the reason', flags: { all: bool('also list blocked tasks and why') }, run: T.ready },
   { section: 'Run', name: 'claim', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'take a ready task for --agent', flags: { lease: int('MIN', 'lease length (default limits.lease_minutes)') }, run: T.claim },
@@ -78,10 +92,10 @@ const COMMANDS = [
 
   { section: 'Views', name: 'status', summary: 'one screen: counts, ready tasks, open decisions, owner tasks, spend, expired leases', run: R.status },
   { section: 'Views', name: 'render', summary: 'write sketch.md and sketch.html (self-contained, no network)', run: R.render },
-  { section: 'Views', name: 'serve', usage: '[--port P]', summary: 'serve the sketch on 127.0.0.1 and reload it when the state changes', flags: { port: int('P', 'port (default 4747; 0 picks a free one)') }, run: run('../lib/serve', 'serve') },
+  { section: 'Views', name: 'serve', usage: '[--port P]', summary: 'serve the sketch and a Settings view for the ladder and task tiers on 127.0.0.1; pages reload when the state changes', flags: { port: int('P', 'port (default 4747; 0 picks a free one)') }, run: run('../lib/serve', 'serve') },
 
   { section: 'Agents and worktrees', name: 'worktree', pos: ['ID'], usage: 'ID', summary: 'create (or print) the git worktree and branch gishra/<id>-<slug> for the task', run: run('../lib/worktree', 'worktree') },
-  { section: 'Agents and worktrees', name: 'spawn', usage: '--role R --task ID [--dry-run] [--wait]', summary: "start the role's harness in the task's worktree; prints the pid, or the command with --dry-run", flags: { role: str('R', 'role from project.json'), task: str('ID', 'task id'), 'dry-run': bool('print the command instead of running it'), wait: bool('run in the foreground and exit with its code') }, required: ['role', 'task'], run: run('../lib/spawn', 'spawn') },
+  { section: 'Agents and worktrees', name: 'spawn', usage: '--task ID [--role RUNG] [--dry-run] [--wait]', summary: "start a rung's harness in the task's worktree (the task's tier unless --role names a rung); prints the pid, or the command with --dry-run", flags: { task: str('ID', 'task id'), role: str('RUNG', "ladder rung, such as review (default: the task's tier)"), 'dry-run': bool('print the command instead of running it'), wait: bool('run in the foreground and exit with its code') }, required: ['task'], run: run('../lib/spawn', 'spawn') },
 
   { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID --cmd CMD', summary: 'tests pass at the submitted sha and fail with the non-test changes reverted; records tests', flags: { cmd: str('CMD', 'test command') }, required: ['cmd'], run: gate('tests') },
   { section: 'Gates', name: 'check clean', pos: ['ID'], usage: 'ID', summary: 'cleanup tool on the task branch against base reports no HIGH finding; records clean', run: gate('clean') },
@@ -101,7 +115,7 @@ function generalHelp() {
   const lines = ['gishra: plan, dispatch, review and merge agent work, with state in plain files', '', 'usage: gishra <command> [args] [--state DIR] [--agent NAME] [--json]'];
   for (const section of SECTIONS) {
     lines.push('', `${section}:`);
-    for (const c of COMMANDS.filter((x) => x.section === section)) lines.push(`  ${c.name.padEnd(14)} ${c.summary}`);
+    for (const c of COMMANDS.filter((x) => x.section === section)) lines.push(`  ${c.name.padEnd(16)} ${c.summary}`);
   }
   lines.push('', 'global options:', ...Object.entries(GLOBAL).map(([n, s]) => flagLine(n, s)));
   lines.push('', 'exit status: 0 done, 1 refused (reason on stderr), 2 usage error, 3 lock not acquired within 10 s');
@@ -119,7 +133,7 @@ function commandHelp(c) {
 
 function groupHelp(group) {
   const lines = [`usage: gishra ${group} <subcommand> ...`, ''];
-  for (const c of COMMANDS.filter((x) => x.name.startsWith(`${group} `))) lines.push(`  ${c.name.padEnd(14)} ${c.summary}`);
+  for (const c of COMMANDS.filter((x) => x.name.startsWith(`${group} `))) lines.push(`  ${c.name.padEnd(16)} ${c.summary}`);
   return lines.join('\n');
 }
 

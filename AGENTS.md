@@ -20,4 +20,4 @@ gishra is a CLI and an agent plugin. The CLI (`bin/`, `lib/`) keeps a project's 
 - `lib/`: state, project, tasks, decisions, render, serve, worktree, spawn, check and util; `lib/gates/`: tests, clean, ci, merge and common.
 - The three skills (`skills/gishra/`, `skills/gishra-work/`, `skills/gishra-review/`) and the two agents in `agents/`: the plugin.
 - `standards/default.md`: the default standards profile.
-- `docs/`: state, CLI and roles.
+- `docs/`: state, CLI and the model ladder.

@@ -18,7 +18,7 @@ Commands that need the repository (`worktree`, `spawn`, the gates) use the one g
 
 The identity recorded in state and events comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, the CLI uses `owner` only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. In every other case it exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT`, before reading or writing state. An empty or whitespace-only identity exits 2 with the same message. Help needs no identity.
 
-`spawn` passes the name `<role>-<task>-<n>` in `GISHRA_AGENT`. Its prompt says `you are not the owner; never pass --agent owner` and closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
+`spawn` passes the name `<job>-<task>-<n>` (`worker-T1-1`, `reviewer-T1-1`) in `GISHRA_AGENT`. Its prompt says `you are not the owner; never pass --agent owner` and closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
 
 `accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers. An agent requests owner action with `gishra ask` or a task note. Set `GISHRA_AGENT=owner` per command, never in a shell profile, where it could override a spawned agent's identity.
 
@@ -26,7 +26,7 @@ The identity recorded in state and events comes from `--agent NAME`, then `GISHR
 
 | File | Holds |
 |---|---|
-| `project.json` | name, goal, repo, base branch, roles, limits, budgets, standards profile |
+| `project.json` | name, goal, repo, base branch, default harness and model ladder, limits, budgets, standards profile |
 | `tasks.json` | every task and its status, evidence and spend |
 | `decisions.json` | questions for the owner and their answers |
 | `briefs/<task>.md` | the context a worker gets for that task, kept current by the orchestrator |
@@ -55,30 +55,53 @@ A lock is stale when its holder process is gone (same host) or its file is older
   "repo": "acme/billing",
   "base": "main",
   "standards": "default",
-  "roles": {
-    "orchestrator": { "harness": "claude", "model": "claude-opus-5-5" },
-    "worker":       { "harness": "codex",  "profile": "sol" },
-    "reviewer":     { "harness": "claude", "model": "claude-opus-5-5" },
-    "small":        { "harness": "codex",  "profile": "luna" }
+  "harness": "codex",
+  "ladder": {
+    "orchestrator": { "harness": "claude", "model": "opus", "effort": "high" },
+    "easy":         { "profile": "luna", "effort": "medium" },
+    "medium":       { "profile": "sol", "effort": "high" },
+    "hard":         { "harness": "claude", "model": "opus", "effort": "high" },
+    "research":     { "harness": "claude", "model": "opus", "effort": "max" },
+    "review":       { "profile": "sol", "effort": "high" },
+    "small":        { "profile": "luna", "effort": "low" }
   },
   "limits": { "workers": 6, "lease_minutes": 60 },
   "budget": { "hours": 40, "tokens": 20000000 }
 }
 ```
 
-`gishra init` writes the roles shown above, `limits` as shown, and `budget` values of `null` (no budget) until `gishra project set` gives them. `limits.workers` caps the tasks in progress at once, counting those with a live lease; `lease_minutes` is the default lease. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
+`gishra init` writes the default harness and ladder (see below), `limits` as shown, and `budget` values of `null` (no budget) until `gishra project set` gives them. `limits.workers` caps the tasks in progress at once, counting those with a live lease; `lease_minutes` is the default lease. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
 
 `base` names the branch used to create new task branches. `worktree` and `spawn` fetch it from origin into `origin/<base>` before creating a branch, then use the fetched commit if the local base is missing or is its ancestor. A local base that is ahead or has diverged is kept, with both commit SHAs reported on stderr, and the local branch is never moved. When origin has no such branch, the local base is used with a stderr note; if neither has it, the command refuses. Repositories without origin use the available local base or `origin/<base>`. A concurrent fetch ref update failure is recoverable only when a fresh read of origin confirms that `origin/<base>` matches its tip. Fetch and verification each have a 60 s timeout. Other fetch failures create no task branch and record no branch or event in state. Existing task branches and worktrees are reused without fetching.
 
-A role names a harness and a model or harness profile. `harness` is one of `claude`, `codex`, `opencode`, `agy`, `pi`, or `command` with a `command` array (`{task}`, `{brief}`, `{prompt}` and `{cwd}` are substituted; `{brief}` is the brief file's path). Optional role fields:
+### Ladder
+
+The ladder says which harness, model and effort runs each kind of work. It has seven rungs:
+
+| Rung | Runs |
+|---|---|
+| `orchestrator` | planning, briefs, dispatch, gates and merges |
+| `easy`, `medium`, `hard`, `research` | a task at that tier (see `tier` under tasks.json) |
+| `review` | clean-context reviews |
+| `small` | small mechanical checks |
+
+`harness` is the default for every rung that does not name its own, so moving everything to pi or opencode is one field (`gishra ladder harness pi`), and a rung with its own `harness` keeps it (a split setup). `harness` is one of `claude`, `codex`, `opencode`, `agy`, `pi`, or `command`. A rung's fields:
 
 | Field | Applies to | Meaning |
 |---|---|---|
-| `model` | all but `command` | model id; pi also takes `provider/id` |
+| `harness` | all | overrides the default harness for this rung |
+| `model` | all but `command` | model id; pi also takes `provider/id`, opencode takes `provider/model` |
 | `profile` | `codex` | codex config profile |
 | `provider` | `pi` | pi provider name |
-| `effort` | all but `opencode` and `command` | reasoning effort, in the harness's own terms (agy: low, medium, high, max; pi: off, minimal, low, medium, high, xhigh, max) |
+| `effort` | all but `command` | reasoning effort in the harness's own terms: claude `low` `medium` `high` `xhigh` `max`; codex `none` `minimal` `low` `medium` `high` `xhigh` `max`; agy `low` `medium` `high` `max`; pi `off` `minimal` `low` `medium` `high` `xhigh` `max`; opencode passes it as `--variant`, whose names each provider defines, so any single word |
 | `args` | all | extra arguments appended verbatim to the command |
+| `command` | `command` | argv array; `{task}`, `{brief}`, `{prompt}` and `{cwd}` are substituted (`{brief}` is the brief file's path) |
+
+Every rung must be able to run on the harness it resolves to: a `codex` rung needs a `model` or a `profile`, `claude`, `opencode`, `agy` and `pi` rungs need a `model`, and a `command` rung needs a `command`. A field the resolved harness does not use (a `profile` on pi, say) is refused, not ignored, so a switch of harness never quietly runs a model nobody chose. A ladder write is refused when it leaves a rung unable to run that could run before; `spawn` refuses a rung that cannot run, and `validate` reports every such rung. Loading checks only the shape (known rungs, harnesses and field types): a rung that falls back to the user file can break when that file changes, and the project must still load so `gishra ladder set` can repair it, one rung at a time.
+
+Defaults come from the user file `~/.config/gishra/config.json` (or the path in `GISHRA_CONFIG`), which holds `{ "harness", "ladder" }` in the same shape, else from the built-in ladder shown above. `gishra init` copies them into the project, and the project file wins from then on. The default harness, and each rung whole, comes from the first layer that has it: project, user file, built-in. A project that leaves a rung out follows the user file for it; `gishra ladder show` prints where each one comes from. `gishra ladder save-user` writes the project's ladder to the user file, keeping any other keys it has.
+
+`project.json` files from before the ladder carry `roles`; loading one is refused with a pointer here. Remove `roles` and set the ladder.
 
 docs/cli.md lists the command each harness gets.
 
@@ -103,7 +126,7 @@ docs/cli.md lists the command each harness gets.
       "depends_on": [],
       "needs_owner": null,
       "size": "M",
-      "role": "worker",
+      "tier": "medium",
       "status": "todo",
       "claim": null,
       "branch": null,
@@ -121,6 +144,7 @@ docs/cli.md lists the command each harness gets.
 
 - `kind`: `code`, `docs`, `research`, `design`, `ops`.
 - `size`: `S` (under an hour), `M` (a few hours), `L` (a day). Anything larger is split; `validate` reports it.
+- `tier`: `easy`, `medium`, `hard` or `research`, the ladder rung that does the task. When `task add` or `plan import` gives none: `research` for kind `research`, else `easy` for `S`, `medium` for `M`, `hard` for `L`. It changes only through `--tier`; a later size or kind change does not move it. A task file without `tier` gets it the same way when it loads.
 - `needs_owner`: null, or the reason the owner has to act (a credential, a purchase, a product call). Such a task is never ready on its own; the owner clears it with `gishra owner-done`. Clearing or replacing an existing reason with `task update --needs-owner` also needs explicit owner identity. Any agent may set a reason when none exists, or keep the same reason.
 - `status`: `todo`, `in_progress`, `submitted`, `accepted`, `rework`, `cancelled`. `ready` and `blocked` are computed, never stored.
 - `claim`: `{ "agent": "w-3", "since": "...", "until": "...", "from": "todo" }` while in progress; `from` is the status before the claim (`todo` or `rework`), which `release` restores. An expired lease frees the task: it counts as `from` again and another agent may claim it. Until someone does, the original claimant can still submit it, or renew it while the workers limit has room: an expired lease no longer counts toward `limits.workers`, so renewing it takes a slot like a new claim.
@@ -185,6 +209,6 @@ A decision blocks only the tasks it lists. Everything else keeps running. `statu
 
 ## events.jsonl
 
-One JSON object per line: `{ "at", "agent", "cmd", "task", "detail" }`. `cmd` is the command name (`task add`, `claim`, `spawn`, `check tests` and so on); `gishra spawn` also counts its earlier `spawn` events to number agents. `gishra status` and the sketch read time and token spend from tasks; the log is for audit and recovery.
+One JSON object per line: `{ "at", "agent", "cmd", "task", "detail" }`. `cmd` is the command name (`task add`, `claim`, `spawn`, `check tests` and so on); a ladder change logs `ladder harness` and one `ladder set` per rung it changed, with the rung's new fields. A write made from the serve Settings view carries `"via": "serve"` in `detail`. `gishra spawn` also counts its earlier `spawn` events to number agents. `gishra status` and the sketch read time and token spend from tasks; the log is for audit and recovery.
 
 A `submit` event's `detail` records `previous_sha` (null on the first submission), `sha`, `branch`, `pr` and `summary`. Both the replaced head and the new head are recorded, including a submission after rework and a new claim: rework preserves the old sha.

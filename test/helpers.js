@@ -10,8 +10,10 @@ const BIN = path.join(ROOT, 'bin', 'gishra.js');
 const HOOKS = path.join(__dirname, 'fixtures', 'hooks.js');
 const TMP_ROOT = process.env.GISHRA_TEST_TMP || os.tmpdir();
 
-// Tests must not see the developer's git config (hooks, signing) or an
-// agent's GISHRA_* variables, so every child gets a clean, explicit env.
+// Tests must not see the developer's git config (hooks, signing), an
+// agent's GISHRA_* variables or the developer's own ladder defaults, so every
+// child gets a clean, explicit env. The user file path is in the temp dir and
+// absent until a test writes it.
 function baseEnv(home) {
   const env = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith('GISHRA_') || k.startsWith('GIT_')) delete env[k];
@@ -19,6 +21,7 @@ function baseEnv(home) {
   env.GISHRA_AGENT = 'owner';
   env.GIT_CONFIG_GLOBAL = path.join(home, 'gitconfig');
   env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GISHRA_CONFIG = path.join(home, 'user-config', 'config.json');
   return env;
 }
 
@@ -44,6 +47,7 @@ function makeRepo(t) {
     base,
     repo,
     env,
+    userConfig: env.GISHRA_CONFIG,
     state: path.join(repo, '.gishra'),
     run: (args, opts = {}) => run(args, withHooks(ctx, opts)),
     runAsync: (args, opts = {}) => runAsync(args, withHooks(ctx, opts)),
