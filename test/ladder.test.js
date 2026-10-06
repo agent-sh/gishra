@@ -125,7 +125,7 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   assert.deepEqual(flags(review.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-review', '--thinking', 'high']);
 
   h.ok(['ladder', 'harness', 'codex']);
-  assert.deepEqual(flags(spawn('T1').argv), ['codex', 'exec', '-m', 'm-easy', '-c', 'model_reasoning_effort=medium']);
+  assert.deepEqual(flags(spawn('T1').argv), ['codex', 'exec', '--json', '-m', 'm-easy', '-c', 'model_reasoning_effort=medium']);
   assert.deepEqual(flags(spawn('T3').argv).slice(0, 1), ['claude']);
   const harnessEvents = events(h).filter((e) => e.cmd === 'ladder harness').map((e) => e.detail.harness);
   assert.deepEqual(harnessEvents, ['pi', 'codex']);

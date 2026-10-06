@@ -11,8 +11,9 @@ const text = (name) => fs.readFileSync(fixture(name), 'utf8');
 const parse = (...args) => require('../lib/usage').parseUsage(...args);
 
 test('codex captured footer and repeated session totals are counted once', () => {
-  assert.deepEqual(parse('codex', text('codex.log')), {
-    tokens: 24675, input: null, cached: null, output: null, model: 'openai.gpt-6.1-sol',
+  assert.equal(parse('codex', text('codex.log')), null, 'the footer excludes cached input');
+  assert.deepEqual(parse('codex', text('codex-stream.jsonl')), {
+    tokens: 24816, input: 24811, cached: 0, output: 5, model: null,
   });
   const session = text('codex-session.jsonl');
   assert.deepEqual(parse('codex', text('codex.log'), session + session), {
@@ -77,16 +78,16 @@ function setup(t, harness = 'codex') {
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-  h.usageEnv = { PATH: bin + path.delimiter + h.env.PATH };
-  h.usageHooks = { HOOK_USAGE_HARNESS: harness, HOOK_USAGE_FILE: fixture(harness === 'codex' ? 'codex.log' : `${harness}.jsonl`) };
+  h.usageEnv = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), CODEX_HOME: path.join(h.base, 'codex') };
+  h.usageHooks = { HOOK_USAGE_HARNESS: harness, HOOK_USAGE_FILE: fixture(harness === 'codex' ? 'codex-stream.jsonl' : `${harness}.jsonl`) };
   return h;
 }
 
 const spends = (h) => h.json(['task', 'show', 'T1']).spend;
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 
-async function collected(h, length = 1) {
-  const deadline = Date.now() + 15000;
+async function collected(h, length = 1, timeout = 15000) {
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const spend = spends(h);
     if (spend.entries?.length === length) return spend;
@@ -124,13 +125,13 @@ test('foreground spawn captures usage after stderr and stdout close, including f
   });
   assert.equal(r.code, 7, r.stderr);
   const started = JSON.parse(r.stdout);
-  assert.match(r.stderr, /tokens used/);
+  assert.match(r.stderr, /turn.completed/);
   assert.ok(fs.existsSync(started.log));
   const s = spends(h);
-  assert.equal(s.tokens, 24675);
+  assert.equal(s.tokens, 24816);
   assert.equal(s.entries[0].rung, 'easy');
   assert.equal(s.entries[0].harness, 'codex');
-  assert.equal(s.entries[0].model, 'openai.gpt-6.1-sol');
+  assert.equal(s.entries[0].model, 'dispatch-model');
   assert.equal(events(h).find((e) => e.cmd === 'spawn exit').detail.code, 7);
 });
 
@@ -141,16 +142,16 @@ test('detached exits record both spawns exactly once and keep dispatch metadata'
   const b = h.json(['spawn', '--task', 'T1'], options);
   h.ok(['ladder', 'set', 'easy', '--model', 'replacement']);
   const s = await collected(h, 2);
-  assert.equal(s.tokens, 49350);
+  assert.equal(s.tokens, 49632);
   assert.deepEqual(s.entries.map((e) => e.source).sort(), [`spawn:${a.agent}`, `spawn:${b.agent}`]);
   for (const e of s.entries) {
     assert.equal(e.rung, 'easy');
     assert.equal(e.harness, 'codex');
-    assert.equal(e.model, 'openai.gpt-6.1-sol');
+    assert.equal(e.model, 'dispatch-model');
   }
   h.ok(['spend', 'T1', '--from-spawn', a.agent]);
   h.ok(['spend', 'T1', '--from-spawn', b.agent]);
-  assert.equal(spends(h).tokens, 49350);
+  assert.equal(spends(h).tokens, 49632);
   assert.equal(events(h).filter((e) => e.cmd === 'spend').length, 2);
 });
 
@@ -161,13 +162,23 @@ test('codex session fallback opens only the exact session and counts cached inpu
   const file = path.join(codexHome, 'sessions', '2026', '10', '06', `rollout-2026-10-06T21-40-07-${id}.jsonl`);
   h.ok(['spawn', '--task', 'T1', '--wait'], {
     env: { ...h.usageEnv, CODEX_HOME: codexHome, USAGE_SESSION: file, USAGE_SESSION_FIXTURE: fixture('codex-session.jsonl') },
-    hooks: h.usageHooks,
+    hooks: { ...h.usageHooks, HOOK_USAGE_FILE: fixture('codex.log') },
   });
   const s = spends(h);
   assert.equal(s.input, 24670);
   assert.equal(s.cached, 0);
   assert.equal(s.output, 5);
   assert.equal(s.tokens, 24675);
+  const detail = { ...events(h).find((e) => e.cmd === 'spawn').detail };
+  delete detail.codex_home;
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHome;
+  try {
+    assert.equal(require('../lib/usage-files').readUsage(detail).tokens, 24675, 'legacy events use the configured session root');
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previous;
+  }
 });
 
 test('an exited spawn without telemetry is marked unknown and can be recollected', async (t) => {
@@ -183,9 +194,64 @@ test('an exited spawn without telemetry is marked unknown and can be recollected
   assert.equal(h.json(['status']).spend.missing_usage, 1);
   assert.match(h.ok(['status']), /1 spawns without usage/);
   assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /Spawns without usage/);
-  fs.appendFileSync(a.log, text('codex.log'));
+  fs.appendFileSync(a.log, text('codex-stream.jsonl'));
   h.ok(['spend', 'T1', '--from-spawn', a.agent]);
   assert.equal(spends(h).entries.length, 1);
-  assert.equal(spends(h).tokens, 24675);
+  assert.equal(spends(h).tokens, 24816);
   assert.equal(h.json(['status']).spend.missing_usage, 0);
+});
+
+test('late session detail enriches a partial total without counting it twice', (t) => {
+  const h = setup(t);
+  const id = '00000000-0000-0000-0000-000000000001';
+  const partial = path.join(h.base, 'partial.jsonl');
+  fs.writeFileSync(partial, [
+    JSON.stringify({ type: 'thread.started', thread_id: id }),
+    JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 20 } }),
+  ].join('\n') + '\n');
+  const started = h.json(['spawn', '--task', 'T1', '--wait'], {
+    env: h.usageEnv, hooks: { ...h.usageHooks, HOOK_USAGE_FILE: partial },
+  });
+  assert.equal(spends(h).tokens, 120);
+  assert.equal(spends(h).entries[0].cached, null);
+  const dir = path.join(h.usageEnv.CODEX_HOME, 'sessions', '2026', '10', '06');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `rollout-2026-10-06T00-00-00-${id}.jsonl`), [
+    JSON.stringify({ type: 'turn_context', payload: { model: 'enriched-model' } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: {
+      input_tokens: 100, cached_input_tokens: 80, output_tokens: 20, total_tokens: 120,
+    } } } }),
+  ].join('\n') + '\n');
+  h.ok(['spend', 'T1', '--from-spawn', started.agent]);
+  h.ok(['spend', 'T1', '--from-spawn', started.agent]);
+  const s = spends(h);
+  assert.equal(s.tokens, 120);
+  assert.equal(s.input, 100);
+  assert.equal(s.cached, 80);
+  assert.equal(s.output, 20);
+  assert.equal(s.entries.length, 1);
+  assert.equal(s.entries[0].model, 'enriched-model');
+});
+
+test('detached accounting retries a lock held across the first collection attempt', async (t) => {
+  const h = setup(t);
+  h.json(['spawn', '--task', 'T1'], { env: { ...h.usageEnv, USAGE_DELAY: '1000' }, hooks: h.usageHooks });
+  const S = require('../lib/state');
+  const lock = S.acquireLock(h.state);
+  const timer = setTimeout(() => S.releaseLock(lock), S.LOCK_WAIT_MS + 3000);
+  t.after(() => { clearTimeout(timer); S.releaseLock(lock); });
+  const s = await collected(h, 1, S.LOCK_WAIT_MS * 3);
+  assert.equal(s.tokens, 24816);
+});
+
+test('foreground accounting errors retain the harness exit code and exit event', (t) => {
+  const h = setup(t);
+  const r = h.run(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: { ...h.usageEnv, USAGE_EXIT: '7' }, hooks: { ...h.usageHooks, HOOK_USAGE_READ_FAIL: '1' },
+  });
+  assert.equal(r.code, 7);
+  assert.equal(JSON.parse(r.stdout).code, 7);
+  assert.match(r.stderr, /usage not recorded: usage log unavailable; retry spend/);
+  assert.equal(events(h).find((e) => e.cmd === 'spawn exit').detail.code, 7);
+  assert.equal(spends(h).tokens, 0);
 });

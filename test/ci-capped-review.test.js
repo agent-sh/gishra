@@ -43,6 +43,8 @@ function fixture(t) {
       const evidence = JSON.parse(r.stdout);
       assert.equal(evidence.sha, sha);
       assert.equal(evidence.type, 'ci');
+      assert.equal(evidence.source, 'check ci');
+      assert.ok(Array.isArray(evidence.commands));
       assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.at(-1), {
         type: evidence.type, ok: evidence.ok, sha: evidence.sha, agent: evidence.agent,
         at: evidence.at, summary: evidence.summary, ref: evidence.ref, revision: evidence.revision,

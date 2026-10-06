@@ -49,8 +49,8 @@ test('spawn --dry-run builds each harness command', (t) => {
   const cases = [
     [['--harness', 'claude', '--model', 'claude-opus-5-5'], (p) => ['claude', '-p', p, '--model', 'claude-opus-5-5', '--output-format', 'json']],
     [['--harness', 'claude', '--model', 'opus', '--effort', 'high'], (p) => ['claude', '-p', p, '--model', 'opus', '--effort', 'high', '--output-format', 'json']],
-    [['--harness', 'codex', '--profile', 'sol'], (p) => ['codex', 'exec', '-p', 'sol', p]],
-    [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p) => ['codex', 'exec', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', p, '--skip-git-repo-check']],
+    [['--harness', 'codex', '--profile', 'sol'], (p) => ['codex', 'exec', '--json', '-p', 'sol', p]],
+    [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p) => ['codex', 'exec', '--json', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', p, '--skip-git-repo-check']],
     [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', p]],
     [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', p]],
     [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro']],

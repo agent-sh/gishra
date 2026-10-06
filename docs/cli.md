@@ -48,7 +48,7 @@ These options also work with `init`. Omitted options leave their fields unchange
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
 | `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
 | `spend ID [--minutes N] [--tokens N] [--input N] [--cached N] [--output N] [--rung R] [--harness H] [--model M]` | add spend, with optional native-agent usage breakdown and metadata; rung defaults the harness, model and profile from the current ladder |
-| `spend ID --from-spawn AGENT` | collect an exited spawn's captured usage once; retry a failed monitor or replace an unknown entry when telemetry arrives. Refuses a live process or an unknown spawn; cannot be mixed with manual spend |
+| `spend ID --from-spawn AGENT` | collect an exited spawn's captured usage once; retry a failed monitor or enrich an unknown/partial entry when telemetry arrives. Refuses a live process or an unknown spawn; cannot be mixed with manual spend |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Requires explicit `--agent owner` or `GISHRA_AGENT=owner` |
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
@@ -174,7 +174,7 @@ Local process checks ignore a spawn recorded on another host and treat permissio
 | Harness | Command |
 |---|---|
 | `claude` | `claude -p <prompt> [--model M] [--effort E] --output-format json` |
-| `codex` | `codex exec [-p PROFILE] [-m M] [-c model_reasoning_effort=E] <prompt>` |
+| `codex` | `codex exec --json [-p PROFILE] [-m M] [-c model_reasoning_effort=E] <prompt>` |
 | `opencode` | `opencode run --format json [-m M] [--variant E] <prompt>` |
 | `agy` | `agy -p <prompt> --mode accept-edits --output-format json [--model M] [--effort E]` |
 | `pi` | `pi -p <prompt> --mode json [--model M] [--provider P] [--thinking E] [--skill DIR]` |
@@ -188,7 +188,7 @@ The rung's `args` follow every command. A pi worker (any tier) gets `--skill <ro
 
 | Harness | Captured usage |
 |---|---|
-| `codex` | The last cumulative `token_count.info.total_token_usage` in the exact session named by `session id` or JSON `thread.started` supplies input, cached input, output and total. Only matching `rollout-*-<id>.jsonl` files under the recorded `CODEX_HOME/sessions` are opened. Repeated totals are counted once. JSON `turn.completed.usage` is supported. A `tokens used` footer supplies total only when session detail is unavailable. |
+| `codex` | The last cumulative `token_count.info.total_token_usage` in the exact session named by `session id` or JSON `thread.started` supplies input, cached input, output and total. Only matching `rollout-*-<id>.jsonl` files under the recorded `CODEX_HOME/sessions` are opened. Repeated totals are counted once. JSON `turn.completed.usage` is supported. The text `tokens used` footer excludes cached input, so it cannot supply the inclusive total when structured usage and session detail are unavailable. |
 | `claude` | JSON result `usage`; streaming/session assistant messages are also supported and deduplicated by message id. Cache creation and reads join fresh input; cache reads are the cached subset. Result usage takes precedence over messages, so they are never added twice. |
 | `opencode` | JSON `step_finish.part.tokens`, summed across steps and deduplicated by part id. Cache reads/writes join fresh input; reasoning joins output. Text mode has no usage footer. Missing step-finish events are unknown; this implementation does not open OpenCode's session database. |
 | `agy` | JSON result `usage`: `input_tokens`, `cache_read_tokens`, `output_tokens`, `thinking_tokens`, `total_tokens`. Input includes cache reads. The configured model supplies metadata when the result does not name it. Text mode omits counts. |

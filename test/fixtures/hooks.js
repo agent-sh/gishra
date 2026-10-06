@@ -177,3 +177,13 @@ if (env.HOOK_USAGE_HARNESS) {
     return original.call(this, file, args, options);
   };
 }
+
+if (env.HOOK_USAGE_READ_FAIL) {
+  const original = fs.readFileSync;
+  fs.readFileSync = function unreadableUsage(file, ...args) {
+    if (typeof file === 'string' && file.startsWith(path.join(env.HOOK_STATE, 'logs') + path.sep)) {
+      throw Object.assign(new Error('usage log unavailable'), { code: 'EACCES' });
+    }
+    return original.call(this, file, ...args);
+  };
+}
