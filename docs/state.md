@@ -68,6 +68,8 @@ A lock is stale when its holder process is gone (same host) or its file is older
 
 `gishra init` writes the roles shown above, `limits` as shown, and `budget` values of `null` (no budget) until `gishra project set` gives them. `limits.workers` caps the tasks in progress at once, counting those with a live lease; `lease_minutes` is the default lease. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
 
+`base` names the branch used to create new task branches. `worktree` and `spawn` fetch it from origin into `origin/<base>` before creating a branch, then use the fetched commit if the local base is missing or is its ancestor. A local base that is ahead or has diverged is kept, with both commit SHAs reported on stderr, and the local branch is never moved. When origin has no such branch, the local base is used with a stderr note; if neither has it, the command refuses. Repositories without origin use the available local base or `origin/<base>`. A concurrent fetch ref update failure is recoverable only when a fresh read of origin confirms that `origin/<base>` matches its tip. Fetch and verification each have a 60 s timeout. Other fetch failures create no task branch and record no branch or event in state. Existing task branches and worktrees are reused without fetching.
+
 A role names a harness and a model or harness profile. `harness` is one of `claude`, `codex`, `opencode`, `agy`, `pi`, or `command` with a `command` array (`{task}`, `{brief}`, `{prompt}` and `{cwd}` are substituted; `{brief}` is the brief file's path). Optional role fields:
 
 | Field | Applies to | Meaning |
