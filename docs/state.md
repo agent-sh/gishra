@@ -122,7 +122,7 @@ docs/cli.md lists the command each harness gets.
 - `needs_owner`: null, or the reason the owner has to act (a credential, a purchase, a product call). Such a task is never ready on its own; the owner clears it with `gishra owner-done`. Clearing or replacing an existing reason with `task update --needs-owner` also needs explicit owner identity. Any agent may set a reason when none exists, or keep the same reason.
 - `status`: `todo`, `in_progress`, `submitted`, `accepted`, `rework`, `cancelled`. `ready` and `blocked` are computed, never stored.
 - `claim`: `{ "agent": "w-3", "since": "...", "until": "...", "from": "todo" }` while in progress; `from` is the status before the claim (`todo` or `rework`), which `release` restores. An expired lease frees the task: it counts as `from` again and another agent may claim it. Until someone does, the original claimant can still submit it, or renew it while the workers limit has room: an expired lease no longer counts toward `limits.workers`, so renewing it takes a slot like a new claim.
-- `submitted_by`: the agent that submitted the current `sha`.
+- `submitted_by`: the agent that submitted the current `sha`. Submission clears `claim`; while the task is `submitted`, only this agent can replace the submitted head.
 - `evidence`: entries `{ "type", "ok", "sha", "agent", "at", "summary", "ref", "revision" }`, plus `"waived": true` on an owner waiver. Types: `tests`, `clean`, `review`, `ci`, `merge`, `note`.
 - `revision`: incremented when acceptance or dependencies change; evidence recorded against an older revision does not count. An accepted task's acceptance, dependencies and kind cannot change; send it back with `rework` first.
 - `notes`: `{ "at", "agent", "text" }` entries. The orchestrator folds what matters into the brief. A note starting with `split:` on an `L` task records why it stays whole.
@@ -144,6 +144,8 @@ Ready tasks come in priority order: most outstanding dependents (direct or trans
 - any task with a PR, whatever its kind: `ci` ok as well
 
 A gate passes when the latest evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `review`, entries by the submitter are ignored.
+
+Resubmitting replaces `sha` without changing `revision` or deleting evidence. Evidence at the older head stays in the audit trail and no longer counts for the new head. Resubmitting the same sha preserves its gates. The task remains `submitted`, with no claim lease; omitted branch and PR values stay unchanged. Accepted tasks must go through `rework` and a new claim before submission, and that claimant becomes the new `submitted_by` agent.
 
 `merge` checks these gates again, for the current revision, before it merges.
 
@@ -180,3 +182,5 @@ A decision blocks only the tasks it lists. Everything else keeps running. `statu
 ## events.jsonl
 
 One JSON object per line: `{ "at", "agent", "cmd", "task", "detail" }`. `cmd` is the command name (`task add`, `claim`, `spawn`, `check tests` and so on); `gishra spawn` also counts its earlier `spawn` events to number agents. `gishra status` and the sketch read time and token spend from tasks; the log is for audit and recovery.
+
+A `submit` event's `detail` records `previous_sha` (null on the first submission), `sha`, `branch`, `pr` and `summary`. On resubmission, both the replaced head and the new head are recorded.
