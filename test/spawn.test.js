@@ -347,3 +347,42 @@ fs.writeFileSync(${JSON.stringify(output)}, "work in progress");`;
   assert.ok(branchExists('feature/second'));
   fs.writeFileSync(path.join(handed, 'claimant-output.txt'), 'work');
 });
+
+test('spawn runs the rung of the tier and ladder it finds under the lock, not the one it saw first', async (t) => {
+  const h = setup(t);
+  const out = path.join(h.base, 'ran.txt');
+  const writes = (word) => [process.execPath, '-e', 'require("fs").writeFileSync(process.argv[1], process.argv[2])', out, word];
+  h.ok(['task', 'update', 'T1', '--tier', 'easy']);
+  commandRung(h, 'easy', writes('easy'));
+  commandRung(h, 'hard', writes('hard'));
+  // The spawn stops after it made the worktree and before it takes the lock;
+  // meanwhile the task moves to hard and the hard rung changes.
+  const stopped = path.join(h.base, 'stopped');
+  const a = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], { hooks: { HOOK_STOP_WORKTREE_ADD: stopped } });
+  await waitForFile(stopped);
+  h.ok(['task', 'update', 'T1', '--tier', 'hard']);
+  commandRung(h, 'hard', writes('hard, changed'));
+  fs.writeFileSync(`${stopped}.go`, '');
+  const r = await a;
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(fs.readFileSync(out, 'utf8'), 'hard, changed');
+  assert.equal(JSON.parse(r.stdout).rung, 'hard');
+  const ev = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((e) => e.cmd === 'spawn');
+  assert.deepEqual([ev.detail.rung, ev.detail.agent], ['hard', 'worker-T1-1']);
+
+  // A rung that broke in the meantime is refused under the lock, and nothing
+  // is recorded.
+  fs.rmSync(out);
+  const stopped2 = path.join(h.base, 'stopped2');
+  h.git(['worktree', 'remove', '--force', ev.detail.cwd]);
+  const b = h.runAsync(['spawn', '--task', 'T1', '--wait'], { hooks: { HOOK_STOP_WORKTREE_ADD: stopped2 } });
+  await waitForFile(stopped2);
+  setRung(h, 'hard', ['--harness', 'command', '--command', JSON.stringify([path.join(h.base, 'no-such-program')])]);
+  fs.writeFileSync(`${stopped2}.go`, '');
+  const rb = await b;
+  assert.equal(rb.code, 1);
+  assert.match(rb.stderr, /could not start .*no-such-program: no executable file by that name; install it, or fix the rung with gishra ladder set hard/);
+  assert.ok(!fs.existsSync(out));
+  const spawns = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.cmd === 'spawn');
+  assert.equal(spawns.length, 1);
+});
