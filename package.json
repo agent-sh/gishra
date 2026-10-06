@@ -8,5 +8,5 @@
   "bin": { "gishra": "bin/gishra.js" },
   "engines": { "node": ">=20" },
   "files": ["bin/", "lib/", "standards/", "docs/"],
-  "scripts": { "test": "node --test test/" }
+  "scripts": { "test": "node --test test/*.test.js" }
 }
