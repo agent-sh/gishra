@@ -228,3 +228,18 @@ test('reclaiming an expired lease under the same identity does not inherit its o
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(events.find((e) => e.cmd === 'release').detail.exited_spawn, undefined);
 });
+
+test('a spawned replacement can claim after another worker lease expires', async (t) => {
+  const h = setup(t);
+  h.ok(['claim', 'T1', '--agent', 'previous-worker', '--lease', '1']);
+  const previousClaim = h.readState('tasks.json').tasks[0].claim;
+  const hook = path.join(__dirname, 'fixtures', 'clock.js').replace(/\\/g, '/');
+  const spawned = await start(t, h, {
+    env: { NODE_OPTIONS: `--require "${hook}"`, GISHRA_TEST_NOW: String(Date.parse(previousClaim.until) + 1) },
+  });
+  assert.equal(h.readState('tasks.json').tasks[0].claim.agent, spawned.agent);
+  assert.deepEqual(h.json(['status']).exited_claims, []);
+  spawned.kill();
+  await until(() => (h.json(['status']).exited_claims || []).length === 1, 'replacement exit was not reported');
+  assert.equal(h.json(['ready']).exited_claims[0].pid, spawned.pid);
+});

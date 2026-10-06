@@ -14,6 +14,19 @@ const cp = require('node:child_process');
 const { EventEmitter } = require('node:events');
 
 const env = process.env;
+// Keep a known missing PID absent when a test waits long enough for OS reuse.
+if (env.HOOK_DEAD_PID) {
+  const kill = process.kill;
+  process.kill = function missingPid(pid, signal) {
+    if (pid === Number(env.HOOK_DEAD_PID) && signal === 0) {
+      const error = new Error('process no longer exists');
+      error.code = 'ESRCH';
+      throw error;
+    }
+    return kill.call(this, pid, signal);
+  };
+}
+
 const STATE = env.HOOK_STATE ? path.resolve(env.HOOK_STATE) : null;
 const LOCK = STATE ? path.join(STATE, 'lock') : null;
 const WRAPPED = ['openSync', 'readFileSync', 'writeFileSync', 'appendFileSync', 'renameSync', 'unlinkSync', 'rmdirSync', 'rmSync', 'linkSync', 'statSync', 'readdirSync', 'mkdirSync', 'existsSync', 'utimesSync'];
