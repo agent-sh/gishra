@@ -159,6 +159,8 @@ Software evidence also has `source` (`check tests`, `check clean`, `check ci` or
 
 `gishra evidence` writes only `review` and `note`. Software types are refused for any agent, whether `--ok` or `--fail`; run their gate commands instead. State version 1 and older evidence remain readable. Software entries without the matching gate source and audit event do not satisfy acceptance, so their gates must run again.
 
+`task show` marks software evidence with missing or mismatched gate proof, or an older sha, as `(does not count)` in its text output. An older revision keeps the `(revision N, does not count)` marker. Each command receipt is printed below its evidence entry, including merge receipts. Owner waivers count without command receipts. The JSON view keeps the stored evidence unchanged and reports the gates separately.
+
 The CLI refuses manual software verdicts, and software receipts require matching records in tasks.json and events.jsonl. Plain files cannot stop a writer running as the same user from forging those records or an owner waiver. Command receipts show what ran; acceptance does not check whether a caller-supplied test or cleanup command is the right one for the project. The reviewer checks those commands.
 
 ### Ready and blocked

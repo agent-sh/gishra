@@ -44,7 +44,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
 
-Pass the commit actually reviewed or checked to `evidence --sha S`. A submitted head can move while a review is running; `gishra evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on any non-`note` evidence is a usage error (exit 2) and writes nothing. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
+Pass the commit actually reviewed to `evidence --sha S`. A submitted head can move while a review is running; `gishra evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on `review` evidence is a usage error (exit 2) and writes nothing. Software evidence types are refused first (exit 1), with or without `--sha`. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
 
 ## Decisions
 
@@ -55,6 +55,8 @@ Pass the commit actually reviewed or checked to `evidence --sha S`. A submitted 
 | `decisions [--open]` | list |
 
 ## Views
+
+`task show ID` marks software evidence that lacks matching gate proof or belongs to an older sha as `(does not count)`. Evidence from an older revision is marked `(revision N, does not count)`. Its text output prints every recorded command with arguments, working directory, exit status and signal when present. JSON output keeps the evidence and command receipts as stored, plus the gate report.
 
 | Command | Does |
 |---|---|

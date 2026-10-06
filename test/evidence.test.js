@@ -53,6 +53,7 @@ test('hand-written tests ok stays readable but cannot satisfy accept', (t) => {
   assert.match(r.stderr, /tests: no tests evidence/);
   assert.doesNotMatch(r.stderr, /clean:|ci:|review:/);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
+  assert.match(h.ok(['task', 'show', 'T1']), /tests ok .* \(does not count\)/);
 });
 
 test('forged gate source without an audit event cannot satisfy accept', (t) => {
@@ -71,6 +72,7 @@ test('forged gate source without an audit event cannot satisfy accept', (t) => {
     const shown = h.json(['task', 'show', 'T1']);
     assert.equal(shown.evidence.at(-1).source, 'check tests');
     assert.equal(shown.gates.ok, false);
+    assert.match(h.ok(['task', 'show', 'T1']), /tests ok .* \(does not count\)/);
     h.ok(['render']);
     assert.match(fs.readFileSync(path.join(h.state, 'sketch.md'), 'utf8'), /missing tests/);
     task.evidence.pop();
@@ -103,6 +105,8 @@ test('software receipts count only with a matching gate event', (t) => {
       const r = h.run(['accept', 'T1']);
       assert.equal(r.code, 1, `${type} ${change}: ${r.stdout}`);
       assert.ok(r.stderr.includes(`${type}: no ${type} evidence`), `${change}: ${r.stderr}`);
+      const line = h.ok(['task', 'show', 'T1']).split('\n').find((line) => line.startsWith(`  - ${type} ok `));
+      assert.ok(line.includes('(does not count)'), `${change}: ${line}`);
     }
   }
   fs.writeFileSync(eventsFile, original + '{"torn":\n');
@@ -125,6 +129,8 @@ test('an ok gate result with matching event but no commands cannot satisfy accep
     const r = h.run(['accept', 'T1']);
     assert.equal(r.code, 1, r.stdout);
     assert.ok(r.stderr.includes(`${type}: no ${type} evidence`), r.stderr);
+    assert.ok(h.ok(['task', 'show', 'T1']).split('\n')
+      .find((line) => line.startsWith(`  - ${type} ok `)).includes('(does not count)'));
   }
 });
 
@@ -193,6 +199,8 @@ for (const type of ['clean', 'ci']) {
     const r = h.run(['accept', 'T1']);
     assert.equal(r.code, 1, r.stdout);
     assert.ok(r.stderr.includes(`${type}: no ${type} evidence`));
+    assert.ok(h.ok(['task', 'show', 'T1']).split('\n')
+      .find((line) => line.startsWith(`  - ${type} ok `)).includes('(does not count)'));
   });
 }
 
@@ -229,6 +237,36 @@ test('real gate commands record their source and executed commands, including me
     assert.equal(event.detail.source, e.source);
     assert.deepEqual(event.detail.commands, e.commands);
   }
+});
+
+test('task show prints every gate command receipt and marks only uncounted software evidence', (t) => {
+  const h = setup(t);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  h.ok(['accept', 'T1', '--agent', 'reviewer']);
+  h.ok(['merge', 'T1', '--agent', 'reviewer']);
+  const shown = h.ok(['task', 'show', 'T1']);
+  assert.doesNotMatch(shown, /does not count/);
+  const doc = h.readState('tasks.json');
+  for (const e of doc.tasks[0].evidence.filter((e) => e.source)) {
+    for (const c of e.commands) {
+      const command = [c.command, ...c.args].map((s) => JSON.stringify(s)).join(' ');
+      assert.ok(shown.includes(`command: ${command}`), `${e.type}: ${command}`);
+      assert.ok(shown.includes(`cwd: ${c.cwd || '-'}, status: ${c.status ?? '-'}`), `${e.type}: ${command}`);
+    }
+  }
+  const tests = doc.tasks[0].evidence.find((e) => e.type === 'tests');
+  doc.tasks[0].evidence.push({ ...tests, sha: 'fffffff' });
+  doc.tasks[0].evidence.push({ ...tests, revision: 0 });
+  doc.tasks[0].evidence.push({ type: 'clean', ok: true, waived: true, sha: tests.sha, agent: 'owner', revision: 1 });
+  h.writeState('tasks.json', doc);
+  const lines = h.ok(['task', 'show', 'T1']).split('\n');
+  assert.match(lines.find((line) => line.includes('tests ok at fffffff')), /\(does not count\)/);
+  assert.ok(lines.some((line) => line.includes('(revision 0, does not count)')));
+  assert.doesNotMatch(lines.find((line) => line.includes('clean waived')), /does not count/);
+  const merge = doc.tasks[0].evidence.find((e) => e.type === 'merge');
+  doc.tasks[0].evidence.push({ ...merge, agent: 'forger' });
+  h.writeState('tasks.json', doc);
+  assert.match(h.ok(['task', 'show', 'T1']), /merge ok .* by forger .*\(does not count\)/);
 });
 
 test('a gate failure before running commands still overrides its earlier pass', (t) => {
