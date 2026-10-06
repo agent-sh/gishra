@@ -46,8 +46,10 @@ cp.spawnSync = (command, args, opts) => command === 'gh'
 `);
     h.env.NODE_OPTIONS = `${h.env.NODE_OPTIONS || ''} --require=${JSON.stringify(preload)}`;
   }
+  // Windows preserves the inherited Path casing in this plain environment object.
+  const pathKey = Object.keys(h.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
   Object.assign(h.env, {
-    PATH: tools + path.delimiter + h.env.PATH,
+    [pathKey]: tools + path.delimiter + (h.env[pathKey] || ''),
     GISHRA_TMP: path.join(h.base, 'gate-tmp'),
     GISHRA_CLEAN_CMD: `${shellQuote(process.execPath)} ${shellQuote(scanner)}`,
     FIXTURE_SHA: sha,

@@ -14,7 +14,7 @@ function setup(t) {
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--sha', sha, '--pr', '1', '--agent', 'worker']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
   return h;
 }
 
@@ -25,9 +25,11 @@ test('manual software evidence is refused for either verdict and every agent wit
   for (const type of ['tests', 'clean', 'ci', 'merge']) {
     for (const agent of ['worker', 'reviewer', 'owner']) {
       for (const verdict of ['--ok', '--fail']) {
-        const r = h.run(['evidence', 'T1', '--type', type, verdict, '--agent', agent]);
-        assert.equal(r.code, 1, `${type} ${agent} ${verdict}: ${r.stderr}`);
-        assert.match(r.stderr, /only gishra (check|merge)/);
+        for (const shaArgs of [[], ['--sha', h.env.FIXTURE_SHA]]) {
+          const r = h.run(['evidence', 'T1', '--type', type, verdict, '--agent', agent, ...shaArgs]);
+          assert.equal(r.code, 1, `${type} ${agent} ${verdict}: ${r.stderr}`);
+          assert.match(r.stderr, /only gishra (check|merge)/);
+        }
       }
     }
   }
@@ -137,6 +139,30 @@ test('merge rechecks software events after acceptance', (t) => {
   assert.equal(r.code, 1, r.stdout);
   assert.match(r.stderr, /its gates no longer pass: tests: no tests evidence/);
   assert.ok(!fs.existsSync(h.env.FIXTURE_MERGED), 'the merge command never ran');
+});
+
+test('a failed gate after an unterminated audit line still blocks accept and merge', (t) => {
+  const h = setup(t);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  const eventsFile = path.join(h.state, 'events.jsonl');
+  const original = fs.readFileSync(eventsFile, 'utf8');
+  for (const tail of [original + '{"torn":', original.trimEnd()]) {
+    fs.writeFileSync(eventsFile, tail);
+    gateEvidence(h, 'tests', 'checker', false);
+    const refused = h.run(['accept', 'T1']);
+    assert.equal(refused.code, 1, refused.stdout);
+    assert.match(refused.stderr, /latest tests .* failed/);
+    const shown = h.json(['task', 'show', 'T1']);
+    assert.equal(shown.gates.gates.find((gate) => gate.type === 'tests').ok, false);
+    gateEvidence(h, 'tests', 'checker');
+  }
+  h.ok(['accept', 'T1']);
+  fs.appendFileSync(eventsFile, '{"torn":');
+  gateEvidence(h, 'ci', 'checker', false);
+  const refused = h.run(['merge', 'T1']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stderr, /its gates no longer pass: ci: latest ci .* failed/);
+  assert.ok(!fs.existsSync(h.env.FIXTURE_MERGED));
 });
 
 test('hand-written waivers require owner identity for review and software gates', (t) => {

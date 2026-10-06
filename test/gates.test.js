@@ -97,7 +97,7 @@ test('merge refuses a task of any kind whose PR has no passing ci at the submitt
   h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   h.ok(['submit', 'T1', '--sha', sha, '--pr', '9', '--agent', 'w-1']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--agent', 'r-1']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
   gateEvidence(h, 'ci', 'ci');
   h.ok(['accept', 'T1']);
   const cli = cliCopy(h);
@@ -121,7 +121,7 @@ test('merge checks the gates as they stand, not only the accepted status', (t) =
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'w-1']);
   for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--agent', 'r-1']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
   h.ok(['accept', 'T1']);
   const cli = cliCopy(h);
   fs.mkdirSync(cli.gates);
