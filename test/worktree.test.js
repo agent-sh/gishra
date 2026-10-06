@@ -39,6 +39,7 @@ for (const base of ['main', 'release/next']) {
     assert.equal(h.git(['rev-parse', 'HEAD'], wt.path), fresh);
     assert.equal(h.git(['rev-parse', `origin/${base}`]), fresh);
     assert.equal(h.git(['rev-parse', base]), stale);
+    assert.equal(h.git(['for-each-ref', '--format=%(upstream)', `refs/heads/${wt.branch}`]), '');
     assert.equal(fs.readFileSync(path.join(wt.path, 'remote.txt'), 'utf8'), 'new base commit\n');
     assert.equal(h.json(['task', 'show', 'T1']).branch, wt.branch);
 
@@ -196,8 +197,73 @@ process.exit(r.status === null ? 1 : r.status);
   });
 }
 
+for (const error of ['lock', 'fetching ref refs/remotes/origin/main failed: incorrect old value provided']) {
+  test(`worktree retries once after ${error} and uses the fresh tracking ref`, (t) => {
+    const h = setup(t);
+    const fresh = advance(h, h.upstream, 'remote.txt');
+    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    const attempts = path.join(h.base, 'fetch-attempts');
+    const r = h.run(['worktree', 'T1', '--json'], {
+      hooks: { HOOK_FETCH_ERROR: error, HOOK_FETCH_ATTEMPTS: attempts },
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(fs.readFileSync(attempts, 'utf8'), '..', 'exactly two fetch attempts');
+    const wt = JSON.parse(r.stdout);
+    assert.equal(h.git(['rev-parse', 'HEAD'], wt.path), fresh);
+    assert.equal(h.git(['rev-parse', 'origin/main']), fresh);
+  });
+}
+
+for (const error of ['lock', 'incorrect old value provided', 'fatal: unpack-objects failed']) {
+  test(`worktree refuses repeated ${error} without creating or recording a branch`, (t) => {
+    const h = setup(t);
+    advance(h, h.upstream, 'remote.txt');
+    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+    const attempts = path.join(h.base, 'fetch-attempts');
+    const r = h.run(['worktree', 'T1'], {
+      hooks: { HOOK_FETCH_ERROR: error, HOOK_FETCH_ALWAYS: '1', HOOK_FETCH_ATTEMPTS: attempts },
+    });
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /git fetch origin main failed/);
+    assert.equal(fs.readFileSync(attempts, 'utf8'), error.includes('unpack-objects') ? '.' : '..');
+    assert.equal(h.json(['task', 'show', 'T1']).branch, null);
+    assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+    assert.equal(h.git(['branch', '--list', 'gishra/*']), '');
+    assert.equal(h.json(['worktree', 'T1']).created, true, 'the failed call permits a later preparation');
+  });
+}
+
+function guardUploadPack(h, delay = 200) {
+  const active = path.join(h.base, 'fetch-active');
+  const attempts = path.join(h.base, 'fetch-attempts');
+  const uploadPack = path.join(h.base, 'upload-pack.js');
+  fs.writeFileSync(uploadPack, `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const active = ${JSON.stringify(active)};
+try {
+  fs.writeFileSync(active, '', { flag: 'wx' });
+} catch {
+  process.stderr.write('concurrent upload-pack processes\\n');
+  process.exit(1);
+}
+try {
+  fs.appendFileSync(${JSON.stringify(attempts)}, '.');
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${delay});
+  const r = cp.spawnSync('git-upload-pack', process.argv.slice(2), { stdio: 'inherit' });
+  process.exitCode = r.status === null ? 1 : r.status;
+} finally {
+  fs.unlinkSync(active);
+}
+`);
+  const quote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+  h.git(['config', 'remote.origin.uploadpack', `${quote(process.execPath)} ${quote(uploadPack)}`]);
+  return attempts;
+}
+
 for (const command of ['worktree', 'spawn']) {
-  test(`six parallel ${command} calls start from the freshly fetched base`, { timeout: 60000 }, async (t) => {
+  test(`one dispatch prepares six ${command} tasks from one slow base fetch`, { timeout: 60000 }, async (t) => {
     const h = setup(t);
     const fresh = advance(h, h.upstream, 'remote.txt');
     h.git(['push', '-q', 'origin', 'main'], h.upstream);
@@ -210,36 +276,118 @@ for (const command of ['worktree', 'spawn']) {
         JSON.stringify([process.execPath, '-e', 'process.exit(0)']), '--clear', 'profile', '--clear', 'effort']);
       for (const id of ids) h.ok(['brief', 'set', id, '-'], { input: 'Use the fresh base.\n' });
     }
-    // Align real upload-pack processes so fetches read the same old tracking ref.
-    const barrier = path.join(h.base, 'fetch-barrier');
-    fs.mkdirSync(barrier);
-    const uploadPack = path.join(h.base, 'upload-pack.js');
-    fs.writeFileSync(uploadPack, `
-const fs = require('node:fs');
-const cp = require('node:child_process');
-const path = require('node:path');
-const barrier = ${JSON.stringify(barrier)};
-fs.writeFileSync(path.join(barrier, String(process.pid)), '');
-const deadline = Date.now() + 20000;
-while (fs.readdirSync(barrier).length < 6) {
-  if (Date.now() >= deadline) process.exit(1);
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-}
-const r = cp.spawnSync('git-upload-pack', process.argv.slice(2), { stdio: 'inherit' });
-process.exit(r.status === null ? 1 : r.status);
-`);
-    const quote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
-    h.git(['config', 'remote.origin.uploadpack', `${quote(process.execPath)} ${quote(uploadPack)}`]);
-    const results = await Promise.all(ids.map((id) => h.runAsync(command === 'worktree'
-      ? ['worktree', id, '--json']
-      : ['spawn', '--role', 'medium', '--task', id, '--wait', '--json'])));
-    assert.deepEqual(results.map((r) => r.code), Array(6).fill(0), results.map((r) => r.stderr).join('\n'));
-    for (let i = 0; i < results.length; i++) {
-      const wt = JSON.parse(results[i].stdout);
-      const dir = command === 'worktree' ? wt.path : wt.cwd;
-      assert.equal(h.git(['rev-parse', 'HEAD'], dir), fresh);
+    const attempts = guardUploadPack(h, 15000);
+    const started = Date.now();
+    const hooks = { HOOK_WORKTREE_ADD_ACTIVE: path.join(h.base, 'worktree-add-active') };
+    const trees = h.json(['worktree', ...ids], { hooks });
+    assert.equal(trees.length, 6);
+    for (let i = 0; i < trees.length; i++) {
+      assert.equal(trees[i].id, ids[i]);
+      assert.equal(h.git(['rev-parse', 'HEAD'], trees[i].path), fresh);
       assert.ok(h.json(['task', 'show', ids[i]]).branch);
     }
+    if (command === 'spawn') {
+      const results = await Promise.all(ids.map((id) => h.runAsync(
+        ['spawn', '--role', 'medium', '--task', id, '--wait', '--json'], { hooks })));
+      assert.deepEqual(results.map((r) => r.code), Array(6).fill(0), results.map((r) => r.stderr).join('\n'));
+      for (const r of results) assert.equal(h.git(['rev-parse', 'HEAD'], JSON.parse(r.stdout).cwd), fresh);
+    }
     assert.equal(h.git(['rev-parse', 'origin/main']), fresh);
+    assert.equal(fs.readFileSync(attempts, 'utf8'), '.', 'the dispatcher fetched once before preparing workers');
+    assert.ok(Date.now() - started < 30000, 'the dispatch finishes within two fetch times');
   });
 }
+
+test('a later dispatch fetches again even when the previous fetch did not move the tracking ref', (t) => {
+  const h = setup(t);
+  h.json(['worktree', 'T1']);
+  const fresh = advance(h, h.upstream, 'remote.txt');
+  h.git(['push', '-q', 'origin', 'main'], h.upstream);
+  const id = h.ok(['task', 'add', '--title', 'Next dispatch', '--acceptance', 'fresh base']);
+  const wt = h.json(['worktree', id]);
+  assert.equal(h.git(['rev-parse', 'HEAD'], wt.path), fresh);
+});
+
+for (const hooks of [{ HOOK_ADD_ERROR: 'ETIMEDOUT' }, { HOOK_DIE_WORKTREE_ADD: '1' }]) {
+  test(`an interrupted add cannot be reused without inspection: ${Object.keys(hooks)[0]}`, (t) => {
+    const h = setup(t);
+    const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+    const r = h.run(['worktree', 'T1'], { hooks });
+    assert.notEqual(r.code, 0, r.stderr);
+    const retry = h.run(['worktree', 'T1']);
+    assert.equal(retry.code, 1, retry.stderr);
+    assert.match(retry.stderr, /worktree.*unfinished/);
+    assert.equal(h.json(['task', 'show', 'T1']).branch, null);
+    assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+    const dir = path.join(h.base, 'repo-worktrees', 'T1-fresh-base');
+    assert.equal(h.git(['status', '--porcelain'], dir), '');
+    h.git(['worktree', 'unlock', dir]);
+    assert.equal(h.json(['worktree', 'T1']).created, false, 'an inspected, complete worktree can be reused');
+  });
+}
+
+async function waitForFile(file) {
+  const deadline = Date.now() + 10000;
+  while (!fs.existsSync(file)) {
+    assert.ok(Date.now() < deadline, `${file} appeared before the deadline`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+test('a surviving post-checkout child cannot write into a replacement worktree', { timeout: 30000 }, async (t) => {
+  const h = setup(t);
+  const paused = path.join(h.base, 'hook-paused');
+  const done = path.join(h.base, 'hook-done');
+  const cliPid = path.join(h.base, 'cli-pid');
+  const hook = path.join(h.base, 'post-checkout.js');
+  fs.writeFileSync(hook, `
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(paused)}, '');
+const end = Date.now() + 20000;
+while (!fs.existsSync(${JSON.stringify(paused + '.go')}) && Date.now() < end) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+}
+fs.writeFileSync('orphan.txt', 'original Git child');
+fs.writeFileSync(${JSON.stringify(done)}, '');
+`);
+  const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
+  const script = path.join(h.repo, '.git', 'hooks', 'post-checkout');
+  fs.writeFileSync(script, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(hook)}\n`, { mode: 0o755 });
+  const first = h.runAsync(['worktree', 'T1'], { hooks: { HOOK_ADD_PID: cliPid } });
+  try {
+    await waitForFile(paused);
+    process.kill(Number(fs.readFileSync(cliPid, 'utf8')), 'SIGKILL');
+    assert.notEqual((await first).code, 0);
+    const retry = h.run(['worktree', 'T1']);
+    assert.equal(retry.code, 1, retry.stderr);
+    assert.match(retry.stderr, /worktree.*unfinished/);
+    assert.equal(h.json(['task', 'show', 'T1']).branch, null);
+  } finally {
+    fs.writeFileSync(`${paused}.go`, '');
+    await waitForFile(done);
+    await first;
+  }
+  const retry = h.run(['worktree', 'T1']);
+  assert.equal(retry.code, 1, retry.stderr);
+  assert.match(retry.stderr, /worktree.*unfinished/);
+  assert.equal(fs.readFileSync(path.join(h.base, 'repo-worktrees', 'T1-fresh-base', 'orphan.txt'), 'utf8'), 'original Git child');
+});
+
+test('a registration interrupted before HEAD exists is refused without deleting it', (t) => {
+  const h = setup(t);
+  const dir = path.join(h.base, 'repo-worktrees', 'T1-fresh-base');
+  const admin = path.join(h.repo, '.git', 'worktrees', 'T1-fresh-base');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(admin, { recursive: true });
+  fs.writeFileSync(path.join(dir, '.git'), `gitdir: ${admin}\n`);
+  fs.writeFileSync(path.join(admin, 'gitdir'), path.join(dir, '.git') + '\n');
+  fs.writeFileSync(path.join(admin, 'locked'), 'initializing');
+  const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  for (let i = 0; i < 2; i++) {
+    const retry = h.run(['worktree', 'T1']);
+    assert.equal(retry.code, 1, retry.stderr);
+    assert.match(retry.stderr, /unfinished|incomplete|exists and is not a worktree/);
+  }
+  assert.ok(fs.existsSync(path.join(admin, 'locked')));
+  assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+});

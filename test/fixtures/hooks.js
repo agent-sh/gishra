@@ -144,7 +144,86 @@ if (env.HOOK_STOP_WORKTREE_ADD) {
   const orig = cp.execFileSync;
   cp.execFileSync = function hookedExecFileSync(file, args, ...rest) {
     const out = orig.call(this, file, args, ...rest);
-    if (Array.isArray(args) && args[0] === 'worktree' && args[1] === 'add' && first('worktree-add')) stop(env.HOOK_STOP_WORKTREE_ADD);
+    const completed = args[0] === 'worktree' && (args[1] === 'unlock'
+      || (args[1] === 'add' && !args.includes('--lock')));
+    if (completed && first('worktree-add')) stop(env.HOOK_STOP_WORKTREE_ADD);
+    return out;
+  };
+}
+
+// Make the first fetch hit a real tracking-ref lock, then release it so the
+// retry can fetch. Other modes inject Git's ref-transaction error or a
+// permanent failure; every attempt is recorded.
+if (env.HOOK_FETCH_ERROR) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function fetchError(file, args, options) {
+    if (file !== 'git' || args[0] !== 'fetch') return orig.call(this, file, args, options);
+    real.appendFileSync(env.HOOK_FETCH_ATTEMPTS, '.');
+    if (first('fetch-error') || env.HOOK_FETCH_ALWAYS) {
+      if (env.HOOK_FETCH_ERROR === 'lock') {
+        const ref = args[args.length - 1].split(':')[1];
+        const lock = path.join(options.cwd, '.git', `${ref}.lock`);
+        real.writeFileSync(lock, '');
+        try {
+          return orig.call(this, file, args, options);
+        } catch (e) {
+          // Some Git versions report this lock conflict as "reference already
+          // exists"; expose the older diagnostic that this retry handles.
+          if (String(e.stderr).includes('reference already exists')) e.stderr += `\nerror: cannot lock ref '${ref}'`;
+          throw e;
+        } finally {
+          real.unlinkSync(lock);
+        }
+      }
+      const e = new Error('git fetch failed');
+      e.stderr = env.HOOK_FETCH_ERROR;
+      e.status = 1;
+      throw e;
+    }
+    return orig.call(this, file, args, options);
+  };
+}
+
+// Refuse overlapping worktree adds, as Git does when it reads another
+// worktree's partially written metadata. Pause before the real add to force it.
+if (env.HOOK_WORKTREE_ADD_ACTIVE) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function worktreeAddGuard(file, args, options) {
+    if (file !== 'git' || args[0] !== 'worktree' || args[1] !== 'add') return orig.call(this, file, args, options);
+    try {
+      real.writeFileSync(env.HOOK_WORKTREE_ADD_ACTIVE, '', { flag: 'wx' });
+    } catch {
+      const e = new Error('concurrent worktree add');
+      e.stderr = 'fatal: failed to read worktree commondir';
+      throw e;
+    }
+    try {
+      sleep(500);
+      return orig.call(this, file, args, options);
+    } finally {
+      real.unlinkSync(env.HOOK_WORKTREE_ADD_ACTIVE);
+    }
+  };
+}
+
+// Expose the CLI pid while real Git and its checkout hook run, or interrupt
+// after add returns with its native initialization lock still in place.
+if (env.HOOK_ADD_PID || env.HOOK_ADD_ERROR || env.HOOK_DIE_WORKTREE_ADD) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function interruptedAdd(file, args, options) {
+    const add = file === 'git' && args[0] === 'worktree' && args[1] === 'add';
+    if (add && env.HOOK_ADD_PID) real.writeFileSync(env.HOOK_ADD_PID, String(process.pid));
+    const out = orig.call(this, file, args, options);
+    if (add && env.HOOK_ADD_ERROR) {
+      const e = new Error('worktree add interrupted');
+      e.code = env.HOOK_ADD_ERROR;
+      e.stderr = 'fatal: worktree add interrupted';
+      throw e;
+    }
+    if (add && env.HOOK_DIE_WORKTREE_ADD) {
+      process.kill(process.pid, 'SIGKILL');
+      sleep(5000);
+    }
     return out;
   };
 }
