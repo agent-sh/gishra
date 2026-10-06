@@ -29,7 +29,7 @@ test('--json output parses for every reading and writing command', (t) => {
   assert.equal(parse(['renew', 'T1', '--agent', 'w']).status, 'in_progress');
   assert.equal(parse(['spend', 'T1', '--minutes', '5', '--tokens', '10']).spend.tokens, 10);
   assert.equal(parse(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'w']).status, 'submitted');
-  assert.equal(parse(['evidence', 'T1', '--type', 'review', '--ok', '--agent', 'r']).type, 'review');
+  assert.equal(parse(['evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1', '--agent', 'r']).type, 'review');
   assert.equal(parse(['rework', 'T1', '--reason', 'r']).status, 'rework');
   assert.equal(parse(['role', 'set', 'small', '--harness', 'pi']).harness, 'pi');
   assert.equal(parse(['project', 'set', '--workers', '3']).limits.workers, 3);
