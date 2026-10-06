@@ -16,7 +16,7 @@ const bool = (help) => ({ type: 'bool', help });
 
 const GLOBAL = {
   state: str('DIR', 'state directory (default: GISHRA_STATE, then .gishra/ in the main checkout)'),
-  agent: str('NAME', 'who is acting (default: GISHRA_AGENT, then owner)'),
+  agent: str('NAME', 'who is acting (default: GISHRA_AGENT; owner only on an interactive terminal outside a task)'),
   json: bool('machine output on stdout'),
   help: bool('show help'),
 };
@@ -52,7 +52,7 @@ const COMMANDS = [
   { section: 'Plan', name: 'project show', summary: 'print project settings and roles', run: P.projectShow },
   { section: 'Plan', name: 'role set', pos: ['ROLE'], usage: 'ROLE --harness H [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON]', summary: 'set who plays a role (replaces the whole role)', flags: { harness: str('H', 'claude, codex, opencode, agy, pi or command'), model: str('M', 'model id'), profile: str('P', 'codex profile'), provider: str('P', 'pi provider'), effort: str('E', 'reasoning effort, passed in the form the harness takes'), args: str('JSON', 'extra arguments appended to the harness command, as a JSON array'), command: str('JSON', 'for --harness command: argv array; {task} {brief} {prompt} {cwd} are substituted') }, required: ['harness'], run: P.roleSet },
   { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--dep ID] [--role R] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
-  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--role R] [--needs-owner REASON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies and kind wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it"), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
+  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--role R] [--needs-owner REASON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies and kind wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request requires explicit owner identity"), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
   { section: 'Plan', name: 'task note', pos: ['ID', 'TEXT...'], usage: 'ID TEXT', summary: 'append a note', run: T.taskNote },
   { section: 'Plan', name: 'task show', pos: ['ID'], usage: 'ID', summary: 'show one task with its gates, evidence and notes', run: T.taskShow },
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, run: T.taskList },
@@ -272,12 +272,19 @@ async function main(argv) {
     for (const r of cmd.required || []) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: gishra ${cmd.name} ${cmd.usage}`);
     }
-    const agent = globals.agent || process.env.GISHRA_AGENT || 'owner';
-    if (!agent.trim()) throw usage('--agent cannot be empty');
+    let agent = globals.agent ?? process.env.GISHRA_AGENT;
+    // Terminal fallback identifies ordinary actions; owner powers need a named identity.
+    const agentExplicit = agent !== undefined;
+    if (agent === undefined) {
+      if (process.stdin.isTTY && process.stdout.isTTY && process.env.GISHRA_TASK === undefined) agent = 'owner';
+      else throw usage('no agent: pass --agent NAME or set GISHRA_AGENT');
+    }
+    if (!agent.trim()) throw usage('no agent: pass --agent NAME or set GISHRA_AGENT');
     const ctx = {
       cwd: process.cwd(),
       env: process.env,
       agent: agent.trim(),
+      agentExplicit,
       json: !!globals.json,
       flags: own,
       pos: parsed.pos,

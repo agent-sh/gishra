@@ -1,6 +1,10 @@
 # CLI
 
-`gishra <command> [args]`. Every command accepts `--state DIR`, `--agent NAME` (default `GISHRA_AGENT`, else `owner`), `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code.
+`gishra <command> [args]`. Every command accepts `--state DIR`, `--agent NAME`, `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code.
+
+Agent identity comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, `owner` is used only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. Otherwise the command exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT` and writes nothing. An empty or whitespace-only identity exits 2 with the same message. Help needs no agent.
+
+`accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers. An agent requests owner action with `gishra ask` or a task note.
 
 Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. `render` takes the lock too. A refused command writes nothing.
 
@@ -13,7 +17,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `project show` | print settings and roles |
 | `role set ROLE --harness H [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON]` | set who plays a role, replacing it whole; `--profile` is for codex, `--provider` for pi, `--command` for `command` |
 | `task add --title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--dep ID] [--role R] [--needs-owner REASON]` | add a task; prints its id. Refused for an unknown dependency or role |
-| `task update ID [--title] [--acceptance (replaces)] [--dep (replaces)] [--size] [--kind] [--role] [--needs-owner] [--status cancelled]` | change a task; acceptance or dependency changes bump `revision`. `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies and kind change only after `rework` |
+| `task update ID [--title] [--acceptance (replaces)] [--dep (replaces)] [--size] [--kind] [--role] [--needs-owner] [--status cancelled]` | change a task; acceptance or dependency changes bump `revision`. `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. Clearing or replacing an existing owner ask requires explicit owner identity; any agent may set a new ask or keep the same reason. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies and kind change only after `rework` |
 | `task note ID TEXT` | append a note |
 | `task show ID`, `task list [--status S]` | read; `S` is a status, `ready` or `blocked` |
 | `plan import FILE` | add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `size`, `depends_on`, `role`, `needs_owner`. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file |
@@ -27,13 +31,13 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first); `--all` lists blocked ones with the reason |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; refused if not ready, already claimed, or the workers limit is reached (tasks in progress with a live lease) |
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
-| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or the owner |
+| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted; only the claimant. `S` is 7 to 64 hex characters |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record evidence; `sha` defaults to the task's submitted sha |
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
 | `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
 | `spend ID [--minutes N] [--tokens N]` | add spend |
-| `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it |
+| `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Requires explicit `--agent owner` or `GISHRA_AGENT=owner` |
 
 ## Decisions
 
@@ -58,7 +62,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `worktree ID` | create (or print) a git worktree and branch `gishra/<id>-<slug>` from `base` for the task, at `<repo-parent>/<repo>-worktrees/<id>-<slug>`; records the branch on the task. Once the task has a branch, its worktree is found by branch, so renaming the task does not move it |
 | `spawn --role R --task ID [--dry-run] [--wait]` | start the role's harness in the task's worktree with the brief and task as the prompt; sets `GISHRA_STATE`, `GISHRA_TASK`, `GISHRA_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command |
 
-`spawn` checks the role, the brief (`brief set`) and the harness program (on `PATH`, or at the path the role gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<role>-<task>-<n>`, numbered from earlier spawns of that role on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
+`spawn` checks the role, the brief (`brief set`) and the harness program (on `PATH`, or at the path the role gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<role>-<task>-<n>`, numbered from earlier spawns of that role on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It says `you are not the owner; never pass --agent owner`. Its closing instruction says `run gishra with --agent <name> if GISHRA_AGENT is missing`, using the same name passed in the environment. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
 
 | Harness | Command |
 |---|---|

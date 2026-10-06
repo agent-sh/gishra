@@ -15,6 +15,8 @@ const TMP_ROOT = process.env.GISHRA_TEST_TMP || os.tmpdir();
 function baseEnv(home) {
   const env = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith('GISHRA_') || k.startsWith('GIT_')) delete env[k];
+  // Existing fixtures act as the owner, so they must provide that identity.
+  env.GISHRA_AGENT = 'owner';
   env.GIT_CONFIG_GLOBAL = path.join(home, 'gitconfig');
   env.GIT_CONFIG_NOSYSTEM = '1';
   return env;
@@ -81,6 +83,16 @@ function run(args, { cwd, env, input, pre = [], timeout = 60000 } = {}) {
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '', signal: r.signal };
 }
 
+const PTY_AVAILABLE = process.platform === 'linux'
+  && cp.spawnSync('script', ['--version'], { timeout: 10000 }).status === 0;
+
+function runPty(args, { cwd, env, timeout = 10000 } = {}) {
+  // script uses a shell, so quote each argument to preserve names and paths.
+  const command = [process.execPath, BIN, ...args].map((s) => `'${s.replace(/'/g, "'\\''")}'`).join(' ');
+  const r = cp.spawnSync('script', ['-qec', command, '/dev/null'], { cwd, env, encoding: 'utf8', timeout });
+  return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '', signal: r.signal };
+}
+
 function runAsync(args, { cwd, env, pre = [] } = {}) {
   return new Promise((resolve) => {
     const child = cp.spawn(process.execPath, [...pre, BIN, ...args], { cwd, env });
@@ -94,4 +106,4 @@ function runAsync(args, { cwd, env, pre = [] } = {}) {
 
 const real = (p) => fs.realpathSync.native(p);
 
-module.exports = { makeRepo, run, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT };
+module.exports = { makeRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT };
