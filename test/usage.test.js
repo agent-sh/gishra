@@ -252,6 +252,9 @@ test('an exited spawn without telemetry is marked unknown and can be recollected
   assert.equal(s.tokens, 0);
   assert.equal(h.json(['status']).spend.missing_usage, 1);
   assert.match(h.ok(['status']), /1 spawns without usage/);
+  // The collector writes state before rendering. Take the same lock and
+  // render from the completed receipt before checking the derived file.
+  h.ok(['render']);
   assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /Spawns without usage/);
   fs.appendFileSync(a.log, text('codex-stream.jsonl'));
   h.ok(['spend', 'T1', '--from-spawn', a.agent]);
