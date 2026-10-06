@@ -9,7 +9,7 @@ const { makeRepo, BIN } = require('./helpers');
 
 const APP = 'revuto-review';
 const CAP = { title: 'Revuto did not review this pull request', summary: 'reached the 2-round review limit', text: null };
-const POLICY = [{ app: APP, pattern: 'review limit' }];
+const POLICY = [{ app: APP, pattern: 'reached the \\d+-round review limit' }];
 const github = path.join(__dirname, 'fixtures', 'github.js');
 
 function run(name, app, id, output = null, conclusion = 'success', status = 'completed') {
@@ -28,14 +28,14 @@ function fixture(t) {
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha, '--pr', '9']);
   return {
-    check({ policy = POLICY, runs = [run('Revuto', APP, 2, CAP, 'failure')], suites = [suite(APP, 2, 'failure')], ci = {} } = {}) {
+    check({ policy = POLICY, runs = [run('Revuto', APP, 2, CAP, 'failure')], suites = [suite(APP, 2, 'failure')], ci = {}, build = true } = {}) {
       const project = h.readState('project.json');
       project.ci = { ...ci, ...(policy === null ? {} : { capped_review: policy }) };
       h.writeState('project.json', project);
       const file = path.join(h.base, 'github.json');
       fs.writeFileSync(file, JSON.stringify({
-        sha, runs: [run('build', 'github-actions', 1), ...runs],
-        suites: [suite('github-actions', 1), ...suites],
+        sha, runs: [...(build ? [run('build', 'github-actions', 1)] : []), ...runs],
+        suites: [...(build ? [suite('github-actions', 1)] : []), ...suites],
       }));
       const r = cp.spawnSync(process.execPath, ['--require', github, BIN, 'check', 'ci', 'T1', '--agent', 'checker', '--json'], {
         cwd: h.repo, env: { ...h.env, TEST_GITHUB: file }, encoding: 'utf8', timeout: 60000,
@@ -54,11 +54,40 @@ function fixture(t) {
 
 test('configured review cap passes the real CLI gate and is named in recorded evidence', (t) => {
   const h = fixture(t);
-  for (const output of [CAP, { title: 'review limit' }, { text: 'review limit' }]) {
+  for (const output of [CAP, { title: CAP.summary }]) {
     const r = h.check({ runs: [run('Revuto', APP, 2, output, 'failure')] });
     assert.equal(r.code, 0, r.summary);
     assert.equal(r.ok, true);
     assert.match(r.summary, /ci\.capped_review: Revuto \(revuto-review\)/);
+  }
+});
+
+test('a capped review cannot satisfy the requirement for a CI run', (t) => {
+  const h = fixture(t);
+  for (const options of [{ build: false }, { ci: { ignore_apps: ['github-actions'] } }]) {
+    const r = h.check(options);
+    assert.equal(r.code, 1, r.summary);
+    assert.equal(r.ok, false);
+    assert.match(r.summary, /no check runs/);
+    assert.match(r.summary, /ci\.capped_review: Revuto \(revuto-review\)/);
+  }
+});
+
+test('review findings that quote a cap in output text still block', (t) => {
+  const h = fixture(t);
+  for (const policy of [POLICY, [{ app: APP, pattern: 'review limit' }]]) {
+    const r = h.check({
+      policy,
+      runs: [run('Revuto', APP, 2, {
+        title: 'Revuto found review concerns',
+        summary: 'HIGH finding',
+        text: 'The documentation says "reached the 2-round review limit".',
+      }, 'failure')],
+    });
+    assert.equal(r.code, 1, r.summary);
+    assert.equal(r.ok, false);
+    assert.match(r.summary, /failing: Revuto \(failure\)/);
+    assert.doesNotMatch(r.summary, /ci\.capped_review:/);
   }
 });
 
@@ -131,7 +160,11 @@ test('capped review patterns are case-insensitive regular expressions', (t) => {
 
 test('malformed capped review rules fail the CLI gate with the field named', (t) => {
   const h = fixture(t);
-  for (const policy of ['review limit', [null], [{}], [{ app: '', pattern: 'review limit' }], [{ app: APP, pattern: '' }], [{ app: APP, pattern: '[' }]]) {
+  for (const policy of [
+    'review limit', [null], [{}], [{ app: '', pattern: 'review limit' }],
+    [{ app: ` ${APP}`, pattern: 'review limit' }], [{ app: `${APP} `, pattern: 'review limit' }],
+    [{ app: APP, pattern: '' }], [{ app: APP, pattern: '[' }],
+  ]) {
     const r = h.check({ policy });
     assert.equal(r.code, 1, r.summary);
     assert.match(r.summary, /ci\.capped_review/);

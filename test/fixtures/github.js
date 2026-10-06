@@ -23,7 +23,7 @@ cp.spawnSync = function github(file, args, ...rest) {
     } else if (args[1].endsWith(`/commits/${data.sha}/check-suites?per_page=100`)) {
       items = data.suites.map((s) => ({
         app: s.app.slug, status: s.status, conclusion: s.conclusion, runs: s.latest_check_runs_count,
-        ...(filter.includes('id') ? { id: s.id } : {}),
+        ...(/[{,]\s*id\s*[,}]/.test(filter) ? { id: s.id } : {}),
       }));
     }
   }
