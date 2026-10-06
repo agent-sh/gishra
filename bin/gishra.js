@@ -99,7 +99,7 @@ const COMMANDS = [
   { section: 'Views', name: 'render', summary: 'write sketch.md and sketch.html (self-contained, no network)', run: R.render },
   { section: 'Views', name: 'serve', usage: '[--port P]', summary: 'serve the sketch and a Settings view for the ladder and task tiers on 127.0.0.1; pages reload when the state changes', flags: { port: int('P', 'port (default 4747; 0 picks a free one)') }, run: run('../lib/serve', 'serve') },
 
-  { section: 'Agents and worktrees', name: 'worktree', pos: ['ID'], usage: 'ID', summary: 'create (or print) the git worktree and branch gishra/<id>-<slug> for the task', run: run('../lib/worktree', 'worktree') },
+  { section: 'Agents and worktrees', name: 'worktree', pos: ['ID...'], usage: 'ID [ID ...]', summary: 'prepare task worktrees serially from one fetched base before dispatch', run: run('../lib/worktree', 'worktree') },
   { section: 'Agents and worktrees', name: 'spawn', usage: '--task ID [--role RUNG] [--dry-run] [--wait]', summary: "start a rung's harness in the task's worktree (the task's tier unless --role names a rung); prints the pid, or the command with --dry-run", flags: { task: str('ID', 'task id'), role: str('RUNG', "ladder rung, such as review (default: the task's tier)"), 'dry-run': bool('print the command instead of running it'), wait: bool('run in the foreground and exit with its code') }, required: ['task'], run: run('../lib/spawn', 'spawn') },
 
   { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID --cmd CMD', summary: 'tests pass at the submitted sha and fail with the non-test changes reverted; records tests', flags: { cmd: str('CMD', 'test command') }, required: ['cmd'], run: gate('tests') },
