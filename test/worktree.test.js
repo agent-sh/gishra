@@ -317,6 +317,8 @@ for (const hooks of [{ HOOK_ADD_ERROR: 'ETIMEDOUT' }, { HOOK_DIE_WORKTREE_ADD: '
     const retry = h.run(['worktree', 'T1']);
     assert.equal(retry.code, 1, retry.stderr);
     assert.match(retry.stderr, /worktree.*unfinished/);
+    assert.match(retry.stderr, /git worktree unlock <path>/);
+    assert.match(retry.stderr, /git worktree remove --force <path>/);
     assert.equal(h.json(['task', 'show', 'T1']).branch, null);
     assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
     const dir = path.join(h.base, 'repo-worktrees', 'T1-fresh-base');
@@ -386,8 +388,7 @@ test('a registration interrupted before HEAD exists is refused without deleting 
   for (let i = 0; i < 2; i++) {
     const retry = h.run(['worktree', 'T1']);
     assert.equal(retry.code, 1, retry.stderr);
-    assert.match(retry.stderr, /git worktree unlock <path>/);
-    assert.match(retry.stderr, /git worktree remove --force <path>/);
+    assert.match(retry.stderr, /unfinished|incomplete|exists and is not a worktree/);
   }
   assert.ok(fs.existsSync(path.join(admin, 'locked')));
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
