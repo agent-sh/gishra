@@ -36,7 +36,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters |
-| `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record evidence; `--sha` is required except for `note`, which defaults to the task's submitted sha |
+| `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `ci` and `merge` for every agent and either verdict; use the gate commands |
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
 | `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
 | `spend ID [--minutes N] [--tokens N]` | add spend |
@@ -44,7 +44,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
 
-Pass the commit actually reviewed or checked to `evidence --sha S`. A submitted head can move while a review is running; `gishra evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on any non-`note` evidence is a usage error (exit 2) and writes nothing. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
+Pass the commit actually reviewed to `evidence --sha S`. A submitted head can move while a review is running; `gishra evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on `review` evidence is a usage error (exit 2) and writes nothing. Software evidence types are refused first (exit 1), with or without `--sha`. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
 
 ## Decisions
 
@@ -55,6 +55,8 @@ Pass the commit actually reviewed or checked to `evidence --sha S`. A submitted 
 | `decisions [--open]` | list |
 
 ## Views
+
+`task show ID` marks software evidence that lacks matching gate proof or belongs to an older sha as `(does not count)`. Evidence from an older revision is marked `(revision N, does not count)`. Its text output prints every recorded command with arguments, working directory, exit status and signal when present. JSON output keeps the evidence and command receipts as stored, plus the gate report.
 
 | Command | Does |
 |---|---|
@@ -113,7 +115,7 @@ Both write under the lock, validate, log events (`ladder harness`, `ladder set` 
 
 Before creating a new task branch, `worktree` fetches `base` from `origin` into `origin/<base>`, even when the remote's fetch configuration excludes that branch. It starts from the fetched commit when the local base is missing or is an ancestor of it. A local base that is ahead of or diverges from origin remains the starting point, with both commit SHAs reported on stderr; the local base branch is never moved. If origin has no such branch, it uses the local base and reports that fallback on stderr, or refuses if the local base is missing too. Without an origin remote, it uses the available local base or `origin/<base>`.
 
-Concurrent fetches that race to update `origin/<base>` continue only after a fresh read of origin confirms that the tracking ref matches its tip. Fetch and verification each time out after 60 s to bound dispatch stalls when origin is unreachable; the error names the operation and timeout. Other fetch failures refuse before a task branch is created or recorded. An existing task branch or worktree is reused without fetching, so it remains usable offline. `spawn` uses the same worktree creation behavior.
+Concurrent fetches that fail while updating `origin/<base>` or unpacking objects continue only after a fresh read of origin confirms that the tracking ref matches its tip. Fetch and verification each time out after 60 s to bound dispatch stalls when origin is unreachable; the error names the operation and timeout. Other fetch failures refuse before a task branch is created or recorded. An existing task branch or worktree is reused without fetching, so it remains usable offline. `spawn` uses the same worktree creation behavior.
 
 `spawn` checks the rung, the brief (`brief set`) and the harness program (on `PATH`, or at the path the rung gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<job>-<task>-<n>`, where the job is `worker` for the four tiers, `reviewer` for `review`, and the rung's name otherwise, numbered from earlier spawns of that job on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It says `you are not the owner; never pass --agent owner`. Its closing instruction says `run gishra with --agent <name> if GISHRA_AGENT is missing`, using the same name passed in the environment. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
 
@@ -130,7 +132,13 @@ The rung's `args` follow every command. A pi worker (any tier) gets `--skill <ro
 
 ## Gates
 
-Each gate runs software, then records evidence on the task. The gate itself lives in `lib/gates/<name>.js` and exports `async run(ctx)` returning `{ ok, summary, ref?, sha? }`, where `ctx` is `{ root, worktree, task, project, args, log }`. The CLI runs it without holding the lock, then records the result as evidence of the gate's type by `--agent`, at the returned `sha` or the submitted one, against the revision the gate started on. A gate that reports `ok: false` exits 1 after recording. A missing gate module exits 1 with "gate not installed".
+Each gate runs software, then records evidence on the task. Only `check tests`, `check clean`, `check ci` and `merge` record their respective software evidence types. Each result carries `source` naming that command and `commands` listing the processes it ran, with their arguments, working directory, exit status and signal. This includes the test command both with and without the change, the cleanup invocation, GitHub queries and the merge invocation. A precondition failure can have no commands; an ok entry needs at least one command to count. The audit event carries the same receipts and revision.
+
+The gate itself lives in `lib/gates/<name>.js` and exports `async run(ctx)` returning `{ ok, summary, ref?, sha? }`, where `ctx` is `{ root, worktree, task, project, args, log, exec }`. Gates run commands through the shared helpers in `lib/gates/common.js`, which use the CLI's `exec` to capture receipts. The CLI runs the gate without holding the lock, then records the result as evidence of the gate's type by `--agent`, at the returned `sha` or the submitted one, against the revision the gate started on. A gate that reports `ok: false` exits 1 after recording. A missing gate module exits 1 with "gate not installed".
+
+Acceptance counts software evidence only when events.jsonl has a matching gate event: `cmd === source`, the same task and agent, and matching type, source, exact evidence sha, verdict, revision and command receipts. It ignores entries without that event and ok entries with no commands. Writes separate an unterminated audit-log tail from new events so a torn line cannot hide a gate receipt. Existing entries stay readable; run the gates again for the submitted sha to replace their proof. Merge and the task views use the same check. Waivers for review and software gates count only when their agent is `owner`.
+
+The CLI refuses manual software verdicts, and software receipts require matching records in tasks.json and events.jsonl. Plain files cannot stop a writer running as the same user from forging those records or an owner waiver. A reviewer still checks whether the caller-supplied test and cleanup commands are appropriate; receipts show what ran.
 
 | Command | Does |
 |---|---|

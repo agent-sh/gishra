@@ -153,6 +153,49 @@ test('worktree refuses a locked tracking ref that does not match the origin tip'
   assert.equal(h.git(['branch', '--list', 'gishra/*']), '');
 });
 
+for (const recovered of [true, false]) {
+  test(`an unpack failure ${recovered ? 'uses a tip fetched by another caller' : 'refuses a stale tracking ref'}`, (t) => {
+    const h = setup(t);
+    const stale = h.git(['rev-parse', 'origin/main']);
+    const fresh = advance(h, h.upstream, 'remote.txt');
+    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    const marker = path.join(h.base, 'upload-pack-failed');
+    const uploadPack = path.join(h.base, 'upload-pack.js');
+    // A peer may finish importing the new tip before this caller's object write fails.
+    fs.writeFileSync(uploadPack, `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const marker = ${JSON.stringify(marker)};
+if (!fs.existsSync(marker)) {
+  fs.writeFileSync(marker, '');
+  if (${recovered}) cp.execFileSync('git', ['-c', 'remote.origin.uploadpack=git-upload-pack',
+    'fetch', '--no-tags', '--no-write-fetch-head', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
+    { cwd: ${JSON.stringify(h.repo)}, stdio: 'pipe' });
+  process.stderr.write('fatal: unpack-objects failed\\n');
+  process.exit(1);
+}
+const r = cp.spawnSync('git-upload-pack', process.argv.slice(2), { stdio: 'inherit' });
+process.exit(r.status === null ? 1 : r.status);
+`);
+    const quote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+    h.git(['config', 'remote.origin.uploadpack', `${quote(process.execPath)} ${quote(uploadPack)}`]);
+    const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+    const result = h.run(['worktree', 'T1', '--json']);
+    if (recovered) {
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(h.git(['rev-parse', 'HEAD'], JSON.parse(result.stdout).path), fresh);
+      assert.equal(h.git(['rev-parse', 'origin/main']), fresh);
+    } else {
+      assert.equal(result.code, 1, result.stdout);
+      assert.match(result.stderr, /git fetch origin main failed/);
+      assert.equal(h.git(['rev-parse', 'origin/main']), stale);
+      assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+      assert.equal(h.json(['task', 'show', 'T1']).branch, null);
+      assert.equal(h.git(['branch', '--list', 'gishra/*']), '');
+    }
+  });
+}
+
 for (const command of ['worktree', 'spawn']) {
   test(`six parallel ${command} calls start from the freshly fetched base`, { timeout: 60000 }, async (t) => {
     const h = setup(t);
