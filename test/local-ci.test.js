@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { makeRepo } = require('./helpers');
+const { gateFixture } = require('./gate-helpers');
 
 function fixture(t, script) {
   const h = makeRepo(t);
@@ -41,6 +42,47 @@ fs.writeFileSync(process.argv[2], JSON.stringify({
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.sha, '--branch', 'local-change', '--pr', '1']);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   return h;
+}
+
+function mergeFixture(t) {
+  const h = fixture(t);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
+  h.merged = path.join(h.base, 'merged');
+  const preload = path.join(h.base, 'github.js');
+  fs.writeFileSync(preload, `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+const original = cp.spawnSync;
+cp.spawnSync = function(command, args, opts) {
+  if (command === 'git' && args.includes('fetch') && process.env.LOCAL_FETCH_TIMEOUT) {
+    require('node:assert/strict').equal(opts.timeout, 60000);
+    const error = Object.assign(new Error('fetch timed out'), {code: 'ETIMEDOUT'});
+    return {status: null, signal: 'SIGTERM', stdout: '', stderr: '', error};
+  }
+  if (command === 'git' && process.env.LOCAL_TREE_LOG
+    && args.some((arg) => arg === 'merge-tree' || arg === 'ls-tree')) {
+    fs.appendFileSync(process.env.LOCAL_TREE_LOG, JSON.stringify(args) + '\\n');
+  }
+  if (command !== 'gh') return original(command, args, opts);
+  const merged = ${JSON.stringify(h.merged)};
+  if (args[0] === 'pr' && args[1] === 'merge') fs.writeFileSync(merged, '');
+  return {status: 0, stderr: '', stdout: JSON.stringify({
+    headRefOid: ${JSON.stringify(h.sha)}, state: fs.existsSync(merged) ? 'MERGED' : 'OPEN',
+    mergeCommit: {oid: ${JSON.stringify(h.sha)}}
+  })};
+};
+`);
+  h.env.NODE_OPTIONS = `${h.env.NODE_OPTIONS || ''} --require=${JSON.stringify(preload)}`;
+  return h;
+}
+
+function originFixture(h) {
+  h.origin = path.join(h.base, 'origin.git');
+  h.git(['init', '--bare', '-q', h.origin]);
+  h.git(['remote', 'add', 'origin', h.origin]);
+  h.git(['push', '-q', 'origin', 'main']);
+  h.upstream = path.join(h.base, 'upstream');
+  h.git(['clone', '-q', h.origin, h.upstream]);
 }
 
 test('local CI runs argv on the merged tree and records audited evidence without hosted CI', (t) => {
@@ -103,6 +145,117 @@ test('local CI receipt for an older merged tree cannot satisfy acceptance or mer
   const merge = h.run(['merge', 'T1']);
   assert.equal(merge.code, 1);
   assert.match(merge.stderr, /local CI receipt.*merged tree/);
+  assert.match(merge.stderr, /gishra check ci T1/);
+  assert.doesNotMatch(merge.stderr, /gishra rework/);
+});
+
+for (const changedTree of [true, false]) {
+  test(`merge refreshes a remote-only base advance with ${changedTree ? 'a changed' : 'the same'} tree`, (t) => {
+    const h = mergeFixture(t);
+    originFixture(h);
+    h.ok(['check', 'ci', 'T1']);
+    h.ok(['accept', 'T1']);
+    if (changedTree) fs.writeFileSync(path.join(h.upstream, 'remote.txt'), 'remote\n');
+    h.git(['add', '.'], h.upstream);
+    h.git(['commit', '--allow-empty', '-qm', 'remote advances'], h.upstream);
+    const remote = h.git(['rev-parse', 'HEAD'], h.upstream);
+    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    h.git(['config', 'remote.origin.fetch', '+refs/heads/other:refs/remotes/origin/other']);
+    assert.equal(h.git(['rev-parse', 'origin/main']), h.baseSha);
+    assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+
+    const refused = h.run(['merge', 'T1']);
+    assert.equal(refused.code, 1, refused.stdout);
+    assert.match(refused.stderr, /local CI receipt.*base.*moved/);
+    assert.match(refused.stderr, /gishra check ci T1/);
+    assert.doesNotMatch(refused.stderr, /gishra rework/);
+    assert.equal(h.git(['rev-parse', 'origin/main']), remote);
+    assert.equal(h.git(['rev-parse', 'main']), h.baseSha);
+    assert.ok(!fs.existsSync(h.merged), 'GitHub merge never ran');
+    assert.ok(!h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'merge'));
+
+    const receipt = h.json(['check', 'ci', 'T1']).receipt;
+    assert.equal(receipt.base_sha, remote);
+    const merged = h.json(['merge', 'T1']);
+    assert.equal(merged.ok, true);
+    assert.ok(merged.commands.some((c) => c.command === 'git' && c.args.includes('fetch') && c.status === 0));
+  });
+}
+
+test('merge refuses an unreachable or timed out local CI base fetch', (t) => {
+  const h = mergeFixture(t);
+  originFixture(h);
+  h.ok(['check', 'ci', 'T1']);
+  h.ok(['accept', 'T1']);
+  const timedOut = h.run(['merge', 'T1'], { env: { LOCAL_FETCH_TIMEOUT: '1' } });
+  assert.equal(timedOut.code, 1);
+  assert.match(timedOut.stderr, /fetch.*timed out/);
+  assert.ok(!fs.existsSync(h.merged));
+  fs.renameSync(h.origin, `${h.origin}.offline`);
+  const failed = h.run(['merge', 'T1']);
+  assert.equal(failed.code, 1);
+  assert.match(failed.stderr, /fetch.*failed/);
+  assert.ok(!fs.existsSync(h.merged));
+});
+
+test('a divergent local base cannot hide a remote advance from merge', (t) => {
+  const h = mergeFixture(t);
+  originFixture(h);
+  fs.writeFileSync(path.join(h.repo, 'local.txt'), 'local\n');
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'local base advances']);
+  h.ok(['check', 'ci', 'T1']);
+  h.ok(['accept', 'T1']);
+  fs.writeFileSync(path.join(h.upstream, 'remote.txt'), 'remote\n');
+  h.git(['add', '.'], h.upstream);
+  h.git(['commit', '-qm', 'remote diverges'], h.upstream);
+  h.git(['push', '-q', 'origin', 'main'], h.upstream);
+  const refused = h.run(['merge', 'T1']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /local CI receipt.*base.*moved/);
+  assert.ok(!fs.existsSync(h.merged));
+});
+
+test('hosted CI merges without fetching an unavailable origin when ci.local is absent', (t) => {
+  const h = makeRepo(t);
+  const sha = gateFixture(h);
+  h.git(['switch', '-q', 'main']);
+  h.init(['--repo', 'acme/demo']);
+  originFixture(h);
+  h.ok(['task', 'add', '--title', 'hosted check', '--kind', 'docs', '--acceptance', 'checked']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha, '--branch', 'fixture-change', '--pr', '1']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  h.ok(['check', 'ci', 'T1']);
+  h.ok(['accept', 'T1']);
+  fs.renameSync(h.origin, `${h.origin}.offline`);
+  const merged = h.json(['merge', 'T1']);
+  assert.equal(merged.ok, true);
+  assert.ok(!merged.commands.some((c) => c.command === 'git' && c.args.includes('fetch')));
+});
+
+test('completed local CI tasks keep their audited result without reading current trees', (t) => {
+  const h = mergeFixture(t);
+  originFixture(h);
+  h.ok(['check', 'ci', 'T1']);
+  h.ok(['accept', 'T1']);
+  h.ok(['merge', 'T1']);
+  fs.writeFileSync(path.join(h.repo, 'later.txt'), 'later\n');
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'base moves after merge']);
+  const log = path.join(h.base, 'tree-queries');
+  const opts = { env: { LOCAL_TREE_LOG: log } };
+  assert.equal(h.json(['task', 'show', 'T1'], opts).gates.ok, true);
+  assert.equal(h.json(['task', 'list'], opts)[0].gates.ok, true);
+  assert.ok(!fs.existsSync(log), 'completed tasks do not recompute their merged tree');
+  fs.renameSync(h.origin, `${h.origin}.offline`);
+  h.ok(['merge', 'T1'], opts);
+  assert.ok(!fs.existsSync(log), 'repeated merges do not recompute their merged tree');
+
+  const audit = path.join(h.state, 'events.jsonl');
+  const events = fs.readFileSync(audit, 'utf8').trim().split('\n').map(JSON.parse);
+  fs.writeFileSync(audit, events.filter((e) => e.cmd !== 'merge').map(JSON.stringify).join('\n') + '\n');
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false, 'unaudited merge evidence cannot bypass CI');
 });
 
 test('local CI receipt edits lose their gate proof and manual verdicts remain refused', (t) => {
