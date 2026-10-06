@@ -27,6 +27,24 @@ if (env.HOOK_DEAD_PID) {
   };
 }
 
+if (env.HOOK_CLOCK_FILE) {
+  const DateClass = Date;
+  const clock = () => Number(fs.readFileSync(env.HOOK_CLOCK_FILE, 'utf8'));
+  global.Date = class extends DateClass {
+    constructor(...args) { super(...(args.length ? args : [clock()])); }
+    static now() { return clock(); }
+  };
+}
+
+if (env.HOOK_WATCH_READY || env.HOOK_NO_WATCH || env.HOOK_SILENT_WATCH) {
+  const watch = fs.watch;
+  fs.watch = function hookedWatch(...args) {
+    if (env.HOOK_WATCH_READY) fs.writeFileSync(env.HOOK_WATCH_READY, '');
+    if (env.HOOK_NO_WATCH) throw new Error('directory watch unavailable');
+    if (env.HOOK_SILENT_WATCH) return { close() {}, on() {} };
+    return watch.apply(this, args);
+  };
+}
 const STATE = env.HOOK_STATE ? path.resolve(env.HOOK_STATE) : null;
 const LOCK = STATE ? path.join(STATE, 'lock') : null;
 const WRAPPED = ['openSync', 'readFileSync', 'writeFileSync', 'appendFileSync', 'renameSync', 'unlinkSync', 'rmdirSync', 'rmSync', 'linkSync', 'statSync', 'readdirSync', 'mkdirSync', 'existsSync', 'utimesSync'];

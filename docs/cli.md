@@ -1,6 +1,6 @@
 # CLI
 
-`gishra <command> [args]`. Every command accepts `--state DIR`, `--agent NAME`, `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code.
+`gishra <command> [args]`. Every command accepts `--state DIR`, `--agent NAME`, `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error or wait timeout, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code. `wait` always prints one compact JSON line, including with `--json`.
 
 Agent identity comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, `owner` is used only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. Otherwise the command exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT` and writes nothing. An empty or whitespace-only identity exits 2 with the same message. Help needs no agent.
 
@@ -42,7 +42,7 @@ These options also work with `init`. Omitted options leave their fields unchange
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; refused if not ready, already claimed, or the workers limit is reached (tasks in progress with a live lease) |
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
-| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner. For an exited spawned claimant, preserves the pid, log path and tail in a note and the release event |
+| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner; any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves exit diagnostics in a note and the release event |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `ci` and `merge` for every agent and either verdict; use the gate commands |
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
@@ -61,6 +61,39 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 | `ask --question Q --option A --option B [--recommend A] [--why W] [--blocks ID]...` | open a decision; prints its id |
 | `answer DID --choice C [--note T]` | answer it (any agent may record the owner's answer; the event names who). `C` must be one of the options when there are any; an answered decision stays answered |
 | `decisions [--open]` | list |
+| `decision note DID TEXT` | append a comment; an explicit owner comment wakes the orchestrator and tasks blocked by the decision |
+
+## Event wakeups
+
+`gishra wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
+
+- `--after` is an event `id` or a byte `offset` returned by a previous wait. The default, `now`, starts at the log's current end; `0` replays from the beginning. Cursors are exclusive. A numeric cursor must be zero or immediately after a complete line, within the current log. Unknown ids and invalid offsets exit 2.
+- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined.
+- No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is exactly `{"type":"timeout"}` followed by a newline and the exit code is 2. Interrupting the wait exits 130 and closes its watchers.
+- An event line contains `id`, `type`, `to`, `at`, `agent`, `cmd`, `task`, `detail`, and `offset`. `offset` is the byte position after that event's newline. Use either returned cursor for the next wait to retain events that arrived while handling the first.
+
+Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review and gate results). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
+
+`gishra msg --to NAME [--task ID] TEXT` appends a message under the state lock. Its task defaults to `GISHRA_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes.
+
+`worker-exited` covers a spawned worker that exits without submitting, including failure before claiming. It includes `agent`, `pid`, `log` and a bounded log `tail`; an existing claim remains for explicit recovery. Detection uses `lib/processes.js`, shared with dead-spawn diagnostics. Local pid checks recognize Linux zombies and reused pids; another host's pid is never probed.
+
+`stall` means the claim lease expired and there has been no claimant progress for at least the most recently granted lease interval (`claim --lease` or `renew --lease`, defaulting to `limits.lease_minutes`). Claimant writes other than claim and renew count as progress. Renewing extends the lease but is not progress. Exit and stall events are deduplicated under the lock for the current claim and source; owner comments do not postpone a worker's stall.
+
+The engine watches the state directory with `fs.watch`. A one-second internal stat and process fallback covers missed or unavailable notifications and detached exits, including Windows. The caller never queries in a repetition to discover completion.
+
+## Board writes
+
+`serve` binds to `127.0.0.1`. Its owner forms submit JSON to the following POST endpoints. Each calls the same locked task or decision function as its CLI command, with explicit `owner` identity.
+
+| Endpoint | JSON body | CLI write path |
+|---|---|---|
+| `/api/tasks/T1/comments` | `{"text":"comment"}` | `task note T1 TEXT --agent owner` |
+| `/api/tasks/T1/owner-done` | `{"note":"what was done"}` (note optional) | `owner-done T1 --agent owner` |
+| `/api/decisions/D1/comments` | `{"text":"comment"}` | `decision note D1 TEXT --agent owner` |
+| `/api/decisions/D1/answer` | `{"choice":"option","note":"context"}` (note optional) | `answer D1 --choice C --agent owner` |
+
+Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the page's `gishra-token` meta value as `x-gishra-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
 
 ## Views
 
@@ -127,9 +160,9 @@ Concurrent fetches that fail while updating `origin/<base>` or unpacking objects
 
 `spawn` checks the rung, the brief (`brief set`) and the harness program (on `PATH`, or at the path the rung gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<job>-<task>-<n>`, where the job is `worker` for the four tiers, `reviewer` for `review`, and the rung's name otherwise, numbered from earlier spawns of that job on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It says `you are not the owner; never pass --agent owner`. Its closing instruction says `run gishra with --agent <name> if GISHRA_AGENT is missing`, using the same name passed in the environment. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
 
-`spawn` also records the host and, on Linux when available, the process start time in clock ticks. `status` and `ready` match the most recent spawn to the current claim's agent, including workers that claim after starting. An exited process is reported as `exited without submit`, with the pid, log path, the last 20 log lines within the final 8192 bytes, and guidance to release with a reason using the claimant identity or request owner action. Neither view prints a command that supplies owner identity. Owner recovery still requires explicit owner identity as described above; terminal fallback alone cannot release another agent's claim. The tail is bounded so a large harness log cannot overwhelm a status check. A missing or unreadable log is reported without hiding the exit. A foreground spawn has no log file; its recorded exit is reported with `foreground output; no log`.
+`spawn` also records the host and, on Linux when available, the process start time in clock ticks. `status` and `ready` match the most recent spawn to the current claim's agent, including workers that claim after starting. An exited process is reported as `exited without submit`, with the pid, log path, the last 20 log lines within the final 8192 bytes, and guidance to release with a reason. Neither view prints a command that supplies owner identity. The engine rechecks exit under the lock before another agent can recover it. A live or unverified process still requires the claimant or an explicit owner. The tail is bounded so a large harness log cannot overwhelm a status check. A missing or unreadable log is reported without hiding the exit. A foreground spawn has no log file; its recorded exit is reported with `foreground output; no log`.
 
-Both commands return an `exited_claims` array under `--json`, with `{ id, agent, pid, log, tail }` entries (empty when none). They only read state: the claim still counts toward the workers limit while its lease is live, and is not automatically released or restarted. Release requires the claimant or an explicit owner, records the caller's reason and the observed exit diagnostics, and makes the task available again. Submitted tasks, manual claims without a matching spawn, and spawn records from a previous claim are excluded, including an expired lease reclaimed under the same agent identity.
+Both commands return an `exited_claims` array under `--json`, with `{ id, agent, pid, log, tail }` entries (empty when none). They only read state: the claim still counts toward the workers limit while its lease is live, and is not automatically released or restarted. Any agent may explicitly release a verified exited claim with a reason; this preserves the observed exit diagnostics and makes the task available again. Submitted tasks, manual claims without a matching spawn, and spawn records from a previous claim are excluded, including an expired lease reclaimed under the same agent identity.
 
 Local process checks ignore a spawn recorded on another host and treat permission errors as unknown, rather than as proof of exit. On Linux they recognize zombies as exited and distinguish a reused pid by its recorded start time. Older spawn events without a host are treated as local. On other platforms an exit is detected when the pid no longer exists or a foreground `spawn exit` event records it.
 
