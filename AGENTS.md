@@ -18,6 +18,6 @@ Tower Crane is a CLI and an agent plugin. The CLI (`bin/`, `lib/`) keeps a proje
 
 - `bin/tower-crane.js`: CLI entry.
 - `lib/`: state, project, tasks, decisions, render, serve, worktree, spawn, check and util; `lib/gates/`: tests, clean, ci, merge and common.
-- The three skills (`skills/tower-crane/`, `skills/tower-crane-work/`, `skills/tower-crane-review/`) and the two agents in `agents/`: the plugin.
+- The three skills (`skills/tower-crane/`, `skills/tower-crane-work/`, `skills/tower-crane-review/`) and four agent files in `agents/` (worker, reviewer, small, orchestrator): the plugin. `lib/agents.js` renders the agent files for spawned agents and builds their homes.
 - `standards/default.md`: the default standards profile.
 - `docs/`: state, CLI and the model ladder.
