@@ -10,7 +10,7 @@ You did not write this change and have not seen it being written. Keep it that w
 
 Arguments: `$ARGUMENTS`. Use `GISHRA_TASK` and `GISHRA_AGENT` when set; otherwise use the task id and agent name passed by the orchestrator. Pass `--agent <name>` on every gishra call. If `GISHRA_STATE` is absent, also pass `--state <dir>` with the supplied state directory.
 
-1. `gishra task show <id> --agent <name>`: kind, acceptance, submitted sha and PR, and evidence. `gishra brief get <id> --agent <name>` for the intent. Code requires tests and clean gates, plus CI when it has a PR; other kinds require independent review only (`docs/state.md`).
+1. `gishra task show <id> --agent <name>`: kind, acceptance, submitted sha and PR, and evidence. `gishra brief get <id> --agent <name>` for the intent. Code requires tests and clean gates; other kinds require independent review only (`docs/state.md`). Every task with a PR needs CI before merge.
 2. Read the diff: `git diff $(git merge-base <base> <sha>) <sha>` and the PR body. Read surrounding code where the diff depends on it.
 3. Check, in this order:
    - each acceptance item is met; code changes have a test shown failing before and passing after, and other work has the verification its brief requires;

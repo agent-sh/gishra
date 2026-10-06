@@ -2,9 +2,7 @@
 name: gishra-reviewer
 description: Review a submitted gishra task with a clean context against its acceptance and gate reports, post the review on the PR and record review evidence. Read-only on the code.
 tools:
-  - Bash(git:*)
-  - Bash(gh:*)
-  - Bash(gishra:*)
+  - Bash
   - Read
   - Grep
   - Glob
