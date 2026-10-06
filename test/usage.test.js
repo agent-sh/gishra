@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo } = require('./helpers');
+const { makeRepo, detachedAlive } = require('./helpers');
 
 const fixture = (name) => path.join(__dirname, 'fixtures', 'usage', name);
 const text = (name) => fs.readFileSync(fixture(name), 'utf8');
@@ -23,6 +23,10 @@ test('codex captured footer and repeated session totals are counted once', () =>
   assert.deepEqual(parse('codex', text('codex.log'), text('codex-cache-session.jsonl')), {
     tokens: 1529656, input: 1516556, cached: 1398443, output: 13100, model: 'openai.gpt-6.1-sol',
   });
+  const writes = text('codex-cache-write-session.jsonl');
+  assert.deepEqual(parse('codex', '', writes + writes), {
+    tokens: 668176, input: 660162, cached: 575581, output: 8014, model: 'openai.gpt-6.1-sol',
+  }, 'cache writes and reasoning are already included in input and output');
 });
 
 test('claude captured usage includes cache reads and writes in input', () => {
@@ -34,6 +38,10 @@ test('claude captured usage includes cache reads and writes in input', () => {
     tokens: 0, input: 0, cached: 0, output: 0, model: null,
   });
   assert.deepEqual(parse('claude', text('claude.jsonl') + text('claude-result.json')), parse('claude', text('claude-result.json')), 'a result is not added to assistant usage');
+  const result = text('claude-print-result.json');
+  assert.deepEqual(parse('claude', result + result), {
+    tokens: 788527, input: 780011, cached: 719614, output: 8516, model: 'claude-opus-5-5',
+  });
 });
 
 test('opencode captured step-finish totals include each step once', () => {
@@ -161,6 +169,13 @@ test('detached exits record both spawns exactly once and keep dispatch metadata'
   h.ok(['spend', 'T1', '--from-spawn', b.agent]);
   assert.equal(spends(h).tokens, 49632);
   assert.equal(events(h).filter((e) => e.cmd === 'spend').length, 2);
+  const monitors = h.detached().filter((c) => c.kind === 'monitor');
+  assert.equal(monitors.length, 2, 'both collectors are tracked for teardown');
+  const deadline = Date.now() + 3000;
+  while (monitors.some(detachedAlive) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(monitors.every((c) => !detachedAlive(c)), 'collectors exit after recording usage');
 });
 
 test('codex session fallback opens only the exact session and counts cached input once', (t) => {
@@ -295,18 +310,73 @@ test('spawn refuses an existing log and never follows its symlink', { skip: proc
   assert.equal(events(h).filter((e) => e.cmd === 'spawn').length, 0);
 });
 
+async function runMonitor(t, h, detail, { clock = false, env = {} } = {}) {
+  const child = cp.spawn(process.execPath, [
+    ...(clock ? ['--require', path.join(__dirname, 'fixtures', 'monitor-clock.js')] : []),
+    path.join(__dirname, '..', 'lib', 'spawn-monitor.js'),
+    JSON.stringify({ state: h.state, task: 'T1', agent: 'worker-T1-1', ...detail }),
+  ], { env: { ...h.env, ...env }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  let timedOut = false;
+  child.stderr.on('data', (data) => { stderr += data; });
+  const closed = new Promise((resolve) => child.on('close', resolve));
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await closed;
+  });
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 3000);
+  try {
+    const code = await closed;
+    return { code: timedOut ? 'timeout' : code, stderr };
+  } finally { clearTimeout(timer); }
+}
+
 test('an accounting monitor exits when its project is removed', async (t) => {
   const h = setup(t);
   fs.rmSync(h.state, { recursive: true, force: true });
-  const child = cp.spawn(process.execPath, [
-    path.join(__dirname, '..', 'lib', 'spawn-monitor.js'),
-    JSON.stringify({ state: h.state, task: 'T1', agent: 'worker-T1-1', pid: 0 }),
-  ], { env: h.env, stdio: 'ignore' });
-  t.after(() => { if (child.exitCode === null) child.kill(); });
-  const code = await new Promise((resolve) => {
-    const timer = setTimeout(() => { child.kill(); resolve('timeout'); }, 3000);
-    child.on('close', (n) => { clearTimeout(timer); resolve(n); });
-  });
+  const { code } = await runMonitor(t, h, { pid: 0 });
   assert.equal(code, 0);
   assert.equal(fs.existsSync(h.state), false, 'cleanup does not recreate the project');
+});
+
+for (const scenario of ['host', 'signal', 'stat']) {
+  test(`an accounting monitor bounds unknown ${scenario} observations without recording usage`, {
+    skip: scenario === 'stat' && process.platform !== 'linux',
+  }, async (t) => {
+    const h = setup(t);
+    const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+    const { code, stderr } = await runMonitor(t, h, {
+      pid: process.pid,
+      ...(scenario === 'host' ? { host: require('node:os').hostname() + '-other' } : {}),
+    }, { clock: true, env: { GISHRA_TEST_MONITOR_PERMISSION: scenario, GISHRA_TEST_MONITOR_PID: String(process.pid) } });
+    assert.equal(code, 1, stderr);
+    assert.match(stderr, /cannot observe.*retry spend T1 --from-spawn worker-T1-1/);
+    assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before, 'unknown is not proof of exit');
+  });
+}
+
+test('test teardown fails for a surviving detached monitor and terminates it', async (t) => {
+  const h = setup(t);
+  h.json(['spawn', '--task', 'T1'], {
+    env: { ...h.usageEnv, USAGE_DELAY: '60000' },
+    hooks: { ...h.usageHooks, HOOK_MONITOR_HOST: require('node:os').hostname() + '-other' },
+  });
+  const monitors = h.detached().filter((c) => c.kind === 'monitor');
+  assert.equal(monitors.length, 1);
+  await assert.rejects(h.cleanup(), /detached usage monitors outlived test teardown/);
+  assert.ok(monitors.every((c) => !detachedAlive(c)));
+});
+
+test('a monitor bounds failed collection with a fractional monotonic deadline', async (t) => {
+  const h = setup(t);
+  const { code, stderr } = await runMonitor(t, h, { pid: process.pid }, {
+    clock: true,
+    env: {
+      GISHRA_TEST_MONITOR_PERMISSION: 'exited', GISHRA_TEST_MONITOR_PID: String(process.pid),
+      GISHRA_TEST_MONITOR_STEP: '590000.5',
+    },
+  });
+  assert.equal(code, 1);
+  assert.match(stderr, /usage not recorded after 10 min; retry spend T1 --from-spawn worker-T1-1/);
+  assert.doesNotMatch(stderr, /usage monitor failed/);
 });

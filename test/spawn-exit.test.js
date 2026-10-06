@@ -20,9 +20,9 @@ function setup(t) {
   const h = makeRepo();
   h.stopWorkers = [];
   // Windows holds directories open while a worker still uses them.
-  t.after(() => {
+  t.after(async () => {
     for (const stop of h.stopWorkers) stop();
-    fs.rmSync(h.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await h.cleanup();
   });
   h.init();
   h.ok(['task', 'add', '--title', 'Recover a worker', '--tier', 'easy', '--acceptance', 'exit is reported']);
