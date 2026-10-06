@@ -1,0 +1,12 @@
+{
+  "name": "@agentsys/gishra",
+  "version": "0.1.0",
+  "description": "Plan, dispatch, review and merge agent work from one issue to a whole project, with state in plain files and gates in software",
+  "license": "MIT",
+  "author": { "name": "Avi Fenesh", "url": "https://github.com/avifenesh" },
+  "repository": { "type": "git", "url": "https://github.com/agent-sh/gishra.git" },
+  "bin": { "gishra": "bin/gishra.js" },
+  "engines": { "node": ">=20" },
+  "files": ["bin/", "lib/", "standards/", "docs/"],
+  "scripts": { "test": "node --test test/*.test.js" }
+}
