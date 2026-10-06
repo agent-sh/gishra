@@ -18,7 +18,7 @@ function setup(t, format = 'codex', session = true) {
   fs.writeFileSync(script, `
 const fs = require('node:fs');
 const cp = require('node:child_process');
-const [bin, out, prior, prompt, format, enabled] = process.argv.slice(2);
+const [bin, out, prior, prompt, format, enabled, assigned] = process.argv.slice(2);
 fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.TOWER_CRANE_AGENT }));
 const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { stdio: 'pipe' });
 const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
@@ -26,7 +26,7 @@ if (!task.claim) cli('claim', 'T1');
 if (enabled === 'true') {
   const record = format === 'codex'
     ? { type: 'thread.started', thread_id: prior || 'worker-session-1' }
-    : { type: 'result', session_id: prior || 'worker-session-1' };
+    : { type: 'result', session_id: prior || assigned || 'worker-session-1' };
   if (process.env.RESUME_USAGE && format === 'claude') {
     record.usage = prior
       ? { input_tokens: 15, cache_read_input_tokens: 40, cache_creation_input_tokens: 0, output_tokens: 7 }
@@ -68,8 +68,9 @@ cp.spawn = function(command, args, options) {
   if (command !== '${harness}') return spawn.call(this, command, args, options);
   const flag = args.indexOf('--resume');
   const prior = flag >= 0 ? args[flag + 1] : args.includes('worker-session-1') ? 'worker-session-1' : '';
+  const assigned = args.includes('--session-id') ? args[args.indexOf('--session-id') + 1] : '';
   const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework'));
-  return spawn.call(this, process.execPath, ${JSON.stringify([script, BIN, seen])}.concat([prior, prompt, '${harness}', 'true']), options);
+  return spawn.call(this, process.execPath, ${JSON.stringify([script, BIN, seen])}.concat([prior, prompt, '${harness}', 'true', assigned]), options);
 };
 `);
   h.env.PATH = bins + path.delimiter + (h.env.PATH || h.env.Path || '');
@@ -225,15 +226,19 @@ for (const harness of ['codex', 'claude']) {
   test(`${harness} native rework ${harness === 'codex' ? 'resumes' : 'starts fresh'} without putting the recorded id in the prompt`, (t) => {
     const { h, script, seen } = setup(t, harness);
     nativeHarness(h, script, seen, harness);
-    h.json(['spawn', '--task', 'T1', '--wait']);
+    const first = h.json(['spawn', '--task', 'T1', '--wait']);
     const receipt = events(h).find((e) => e.cmd === 'spawn session');
-    assert.equal(receipt.detail.session_id, 'worker-session-1');
+    assert.equal(receipt.detail.session_id, harness === 'codex' ? 'worker-session-1' : first.session_id);
     assert.equal(receipt.detail.harness, harness);
     sendBack(h);
     const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);
     assert.equal(dry.harness, harness);
     assert.equal(dry.resumed, harness === 'codex');
-    assert.equal(dry.session_id, harness === 'codex' ? 'worker-session-1' : null);
+    if (harness === 'codex') assert.equal(dry.session_id, 'worker-session-1');
+    else {
+      assert.match(dry.session_id, /^[a-f0-9-]{36}$/);
+      assert.notEqual(dry.session_id, first.session_id);
+    }
     if (harness === 'codex') {
       assert.deepEqual(dry.argv.slice(0, 5), ['codex', 'exec', '-p', 'sol', 'resume']);
       assert.ok(dry.argv.includes('--json'));
