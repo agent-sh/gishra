@@ -107,6 +107,17 @@ if (STATE) {
   }
 }
 
+// HOOK_STOP_WORKTREE_ADD=SIGNAL: stop right after git worktree add returns,
+// before the command takes the lock to record what it made.
+if (env.HOOK_STOP_WORKTREE_ADD) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function hookedExecFileSync(file, args, ...rest) {
+    const out = orig.call(this, file, args, ...rest);
+    if (Array.isArray(args) && args[0] === 'worktree' && args[1] === 'add' && first('worktree-add')) stop(env.HOOK_STOP_WORKTREE_ADD);
+    return out;
+  };
+}
+
 // HOOK_SPAWN_FAIL=1: every child process fails to start, as a program that
 // vanished after it was found would. git runs through execFileSync and is
 // unaffected.

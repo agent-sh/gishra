@@ -208,3 +208,58 @@ test('a spawn whose program fails to start undoes the worktree it made', (t) => 
   assert.equal(r.code, 1, r.stderr);
   assert.ok(fs.existsSync(wt), 'the worktree made by gishra worktree is kept');
 });
+
+async function waitForFile(file, ms = 20000) {
+  const end = Date.now() + ms;
+  while (!fs.existsSync(file)) {
+    if (Date.now() > end) throw new Error(`${file} never appeared`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+test('a spawn that fails to start keeps a worktree another spawn adopted, or one with changes', async (t) => {
+  const h = setup(t);
+  const output = 'worker-output.txt';
+  const release = path.join(h.base, 'worker-may-write');
+  // The worker stays alive with nothing written until the test releases it,
+  // then writes into its working directory.
+  const worker = `const fs = require("fs"); const end = Date.now() + 20000;
+while (!fs.existsSync(process.argv[1]) && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+fs.writeFileSync(${JSON.stringify(output)}, "work in progress");`;
+  h.ok(['role', 'set', 'runner', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', worker, release])]);
+  const branchExists = (b) => h.git(['branch', '--list', b]).replace(/^[*+ ]+/, '') === b;
+
+  // A creates T1's worktree and stops before it takes the lock; its program
+  // will fail to start. B adopts the worktree and starts a live worker in it.
+  // Then A goes on and fails.
+  const aCreated = path.join(h.base, 'a-created');
+  const a = h.runAsync(['spawn', '--role', 'runner', '--task', 'T1'], { hooks: { HOOK_STOP_WORKTREE_ADD: aCreated, HOOK_SPAWN_FAIL: '1' } });
+  await waitForFile(aCreated);
+  const b = h.json(['spawn', '--role', 'runner', '--task', 'T1']);
+  fs.writeFileSync(`${aCreated}.go`, '');
+  const ra = await a;
+  assert.equal(ra.code, 1, ra.stderr);
+  assert.ok(fs.existsSync(b.cwd), "B's worktree is still there");
+  assert.match(ra.stderr, /kept the worktree .* because another command has started using it/);
+  const task = h.readState('tasks.json').tasks[0];
+  assert.ok(branchExists(task.branch), `T1's recorded branch ${task.branch} still exists`);
+  fs.writeFileSync(release, '');
+  await waitForFile(path.join(b.cwd, output));
+  assert.equal(real(h.json(['worktree', 'T1']).path), real(b.cwd), 'T1 still has its worktree');
+
+  // Nobody adopted T2's new worktree, but someone wrote in it: a failed
+  // spawn must not delete that either.
+  h.ok(['task', 'add', '--title', 'Second', '--acceptance', 'b']);
+  h.ok(['brief', 'set', 'T2', '-'], { input: 'second brief\n' });
+  const a2Created = path.join(h.base, 'a2-created');
+  const a2 = h.runAsync(['spawn', '--role', 'runner', '--task', 'T2'], { hooks: { HOOK_STOP_WORKTREE_ADD: a2Created, HOOK_SPAWN_FAIL: '1' } });
+  await waitForFile(a2Created);
+  const wt2 = path.join(h.base, 'repo-worktrees', 'T2-second');
+  fs.writeFileSync(path.join(wt2, 'notes.txt'), 'written by hand');
+  fs.writeFileSync(`${a2Created}.go`, '');
+  const ra2 = await a2;
+  assert.equal(ra2.code, 1, ra2.stderr);
+  assert.ok(fs.existsSync(path.join(wt2, 'notes.txt')), 'the hand-written file is still there');
+  assert.ok(branchExists('gishra/T2-second'), "the worktree's branch is kept with it");
+  assert.match(ra2.stderr, /kept the worktree .*T2-second because it has changes/);
+});
