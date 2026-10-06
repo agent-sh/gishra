@@ -96,41 +96,48 @@ test('serve serves the sketch and pushes a reload when the state changes', async
   h.init();
   populate(h);
   const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json'], { cwd: h.repo, env: h.env });
-  t.after(() => server.kill());
-  const url = await new Promise((resolve, reject) => {
-    let out = '';
-    server.stdout.on('data', (d) => {
-      out += d;
-      if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]).url);
-    });
-    server.on('exit', (code) => reject(new Error(`serve exited ${code}`)));
-  });
-  const page = await get(url);
-  assert.equal(page.status, 200);
-  assert.match(page.body, /<h1>demo<\/h1>/);
-  assert.match(page.body, /new EventSource\("events"\)/);
-  assert.doesNotMatch(page.body, /https?:\/\//i);
-  assert.equal((await get(`${url}nope`)).status, 404);
-
-  const reload = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('no reload event within 10 s')), 10000);
-    http.get(`${url}events`, (res) => {
-      assert.equal(res.headers['content-type'], 'text/event-stream');
-      let buf = '';
-      res.on('data', (d) => {
-        buf += d;
-        if (buf.includes(': connected') && !buf.includes('wrote')) {
-          buf += 'wrote';
-          h.runAsync(['task', 'add', '--title', 'Late', '--acceptance', 'e']);
-        }
-        if (buf.includes('event: reload')) {
-          clearTimeout(timer);
-          res.destroy();
-          resolve();
-        }
+  const exited = new Promise((resolve) => server.on('exit', resolve));
+  let late = null;
+  try {
+    const url = await new Promise((resolve, reject) => {
+      let out = '';
+      server.stdout.on('data', (d) => {
+        out += d;
+        if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]).url);
       });
-    }).on('error', reject);
-  });
-  await reload;
-  assert.match((await get(url)).body, /Late/);
+      server.on('exit', (code) => reject(new Error(`serve exited ${code}`)));
+    });
+    const page = await get(url);
+    assert.equal(page.status, 200);
+    assert.match(page.body, /<h1>demo<\/h1>/);
+    assert.match(page.body, /new EventSource\("events"\)/);
+    assert.doesNotMatch(page.body, /https?:\/\//i);
+    assert.equal((await get(`${url}nope`)).status, 404);
+
+    const reload = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no reload event within 10 s')), 10000);
+      http.get(`${url}events`, (res) => {
+        assert.equal(res.headers['content-type'], 'text/event-stream');
+        let buf = '';
+        res.on('data', (d) => {
+          buf += d;
+          if (buf.includes(': connected') && !late) late = h.runAsync(['task', 'add', '--title', 'Late', '--acceptance', 'e']);
+          if (buf.includes('event: reload')) {
+            clearTimeout(timer);
+            res.destroy();
+            resolve();
+          }
+        });
+      }).on('error', reject);
+    });
+    await reload;
+    assert.match((await get(url)).body, /Late/);
+    assert.equal((await late).code, 0);
+  } finally {
+    // Windows cannot delete a directory a live process runs in, so the server
+    // and the writer must be gone before makeRepo's cleanup removes the repo.
+    server.kill();
+    await exited;
+    if (late) await late;
+  }
 });
