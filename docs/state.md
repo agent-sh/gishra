@@ -173,6 +173,16 @@ A task is ready when its status is `todo` or `rework`, every dependency is `acce
 
 Ready tasks come in priority order: most outstanding dependents (direct or transitive, not yet accepted or cancelled) first, then by id.
 
+### Spawned process exits
+
+`status` and `ready`, including `ready --all`, report a current claim when its matching spawned process has exited without submitting. This is a computed diagnostic, not a stored status. Their JSON includes `exited_claims: [{ id, agent, pid, log, tail }]`. Text names the process and log, includes a tail of at most 20 lines from the final 8192 bytes, and directs the caller to release with a reason using the claimant identity or request owner action. It never prints a command that supplies owner identity. Missing logs leave the exit visible with a `log unavailable` diagnostic. Foreground spawns use their recorded exit and have `log: null` and an empty tail.
+
+Only the current claimant's most recent spawn counts. A worker can claim after its spawn; earlier claims, release, submit and rework events fence off older spawn records. Reclaiming an expired lease under the same agent identity does not inherit the previous claim's spawn. A submitted task or a manual claim with no matching spawn is not an exited claim. Reading either view writes no state, changes no lease and starts no replacement.
+
+The host recorded by `spawn` bounds local pid checks to that host; older events without it are assumed local. Permission errors and processes on another host do not establish an exit. Linux checks recognize zombie processes and compare the recorded process start time to catch a reused pid. Other platforms use missing pids and recorded foreground exits.
+
+The claimant or an explicit owner recovers the task with `release ID --reason R`. The usual prior `todo` or `rework` status is restored. The supplied reason stays in the release note; the observed pid, log and tail are preserved in an additional note and the release event's `detail.exited_spawn`. Releasing clears the diagnostic; a new claim does not inherit the old process.
+
 ### Acceptance gates
 
 `gishra accept` refuses unless the task's current revision has, at the submitted `sha`:
@@ -222,5 +232,7 @@ A decision blocks only the tasks it lists. Everything else keeps running. `statu
 ## events.jsonl
 
 One JSON object per line: `{ "at", "agent", "cmd", "task", "detail" }`. `cmd` is the command name (`task add`, `claim`, `spawn`, `check tests` and so on); a ladder change logs `ladder harness` and one `ladder set` per rung it changed, with the rung's new fields. A write made from the serve Settings view carries `"via": "serve"` in `detail`. `gishra spawn` also counts its earlier `spawn` events to number agents. Gate events have `{ "type", "ok", "sha", "ref", "revision", "source", "commands" }` in `detail`. Acceptance, merge, task views and the sketch match software evidence against these events; a missing or unreadable log supplies no gate proof, while malformed lines are skipped. A write inserts a newline after an unterminated log tail before appending events, so a torn record cannot hide the next gate receipt. `gishra status` and the sketch read time and token spend from tasks. Keep the log with tasks.json when copying or restoring state.
+
+A `spawn` event records `{ role, rung, agent, harness, pid, host, cwd, log }`, plus `start_ticks` on Linux when available. `role` is the job (`worker` for a task tier); `rung` names the selected ladder rung. `log` is the background output path, or null with `--wait`. A foreground completion adds `spawn exit` with `{ role, rung, agent, pid, code }`. Exits of detached processes are discovered by the views, without adding an event. A release of an exited spawned claim records `{ reason, holder, status, exited_spawn }`, where `exited_spawn` is the diagnostic `{ id, agent, pid, log, tail }` observed at release.
 
 A `submit` event's `detail` records `previous_sha` (null on the first submission), `sha`, `branch`, `pr` and `summary`. Both the replaced head and the new head are recorded, including a submission after rework and a new claim: rework preserves the old sha.

@@ -135,10 +135,15 @@ test('a stale lock that cannot be removed still times out with exit 3', (t) => {
   const h = makeRepo(t);
   h.init();
   killHolder(h);
+  // Windows can reuse the killed holder's PID during the 10 s removal wait.
+  const lock = path.join(h.state, 'lock');
+  const marker = JSON.parse(fs.readFileSync(path.join(lock, fs.readdirSync(lock)[0]), 'utf8'));
   const attempts = path.join(h.base, 'attempts');
   fs.writeFileSync(attempts, '');
   const started = Date.now();
-  const r = h.run(['task', 'add', '--title', 'A', '--acceptance', 'a'], { hooks: { HOOK_FAIL_LOCK: attempts }, timeout: 25000 });
+  const r = h.run(['task', 'add', '--title', 'A', '--acceptance', 'a'], {
+    hooks: { HOOK_FAIL_LOCK: attempts, HOOK_DEAD_PID: String(marker.pid) }, timeout: 25000,
+  });
   const waited = Date.now() - started;
   assert.equal(r.code, 3, `exit ${r.code} (signal ${r.signal}) after ${waited} ms: ${r.stderr}`);
   assert.ok(waited >= 9500 && waited < 20000, `waited ${waited} ms`);

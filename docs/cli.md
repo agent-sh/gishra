@@ -31,10 +31,10 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 
 | Command | Does |
 |---|---|
-| `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first); `--all` lists blocked ones with the reason |
+| `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; refused if not ready, already claimed, or the workers limit is reached (tasks in progress with a live lease) |
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
-| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner |
+| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner. For an exited spawned claimant, preserves the pid, log path and tail in a note and the release event |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `ci` and `merge` for every agent and either verdict; use the gate commands |
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
@@ -60,7 +60,7 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 | Command | Does |
 |---|---|
-| `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases |
+| `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
 | `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html` (self-contained, no network) from the state as it stands under the lock |
 | `serve [--port P]` | serve the sketch and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and reload open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use |
 
@@ -118,6 +118,12 @@ Before creating a new task branch, `worktree` fetches `base` from `origin` into 
 Concurrent fetches that fail while updating `origin/<base>` or unpacking objects continue only after a fresh read of origin confirms that the tracking ref matches its tip. Fetch and verification each time out after 60 s to bound dispatch stalls when origin is unreachable; the error names the operation and timeout. Other fetch failures refuse before a task branch is created or recorded. An existing task branch or worktree is reused without fetching, so it remains usable offline. `spawn` uses the same worktree creation behavior.
 
 `spawn` checks the rung, the brief (`brief set`) and the harness program (on `PATH`, or at the path the rung gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<job>-<task>-<n>`, where the job is `worker` for the four tiers, `reviewer` for `review`, and the rung's name otherwise, numbered from earlier spawns of that job on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It says `you are not the owner; never pass --agent owner`. Its closing instruction says `run gishra with --agent <name> if GISHRA_AGENT is missing`, using the same name passed in the environment. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
+
+`spawn` also records the host and, on Linux when available, the process start time in clock ticks. `status` and `ready` match the most recent spawn to the current claim's agent, including workers that claim after starting. An exited process is reported as `exited without submit`, with the pid, log path, the last 20 log lines within the final 8192 bytes, and guidance to release with a reason using the claimant identity or request owner action. Neither view prints a command that supplies owner identity. Owner recovery still requires explicit owner identity as described above; terminal fallback alone cannot release another agent's claim. The tail is bounded so a large harness log cannot overwhelm a status check. A missing or unreadable log is reported without hiding the exit. A foreground spawn has no log file; its recorded exit is reported with `foreground output; no log`.
+
+Both commands return an `exited_claims` array under `--json`, with `{ id, agent, pid, log, tail }` entries (empty when none). They only read state: the claim still counts toward the workers limit while its lease is live, and is not automatically released or restarted. Release requires the claimant or an explicit owner, records the caller's reason and the observed exit diagnostics, and makes the task available again. Submitted tasks, manual claims without a matching spawn, and spawn records from a previous claim are excluded, including an expired lease reclaimed under the same agent identity.
+
+Local process checks ignore a spawn recorded on another host and treat permission errors as unknown, rather than as proof of exit. On Linux they recognize zombies as exited and distinguish a reused pid by its recorded start time. Older spawn events without a host are treated as local. On other platforms an exit is detected when the pid no longer exists or a foreground `spawn exit` event records it.
 
 | Harness | Command |
 |---|---|
