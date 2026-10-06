@@ -74,6 +74,10 @@ docs/cli.md lists the command each harness gets.
 
 `standards` is `default` (the profile shipped with gishra) or a path to a Markdown file. A path is checked for readability and recorded relative to the repository root; only the default gates apply for now.
 
+`ci` is optional. `ci.ignore_apps` is an array of GitHub app slugs, for example `{ "ci": { "ignore_apps": ["claude", "cursor"] } }`, whose check suites and check runs `gishra check ci` skips. It is for apps that open a check suite on every push and never report on it, such as review bots; their suites stay queued and would otherwise hold the gate forever. It defaults to empty: every other suite or run that is not complete and green fails the gate, and gishra never infers which apps to skip. No `gishra project set` flag sets it yet; add it to project.json by hand while no gishra command is writing.
+
+`tests` is optional too. `gishra check tests` splits a task's changed files into tests and code: it keeps the tests and reverts the code to show the tests fail without it. By default a file is a test when it sits under a `test/`, `tests/`, `spec/`, `specs/` or `__tests__/` directory in any case (`Tests/`, `Test/`), under a directory named like `MyApp.Tests`, `MyApp.UnitTests` or `integration_test`, or a CamelCase one like `AppTests` or `androidTest`, or when its name looks like `foo.test.js`, `foo_test.go`, `foo_spec.rb`, `foo.spec.ts`, `test_foo.py`, `FooTest.java`, `FooTests.swift`, `FooSpec.scala`, `FooIT.java` or `TestFoo.java`. CamelCase forms need their capital, so `latest.js` and `contest.py` stay code. `tests.paths`, for example `{ "tests": { "paths": ["src/test/**", "**/*Test.java"] } }`, replaces those defaults with the project's own globs over repository paths: `*` and `?` stay within one directory, `**/` spans any number of directories, `{a,b}` matches either, a trailing `/` takes everything beneath, and matching is case-sensitive. Like `ci`, it is added to project.json by hand for now.
+
 ## tasks.json
 
 ```json
@@ -127,8 +131,9 @@ Ready tasks come in priority order: most outstanding dependents (direct or trans
 
 `gishra accept` refuses unless the task's current revision has, at the submitted `sha`:
 
-- `code` tasks: `tests` ok, `clean` ok, `review` ok from an agent other than the one that submitted, and `ci` ok when the task has a PR
+- `code` tasks: `tests` ok, `clean` ok, and `review` ok from an agent other than the one that submitted
 - other kinds: `review` ok from another agent
+- any task with a PR, whatever its kind: `ci` ok as well
 
 A gate passes when the latest evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `review`, entries by the submitter are ignored.
 

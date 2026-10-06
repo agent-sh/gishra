@@ -123,6 +123,18 @@ test('other kinds need only a review from another agent', (t) => {
   h.ok(['accept', 'T1']);
 });
 
+test('a task of any kind with a PR needs ci ok at the submitted sha', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  submitted(h, ['--pr', '7'], 'docs');
+  ev(h, 'review', 'r-1');
+  const r = h.run(['accept', 'T1']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /ci: no ci evidence at 0123456/);
+  ev(h, 'ci', 'ci', true, ['--sha', SHA]);
+  h.ok(['accept', 'T1']);
+});
+
 test('only the owner can waive a gate, and a refused accept records no waiver', (t) => {
   const h = makeRepo(t);
   h.init();
