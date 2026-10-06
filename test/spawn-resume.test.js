@@ -1,0 +1,290 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { makeRepo, BIN } = require('./helpers');
+
+const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+
+function setup(t, format = 'codex', session = true) {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Resume worker', '--acceptance', 'rework resumes']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Implement the acceptance.\n' });
+  const script = path.join(h.base, 'harness.js');
+  const seen = path.join(h.base, 'seen.json');
+  fs.writeFileSync(script, `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const [bin, out, prior, prompt, format, enabled] = process.argv.slice(2);
+fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.GISHRA_AGENT }));
+const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { stdio: 'pipe' });
+const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
+if (!task.claim) cli('claim', 'T1');
+if (enabled === 'true') {
+  const record = format === 'codex'
+    ? { type: 'thread.started', thread_id: prior || 'worker-session-1' }
+    : { type: 'result', session_id: prior || 'worker-session-1' };
+  if (process.env.RESUME_USAGE && format === 'claude') {
+    record.usage = prior
+      ? { input_tokens: 15, cache_read_input_tokens: 40, cache_creation_input_tokens: 0, output_tokens: 7 }
+      : { input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 30, output_tokens: 5 };
+  }
+  const text = JSON.stringify(record);
+  process.stdout.write(text.slice(0, 12));
+  process.stdout.write(text.slice(12) + '\\n');
+  if (process.env.RESUME_USAGE && format === 'codex') {
+    console.log(JSON.stringify({ type: 'turn.completed', usage: prior
+      ? { input_tokens: 250, cached_input_tokens: 70, output_tokens: 25 }
+      : { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10 } }));
+  }
+}
+`);
+  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
+    '--command', JSON.stringify([process.execPath, script, BIN, seen, '{session}', '{prompt}', format, String(session)])]);
+  return { h, seen, script };
+}
+
+function sendBack(h, agent = 'worker-T1-1') {
+  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', agent]);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer-T1-1',
+    '--summary', 'Missing worktree validation', '--ref', 'review-receipt']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef2', '--agent', 'reviewer-T1-2',
+    '--summary', 'Unrelated older head']);
+  h.ok(['rework', 'T1', '--reason', 'Add the worktree guard']);
+}
+
+for (const format of ['codex', 'claude']) {
+  test(`${format} session output resumes rework with its review note and original claim`, (t) => {
+    const { h, seen } = setup(t, format);
+    const first = h.json(['spawn', '--task', 'T1', '--wait']);
+    const claim = h.json(['task', 'show', 'T1']).claim;
+    const receipt = events(h).find((e) => e.cmd === 'spawn session');
+    assert.equal(receipt.detail.session_id, 'worker-session-1');
+    assert.equal(receipt.detail.harness, 'command');
+    assert.equal(receipt.detail.rung, 'medium');
+    assert.equal(receipt.detail.cwd, first.cwd);
+    sendBack(h);
+    const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+    const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);
+    assert.equal(dry.resumed, true);
+    assert.equal(dry.agent, first.agent);
+    assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+    const next = h.json(['spawn', '--task', 'T1', '--wait']);
+    assert.equal(next.agent, first.agent);
+    assert.equal(next.cwd, first.cwd);
+    assert.equal(next.session_id, 'worker-session-1');
+    assert.equal(next.attempt, 2);
+    const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
+    assert.equal(input.prior, 'worker-session-1');
+    assert.match(input.prompt, /Add the worktree guard/);
+    assert.match(input.prompt, /Missing worktree validation/);
+    assert.match(input.prompt, /review-receipt/);
+    assert.ok(!input.prompt.includes('Unrelated older head'));
+    assert.ok(!input.prompt.includes('worker-session-1'));
+    const held = h.json(['task', 'show', 'T1']).claim;
+    assert.equal(held.agent, claim.agent);
+    assert.equal(held.since, claim.since);
+    assert.equal(held.from, 'rework');
+    h.ok(['submit', 'T1', '--sha', 'abcdef3', '--agent', next.agent]);
+    h.ok(['rework', 'T1', '--reason', 'Second round']);
+    assert.equal(h.json(['spawn', '--task', 'T1', '--wait']).agent, first.agent);
+  });
+}
+
+test('a detached command harness records its session and resumes with a separate attempt log', async (t) => {
+  const { h } = setup(t);
+  const first = h.json(['spawn', '--task', 'T1']);
+  const deadline = Date.now() + 10000;
+  while (!events(h).some((e) => e.cmd === 'spawn session')) {
+    if (Date.now() > deadline) throw new Error('session was not recorded');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  sendBack(h);
+  const next = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(next.agent, first.agent);
+  assert.equal(next.resumed, true);
+  assert.notEqual(next.log, first.log);
+  assert.ok(fs.existsSync(first.log));
+});
+
+test('no session record or a changed rung starts a fresh worker', (t) => {
+  for (const change of ['missing', 'rung', 'route']) {
+    const { h, seen } = setup(t, 'codex', change !== 'missing');
+    h.json(['spawn', '--task', 'T1', '--wait']);
+    sendBack(h);
+    if (change === 'rung') h.ok(['task', 'update', 'T1', '--tier', 'easy']);
+    if (change === 'route') h.ok(['ladder', 'set', 'medium', '--args', '["changed-route"]']);
+    const next = h.json(['spawn', '--task', 'T1', '--dry-run']);
+    assert.equal(next.resumed, false, change);
+    assert.equal(next.agent, 'worker-T1-2', change);
+    assert.equal(next.session_id, null, change);
+    if (change !== 'rung') {
+      const started = h.json(['spawn', '--task', 'T1', '--wait']);
+      assert.equal(started.resumed, false);
+      assert.equal(started.agent, 'worker-T1-2');
+      const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
+      assert.equal(input.prior, '');
+      assert.match(input.prompt, /## Task/);
+    }
+  }
+});
+
+test('a changed harness or moved worktree refuses without writing state or starting work', (t) => {
+  for (const change of ['harness', 'worktree']) {
+    const { h } = setup(t);
+    const first = h.json(['spawn', '--task', 'T1', '--wait']);
+    sendBack(h);
+    if (change === 'harness') {
+      h.ok(['ladder', 'set', 'medium', '--harness', 'claude', '--model', 'opus', '--clear', 'command']);
+    } else {
+      h.git(['worktree', 'move', first.cwd, path.join(h.base, 'moved-worker')]);
+    }
+    const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+    for (const flags of [['--dry-run'], []]) {
+      const result = h.run(['spawn', '--task', 'T1', ...flags]);
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, change === 'harness' ? /cannot resume across harnesses/ : /cannot resume in a different worktree/);
+      assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+    }
+  }
+});
+
+test('resume preserves an existing claim and refuses another claimant', (t) => {
+  for (const agent of ['worker-T1-1', 'replacement-worker']) {
+    const { h } = setup(t);
+    h.json(['spawn', '--task', 'T1', '--wait']);
+    sendBack(h);
+    h.ok(['claim', 'T1', '--agent', agent]);
+    const before = h.json(['task', 'show', 'T1']).claim;
+    const result = h.run(['spawn', '--task', 'T1', '--wait']);
+    assert.equal(result.code, agent === 'worker-T1-1' ? 0 : 1, result.stderr);
+    if (result.code) assert.match(result.stderr, /cannot resume .* while claimed by replacement-worker/);
+    assert.deepEqual(h.json(['task', 'show', 'T1']).claim, before);
+  }
+});
+
+test('resume obeys worker limits and blockers before restoring a claim', (t) => {
+  const { h } = setup(t);
+  h.json(['spawn', '--task', 'T1', '--wait']);
+  sendBack(h);
+  h.ok(['project', 'set', '--workers', '1']);
+  h.ok(['task', 'add', '--title', 'Occupy slot', '--acceptance', 'held']);
+  h.ok(['claim', 'T2', '--agent', 'other-worker']);
+  let result = h.run(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /workers limit is reached/);
+  h.ok(['release', 'T2', '--agent', 'other-worker', '--reason', 'done']);
+  h.ok(['task', 'update', 'T1', '--needs-owner', 'resolve requirement']);
+  result = h.run(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /is blocked/);
+  assert.equal(h.json(['task', 'show', 'T1']).claim, null);
+});
+
+for (const harness of ['codex', 'claude']) {
+  test(`${harness} native argv resumes the recorded id without forking or putting it in the prompt`, (t) => {
+    const { h, script, seen } = setup(t, harness);
+    const bins = path.join(h.base, 'bin');
+    fs.mkdirSync(bins);
+    fs.writeFileSync(path.join(bins, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
+    const hook = path.join(h.base, 'native-harness.js');
+    fs.writeFileSync(hook, `
+const cp = require('node:child_process');
+const spawn = cp.spawn;
+cp.spawn = function(command, args, options) {
+  if (command !== '${harness}') return spawn.call(this, command, args, options);
+  const flag = args.indexOf('--resume');
+  const prior = flag >= 0 ? args[flag + 1] : args.includes('worker-session-1') ? 'worker-session-1' : '';
+  const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework'));
+  return spawn.call(this, process.execPath, ${JSON.stringify([script, BIN, seen])}.concat([prior, prompt, '${harness}', 'true']), options);
+};
+`);
+    h.env.PATH = bins + path.delimiter + h.env.PATH;
+    h.env.NODE_OPTIONS = `--require "${hook}"`;
+    h.env.RESUME_USAGE = '1';
+    h.ok(['ladder', 'set', 'medium', '--harness', harness, '--clear', 'command',
+      ...(harness === 'codex' ? ['--profile', 'sol', '--effort', 'high'] : ['--model', 'opus', '--effort', 'high'])]);
+    h.json(['spawn', '--task', 'T1', '--wait']);
+    sendBack(h);
+    const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);
+    assert.equal(dry.harness, harness);
+    assert.equal(dry.resumed, true);
+    assert.equal(dry.session_id, 'worker-session-1');
+    if (harness === 'codex') {
+      assert.deepEqual(dry.argv.slice(0, 5), ['codex', 'exec', '-p', 'sol', 'resume']);
+      assert.ok(dry.argv.includes('--json'));
+    } else {
+      assert.deepEqual(dry.argv.slice(0, 3), ['claude', '--resume', 'worker-session-1']);
+      assert.ok(!dry.argv.includes('--fork-session'));
+    }
+    const next = h.json(['spawn', '--task', 'T1', '--wait']);
+    assert.equal(next.resumed, true);
+    const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
+    assert.equal(input.prior, 'worker-session-1');
+    assert.ok(!input.prompt.includes('worker-session-1'));
+    const spend = h.json(['task', 'show', 'T1']).spend;
+    assert.equal(spend.tokens, harness === 'codex' ? 275 : 127);
+    assert.equal(spend.cached, harness === 'codex' ? 70 : 60);
+    assert.deepEqual(spend.entries.map((e) => e.source), ['spawn:worker-T1-1', 'spawn:worker-T1-1:attempt:2']);
+    h.json(['spend', 'T1', '--from-spawn', 'worker-T1-1']);
+    assert.deepEqual(h.json(['task', 'show', 'T1']).spend, spend, 'a repeated collector cannot double count either attempt');
+    const reviewer = h.json(['spawn', '--task', 'T1', '--role', 'review', '--dry-run']);
+    assert.equal(reviewer.resumed, false);
+  });
+}
+
+test('a still-running worker cannot be resumed', async (t) => {
+  const { h, script } = setup(t);
+  fs.appendFileSync(script, '\nsetInterval(() => {}, 1000);\n');
+  const first = h.json(['spawn', '--task', 'T1']);
+  t.after(() => { try { process.kill(first.pid, 'SIGKILL'); } catch {} });
+  const deadline = Date.now() + 10000;
+  while (!events(h).some((e) => e.cmd === 'spawn session')) {
+    if (Date.now() > deadline) throw new Error('worker did not start');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  sendBack(h);
+  const result = h.run(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /still running or its exit is unverified/);
+});
+
+test('an expired resumed claim needs room and keeps its original since', (t) => {
+  const { h } = setup(t);
+  h.json(['spawn', '--task', 'T1', '--wait']);
+  sendBack(h);
+  h.ok(['claim', 'T1', '--agent', 'worker-T1-1', '--lease', '1']);
+  const before = h.json(['task', 'show', 'T1']).claim;
+  h.ok(['project', 'set', '--workers', '1']);
+  h.ok(['task', 'add', '--title', 'Other worker', '--acceptance', 'slot']);
+  const clock = path.join(h.base, 'clock');
+  fs.writeFileSync(clock, String(Date.now() + 120000));
+  const opts = { hooks: { HOOK_CLOCK_FILE: clock } };
+  h.ok(['claim', 'T2', '--agent', 'other-worker'], opts);
+  const refused = h.run(['spawn', '--task', 'T1', '--wait'], opts);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /workers limit is reached/);
+  h.ok(['release', 'T2', '--agent', 'other-worker', '--reason', 'done'], opts);
+  h.json(['spawn', '--task', 'T1', '--wait'], opts);
+  const after = h.json(['task', 'show', 'T1']).claim;
+  assert.equal(after.agent, before.agent);
+  assert.equal(after.since, before.since);
+  assert.ok(Date.parse(after.until) > Number(fs.readFileSync(clock, 'utf8')));
+});
+
+test('a failed resume launch leaves the task, claim and receipts unchanged', (t) => {
+  const { h } = setup(t);
+  h.json(['spawn', '--task', 'T1', '--wait']);
+  sendBack(h);
+  const before = h.readState('tasks.json');
+  const audit = events(h);
+  const failed = h.run(['spawn', '--task', 'T1', '--wait'], { hooks: { HOOK_SPAWN_FAIL: '1' } });
+  assert.equal(failed.code, 1, failed.stderr);
+  assert.match(failed.stderr, /could not start/);
+  assert.deepEqual(h.readState('tasks.json'), before);
+  assert.deepEqual(events(h), audit);
+  assert.equal(h.json(['spawn', '--task', 'T1', '--wait']).resumed, true);
+});
