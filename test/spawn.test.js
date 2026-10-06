@@ -79,6 +79,7 @@ test('the prompt is the brief, then the task, then how to use gishra', (t) => {
   const json = JSON.parse(p.slice(p.indexOf('```json\n') + 8, p.indexOf('\n```', p.indexOf('```json'))));
   assert.deepEqual(json, { id: 'T1', title: 'Idempotency key on retries', acceptance: ['processed once', 'test proves it'], kind: 'code' });
   assert.match(p, /GISHRA_STATE, GISHRA_TASK and GISHRA_AGENT are set/);
+  assert.ok(p.includes('you are not the owner; never pass --agent owner'));
   assert.ok(p.endsWith('run gishra with --agent worker-T1-1 if GISHRA_AGENT is missing.'));
 });
 

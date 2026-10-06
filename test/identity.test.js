@@ -12,6 +12,11 @@ const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'
 const withoutGishra = (env) => Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('GISHRA_')));
 const terminal = (h, args, env = {}) => runPty([...args, '--state', h.state], { cwd: h.repo, env: { ...withoutGishra(h.env), ...env } });
 
+function assertOwnerRequest(output) {
+  assert.match(output, /gishra ask.*task note/);
+  assert.doesNotMatch(output, /--agent owner|GISHRA_AGENT=owner/);
+}
+
 function setup(t) {
   const h = makeRepo(t);
   h.init();
@@ -72,13 +77,61 @@ test('terminal fallback cannot clear owner work without explicit owner identity'
     const blocked = terminal(h, ['owner-done', 'T1']);
     assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
     assert.match(blocked.stdout, /only the owner/);
-    assert.match(blocked.stdout, /--agent owner.*GISHRA_AGENT=owner/);
+    assertOwnerRequest(blocked.stdout);
     assert.equal(events(h), before);
     assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
     const done = terminal(h, ['owner-done', 'T1', ...(identity === 'flag' ? ['--agent', 'owner'] : [])],
       identity === 'env' ? { GISHRA_AGENT: 'owner' } : {});
     assert.equal(done.code, 0, done.stdout + done.stderr);
     assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
+  }
+});
+
+test('agents cannot clear or replace an existing owner request through task update', (t) => {
+  const h = setup(t);
+  const before = events(h);
+  const tasksBefore = h.readState('tasks.json');
+  for (const agent of ['reviewer', 'Owner']) {
+    for (const reason of ['', '   ', 'approve funding']) {
+      const blocked = h.run(['task', 'update', 'T1', '--title', 'Changed', '--needs-owner', reason, '--agent', agent]);
+      assert.equal(blocked.code, 1, blocked.stderr);
+      assert.match(blocked.stderr, /only the owner/);
+      assertOwnerRequest(blocked.stderr);
+      assert.equal(events(h), before);
+      assert.deepEqual(h.readState('tasks.json'), tasksBefore);
+    }
+  }
+  h.ok(['task', 'update', 'T1', '--title', 'Renamed', '--needs-owner', ' approve access ', '--agent', 'reviewer']);
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
+  h.ok(['task', 'add', '--title', 'New request', '--acceptance', 'approved', '--agent', 'reviewer']);
+  h.ok(['task', 'update', 'T2', '--needs-owner', 'approve funding', '--agent', 'reviewer']);
+  assert.equal(h.readState('tasks.json').tasks[1].needs_owner, 'approve funding');
+});
+
+test('terminal task update needs explicit owner to clear or replace owner work', { skip: !PTY_AVAILABLE }, (t) => {
+  for (const identity of ['flag', 'env']) {
+    const h = setup(t);
+    const before = events(h);
+    const tasksBefore = h.readState('tasks.json');
+    for (const reason of ['', '   ', 'approve funding']) {
+      const blocked = terminal(h, ['task', 'update', 'T1', '--title', 'Changed', '--needs-owner', reason]);
+      assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
+      assert.match(blocked.stdout, /only the owner/);
+      assertOwnerRequest(blocked.stdout);
+      assert.equal(events(h), before);
+      assert.deepEqual(h.readState('tasks.json'), tasksBefore);
+    }
+    h.ok(['task', 'add', '--title', 'New request', '--acceptance', 'approved']);
+    const requested = terminal(h, ['task', 'update', 'T2', '--needs-owner', 'approve funding']);
+    assert.equal(requested.code, 0, requested.stdout + requested.stderr);
+    assert.equal(h.readState('tasks.json').tasks[1].needs_owner, 'approve funding');
+    for (const reason of ['approve funding', '']) {
+      const updated = terminal(h, ['task', 'update', 'T1', '--needs-owner', reason,
+        ...(identity === 'flag' ? ['--agent', 'owner'] : [])], identity === 'env' ? { GISHRA_AGENT: 'owner' } : {});
+      assert.equal(updated.code, 0, updated.stdout + updated.stderr);
+      assert.equal(h.readState('tasks.json').tasks[0].needs_owner, reason || null);
+      assert.equal(JSON.parse(events(h).trim().split('\n').at(-1)).agent, 'owner');
+    }
   }
 });
 
@@ -93,6 +146,7 @@ test('terminal fallback cannot waive gates without explicit owner identity', { s
     const blocked = terminal(h, waive);
     assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
     assert.match(blocked.stdout, /only the owner can waive/);
+    assertOwnerRequest(blocked.stdout);
     assert.equal(events(h), before);
     assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
     assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
@@ -115,6 +169,7 @@ test('terminal fallback cannot release another agent claim without explicit owne
     const blocked = terminal(h, release);
     assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
     assert.match(blocked.stdout, /only the claimant/);
+    assertOwnerRequest(blocked.stdout);
     assert.equal(events(h), before);
     assert.equal(h.readState('tasks.json').tasks[0].claim.agent, 'worker');
     const released = terminal(h, [...release, ...(identity === 'flag' ? ['--agent', 'owner'] : [])],
@@ -148,6 +203,7 @@ test('owner-done and waivers require the resolved name owner exactly', (t) => {
     const r = h.run(['owner-done', 'T1', '--agent', agent]);
     assert.equal(r.code, 1, r.stderr);
     assert.match(r.stderr, /only the owner/);
+    assertOwnerRequest(r.stderr);
     assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
   }
   h.ok(['owner-done', 'T1', '--agent', 'owner']);
@@ -158,6 +214,7 @@ test('owner-done and waivers require the resolved name owner exactly', (t) => {
     const r = h.run([...waive, '--agent', agent]);
     assert.equal(r.code, 1, r.stderr);
     assert.match(r.stderr, /only the owner can waive/);
+    assertOwnerRequest(r.stderr);
     assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
   }
   const task = h.json([...waive, '--agent', 'owner'], { env: noAgent });

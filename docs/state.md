@@ -18,9 +18,9 @@ Commands that need the repository (`worktree`, `spawn`, the gates) use the one g
 
 The identity recorded in state and events comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, the CLI uses `owner` only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. In every other case it exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT`, before reading or writing state. An empty or whitespace-only identity exits 2 with the same message. Help needs no identity.
 
-`spawn` passes the name `<role>-<task>-<n>` in `GISHRA_AGENT`. Its prompt closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
+`spawn` passes the name `<role>-<task>-<n>` in `GISHRA_AGENT`. Its prompt says `you are not the owner; never pass --agent owner` and closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
 
-`accept --waive`, `owner-done` and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers.
+`accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers. An agent requests owner action with `gishra ask` or a task note. Set `GISHRA_AGENT=owner` per command, never in a shell profile, where it could override a spawned agent's identity.
 
 ## Files
 
@@ -115,7 +115,7 @@ docs/cli.md lists the command each harness gets.
 
 - `kind`: `code`, `docs`, `research`, `design`, `ops`.
 - `size`: `S` (under an hour), `M` (a few hours), `L` (a day). Anything larger is split; `validate` reports it.
-- `needs_owner`: null, or the reason the owner has to act (a credential, a purchase, a product call). Such a task is never ready on its own; the owner clears it with `gishra owner-done`.
+- `needs_owner`: null, or the reason the owner has to act (a credential, a purchase, a product call). Such a task is never ready on its own; the owner clears it with `gishra owner-done`. Clearing or replacing an existing reason with `task update --needs-owner` also needs explicit owner identity. Any agent may set a reason when none exists, or keep the same reason.
 - `status`: `todo`, `in_progress`, `submitted`, `accepted`, `rework`, `cancelled`. `ready` and `blocked` are computed, never stored.
 - `claim`: `{ "agent": "w-3", "since": "...", "until": "...", "from": "todo" }` while in progress; `from` is the status before the claim (`todo` or `rework`), which `release` restores. An expired lease frees the task: it counts as `from` again and another agent may claim it. Until someone does, the original claimant can still submit it, or renew it while the workers limit has room: an expired lease no longer counts toward `limits.workers`, so renewing it takes a slot like a new claim.
 - `submitted_by`: the agent that submitted the current `sha`.
