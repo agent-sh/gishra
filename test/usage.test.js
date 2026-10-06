@@ -43,6 +43,9 @@ test('opencode captured step-finish totals include each step once', () => {
   assert.deepEqual(parse('opencode', cached + cached), {
     tokens: 288768, input: 288252, cached: 282624, output: 516, model: null,
   });
+  assert.deepEqual(parse('opencode', text('opencode-reasoning.jsonl')), {
+    tokens: 223603, input: 213750, cached: 0, output: 9853, model: null,
+  });
 });
 
 test('agy captured json reports inclusive input and separate thinking', () => {
@@ -231,6 +234,10 @@ test('late session detail enriches a partial total without counting it twice', (
   assert.equal(s.output, 20);
   assert.equal(s.entries.length, 1);
   assert.equal(s.entries[0].model, 'enriched-model');
+  fs.unlinkSync(path.join(dir, `rollout-2026-10-06T00-00-00-${id}.jsonl`));
+  h.ok(['spend', 'T1', '--from-spawn', started.agent]);
+  assert.equal(spends(h).entries[0].model, 'enriched-model');
+  assert.equal(events(h).filter((e) => e.cmd === 'spend').length, 2, 'missing detail does not downgrade measured metadata');
 });
 
 test('detached accounting retries a lock held across the first collection attempt', async (t) => {

@@ -1,0 +1,1 @@
+{"type": "step_finish", "part": {"reason": "tool-calls", "type": "step-finish", "tokens": {"total": 223603, "input": 3, "output": 8841, "reasoning": 1012, "cache": {"write": 213747, "read": 0}}, "cost": 6.08271, "id": "captured-reasoning-step"}}
