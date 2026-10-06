@@ -111,8 +111,8 @@ const r = cp.spawnSync(process.execPath, [process.argv[1], 'evidence', 'T1', '--
 fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('GISHRA_')), code: r.status, stderr: r.stderr }));
 process.exit(r.status === null ? 1 : r.status);
 `;
-  h.ok(['role', 'set', 'reviewer', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, out])]);
-  const r = h.run(['spawn', '--role', 'reviewer', '--task', 'T1', '--wait']);
+  commandRung(h, 'review', [process.execPath, '-e', script, BIN, out]);
+  const r = h.run(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
   assert.equal(r.code, 2, r.stderr);
   const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
   assert.deepEqual(seen, {
@@ -143,8 +143,8 @@ const r = runPty(['owner-done', 'T2', '--state', state], { cwd: process.cwd(), e
 fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('GISHRA_')), ...r }));
 process.exit(r.code === null ? 99 : r.code);
 `;
-  h.ok(['role', 'set', 'reviewer', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, require.resolve('./helpers'), out])]);
-  const r = h.run(['spawn', '--role', 'reviewer', '--task', 'T1', '--wait']);
+  commandRung(h, 'review', [process.execPath, '-e', script, require.resolve('./helpers'), out]);
+  const r = h.run(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
   assert.equal(r.code, 1, r.stderr);
   const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
   assert.equal(seen.agent, 'reviewer-T1-1');
