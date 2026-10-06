@@ -132,6 +132,30 @@ test('accepted wakes after gates pass; a refused accept emits nothing', async (t
   await event(result, 'accepted');
 });
 
+test('review and software gate pass or failure wake as evidence with their verdicts', async (t) => {
+  const h = setup(t);
+  h.sha = gateFixture(h);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
+  submit(h, ['--pr', '9']);
+  for (const type of ['review', 'tests', 'clean', 'ci']) {
+    for (const ok of [true, false]) {
+      const result = await waiting(t, h, ['--types', 'evidence', '--task', 'T1']);
+      if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, ok ? '--ok' : '--fail']);
+      else gateEvidence(h, type, 'gate-runner', ok);
+      const e = await event(result, 'evidence');
+      assert.equal(e.detail.type, type);
+      assert.equal(e.detail.ok, ok);
+      assert.equal(e.detail.sha, h.sha);
+      assert.equal(e.agent, type === 'review' ? 'reviewer' : 'gate-runner');
+      if (type !== 'review') {
+        assert.equal(e.cmd, `check ${type}`);
+        assert.equal(e.detail.source, `check ${type}`);
+        assert.ok(e.detail.commands.length > 0);
+      }
+    }
+  }
+});
+
 test('rework wakes and carries the reason', async (t) => {
   const h = setup(t);
   submit(h);
