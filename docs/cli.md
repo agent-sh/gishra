@@ -36,7 +36,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters |
-| `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record evidence; `--sha` is required except for `note`, which defaults to the task's submitted sha |
+| `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `ci` and `merge` for every agent and either verdict; use the gate commands |
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
 | `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
 | `spend ID [--minutes N] [--tokens N]` | add spend |
@@ -130,7 +130,11 @@ The rung's `args` follow every command. A pi worker (any tier) gets `--skill <ro
 
 ## Gates
 
-Each gate runs software, then records evidence on the task. The gate itself lives in `lib/gates/<name>.js` and exports `async run(ctx)` returning `{ ok, summary, ref?, sha? }`, where `ctx` is `{ root, worktree, task, project, args, log }`. The CLI runs it without holding the lock, then records the result as evidence of the gate's type by `--agent`, at the returned `sha` or the submitted one, against the revision the gate started on. A gate that reports `ok: false` exits 1 after recording. A missing gate module exits 1 with "gate not installed".
+Each gate runs software, then records evidence on the task. Only `check tests`, `check clean`, `check ci` and `merge` record their respective software evidence types. Each result carries `source` naming that command and `commands` listing the processes it ran, with their arguments, working directory, exit status and signal. This includes the test command both with and without the change, the cleanup invocation, GitHub queries and the merge invocation. A precondition failure can have no commands.
+
+The gate itself lives in `lib/gates/<name>.js` and exports `async run(ctx)` returning `{ ok, summary, ref?, sha? }`, where `ctx` is `{ root, worktree, task, project, args, log, exec }`. Gates run commands through the shared helpers in `lib/gates/common.js`, which use the CLI's `exec` to capture receipts. The CLI runs the gate without holding the lock, then records the result as evidence of the gate's type by `--agent`, at the returned `sha` or the submitted one, against the revision the gate started on. A gate that reports `ok: false` exits 1 after recording. A missing gate module exits 1 with "gate not installed".
+
+Acceptance ignores software evidence without the matching gate `source`, including older manual passes. Existing entries stay readable; run the gates again for the submitted sha to replace their proof. Explicit owner waivers through `accept --waive` still satisfy their gates.
 
 | Command | Does |
 |---|---|

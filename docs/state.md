@@ -155,6 +155,10 @@ docs/cli.md lists the command each harness gets.
 
 The CLI never writes a dependency on a task that does not exist, a dependency cycle, or a task without acceptance. `validate` still checks files edited by hand.
 
+Software evidence also has `source` (`check tests`, `check clean`, `check ci` or `merge`) and `commands`, an array of `{ "command", "args", "cwd", "status", "signal" }` receipts. `command` is the executable name or shell command line, `args` holds its arguments, `cwd` is its working directory, and `status` and `signal` report how it ended (null when unavailable). All commands the gate ran are recorded, including failed commands and GitHub queries. A gate refused before running a process records an empty array. Gate evidence and its event carry the same receipts.
+
+`gishra evidence` writes only `review` and `note`. Software types are refused for any agent, whether `--ok` or `--fail`; run their gate commands instead. State version 1 and older evidence remain readable. Software entries without the matching gate `source` do not satisfy acceptance, so their gates must run again.
+
 ### Ready and blocked
 
 A task is ready when its status is `todo` or `rework`, every dependency is `accepted`, `needs_owner` is null, and no open decision lists it in `blocks`. Otherwise `gishra ready --all` says what blocks it.
@@ -169,7 +173,7 @@ Ready tasks come in priority order: most outstanding dependents (direct or trans
 - other kinds: `review` ok from another agent
 - any task with a PR, whatever its kind: `ci` ok as well
 
-A gate passes when the latest evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `review`, entries by the submitter are ignored.
+A gate passes when the latest eligible evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `tests`, `clean` and `ci`, only evidence with the matching gate `source` counts, apart from an owner waiver. Manual and older unmarked entries are ignored, including later entries that would otherwise override a genuine pass or failure. For `review`, entries by the submitter are ignored.
 
 Resubmitting replaces `sha` without changing `revision` or deleting evidence. Evidence at the older head stays in the audit trail and no longer counts for the new head. Resubmitting the same sha preserves its gates. The task remains `submitted`, with no claim lease; omitted branch and PR values stay unchanged. Accepted tasks must go through `rework` and a new claim before submission, and that claimant becomes the new `submitted_by` agent.
 

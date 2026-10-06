@@ -5,16 +5,19 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo } = require('./helpers');
-
-const SHA = '0123456789abcdef0123456789abcdef01234567';
+const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 function submitted(h, extra = [], kind = 'code') {
+  h.sha = gateFixture(h);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works', '--kind', kind]);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
-  h.ok(['submit', 'T1', '--sha', SHA.slice(0, 10), '--agent', 'w-1', ...extra]);
+  h.ok(['submit', 'T1', '--sha', h.sha.slice(0, 10), '--agent', 'w-1', ...extra]);
 }
 
-const ev = (h, type, agent, ok = true, extra = []) => h.ok(['evidence', 'T1', '--type', type, ok ? '--ok' : '--fail', '--agent', agent, ...(extra.includes('--sha') ? [] : ['--sha', SHA]), ...extra]);
+const ev = (h, type, agent, ok = true) => ['tests', 'clean', 'ci'].includes(type)
+  ? gateEvidence(h, type, agent, ok)
+  : h.ok(['evidence', 'T1', '--type', type, ok ? '--ok' : '--fail', '--agent', agent]);
 
 test('accept refuses a code task without gates, and a review by the submitter does not count', (t) => {
   const h = makeRepo(t);
@@ -47,15 +50,19 @@ test('the latest evidence at the submitted sha decides, and other shas do not co
   ev(h, 'tests', 'w-1');
   ev(h, 'clean', 'w-1');
   ev(h, 'review', 'r-1');
-  ev(h, 'ci', 'ci', true, ['--sha', 'fffffff']);
+  ev(h, 'ci', 'ci');
+  const doc = h.readState('tasks.json');
+  // Keep a genuine receipt at another sha to exercise commit matching independently of provenance.
+  doc.tasks[0].evidence.at(-1).sha = 'fffffff';
+  h.writeState('tasks.json', doc);
   const r = h.run(['accept', 'T1']);
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /ci: no ci evidence at 0123456/);
-  ev(h, 'ci', 'ci', true, ['--sha', SHA]);
-  ev(h, 'tests', 'w-1', false, ['--summary', 'flaky retry test']);
+  assert.ok(r.stderr.includes(`ci: no ci evidence at ${h.sha.slice(0, 7)}`));
+  ev(h, 'ci', 'ci');
+  ev(h, 'tests', 'w-1', false);
   const failed = h.run(['accept', 'T1']);
   assert.equal(failed.code, 1);
-  assert.match(failed.stderr, /latest tests at 0123456 failed: flaky retry test/);
+  assert.match(failed.stderr, /latest tests at .* failed:/);
   ev(h, 'tests', 'w-1');
   h.ok(['accept', 'T1']);
 });
@@ -70,7 +77,7 @@ test('a revision bump invalidates earlier evidence', (t) => {
   h.ok(['task', 'update', 'T1', '--acceptance', 'it works', '--acceptance', 'and logs it']);
   const r = h.run(['accept', 'T1']);
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /no tests evidence at 0123456 for revision 2/);
+  assert.ok(r.stderr.includes(`no tests evidence at ${h.sha.slice(0, 7)} for revision 2`));
   assert.match(h.ok(['task', 'show', 'T1']), /revision 1, does not count/);
   ev(h, 'tests', 'w-1');
   ev(h, 'clean', 'w-1');
@@ -130,8 +137,8 @@ test('a task of any kind with a PR needs ci ok at the submitted sha', (t) => {
   ev(h, 'review', 'r-1');
   const r = h.run(['accept', 'T1']);
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /ci: no ci evidence at 0123456/);
-  ev(h, 'ci', 'ci', true, ['--sha', SHA]);
+  assert.ok(r.stderr.includes(`ci: no ci evidence at ${h.sha.slice(0, 7)}`));
+  ev(h, 'ci', 'ci');
   h.ok(['accept', 'T1']);
 });
 
@@ -181,10 +188,10 @@ test('evidence needs a sha and exactly one verdict', (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'A', '--acceptance', 'a']);
-  const r = h.run(['evidence', 'T1', '--type', 'tests', '--ok']);
-  assert.equal(r.code, 2);
-  assert.match(r.stderr, /tests evidence needs --sha/);
-  assert.equal(h.run(['evidence', 'T1', '--type', 'tests', '--ok', '--fail', '--sha', 'abcdef1']).code, 2);
+  const r = h.run(['evidence', 'T1', '--type', 'review', '--ok']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /pass --sha/);
+  assert.equal(h.run(['evidence', 'T1', '--type', 'review', '--ok', '--fail', '--sha', 'abcdef1']).code, 2);
   assert.equal(h.run(['evidence', 'T1', '--type', 'vibes', '--ok', '--sha', 'abcdef1']).code, 2);
   h.ok(['evidence', 'T1', '--type', 'note', '--ok', '--sha', 'abcdef1', '--ref', 'run 42']);
   assert.equal(h.readState('tasks.json').tasks[0].evidence[0].ref, 'run 42');
