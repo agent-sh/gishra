@@ -62,7 +62,42 @@ Pass the commit actually reviewed or checked to `evidence --sha S`. A submitted 
 | `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html` (self-contained, no network) from the state as it stands under the lock |
 | `serve [--port P]` | serve the sketch and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and reload open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use |
 
-The Settings view (`/settings`) edits the default harness, every rung, and each task's tier. Saving posts only what changed to `/api/ladder` (`{ "harness", "rungs": { RUNG: { field: text } } }`, where an empty field is cleared and `args` and `command` are JSON text) or `/api/tiers` (`{ "tiers": { "T1": "hard" } }`). serve writes them through the same code as `ladder set` and `task update --tier`: under the lock, validated, evented with `"via": "serve"` and the agent serve runs as, then re-rendered. A refused change writes nothing and the page shows the reason next to the form. Each run makes a random token and embeds it in the Settings page; every POST must carry it in `x-gishra-token`, send JSON, and come from the page's own origin. serve answers only requests whose `Host` is `127.0.0.1:<port>` or `localhost:<port>`, so a page on another site cannot read the token through a rebound name. While a form has unsaved edits, a change on disk shows a notice instead of reloading the page.
+The Settings view (`/settings`) edits the default harness, every rung and each task's tier. While a form has unsaved edits, a change on disk shows a notice instead of reloading the page.
+
+### serve endpoints
+
+| Method and path | Does |
+|---|---|
+| `GET /`, `GET /sketch.html` | the sketch, rendered from the state on each request, with links to the views |
+| `GET /settings` | the Settings view; carries the run's token in `<meta name="gishra-token">` |
+| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes |
+| `POST /api/ladder` | change the default harness and rungs, as `ladder harness` and `ladder set` do |
+| `POST /api/tiers` | change task tiers, as `task update --tier` does |
+
+Every POST needs:
+
+- `x-gishra-token: <token>`, the random token of this serve run, which only the Settings page carries;
+- `content-type: application/json` and a body of at most 64 KiB;
+- an `Origin`, if the browser sends one, of `http://127.0.0.1:<port>` or `http://localhost:<port>`.
+
+serve answers any request only when its `Host` is `127.0.0.1:<port>` or `localhost:<port>`, so a page on another site cannot reach it through a name rebound to 127.0.0.1 and read the token.
+
+`POST /api/ladder` body, with both keys optional but at least one change:
+
+```json
+{
+  "harness": "pi",
+  "rungs": {
+    "easy": { "harness": "", "model": "openai/gpt-5.5", "profile": "", "effort": "low", "args": "[\"--no-session\"]" }
+  }
+}
+```
+
+Each rung lists the fields to change, as strings. An empty string clears the field; a field left out keeps its value. `args` and `command` are JSON array text, as on the command line. The whole request is one write: if any rung could not run afterwards, nothing is written. The reply is `{ "ok": true, ... }` plus what `ladder show --json` prints (`harness`, `harness_from`, `user_file`, `user_file_exists`, `ladder`).
+
+`POST /api/tiers` body: `{ "tiers": { "T1": "hard", "T4": "research" } }`. All tiers are written in one write, or none. The reply is `{ "ok": true, "tiers": [{ "id": "T1", "tier": "hard" }, ...] }`.
+
+Both write under the lock, validate, log events (`ladder harness`, `ladder set` per rung, `task update` per task) with `"via": "serve"` and the agent serve runs as, and re-render the sketch. Refusals reply `{ "error": "<reason>" }`: 400 for a refused or malformed change (the reason is the one the CLI gives, prefixed with the rung or task it is about), 403 for a missing or wrong token, a foreign origin or a foreign host, 404 for an unknown POST path, 405 for a method other than GET or POST, 413 for an oversize body, 415 for a body that is not JSON, 503 when the state lock is busy, 500 for anything else.
 
 ## Agents and worktrees
 

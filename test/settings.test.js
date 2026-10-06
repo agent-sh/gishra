@@ -89,6 +89,7 @@ test('the Settings view edits the ladder and task tiers only with the page token
 
     const saved = await request(ladder, { method: 'POST', headers: { 'x-gishra-token': token }, body: change });
     assert.equal(saved.status, 200, saved.text);
+    assert.deepEqual([saved.json.ok, saved.json.harness, saved.json.ladder.easy.model, saved.json.ladder.easy.from], [true, 'codex', 'gpt-x', 'project'], 'the reply is the ladder as ladder show prints it');
     assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'low', args: ['--skip-git-repo-check'] });
     const ev = events(h).find((e) => e.cmd === 'ladder set');
     assert.deepEqual([ev.agent, ev.detail.rung, ev.detail.via], ['owner', 'easy', 'serve']);
@@ -107,6 +108,7 @@ test('the Settings view edits the ladder and task tiers only with the page token
     assert.equal(read(h, 'tasks.json'), tasks);
     const tier = await request(tiers, { method: 'POST', headers: { 'x-gishra-token': token }, body: { tiers: { T1: 'hard' } } });
     assert.equal(tier.status, 200, tier.text);
+    assert.deepEqual(tier.json, { ok: true, tiers: [{ id: 'T1', tier: 'hard' }] });
     assert.equal(h.readState('tasks.json').tasks[0].tier, 'hard');
     const tierEv = events(h).filter((e) => e.cmd === 'task update').pop();
     assert.deepEqual([tierEv.task, tierEv.detail], ['T1', { tier: 'hard', via: 'serve' }]);
