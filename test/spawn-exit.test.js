@@ -4,11 +4,16 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
-const { makeRepo, BIN } = require('./helpers');
+const { makeRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
 
 function setup(t) {
-  const h = makeRepo(t);
+  const h = makeRepo();
+  h.stopWorkers = [];
+  // Windows holds directories open while a worker still uses them.
+  t.after(() => {
+    for (const stop of h.stopWorkers) stop();
+    fs.rmSync(h.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
   h.init();
   h.ok(['task', 'add', '--title', 'Recover a worker', '--acceptance', 'exit is reported']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Work on T1.\n' });
@@ -45,7 +50,7 @@ ${wait ? 'process.exit(7);' : 'setInterval(() => {}, 1000);'}
     killed = true;
     try { process.kill(spawned.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   };
-  t.after(kill);
+  h.stopWorkers.push(kill);
   await until(() => fs.existsSync(marker), 'stand-in did not claim the task');
   assert.deepEqual(JSON.parse(fs.readFileSync(marker, 'utf8')), { agent: spawned.agent, pid: spawned.pid });
   return { ...spawned, kill };
@@ -78,7 +83,7 @@ test('a killed spawned claimant is reported with its log tail and released for r
     assert.match(text, /exited without submit/);
     assert.ok(text.includes(spawned.log), text);
     assert.match(text, /last diagnostic before exit/);
-    assert.match(text, /gishra release T1 --reason/);
+    assert.match(text, /gishra release T1 --agent owner --reason/);
     assert.deepEqual(data.ready, [], 'the claim stays held until release or lease expiry');
   }
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before, 'views do not change state');
@@ -143,9 +148,25 @@ test('a missing log does not hide an exited claimant', async (t) => {
 test('a spawn on another host is not inferred dead from a local PID', async (t) => {
   const h = setup(t);
   const hook = path.join(h.base, 'other-host.js');
-  fs.writeFileSync(hook, `require('node:os').hostname = () => ${JSON.stringify(`${os.hostname()}-other`)};\n`);
-  const spawned = await start(t, h, { env: { NODE_OPTIONS: `--require "${hook}"` } });
+  fs.writeFileSync(hook, "const os = require('node:os');\nconst hostname = os.hostname;\nos.hostname = () => hostname() + '-other';\n");
+  const spawned = await start(t, h, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } });
   spawned.kill();
   assert.deepEqual(h.json(['status']).exited_claims, []);
   assert.deepEqual(h.json(['ready']).exited_claims, []);
+});
+
+test('the suggested recovery command works with terminal owner fallback', { skip: !PTY_AVAILABLE }, async (t) => {
+  const h = setup(t);
+  const spawned = await start(t, h);
+  spawned.kill();
+  await until(() => (h.json(['status']).exited_claims || []).length === 1, 'exit was not reported');
+  const text = h.ok(['status']);
+  const command = text.match(/gishra release (T\d+)(?: --agent (\S+))? --reason "([^"]+)"/);
+  assert.ok(command, text);
+  const args = ['release', command[1], '--reason', command[3], ...(command[2] ? ['--agent', command[2]] : [])];
+  const env = { ...h.env };
+  delete env.GISHRA_AGENT;
+  const result = runPty(args, { cwd: h.repo, env });
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'todo');
 });

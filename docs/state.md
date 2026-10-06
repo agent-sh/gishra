@@ -163,7 +163,7 @@ Ready tasks come in priority order: most outstanding dependents (direct or trans
 
 ### Spawned process exits
 
-`status` and `ready`, including `ready --all`, report a current claim when its matching spawned process has exited without submitting. This is a computed diagnostic, not a stored status. Their JSON includes `exited_claims: [{ id, agent, pid, log, tail }]`. Text names the process and log, includes a tail of at most 20 lines from the final 8192 bytes, and gives a `release --reason` command. Missing logs leave the exit visible with a `log unavailable` diagnostic. Foreground spawns use their recorded exit and have `log: null` and an empty tail.
+`status` and `ready`, including `ready --all`, report a current claim when its matching spawned process has exited without submitting. This is a computed diagnostic, not a stored status. Their JSON includes `exited_claims: [{ id, agent, pid, log, tail }]`. Text names the process and log, includes a tail of at most 20 lines from the final 8192 bytes, and gives a `release --agent owner --reason` command for explicit owner recovery. Workers still act only as their own claimant identity or request owner action. Missing logs leave the exit visible with a `log unavailable` diagnostic. Foreground spawns use their recorded exit and have `log: null` and an empty tail.
 
 Only the current claimant's most recent spawn counts. A worker can claim after its spawn; earlier claims, release, submit and rework events fence off older spawn records. A submitted task or a manual claim with no matching spawn is not an exited claim. Reading either view writes no state, changes no lease and starts no replacement.
 
