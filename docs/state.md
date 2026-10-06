@@ -14,6 +14,14 @@ The state directory is the first of:
 
 Commands that need the repository (`worktree`, `spawn`, the gates) use the one gishra runs in; outside a repository, the one that holds the state directory.
 
+## Agent identity
+
+The identity recorded in state and events comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, the CLI uses `owner` only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. In every other case it exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT`, before reading or writing state. Help needs no identity.
+
+`spawn` passes the name `<role>-<task>-<n>` in `GISHRA_AGENT`. Its prompt closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
+
+`accept --waive` and `owner-done` require the resolved name to be exactly `owner`. Automated owner actions must name it with `--agent owner` or `GISHRA_AGENT=owner`.
+
 ## Files
 
 | File | Holds |

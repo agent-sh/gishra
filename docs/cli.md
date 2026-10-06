@@ -1,6 +1,8 @@
 # CLI
 
-`gishra <command> [args]`. Every command accepts `--state DIR`, `--agent NAME` (default `GISHRA_AGENT`, else `owner`), `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code.
+`gishra <command> [args]`. Every command accepts `--state DIR`, `--agent NAME`, `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code.
+
+Agent identity comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, `owner` is used only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. Otherwise the command exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT` and writes nothing. Help needs no agent. Automated owner actions must pass `--agent owner` or set `GISHRA_AGENT=owner`; `accept --waive` and `owner-done` require the resolved name to be exactly `owner`.
 
 Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. `render` takes the lock too. A refused command writes nothing.
 
@@ -33,7 +35,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
 | `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
 | `spend ID [--minutes N] [--tokens N]` | add spend |
-| `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it |
+| `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Only the agent named `owner` |
 
 ## Decisions
 
@@ -58,7 +60,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `worktree ID` | create (or print) a git worktree and branch `gishra/<id>-<slug>` from `base` for the task, at `<repo-parent>/<repo>-worktrees/<id>-<slug>`; records the branch on the task. Once the task has a branch, its worktree is found by branch, so renaming the task does not move it |
 | `spawn --role R --task ID [--dry-run] [--wait]` | start the role's harness in the task's worktree with the brief and task as the prompt; sets `GISHRA_STATE`, `GISHRA_TASK`, `GISHRA_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command |
 
-`spawn` checks the role, the brief (`brief set`) and the harness program (on `PATH`, or at the path the role gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<role>-<task>-<n>`, numbered from earlier spawns of that role on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
+`spawn` checks the role, the brief (`brief set`) and the harness program (on `PATH`, or at the path the role gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<role>-<task>-<n>`, numbered from earlier spawns of that role on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. Its closing instruction says `run gishra with --agent <name> if GISHRA_AGENT is missing`, using the same name passed in the environment. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
 
 | Harness | Command |
 |---|---|

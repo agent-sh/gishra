@@ -16,7 +16,7 @@ const bool = (help) => ({ type: 'bool', help });
 
 const GLOBAL = {
   state: str('DIR', 'state directory (default: GISHRA_STATE, then .gishra/ in the main checkout)'),
-  agent: str('NAME', 'who is acting (default: GISHRA_AGENT, then owner)'),
+  agent: str('NAME', 'who is acting (default: GISHRA_AGENT; owner only on an interactive terminal outside a task)'),
   json: bool('machine output on stdout'),
   help: bool('show help'),
 };
@@ -272,7 +272,11 @@ async function main(argv) {
     for (const r of cmd.required || []) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: gishra ${cmd.name} ${cmd.usage}`);
     }
-    const agent = globals.agent || process.env.GISHRA_AGENT || 'owner';
+    let agent = globals.agent ?? process.env.GISHRA_AGENT;
+    if (agent === undefined) {
+      if (process.stdin.isTTY && process.stdout.isTTY && process.env.GISHRA_TASK === undefined) agent = 'owner';
+      else throw usage('no agent: pass --agent NAME or set GISHRA_AGENT');
+    }
     if (!agent.trim()) throw usage('--agent cannot be empty');
     const ctx = {
       cwd: process.cwd(),

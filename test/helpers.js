@@ -15,6 +15,8 @@ const TMP_ROOT = process.env.GISHRA_TEST_TMP || os.tmpdir();
 function baseEnv(home) {
   const env = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith('GISHRA_') || k.startsWith('GIT_')) delete env[k];
+  // Existing fixtures act as the owner, so they must provide that identity.
+  env.GISHRA_AGENT = 'owner';
   env.GIT_CONFIG_GLOBAL = path.join(home, 'gitconfig');
   env.GIT_CONFIG_NOSYSTEM = '1';
   return env;
