@@ -163,3 +163,48 @@ test('spawn in the background detaches, logs output and numbers agents', async (
   assert.equal(noBrief.code, 1);
   assert.match(noBrief.stderr, /T2 has no brief; write one with gishra brief set T2/);
 });
+
+// Everything a spawn could leave behind: state files, events, logs, the
+// worktree and its branch.
+function footprint(h) {
+  const read = (f) => (fs.existsSync(path.join(h.state, f)) ? fs.readFileSync(path.join(h.state, f), 'utf8') : null);
+  return {
+    tasks: read('tasks.json'),
+    events: read('events.jsonl'),
+    logs: fs.existsSync(path.join(h.state, 'logs')) ? fs.readdirSync(path.join(h.state, 'logs')) : null,
+    worktrees: fs.existsSync(path.join(h.base, 'repo-worktrees')),
+    branches: h.git(['branch', '--list', 'gishra/*']),
+  };
+}
+
+test('a spawn refused for a missing program creates and writes nothing', (t) => {
+  const h = setup(t);
+  for (const command of [['gishra-no-such-program', '{prompt}'], [path.join(h.base, 'missing', 'agent')]]) {
+    h.ok(['role', 'set', 'ghost', '--harness', 'command', '--command', JSON.stringify(command)]);
+    const before = footprint(h);
+    assert.equal(h.readState('tasks.json').tasks[0].branch, null);
+    for (const mode of [[], ['--wait']]) {
+      const r = h.run(['spawn', '--role', 'ghost', '--task', 'T1', ...mode]);
+      assert.equal(r.code, 1, r.stderr);
+      assert.deepEqual(footprint(h), before, `${command[0]} ${mode.join(' ')}`);
+      assert.ok(r.stderr.includes(`could not start ${command[0]}: no executable file by that name`), r.stderr);
+    }
+  }
+});
+
+test('a spawn whose program fails to start undoes the worktree it made', (t) => {
+  const h = setup(t);
+  h.ok(['role', 'set', 'runner', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]);
+  const before = footprint(h);
+  for (const mode of [[], ['--wait']]) {
+    const r = h.run(['spawn', '--role', 'runner', '--task', 'T1', ...mode], { hooks: { HOOK_SPAWN_FAIL: '1' } });
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /could not start/);
+    assert.deepEqual(footprint(h), before, mode.join(' ') || 'background');
+  }
+  // An existing worktree is the task's own and stays.
+  const wt = h.json(['worktree', 'T1']).path;
+  const r = h.run(['spawn', '--role', 'runner', '--task', 'T1'], { hooks: { HOOK_SPAWN_FAIL: '1' } });
+  assert.equal(r.code, 1, r.stderr);
+  assert.ok(fs.existsSync(wt), 'the worktree made by gishra worktree is kept');
+});

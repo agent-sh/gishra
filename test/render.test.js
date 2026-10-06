@@ -58,6 +58,29 @@ test('render writes both files on demand', (t) => {
   assert.ok(fs.existsSync(out.md) && fs.existsSync(out.html));
 });
 
+test('render holds the lock, so a write made while it runs still shows in the sketch', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const paused = path.join(h.base, 'render-read');
+  // render stops right after it reads tasks.json, then a task is added.
+  const render = h.runAsync(['render'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
+  const end = Date.now() + 20000;
+  while (!fs.existsSync(paused)) {
+    if (Date.now() > end) throw new Error('render never read the state');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const add = h.runAsync(['task', 'add', '--title', 'Added during render', '--acceptance', 'a']);
+  // Give the add time to finish if nothing holds it back, then let render go on.
+  await Promise.race([add, new Promise((r) => setTimeout(r, 1500))]);
+  fs.writeFileSync(`${paused}.go`, '');
+  const [r, a] = await Promise.all([render, add]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(a.code, 0, a.stderr);
+  assert.equal(h.readState('tasks.json').tasks.length, 1);
+  assert.match(fs.readFileSync(path.join(h.state, 'sketch.md'), 'utf8'), /Added during render/, 'sketch.md shows the task');
+  assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /Added during render/, 'sketch.html shows the task');
+});
+
 function get(url) {
   return new Promise((resolve, reject) => {
     http.get(url, (res) => {

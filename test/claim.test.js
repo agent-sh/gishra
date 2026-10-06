@@ -59,6 +59,30 @@ test('the workers limit caps tasks in progress', (t) => {
   h.ok(['claim', 'T1', '--agent', 'w-1']);
 });
 
+test('renewing an expired lease takes a worker slot like a claim', (t) => {
+  const h = makeRepo(t);
+  h.init(['--workers', '1']);
+  h.ok(['task', 'add', '--title', 'A', '--acceptance', 'a']);
+  h.ok(['task', 'add', '--title', 'B', '--acceptance', 'b']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  const doc = h.readState('tasks.json');
+  doc.tasks[0].claim.until = new Date(Date.now() - 1000).toISOString();
+  h.writeState('tasks.json', doc);
+  h.ok(['claim', 'T2', '--agent', 'w-2']);
+
+  const late = h.run(['renew', 'T1', '--agent', 'w-1']);
+  assert.equal(late.code, 1, late.stderr);
+  assert.match(late.stderr, /T1's lease expired and the workers limit is reached \(1 tasks in progress, limit 1\)/);
+  const inProgress = h.json(['status']).in_progress.filter((x) => !x.expired);
+  assert.deepEqual(inProgress.map((x) => x.id), ['T2'], 'one task in progress, as the limit says');
+
+  h.ok(['renew', 'T2', '--agent', 'w-2']);
+  h.ok(['submit', 'T2', '--sha', 'abcdef1', '--agent', 'w-2']);
+  h.ok(['renew', 'T1', '--agent', 'w-1']);
+  assert.ok(Date.parse(h.readState('tasks.json').tasks[0].claim.until) > Date.now(), 'with a slot free, the late renewal stands');
+  h.ok(['submit', 'T1', '--sha', 'abcdef2', '--agent', 'w-1']);
+});
+
 test('only the claimant submits, renews or releases', (t) => {
   const h = makeRepo(t);
   h.init();

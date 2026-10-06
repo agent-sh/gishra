@@ -2,7 +2,7 @@
 
 `gishra <command> [args]`. Every command accepts `--state DIR`, `--agent NAME` (default `GISHRA_AGENT`, else `owner`), `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code.
 
-Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. A refused command writes nothing.
+Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. `render` takes the lock too. A refused command writes nothing.
 
 ## Plan
 
@@ -13,7 +13,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `project show` | print settings and roles |
 | `role set ROLE --harness H [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON]` | set who plays a role, replacing it whole; `--profile` is for codex, `--provider` for pi, `--command` for `command` |
 | `task add --title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--dep ID] [--role R] [--needs-owner REASON]` | add a task; prints its id. Refused for an unknown dependency or role |
-| `task update ID [--title] [--acceptance (replaces)] [--dep (replaces)] [--size] [--kind] [--role] [--needs-owner] [--status cancelled]` | change a task; acceptance or dependency changes bump `revision`. `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. Refused if it would form a cycle; an accepted task cannot be cancelled |
+| `task update ID [--title] [--acceptance (replaces)] [--dep (replaces)] [--size] [--kind] [--role] [--needs-owner] [--status cancelled]` | change a task; acceptance or dependency changes bump `revision`. `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies and kind change only after `rework` |
 | `task note ID TEXT` | append a note |
 | `task show ID`, `task list [--status S]` | read; `S` is a status, `ready` or `blocked` |
 | `plan import FILE` | add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `size`, `depends_on`, `role`, `needs_owner`. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file |
@@ -26,7 +26,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 |---|---|
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first); `--all` lists blocked ones with the reason |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; refused if not ready, already claimed, or the workers limit is reached (tasks in progress with a live lease) |
-| `renew ID [--lease MIN]` | extend the lease from now; only the claimant |
+| `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or the owner |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted; only the claimant. `S` is 7 to 64 hex characters |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record evidence; `sha` defaults to the task's submitted sha |
@@ -48,7 +48,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | Command | Does |
 |---|---|
 | `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases |
-| `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html` (self-contained, no network) |
+| `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html` (self-contained, no network) from the state as it stands under the lock |
 | `serve [--port P]` | serve the sketch on 127.0.0.1 (default port 4747; 0 picks a free one) and reload open pages over server-sent events when the state changes. Pages are rendered from the state on each request |
 
 ## Agents and worktrees
@@ -58,7 +58,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `worktree ID` | create (or print) a git worktree and branch `gishra/<id>-<slug>` from `base` for the task, at `<repo-parent>/<repo>-worktrees/<id>-<slug>`; records the branch on the task. Once the task has a branch, its worktree is found by branch, so renaming the task does not move it |
 | `spawn --role R --task ID [--dry-run] [--wait]` | start the role's harness in the task's worktree with the brief and task as the prompt; sets `GISHRA_STATE`, `GISHRA_TASK`, `GISHRA_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command |
 
-`spawn` needs a brief (`brief set`). The agent is named `<role>-<task>-<n>`, numbered from earlier spawns of that role on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
+`spawn` needs a brief (`brief set`) and a harness program it can find (on `PATH`, or at the path the role gives) before it creates the worktree. A spawn that is refused, or whose program fails to start, writes nothing and removes the worktree and branch it created. The agent is named `<role>-<task>-<n>`, numbered from earlier spawns of that role on that task. The prompt is the brief, then the task's id, title, acceptance and kind as JSON, then a line telling the agent to use the `gishra` CLI for every state change. It runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. In the background the agent is detached, its output goes to `logs/<task>-<agent>.log` and the `spawn` event records its pid. With `--wait` it runs in the foreground (its stdout goes to stderr under `--json`) and gishra exits with its code.
 
 | Harness | Command |
 |---|---|
@@ -80,4 +80,4 @@ Each gate runs software, then records evidence on the task. The gate itself live
 | `check tests ID --cmd CMD` | run CMD in the worktree at the submitted sha (must pass), then with the task's changes to non-test files reverted (must fail when the task added or changed tests); records `tests` |
 | `check clean ID` | run the cleanup tool on the task branch against `base`; records `clean`, ok when it reports no HIGH finding |
 | `check ci ID` | read GitHub check runs on the submitted sha; ok only when all completed and none failed, cancelled, timed out or skipped-required; records `ci` |
-| `merge ID` | merge the task's PR with `--match-head-commit` when the task is accepted (refused otherwise); records `merge` |
+| `merge ID` | merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise); records `merge` |

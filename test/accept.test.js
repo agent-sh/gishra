@@ -78,6 +78,41 @@ test('a revision bump invalidates earlier evidence', (t) => {
   h.ok(['accept', 'T1']);
 });
 
+test('an accepted task keeps its acceptance, dependencies and kind until it is sent back', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  submitted(h);
+  ev(h, 'tests', 'w-1');
+  ev(h, 'clean', 'w-1');
+  ev(h, 'review', 'r-1');
+  h.ok(['accept', 'T1']);
+  h.ok(['task', 'add', '--title', 'Uses the change', '--acceptance', 'b', '--dep', 'T1']);
+  h.ok(['task', 'add', '--title', 'Unrelated', '--acceptance', 'c']);
+  const before = fs.readFileSync(path.join(h.state, 'tasks.json'), 'utf8');
+  for (const [flags, what] of [
+    [['--acceptance', 'a new unmet criterion'], 'acceptance'],
+    [['--dep', 'T3'], 'dependencies'],
+    [['--kind', 'docs'], 'kind'],
+  ]) {
+    const r = h.run(['task', 'update', 'T1', ...flags]);
+    assert.equal(r.code, 1, `${flags.join(' ')}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`T1 is accepted, so its ${what} cannot change; send it back first with gishra rework T1`));
+  }
+  assert.equal(fs.readFileSync(path.join(h.state, 'tasks.json'), 'utf8'), before, 'a refused update writes nothing');
+  const t1 = h.json(['task', 'show', 'T1']);
+  assert.deepEqual([t1.status, t1.revision, t1.gates.ok], ['accepted', 1, true]);
+
+  h.ok(['task', 'update', 'T1', '--title', 'Change, renamed', '--size', 'S']);
+  h.ok(['task', 'update', 'T1', '--acceptance', 'it works']);
+  assert.equal(h.readState('tasks.json').tasks[0].revision, 1, 'unchanged acceptance is not a change');
+
+  h.ok(['rework', 'T1', '--reason', 'it must also log retries']);
+  h.ok(['task', 'update', 'T1', '--acceptance', 'it works', '--acceptance', 'it logs retries']);
+  const reworked = h.readState('tasks.json').tasks[0];
+  assert.deepEqual([reworked.status, reworked.revision], ['rework', 2]);
+  assert.deepEqual(h.json(['ready']).ready.map((x) => x.id), ['T1', 'T3'], 'T2 waits for T1 again');
+});
+
 test('other kinds need only a review from another agent', (t) => {
   const h = makeRepo(t);
   h.init();

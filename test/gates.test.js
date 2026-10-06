@@ -87,3 +87,27 @@ test('a gate gets its context and its result is recorded as evidence', (t) => {
   assert.equal(merge.code, 1);
   assert.match(merge.stderr, /T1 is submitted; merge needs an accepted task/);
 });
+
+test('merge checks the gates as they stand, not only the accepted status', (t) => {
+  const h = makeRepo(t);
+  submittedTask(h);
+  for (const [type, agent] of [['tests', 'w-1'], ['clean', 'w-1'], ['review', 'r-1']]) h.ok(['evidence', 'T1', '--type', type, '--ok', '--agent', agent]);
+  h.ok(['accept', 'T1']);
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates);
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+  const out = path.join(h.base, 'gate.json');
+
+  // A test run recorded after the accept fails at the same commit.
+  h.ok(['evidence', 'T1', '--type', 'tests', '--fail', '--summary', 'fails on main after a rebase', '--agent', 'checker']);
+  const refused = cli.run(['merge', 'T1'], { GATE_OUT: out, GATE_OK: '1' });
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stderr, /T1 is accepted, but its gates no longer pass: tests: latest tests at abcdef1 failed: fails on main after a rebase; send it back with gishra rework T1/);
+  assert.ok(!fs.existsSync(out), 'the merge gate did not run');
+  assert.ok(!h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'merge'));
+
+  h.ok(['evidence', 'T1', '--type', 'tests', '--ok', '--agent', 'checker']);
+  const merged = cli.run(['merge', 'T1'], { GATE_OUT: out, GATE_OK: '1' });
+  assert.equal(merged.code, 0, merged.stderr);
+  assert.ok(fs.existsSync(out), 'with the gates passing again, the merge gate runs');
+});

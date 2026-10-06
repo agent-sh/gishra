@@ -7,6 +7,7 @@ const cp = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'gishra.js');
+const HOOKS = path.join(__dirname, 'fixtures', 'hooks.js');
 const TMP_ROOT = process.env.GISHRA_TEST_TMP || os.tmpdir();
 
 // Tests must not see the developer's git config (hooks, signing) or an
@@ -42,8 +43,8 @@ function makeRepo(t) {
     repo,
     env,
     state: path.join(repo, '.gishra'),
-    run: (args, opts = {}) => run(args, { cwd: repo, env, ...opts, env: { ...env, ...(opts.env || {}) } }),
-    runAsync: (args, opts = {}) => runAsync(args, { cwd: repo, env, ...opts, env: { ...env, ...(opts.env || {}) } }),
+    run: (args, opts = {}) => run(args, withHooks(ctx, opts)),
+    runAsync: (args, opts = {}) => runAsync(args, withHooks(ctx, opts)),
     json: (args, opts) => {
       const r = ctx.run([...args, '--json'], opts);
       if (r.code !== 0) throw new Error(`gishra ${args.join(' ')} exited ${r.code}: ${r.stderr}`);
@@ -63,14 +64,26 @@ function makeRepo(t) {
   return ctx;
 }
 
-function run(args, { cwd, env, input } = {}) {
-  const r = cp.spawnSync(process.execPath, [BIN, ...args], { cwd, env, input, encoding: 'utf8', timeout: 60000 });
-  return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+// opts.hooks preloads test/fixtures/hooks.js into the CLI with those HOOK_*
+// variables, acting on this repository's state directory.
+function withHooks(ctx, opts) {
+  const env = { ...ctx.env, ...(opts.env || {}) };
+  let pre = [];
+  if (opts.hooks) {
+    Object.assign(env, { HOOK_STATE: ctx.state }, opts.hooks);
+    pre = ['--require', HOOKS];
+  }
+  return { cwd: ctx.repo, ...opts, env, pre };
 }
 
-function runAsync(args, { cwd, env } = {}) {
+function run(args, { cwd, env, input, pre = [], timeout = 60000 } = {}) {
+  const r = cp.spawnSync(process.execPath, [...pre, BIN, ...args], { cwd, env, input, encoding: 'utf8', timeout });
+  return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '', signal: r.signal };
+}
+
+function runAsync(args, { cwd, env, pre = [] } = {}) {
   return new Promise((resolve) => {
-    const child = cp.spawn(process.execPath, [BIN, ...args], { cwd, env });
+    const child = cp.spawn(process.execPath, [...pre, BIN, ...args], { cwd, env });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => (stdout += d));
@@ -81,4 +94,4 @@ function runAsync(args, { cwd, env } = {}) {
 
 const real = (p) => fs.realpathSync.native(p);
 
-module.exports = { makeRepo, run, runAsync, BIN, ROOT, real, TMP_ROOT };
+module.exports = { makeRepo, run, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT };

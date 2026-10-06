@@ -26,7 +26,7 @@ const SETTINGS = {
   goal: str('G', 'one-line goal'),
   repo: str('O/R', 'GitHub repository (default: from the origin remote)'),
   base: str('B', 'base branch for task branches (default: the current branch)'),
-  workers: int('N', 'tasks that may be in progress at once (default 6)'),
+  workers: int('N', 'tasks in progress at once, counting live leases (default 6)'),
   'lease-minutes': int('MIN', 'default claim lease (default 60)'),
   'budget-hours': num('H', 'hours budget'),
   'budget-tokens': int('N', 'token budget'),
@@ -52,7 +52,7 @@ const COMMANDS = [
   { section: 'Plan', name: 'project show', summary: 'print project settings and roles', run: P.projectShow },
   { section: 'Plan', name: 'role set', pos: ['ROLE'], usage: 'ROLE --harness H [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON]', summary: 'set who plays a role (replaces the whole role)', flags: { harness: str('H', 'claude, codex, opencode, agy, pi or command'), model: str('M', 'model id'), profile: str('P', 'codex profile'), provider: str('P', 'pi provider'), effort: str('E', 'reasoning effort, passed in the form the harness takes'), args: str('JSON', 'extra arguments appended to the harness command, as a JSON array'), command: str('JSON', 'for --harness command: argv array; {task} {brief} {prompt} {cwd} are substituted') }, required: ['harness'], run: P.roleSet },
   { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--dep ID] [--role R] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
-  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--role R] [--needs-owner REASON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies)", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it"), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
+  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--role R] [--needs-owner REASON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies and kind wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it"), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
   { section: 'Plan', name: 'task note', pos: ['ID', 'TEXT...'], usage: 'ID TEXT', summary: 'append a note', run: T.taskNote },
   { section: 'Plan', name: 'task show', pos: ['ID'], usage: 'ID', summary: 'show one task with its gates, evidence and notes', run: T.taskShow },
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, run: T.taskList },
@@ -63,7 +63,7 @@ const COMMANDS = [
 
   { section: 'Run', name: 'ready', usage: '[--all]', summary: 'ready tasks, those that unblock the most first; --all adds blocked ones with the reason', flags: { all: bool('also list blocked tasks and why') }, run: T.ready },
   { section: 'Run', name: 'claim', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'take a ready task for --agent', flags: { lease: int('MIN', 'lease length (default limits.lease_minutes)') }, run: T.claim },
-  { section: 'Run', name: 'renew', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'extend your lease', flags: { lease: int('MIN', 'new lease length from now') }, run: T.renew },
+  { section: 'Run', name: 'renew', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'extend your lease; an expired one only while the workers limit has room', flags: { lease: int('MIN', 'new lease length from now') }, run: T.renew },
   { section: 'Run', name: 'release', pos: ['ID'], usage: 'ID --reason R', summary: 'give a claimed task back; it returns to todo or rework', flags: { reason: str('R', 'why') }, required: ['reason'], run: T.release },
   { section: 'Run', name: 'submit', pos: ['ID'], usage: 'ID --sha S [--branch B] [--pr N] [--summary T]', summary: 'mark submitted; only the claimant', flags: { sha: str('S', 'commit to review'), branch: str('B', 'branch holding it'), pr: int('N', 'pull request number'), summary: str('T', 'what changed') }, required: ['sha'], run: T.submit },
   { section: 'Run', name: 'evidence', pos: ['ID'], usage: 'ID --type T (--ok | --fail) [--sha S] [--summary T] [--ref URL]', summary: 'record evidence; sha defaults to the submitted sha', flags: { type: str('T', 'tests, clean, review, ci, merge or note'), ok: bool('it passed'), fail: bool('it failed'), sha: str('S', 'commit the evidence is about'), summary: str('T', 'one line'), ref: str('URL', 'link to the run, review or log') }, required: ['type'], run: T.evidence },
@@ -86,7 +86,7 @@ const COMMANDS = [
   { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID --cmd CMD', summary: 'tests pass at the submitted sha and fail with the non-test changes reverted; records tests', flags: { cmd: str('CMD', 'test command') }, required: ['cmd'], run: gate('tests') },
   { section: 'Gates', name: 'check clean', pos: ['ID'], usage: 'ID', summary: 'cleanup tool on the task branch against base reports no HIGH finding; records clean', run: gate('clean') },
   { section: 'Gates', name: 'check ci', pos: ['ID'], usage: 'ID', summary: 'GitHub check runs on the submitted sha all completed and passed; records ci', run: gate('ci') },
-  { section: 'Gates', name: 'merge', pos: ['ID'], usage: 'ID', summary: "merge an accepted task's PR with --match-head-commit; records merge", run: gate('merge') },
+  { section: 'Gates', name: 'merge', pos: ['ID'], usage: 'ID', summary: "merge an accepted task's PR with --match-head-commit if its gates still pass; records merge", run: gate('merge') },
 ];
 
 const GROUPS = new Set(COMMANDS.filter((c) => c.name.includes(' ')).map((c) => c.name.split(' ')[0]));
