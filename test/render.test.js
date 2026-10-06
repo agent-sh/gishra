@@ -141,3 +141,19 @@ test('serve serves the sketch and pushes a reload when the state changes', async
     if (late) await late;
   }
 });
+
+test('serve exits 1 when its port is taken', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const taken = http.createServer();
+  await new Promise((resolve) => taken.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = taken.address().port;
+    const started = Date.now();
+    const r = h.run(['serve', '--port', String(port)], { timeout: 15000 });
+    assert.equal(r.code, 1, `exit ${r.code} (signal ${r.signal}) after ${Date.now() - started} ms: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`port ${port} is in use`));
+  } finally {
+    taken.close();
+  }
+});
