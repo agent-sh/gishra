@@ -2,7 +2,9 @@
 
 `gishra <command> [args]`. Every command accepts `--state DIR`, `--agent NAME`, `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code.
 
-Agent identity comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, `owner` is used only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. Otherwise the command exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT` and writes nothing. Help needs no agent. Automated owner actions must pass `--agent owner` or set `GISHRA_AGENT=owner`; `accept --waive` and `owner-done` require the resolved name to be exactly `owner`.
+Agent identity comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, `owner` is used only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. Otherwise the command exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT` and writes nothing. An empty or whitespace-only identity exits 2 with the same message. Help needs no agent.
+
+`accept --waive`, `owner-done` and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers.
 
 Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. `render` takes the lock too. A refused command writes nothing.
 
@@ -29,13 +31,13 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first); `--all` lists blocked ones with the reason |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; refused if not ready, already claimed, or the workers limit is reached (tasks in progress with a live lease) |
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
-| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or the owner |
+| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted; only the claimant. `S` is 7 to 64 hex characters |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record evidence; `sha` defaults to the task's submitted sha |
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
 | `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
 | `spend ID [--minutes N] [--tokens N]` | add spend |
-| `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Only the agent named `owner` |
+| `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Requires explicit `--agent owner` or `GISHRA_AGENT=owner` |
 
 ## Decisions
 

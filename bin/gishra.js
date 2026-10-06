@@ -273,15 +273,18 @@ async function main(argv) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: gishra ${cmd.name} ${cmd.usage}`);
     }
     let agent = globals.agent ?? process.env.GISHRA_AGENT;
+    // Terminal fallback identifies ordinary actions; owner powers need a named identity.
+    const agentExplicit = agent !== undefined;
     if (agent === undefined) {
       if (process.stdin.isTTY && process.stdout.isTTY && process.env.GISHRA_TASK === undefined) agent = 'owner';
       else throw usage('no agent: pass --agent NAME or set GISHRA_AGENT');
     }
-    if (!agent.trim()) throw usage('--agent cannot be empty');
+    if (!agent.trim()) throw usage('no agent: pass --agent NAME or set GISHRA_AGENT');
     const ctx = {
       cwd: process.cwd(),
       env: process.env,
       agent: agent.trim(),
+      agentExplicit,
       json: !!globals.json,
       flags: own,
       pos: parsed.pos,

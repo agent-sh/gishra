@@ -4,11 +4,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, runPty, PTY_AVAILABLE } = require('./helpers');
 
 const noAgent = { GISHRA_AGENT: undefined };
 const message = 'gishra: no agent: pass --agent NAME or set GISHRA_AGENT\n';
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+const withoutGishra = (env) => Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('GISHRA_')));
+const terminal = (h, args, env = {}) => runPty([...args, '--state', h.state], { cwd: h.repo, env: { ...withoutGishra(h.env), ...env } });
 
 function setup(t) {
   const h = makeRepo(t);
@@ -36,6 +38,91 @@ test('a task environment without an agent is refused on a non-TTY run', (t) => {
   assert.equal(r.stderr, message);
   assert.equal(events(h), before);
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
+});
+
+test('empty agent identity names both ways to supply it', (t) => {
+  const h = setup(t);
+  const before = events(h);
+  for (const agent of ['', '   ']) {
+    const r = h.run(['owner-done', 'T1'], { env: { GISHRA_AGENT: agent } });
+    assert.equal(r.code, 2, r.stderr);
+    assert.equal(r.stderr, message);
+    assert.equal(events(h), before);
+  }
+});
+
+test('terminal fallback records owner only outside a task', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = setup(t);
+  const r = terminal(h, ['task', 'note', 'T1', 'person at a terminal']);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.equal(h.readState('tasks.json').tasks[0].notes[0].agent, 'owner');
+  const before = events(h);
+  for (const task of ['T1', '']) {
+    const blocked = terminal(h, ['task', 'note', 'T1', 'lost identity'], { GISHRA_TASK: task });
+    assert.equal(blocked.code, 2, blocked.stdout + blocked.stderr);
+    assert.ok(blocked.stdout.includes(message.trim()));
+    assert.equal(events(h), before);
+  }
+});
+
+test('terminal fallback cannot clear owner work without explicit owner identity', { skip: !PTY_AVAILABLE }, (t) => {
+  for (const identity of ['flag', 'env']) {
+    const h = setup(t);
+    const before = events(h);
+    const blocked = terminal(h, ['owner-done', 'T1']);
+    assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
+    assert.match(blocked.stdout, /only the owner/);
+    assert.match(blocked.stdout, /--agent owner.*GISHRA_AGENT=owner/);
+    assert.equal(events(h), before);
+    assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
+    const done = terminal(h, ['owner-done', 'T1', ...(identity === 'flag' ? ['--agent', 'owner'] : [])],
+      identity === 'env' ? { GISHRA_AGENT: 'owner' } : {});
+    assert.equal(done.code, 0, done.stdout + done.stderr);
+    assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
+  }
+});
+
+test('terminal fallback cannot waive gates without explicit owner identity', { skip: !PTY_AVAILABLE }, (t) => {
+  for (const identity of ['flag', 'env']) {
+    const h = setup(t);
+    h.ok(['owner-done', 'T1']);
+    h.ok(['claim', 'T1', '--agent', 'worker']);
+    h.ok(['submit', 'T1', '--sha', 'abcdef1', '--pr', '1', '--agent', 'worker']);
+    const waive = ['accept', 'T1', '--waive', 'tests', '--waive', 'clean', '--waive', 'review', '--waive', 'ci', '--reason', 'approved'];
+    const before = events(h);
+    const blocked = terminal(h, waive);
+    assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
+    assert.match(blocked.stdout, /only the owner can waive/);
+    assert.equal(events(h), before);
+    assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
+    assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
+    const accepted = terminal(h, [...waive, ...(identity === 'flag' ? ['--agent', 'owner'] : [])],
+      identity === 'env' ? { GISHRA_AGENT: 'owner' } : {});
+    assert.equal(accepted.code, 0, accepted.stdout + accepted.stderr);
+    const task = h.readState('tasks.json').tasks[0];
+    assert.equal(task.status, 'accepted');
+    assert.ok(task.evidence.every((e) => e.waived && e.agent === 'owner'));
+  }
+});
+
+test('terminal fallback cannot release another agent claim without explicit owner identity', { skip: !PTY_AVAILABLE }, (t) => {
+  for (const identity of ['flag', 'env']) {
+    const h = setup(t);
+    h.ok(['owner-done', 'T1']);
+    h.ok(['claim', 'T1', '--agent', 'worker']);
+    const release = ['release', 'T1', '--reason', 'handoff'];
+    const before = events(h);
+    const blocked = terminal(h, release);
+    assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
+    assert.match(blocked.stdout, /only the claimant/);
+    assert.equal(events(h), before);
+    assert.equal(h.readState('tasks.json').tasks[0].claim.agent, 'worker');
+    const released = terminal(h, [...release, ...(identity === 'flag' ? ['--agent', 'owner'] : [])],
+      identity === 'env' ? { GISHRA_AGENT: 'owner' } : {});
+    assert.equal(released.code, 0, released.stdout + released.stderr);
+    assert.equal(h.readState('tasks.json').tasks[0].claim, null);
+    assert.equal(h.readState('tasks.json').tasks[0].status, 'todo');
+  }
 });
 
 test('--agent owner recovers missing identity and overrides the environment', (t) => {

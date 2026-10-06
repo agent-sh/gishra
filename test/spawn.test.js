@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, real, BIN } = require('./helpers');
+const { makeRepo, real, BIN, PTY_AVAILABLE } = require('./helpers');
 
 function setup(t) {
   const h = makeRepo(t);
@@ -82,7 +82,7 @@ test('the prompt is the brief, then the task, then how to use gishra', (t) => {
   assert.ok(p.endsWith('run gishra with --agent worker-T1-1 if GISHRA_AGENT is missing.'));
 });
 
-test('a spawned reviewer that loses GISHRA_AGENT cannot record evidence as owner', (t) => {
+test('a spawned reviewer that loses all GISHRA variables cannot record evidence as owner', (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'lost-agent.json');
   const script = `
@@ -90,11 +90,13 @@ const fs = require('node:fs');
 const cp = require('node:child_process');
 const env = { ...process.env };
 const agent = env.GISHRA_AGENT;
-delete env.GISHRA_AGENT;
-const r = cp.spawnSync(process.execPath, [process.argv[1], 'evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1'], {
+const task = env.GISHRA_TASK;
+const state = env.GISHRA_STATE;
+for (const key of Object.keys(env)) if (key.startsWith('GISHRA_')) delete env[key];
+const r = cp.spawnSync(process.execPath, [process.argv[1], 'evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1', '--state', state], {
   env, encoding: 'utf8', timeout: 10000,
 });
-fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task: env.GISHRA_TASK, code: r.status, stderr: r.stderr }));
+fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('GISHRA_')), code: r.status, stderr: r.stderr }));
 process.exit(r.status === null ? 1 : r.status);
 `;
   h.ok(['role', 'set', 'reviewer', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, out])]);
@@ -104,12 +106,45 @@ process.exit(r.status === null ? 1 : r.status);
   assert.deepEqual(seen, {
     agent: 'reviewer-T1-1',
     task: 'T1',
+    remaining: [],
     code: 2,
     stderr: 'gishra: no agent: pass --agent NAME or set GISHRA_AGENT\n',
   });
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
   assert.ok(!events.some((e) => e.cmd === 'evidence'));
+});
+
+test('a spawned reviewer losing all GISHRA variables in a terminal cannot clear owner work', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = setup(t);
+  h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'approved', '--needs-owner', 'approve access']);
+  const out = path.join(h.base, 'lost-agent-terminal.json');
+  const script = `
+const fs = require('node:fs');
+const { runPty } = require(process.argv[1]);
+const env = { ...process.env };
+const agent = env.GISHRA_AGENT;
+const task = env.GISHRA_TASK;
+const state = env.GISHRA_STATE;
+for (const key of Object.keys(env)) if (key.startsWith('GISHRA_')) delete env[key];
+const r = runPty(['owner-done', 'T2', '--state', state], { cwd: process.cwd(), env });
+fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('GISHRA_')), ...r }));
+process.exit(r.code === null ? 99 : r.code);
+`;
+  h.ok(['role', 'set', 'reviewer', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, require.resolve('./helpers'), out])]);
+  const r = h.run(['spawn', '--role', 'reviewer', '--task', 'T1', '--wait']);
+  assert.equal(r.code, 1, r.stderr);
+  const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.equal(seen.agent, 'reviewer-T1-1');
+  assert.equal(seen.task, 'T1');
+  assert.deepEqual(seen.remaining, []);
+  assert.equal(seen.code, 1, seen.stdout + seen.stderr);
+  assert.match(seen.stdout, /only the owner/);
+  const task = h.readState('tasks.json').tasks[1];
+  assert.equal(task.needs_owner, 'approve access');
+  assert.deepEqual(task.notes, []);
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  assert.ok(!events.some((e) => e.cmd === 'owner-done'));
 });
 
 test('pi roles load the gishra skill for workers and reviewers when it is installed', (t) => {

@@ -16,11 +16,11 @@ Commands that need the repository (`worktree`, `spawn`, the gates) use the one g
 
 ## Agent identity
 
-The identity recorded in state and events comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, the CLI uses `owner` only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. In every other case it exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT`, before reading or writing state. Help needs no identity.
+The identity recorded in state and events comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, the CLI uses `owner` only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. In every other case it exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT`, before reading or writing state. An empty or whitespace-only identity exits 2 with the same message. Help needs no identity.
 
 `spawn` passes the name `<role>-<task>-<n>` in `GISHRA_AGENT`. Its prompt closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
 
-`accept --waive` and `owner-done` require the resolved name to be exactly `owner`. Automated owner actions must name it with `--agent owner` or `GISHRA_AGENT=owner`.
+`accept --waive`, `owner-done` and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers.
 
 ## Files
 
@@ -142,7 +142,7 @@ A gate passes when the latest evidence of its type for the current revision, at 
 
 `merge` checks these gates again, for the current revision, before it merges.
 
-The standards profile may add gates. `--waive TYPE --reason TEXT` records an owner waiver as evidence; only an agent named `owner` can waive. A waiver satisfies its gate. If the accept is still refused, the waiver is not recorded.
+The standards profile may add gates. `--waive TYPE --reason TEXT` records an owner waiver as evidence; only an explicit `--agent owner` or `GISHRA_AGENT=owner` can waive. A waiver satisfies its gate. If the accept is still refused, the waiver is not recorded.
 
 ## decisions.json
 
