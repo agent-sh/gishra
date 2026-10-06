@@ -18,7 +18,7 @@ Commands that need the repository (`worktree`, `spawn`, the gates) use the one g
 
 The identity recorded in state and events comes from `--agent NAME`, then `GISHRA_AGENT`. With neither, the CLI uses `owner` only when stdin and stdout are both TTYs and `GISHRA_TASK` is unset. In every other case it exits 2 with `no agent: pass --agent NAME or set GISHRA_AGENT`, before reading or writing state. An empty or whitespace-only identity exits 2 with the same message. Help needs no identity.
 
-`spawn` passes the name `<role>-<task>-<n>` in `GISHRA_AGENT`. Its prompt says `you are not the owner; never pass --agent owner` and closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
+`spawn` passes the name `<job>-<task>-<n>` (`worker-T1-1`, `reviewer-T1-1`) in `GISHRA_AGENT`. Its prompt says `you are not the owner; never pass --agent owner` and closes with `run gishra with --agent <name> if GISHRA_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
 
 `accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `GISHRA_AGENT=owner`. The terminal fallback never grants these owner powers. An agent requests owner action with `gishra ask` or a task note. Set `GISHRA_AGENT=owner` per command, never in a shell profile, where it could override a spawned agent's identity.
 

@@ -228,6 +228,52 @@ test("in a browser, saving one form keeps the other form's unsaved edits, and a 
   assert.deepEqual(await b.inPage(`[window.firstLoad === true, ${easyEffort}.value]`), [true, 'low'], 'the unsaved ladder edit stays too');
 });
 
+test('in a browser, a form is read-only while its save waits, so typing then loses nothing', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Webhook retries', '--acceptance', 'a']);
+  const s = await startServe(h);
+  t.after(() => s.stop());
+  const b = await openBrowser(t);
+  const easyModel = `document.querySelector('tr[data-rung="easy"] input[name="model"]')`;
+  const easyEffort = `document.querySelector('tr[data-rung="easy"] input[name="effort"]')`;
+  const tierSelect = `document.querySelector('tr[data-task="T1"] select')`;
+  const set = (el, value, event) => b.inPage(`(function (el) { el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event(${JSON.stringify(event)}, { bubbles: true })); })(${el})`);
+  const appeared = async (file) => {
+    const end = Date.now() + 15000;
+    while (!fs.existsSync(file)) {
+      if (Date.now() > end) throw new Error(`${file} never appeared`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+
+  // otherDirty: with an unsaved tier the saved form is updated in place,
+  // without one the page reloads; both must keep what the person typed.
+  for (const [round, otherDirty] of [[1, false], [2, true]]) {
+    await b.goto(`${s.url}settings`);
+    if (otherDirty) await set(tierSelect, 'hard', 'change');
+    await set(easyEffort, round === 1 ? 'high' : 'low', 'input');
+    await b.inPage(`${easyModel}.focus()`);
+    // A CLI write holds the lock, so the save waits for it.
+    const paused = path.join(h.base, `holder-${round}`);
+    const holder = h.runAsync(['task', 'note', 'T1', 'holding the lock'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
+    await appeared(paused);
+    await b.inPage(`document.querySelector('#ladder-form button[type="submit"]').click()`);
+    await b.until(`document.querySelector('#ladder-form button[type="submit"]').textContent === 'Saving...'`, 'the save to start');
+    assert.deepEqual(await b.inPage(`[${easyModel}.disabled, ${easyEffort}.disabled, document.getElementById('harness').disabled, document.getElementById('ladder-form').getAttribute('aria-busy')]`), [true, true, true, 'true']);
+    await b.type('typed-while-saving');
+    const typed = await b.inPage(`${easyModel}.value`);
+    fs.writeFileSync(`${paused}.go`, '');
+    assert.equal((await holder).code, 0);
+    await b.until(`document.readyState === 'complete' && !document.querySelector('#ladder-form[aria-busy]') && ${easyModel} && !${easyModel}.disabled`, 'the save to finish');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(h.readState('project.json').ladder.easy.effort, round === 1 ? 'high' : 'low');
+    assert.equal(await b.inPage(`${easyModel}.value`), typed, `round ${round}: what was typed during the save is still there`);
+    assert.equal(typed, '', 'the read-only field took no input');
+    if (otherDirty) assert.equal(await b.inPage(`${tierSelect}.value`), 'hard', 'the other form keeps its edit');
+  }
+});
+
 // A second server on the same state, to show the token is per run.
 async function startAgain(h) {
   const s = await startServe(h);
