@@ -15,7 +15,20 @@ function log(h) {
 }
 
 function setup(t, flags = []) {
-  const h = makeRepo(t);
+  const h = makeRepo();
+  h.children = [];
+  h.workerPids = [];
+  t.after(async () => {
+    for (const pid of h.workerPids) {
+      try { process.kill(pid, 'SIGKILL'); } catch {}
+    }
+    for (const { p } of h.children) {
+      if (p.exitCode === null && p.signalCode === null) p.kill();
+    }
+    await Promise.all(h.children.map((c) => c.result));
+    // Windows keeps a running child's cwd open, so stop children first.
+    fs.rmSync(h.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
   h.init(flags);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
   return h;
@@ -34,11 +47,9 @@ function child(t, h, args, hooks = {}) {
     clearTimeout(timer);
     return { code, stdout, stderr };
   });
-  t.after(async () => {
-    if (p.exitCode === null && p.signalCode === null) p.kill();
-    await result;
-  });
-  return { p, result };
+  const c = { p, result };
+  h.children.push(c);
+  return c;
 }
 
 function created(file) {
@@ -90,6 +101,11 @@ function gates(h, ci = false) {
     if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, '--ok']);
     else gateEvidence(h, type, 'reviewer');
   }
+}
+
+function commandWorker(h, argv) {
+  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify(argv),
+    ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
 }
 
 test('submitted wakes a live waiter with one event JSON line, even with --json', async (t) => {
@@ -206,10 +222,10 @@ if (r.status !== 0) process.exit(1);
 console.log('worker alive'); fs.writeFileSync(${JSON.stringify(claimed)}, '');
 setInterval(() => {}, 1000);\n`);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
-  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, script])]);
+  commandWorker(h, [process.execPath, script]);
   const ready = created(claimed);
   const spawned = h.json(['spawn', '--task', 'T1']);
-  t.after(() => { try { process.kill(spawned.pid); } catch {} });
+  h.workerPids.push(spawned.pid);
   await ready;
   const [a, b] = await Promise.all([waiting(t, h, ['--types', 'worker-exited']), waiting(t, h, ['--types', 'worker-exited'])]);
   process.kill(spawned.pid, 'SIGKILL');
@@ -230,7 +246,7 @@ for (const args of [['claim', 'T1'], ['submit', 'T1', '--sha', 'abcdef1']]) {
 const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, ...args], { env: process.env }); if (r.status) process.exit(r.status);
 }\n`);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
-  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, script])]);
+  commandWorker(h, [process.execPath, script]);
   h.ok(['spawn', '--task', 'T1', '--wait']);
   const r = h.run(['wait', '--types', 'worker-exited', '--timeout', '0.1']);
   assert.equal(r.code, 2);
@@ -240,7 +256,7 @@ const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, ...args], { en
 test('a spawned worker that exits before claiming wakes without waiting for a lease', async (t) => {
   const h = setup(t);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
-  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]);
+  commandWorker(h, [process.execPath, '-e', 'process.exit(0)']);
   const result = await waiting(t, h, ['--types', 'worker-exited']);
   const started = h.json(['spawn', '--task', 'T1', '--wait']);
   const e = await event(result, 'worker-exited');
