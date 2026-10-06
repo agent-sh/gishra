@@ -1,6 +1,6 @@
 # T10 board screenshots
 
-Taken with the Playwright MCP from `tower-crane serve` and `render` on a copy of this repository's own state, with two decisions, an owner task, a submitted task and token spend added. Sizes are CSS pixels; 1280x800 and 390x844 are at 2x. Every view and state is shown at all four sizes in light and dark.
+Taken with the Playwright MCP from `tower-crane serve` and `render` at 118c42d59e97f38560697c3f429e927b68676144, on a copy of this repository's own state with two decisions, an owner task, a submitted task and token spend added. Sizes are CSS pixels; 1280x800 and 390x844 are at 2x. Every view and state is shown at all four sizes in light and dark.
 
 ## Explored directions
 
