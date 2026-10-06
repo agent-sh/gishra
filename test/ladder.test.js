@@ -118,8 +118,10 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   assert.deepEqual([easy.rung, easy.agent], ['easy', 'worker-T1-1']);
   assert.deepEqual(flags(easy.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-easy', '--thinking', 'medium']);
   assert.deepEqual(flags(spawn('T2').argv), ['pi', '-p', '--mode', 'json', '--model', 'm-medium', '--thinking', 'high']);
-  assert.deepEqual(flags(spawn('T3').argv), ['claude', '-p', '--model', 'opus', '--effort', 'high', '--output-format', 'json']);
-  assert.deepEqual(flags(spawn('T4').argv), ['claude', '-p', '--model', 'opus', '--effort', 'max', '--output-format', 'json']);
+  const hard = spawn('T3');
+  const research = spawn('T4');
+  assert.deepEqual(flags(hard.argv), ['claude', '-p', '--model', 'opus', '--effort', 'high', '--output-format', 'json', '--session-id', hard.session_id]);
+  assert.deepEqual(flags(research.argv), ['claude', '-p', '--model', 'opus', '--effort', 'max', '--output-format', 'json', '--session-id', research.session_id]);
   const review = spawn('T2', 'review');
   assert.deepEqual([review.rung, review.agent], ['review', 'reviewer-T2-1']);
   assert.deepEqual(flags(review.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-review', '--thinking', 'high']);

@@ -49,6 +49,7 @@ test('spawn --dry-run builds each harness command', (t) => {
   const cases = [
     [['--harness', 'claude', '--model', 'claude-opus-5-5'], (p) => ['claude', '-p', p, '--model', 'claude-opus-5-5', '--output-format', 'json']],
     [['--harness', 'claude', '--model', 'opus', '--effort', 'high'], (p) => ['claude', '-p', p, '--model', 'opus', '--effort', 'high', '--output-format', 'json']],
+    [['--harness', 'claude', '--model', 'opus', '--args', '["--resume","01a11297-1067-7831-a3bc-2c04eac9aaef"]'], (p) => ['claude', '-p', p, '--model', 'opus', '--output-format', 'json', '--resume', '01a11297-1067-7831-a3bc-2c04eac9aaef']],
     [['--harness', 'codex', '--profile', 'sol'], (p) => ['codex', 'exec', '--json', '-p', 'sol', p]],
     [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p) => ['codex', 'exec', '--json', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', p, '--skip-git-repo-check']],
     [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', p]],
@@ -65,7 +66,13 @@ test('spawn --dry-run builds each harness command', (t) => {
     const out = dry(h, 'small', { TOWER_CRANE_PLUGIN_ROOT: empty });
     const prompt = out.argv.find((a) => a.includes('## Task'));
     assert.ok(prompt, `prompt present for ${flags.join(' ')}`);
-    assert.deepEqual(out.argv, expected(prompt), flags.join(' '));
+    const argv = expected(prompt);
+    if (flags.includes('claude')) {
+      assert.match(out.session_id, /^[a-f0-9-]{36}$/);
+      if (out.argv.includes('--resume')) assert.equal(out.session_id, out.argv[out.argv.indexOf('--resume') + 1]);
+      else argv.push('--session-id', out.session_id);
+    }
+    assert.deepEqual(out.argv, argv, flags.join(' '));
   }
   const out = dry(h, 'small');
   assert.equal(out.agent, 'small-T1-1');
