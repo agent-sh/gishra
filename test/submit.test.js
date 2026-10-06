@@ -22,7 +22,7 @@ test('the claimant resubmits a newer head and its gates need evidence at that he
     { previous_sha: null, sha: oldSha, branch: 'feature/change', pr: 7, summary: null },
   );
   const gates = [['tests', 'w-1'], ['clean', 'w-1'], ['review', 'r-1'], ['ci', 'ci']];
-  for (const [type, agent] of gates) h.ok(['evidence', 'T1', '--type', type, '--ok', '--agent', agent]);
+  for (const [type, agent] of gates) h.ok(['evidence', 'T1', '--type', type, '--ok', '--sha', oldSha, '--agent', agent]);
   const before = h.json(['task', 'show', 'T1']);
   assert.equal(before.gates.ok, true);
 
@@ -52,12 +52,12 @@ test('the claimant resubmits a newer head and its gates need evidence at that he
   assert.equal(h.json(['task', 'show', 'T1']).status, 'submitted');
 
   for (const [type, agent] of [['tests', 'w-1'], ['clean', 'w-1'], ['review', 'w-1'], ['ci', 'ci']]) {
-    h.ok(['evidence', 'T1', '--type', type, '--ok', '--agent', agent]);
+    h.ok(['evidence', 'T1', '--type', type, '--ok', '--sha', newSha, '--agent', agent]);
   }
   const selfReview = h.run(['accept', 'T1']);
   assert.equal(selfReview.code, 1);
   assert.match(selfReview.stderr, /only the submitter \(w-1\) reviewed/);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--agent', 'r-1']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', newSha, '--agent', 'r-1']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
   h.ok(['accept', 'T1']);
   assert.equal(h.json(['task', 'show', 'T1']).status, 'accepted');
@@ -74,17 +74,17 @@ test('resubmission belongs to the current submitter and stops after acceptance o
   for (const agent of ['w-2', 'owner']) {
     const denied = h.run(['submit', 'T1', '--sha', 'abcdef2', '--agent', agent]);
     assert.equal(denied.code, 1);
-    assert.match(denied.stderr, /only the claimant \(w-1\)/);
+    assert.match(denied.stderr, /only the submitter \(w-1\) can resubmit T1/);
   }
   assert.equal(h.run(['submit', 'T1', '--sha', 'not-a-sha', '--agent', 'w-1']).code, 2);
   assert.deepEqual(h.json(['task', 'show', 'T1']), before);
   assert.deepEqual(events(h), beforeEvents);
 
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--agent', 'r-1']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1', '--agent', 'r-1']);
   const again = h.json(['submit', 'T1', '--sha', 'ABCDEF1', '--branch', 'feature/new', '--pr', '8', '--agent', 'w-1']);
   assert.deepEqual([again.sha, again.branch, again.pr], ['abcdef1', 'feature/new', 8]);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((gate) => gate.type === 'review').ok, true);
-  h.ok(['evidence', 'T1', '--type', 'ci', '--ok', '--agent', 'ci']);
+  h.ok(['evidence', 'T1', '--type', 'ci', '--ok', '--sha', 'abcdef1', '--agent', 'ci']);
   h.ok(['accept', 'T1']);
   const accepted = h.json(['task', 'show', 'T1']);
   const acceptedEvents = events(h);
@@ -97,6 +97,64 @@ test('resubmission belongs to the current submitter and stops after acceptance o
   h.ok(['claim', 'T1', '--agent', 'w-2']);
   assert.equal(h.run(['submit', 'T1', '--sha', 'abcdef2', '--agent', 'w-1']).code, 1);
   h.ok(['submit', 'T1', '--sha', 'abcdef2', '--agent', 'w-2']);
+  const afterRework = events(h).filter((event) => event.cmd === 'submit').at(-1);
+  assert.deepEqual([afterRework.detail.previous_sha, afterRework.detail.sha], ['abcdef1', 'abcdef2']);
   assert.equal(h.run(['submit', 'T1', '--sha', 'abcdef3', '--agent', 'w-1']).code, 1);
   assert.equal(h.json(['submit', 'T1', '--sha', 'abcdef3', '--agent', 'w-2']).submitted_by, 'w-2');
+});
+
+test('review evidence must pin the reviewed sha when a worker resubmits during review', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  const reviewedSha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--sha', reviewedSha, '--agent', 'w-1']);
+  fs.appendFileSync(path.join(h.repo, 'README.md'), 'A change after review started.\n');
+  h.git(['add', 'README.md']);
+  h.git(['commit', '-q', '-m', 'update during review']);
+  const newerSha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--sha', newerSha, '--agent', 'w-1']);
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
+
+  for (const verdict of ['--ok', '--fail']) {
+    const refused = h.run(['evidence', 'T1', '--type', 'review', verdict, '--agent', 'r-1']);
+    assert.equal(refused.code, 2, refused.stdout);
+    assert.match(refused.stderr, /review evidence needs --sha/);
+  }
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+
+  const review = h.json(['evidence', 'T1', '--type', 'review', '--ok', '--sha', reviewedSha.toUpperCase(), '--agent', 'r-1']);
+  assert.equal(review.sha, reviewedSha);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
+  assert.equal(h.run(['accept', 'T1']).code, 1);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', newerSha, '--agent', 'r-1']);
+  h.ok(['accept', 'T1']);
+  assert.equal(h.json(['task', 'show', 'T1']).sha, newerSha);
+});
+
+test('only note evidence can default to the submitted sha', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works']);
+  const noHead = h.run(['evidence', 'T1', '--type', 'note', '--ok']);
+  assert.equal(noHead.code, 1);
+  assert.match(noHead.stderr, /no submitted sha yet; pass --sha/);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'w-1']);
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
+  for (const type of ['tests', 'clean', 'review', 'ci', 'merge']) {
+    const refused = h.run(['evidence', 'T1', '--type', type, '--ok', '--agent', 'r-1']);
+    assert.equal(refused.code, 2, `${type}: ${refused.stdout}`);
+    assert.match(refused.stderr, new RegExp(`${type} evidence needs --sha`));
+  }
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+  const note = h.json(['evidence', 'T1', '--type', 'note', '--ok', '--agent', 'r-1']);
+  assert.deepEqual([note.type, note.sha], ['note', 'abcdef1']);
+  const pinned = h.json(['evidence', 'T1', '--type', 'note', '--ok', '--sha', 'ABCDEF2', '--agent', 'r-1']);
+  assert.equal(pinned.sha, 'abcdef2');
 });

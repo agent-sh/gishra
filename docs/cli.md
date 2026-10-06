@@ -32,14 +32,16 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; refused if not ready, already claimed, or the workers limit is reached (tasks in progress with a live lease) |
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner |
-| `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted or replace a submitted head; only the claimant. `S` is 7 to 64 hex characters |
-| `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record evidence; `sha` defaults to the task's submitted sha |
+| `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters |
+| `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record evidence; `--sha` is required except for `note`, which defaults to the task's submitted sha |
 | `accept ID [--waive TYPE --reason R]` | accept if the gates pass (see state.md) |
 | `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
 | `spend ID [--minutes N] [--tokens N]` | add spend |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Requires explicit `--agent owner` or `GISHRA_AGENT=owner` |
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
+
+Pass the commit actually reviewed or checked to `evidence --sha S`. A submitted head can move while a review is running; `gishra evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on any non-`note` evidence is a usage error (exit 2) and writes nothing. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
 
 ## Decisions
 
