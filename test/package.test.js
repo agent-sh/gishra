@@ -16,7 +16,7 @@ test('the npm package ships the plugin and loads pi skills through its CLI', (t)
   assert.equal(packed.status, 0, packed.stderr);
   const files = JSON.parse(packed.stdout)[0].files.map((file) => file.path);
   for (const file of [
-    'commands/gishra.md',
+    'commands/README.txt',
     'skills/gishra/SKILL.md',
     'skills/gishra-work/SKILL.md',
     'skills/gishra-review/SKILL.md',
@@ -27,6 +27,14 @@ test('the npm package ships the plugin and loads pi skills through its CLI', (t)
     '.claude-plugin/marketplace.json',
     'components.json',
   ]) assert.ok(files.includes(file), `npm package is missing ${file}`);
+  assert.ok(!files.includes('commands/gishra.md'), 'the skill must be the only gishra entry point');
+  const components = JSON.parse(fs.readFileSync(path.join(ROOT, 'components.json'), 'utf8'));
+  for (const [type, names] of Object.entries(components)) {
+    for (const name of names) {
+      const file = type === 'skills' ? `skills/${name}/SKILL.md` : `${type}/${name}.md`;
+      assert.ok(files.includes(file), `registered component is missing from the package: ${file}`);
+    }
+  }
 
   const installed = path.join(h.base, 'installed');
   for (const file of files) {

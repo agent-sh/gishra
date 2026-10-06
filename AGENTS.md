@@ -2,7 +2,7 @@
 
 ## Project
 
-gishra is a CLI and an agent plugin. The CLI (`bin/`, `lib/`) keeps a project's plan and progress in plain files in the project's gishra state directory and runs the software gates; the plugin (`commands/`, `skills/`, `agents/`, `standards/`) is the methodology agents follow on top of it. Part of the [agentsys](https://github.com/agent-sh/agentsys) ecosystem.
+gishra is a CLI and an agent plugin. The CLI (`bin/`, `lib/`) keeps a project's plan and progress in plain files in the project's gishra state directory and runs the software gates; the plugin (`skills/`, `agents/`, `standards/`) is the methodology agents follow on top of it. Part of the [agentsys](https://github.com/agent-sh/agentsys) ecosystem.
 
 ## Rules
 
@@ -17,7 +17,7 @@ gishra is a CLI and an agent plugin. The CLI (`bin/`, `lib/`) keeps a project's 
 ## Layout
 
 - `bin/gishra.js`: CLI entry.
-- `lib/`: state, tasks, decisions, render, serve, worktree, spawn; `lib/gates/` holds the software gates.
-- `commands/gishra.md`, the three skills (`skills/gishra/`, `skills/gishra-work/`, `skills/gishra-review/`) and the two agents in `agents/`: the plugin.
+- `lib/`: state, project, tasks, decisions, render, serve, worktree, spawn, check and util.
+- The three skills (`skills/gishra/`, `skills/gishra-work/`, `skills/gishra-review/`) and the two agents in `agents/`: the plugin.
 - `standards/default.md`: the default standards profile.
 - `docs/`: state, CLI and roles.
