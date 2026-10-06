@@ -14,19 +14,23 @@ test('the npm package ships the plugin and loads pi skills through its CLI', (t)
     process.env.npm_execpath ? [process.env.npm_execpath, ...args] : args,
     { cwd: ROOT, env: h.env, encoding: 'utf8', timeout: 60000, shell: !process.env.npm_execpath && process.platform === 'win32' });
   assert.equal(packed.status, 0, packed.stderr);
-  const files = JSON.parse(packed.stdout)[0].files.map((file) => file.path);
+  const artifact = JSON.parse(packed.stdout)[0];
+  assert.equal(artifact.name, '@agentsys/tower-crane');
+  const metadata = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  assert.deepEqual(metadata.bin, { 'tower-crane': 'bin/tower-crane.js' });
+  const files = artifact.files.map((file) => file.path);
   for (const file of [
-    'skills/gishra/SKILL.md',
-    'skills/gishra-work/SKILL.md',
-    'skills/gishra-review/SKILL.md',
-    'agents/gishra-worker.md',
-    'agents/gishra-reviewer.md',
+    'skills/tower-crane/SKILL.md',
+    'skills/tower-crane-work/SKILL.md',
+    'skills/tower-crane-review/SKILL.md',
+    'agents/tower-crane-worker.md',
+    'agents/tower-crane-reviewer.md',
     'standards/default.md',
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
     'components.json',
   ]) assert.ok(files.includes(file), `npm package is missing ${file}`);
-  assert.ok(!files.includes('commands/gishra.md'), 'the skill must be the only gishra entry point');
+  assert.ok(!files.includes('commands/tower-crane.md'), 'the skill must be the only tower-crane entry point');
   const components = JSON.parse(fs.readFileSync(path.join(ROOT, 'components.json'), 'utf8'));
   for (const [type, names] of Object.entries(components)) {
     for (const name of names) {
@@ -42,15 +46,15 @@ test('the npm package ships the plugin and loads pi skills through its CLI', (t)
     fs.copyFileSync(path.join(ROOT, file), dest);
   }
   const cli = (args) => {
-    const r = cp.spawnSync(process.execPath, [path.join(installed, 'bin/gishra.js'), ...args],
+    const r = cp.spawnSync(process.execPath, [path.join(installed, 'bin/tower-crane.js'), ...args],
       { cwd: h.repo, env: h.env, encoding: 'utf8', timeout: 60000 });
     assert.equal(r.status, 0, r.stderr);
     return r.stdout;
   };
   cli(['init', '--name', 'packaged', '--goal', 'load shipped skills']);
   cli(['task', 'add', '--title', 'Packaged task', '--acceptance', 'skills load']);
-  cli(['brief', 'set', 'T1', '--file', path.join(installed, 'skills/gishra-work/SKILL.md')]);
-  for (const [rung, skill] of [['medium', 'gishra-work'], ['review', 'gishra-review']]) {
+  cli(['brief', 'set', 'T1', '--file', path.join(installed, 'skills/tower-crane-work/SKILL.md')]);
+  for (const [rung, skill] of [['medium', 'tower-crane-work'], ['review', 'tower-crane-review']]) {
     cli(['ladder', 'set', rung, '--harness', 'pi', '--model', 'openai/gpt-5.5', '--clear', 'profile', '--clear', 'effort']);
     const out = JSON.parse(cli(['spawn', '--role', rung, '--task', 'T1', '--dry-run', '--json']));
     assert.equal(out.argv[out.argv.indexOf('--skill') + 1], path.join(installed, 'skills', skill));

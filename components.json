@@ -1,5 +1,5 @@
 {
-  "agents": ["gishra-worker", "gishra-reviewer"],
-  "skills": ["gishra", "gishra-work", "gishra-review"],
+  "agents": ["tower-crane-worker", "tower-crane-reviewer"],
+  "skills": ["tower-crane", "tower-crane-work", "tower-crane-review"],
   "commands": []
 }

@@ -31,8 +31,8 @@ const MUL_TEST = "require('assert').strictEqual(require('../lib/mul')(3, 3), 9);
 
 const tmp = scratch('gates-tests');
 isolateGit(tmp);
-process.env.GISHRA_TMP = path.join(tmp, 'gishra-tmp');
-fs.mkdirSync(process.env.GISHRA_TMP);
+process.env.TOWER_CRANE_TMP = path.join(tmp, 'tower-crane-tmp');
+fs.mkdirSync(process.env.TOWER_CRANE_TMP);
 const root = path.join(tmp, 'repo');
 initRepo(root, BASE);
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -57,7 +57,7 @@ function ctx(sha, { kind = 'code', args = {}, project = {} } = {}) {
 }
 
 function assertCleanedUp() {
-  assert.deepEqual(fs.readdirSync(process.env.GISHRA_TMP), []);
+  assert.deepEqual(fs.readdirSync(process.env.TOWER_CRANE_TMP), []);
   assert.equal(worktrees(root), 1);
 }
 
@@ -94,7 +94,7 @@ test('a code task that changes no test: not ok', async () => {
   const r = await gate.run(ctx(sha));
   assert.equal(r.ok, false);
   assert.match(r.summary, /no test covers this change/);
-  assert.match(r.summary, /gishra project set --tests-paths/);
+  assert.match(r.summary, /tower-crane project set --tests-paths/);
   assertCleanedUp();
 });
 
@@ -177,7 +177,7 @@ test('a worktree add that fails after registering leaves no registration behind'
   assert.equal(r.ok, false);
   assert.match(r.summary, /could not create a worktree/);
   assert.equal(worktrees(hooked), 1);
-  assert.deepEqual(fs.readdirSync(process.env.GISHRA_TMP), []);
+  assert.deepEqual(fs.readdirSync(process.env.TOWER_CRANE_TMP), []);
 });
 
 test('a commit that is not in the repository: not ok', async () => {
@@ -247,7 +247,7 @@ test('a malformed tests.paths: not ok, naming the field', async () => {
     const r = await gate.run(ctx(sha, { project: { tests } }));
     assert.equal(r.ok, false, JSON.stringify(tests));
     assert.match(r.summary, /tests\.paths must be a non-empty array of globs/);
-    assert.match(r.summary, /gishra project set --tests-paths/);
+    assert.match(r.summary, /tower-crane project set --tests-paths/);
     assert.match(r.summary, /--tests-paths null/);
   }
 });

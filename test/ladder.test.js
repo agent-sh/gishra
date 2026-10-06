@@ -106,7 +106,7 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   for (const id of ['T1', 'T2', 'T3', 'T4']) h.ok(['brief', 'set', id, '-'], { input: `brief ${id}\n` });
   const empty = path.join(h.base, 'no-plugin');
   fs.mkdirSync(empty);
-  const spawn = (id, role) => h.json(['spawn', '--task', id, ...(role ? ['--role', role] : []), '--dry-run'], { env: { GISHRA_PLUGIN_ROOT: empty } });
+  const spawn = (id, role) => h.json(['spawn', '--task', id, ...(role ? ['--role', role] : []), '--dry-run'], { env: { TOWER_CRANE_PLUGIN_ROOT: empty } });
   const flags = (argv) => argv.filter((a) => !a.includes('brief T'));
 
   h.ok(['ladder', 'harness', 'pi']);
@@ -195,14 +195,14 @@ test('a ladder broken by a changed user file still loads, and ladder set repairs
   assert.ok(v.stdout.includes(`ladder easy (pi, the default harness, from the user file ${h.userConfig}): profile applies only to codex, needs a model`), v.stdout);
   const spawn = h.run(['spawn', '--task', 'T1', '--dry-run']);
   assert.equal(spawn.code, 1);
-  assert.match(spawn.stderr, /ladder easy \(pi.*profile applies only to codex, needs a model; fix it with gishra ladder set easy/);
+  assert.match(spawn.stderr, /ladder easy \(pi.*profile applies only to codex, needs a model; fix it with tower-crane ladder set easy/);
   assert.match(h.ok(['ladder', 'show']), /^cannot run: ladder medium \(pi/m);
 
   h.ok(['ladder', 'set', 'easy', '--model', 'p/easy', '--clear', 'profile']);
   assert.equal(h.json(['spawn', '--task', 'T1', '--dry-run']).argv[0], 'pi', 'the repaired rung runs while others are still broken');
   const worse = h.run(['ladder', 'set', 'orchestrator', '--effort', 'ultra']);
   assert.equal(worse.code, 1, 'a change that breaks a working rung is still refused');
-  assert.match(worse.stderr, /^gishra: ladder orchestrator \(claude\): effort must be one of/);
+  assert.match(worse.stderr, /^tower-crane: ladder orchestrator \(claude\): effort must be one of/);
 });
 
 test('a ladder write is evented and re-renders the sketch with the ladder and each task tier', (t) => {

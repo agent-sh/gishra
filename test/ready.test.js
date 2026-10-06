@@ -38,7 +38,7 @@ test('ready lists only unblocked tasks and --all says why the rest wait', (t) =>
   const wrong = h.run(['answer', 'D1', '--choice', 'mysql']);
   assert.equal(wrong.code, 1);
   assert.match(wrong.stderr, /redis, postgres/);
-  h.ok(['answer', 'D1', '--choice', 'postgres', '--note', 'keys must survive a flush'], { env: { GISHRA_AGENT: 'orchestrator' } });
+  h.ok(['answer', 'D1', '--choice', 'postgres', '--note', 'keys must survive a flush'], { env: { TOWER_CRANE_AGENT: 'orchestrator' } });
   const d = h.readState('decisions.json').decisions[0];
   assert.deepEqual([d.status, d.answer, d.answered_by], ['answered', 'postgres', 'orchestrator']);
   assert.match(h.readState('tasks.json').tasks[3].notes[0].text, /decision D1 answered: postgres/);

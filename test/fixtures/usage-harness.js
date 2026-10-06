@@ -6,7 +6,7 @@ const path = require('node:path');
 
 if (process.env.USAGE_CLAIM) {
   const result = cp.spawnSync(process.execPath, [
-    path.join(__dirname, '..', '..', 'bin', 'gishra.js'), 'claim', process.env.GISHRA_TASK,
+    path.join(__dirname, '..', '..', 'bin', 'tower-crane.js'), 'claim', process.env.TOWER_CRANE_TASK,
   ], { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr);
 }

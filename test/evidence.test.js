@@ -28,7 +28,7 @@ test('manual software evidence is refused for either verdict and every agent wit
         for (const shaArgs of [[], ['--sha', h.env.FIXTURE_SHA]]) {
           const r = h.run(['evidence', 'T1', '--type', type, verdict, '--agent', agent, ...shaArgs]);
           assert.equal(r.code, 1, `${type} ${agent} ${verdict}: ${r.stderr}`);
-          assert.match(r.stderr, /only gishra (check|merge)/);
+          assert.match(r.stderr, /only tower-crane (check|merge)/);
         }
       }
     }
@@ -218,7 +218,7 @@ test('real gate commands record their source and executed commands, including me
   }
   const tests = evidence.find((e) => e.type === 'tests').commands.filter((c) => c.command === 'node test/value.test.js');
   assert.deepEqual(tests.map((c) => c.status), [0, 1]);
-  assert.ok(tests.every((c) => c.cwd.startsWith(h.env.GISHRA_TMP)));
+  assert.ok(tests.every((c) => c.cwd.startsWith(h.env.TOWER_CRANE_TMP)));
   const clean = evidence.find((e) => e.type === 'clean').commands;
   assert.ok(clean.some((c) => c.command.includes('scanner.js') && c.command.includes('--base=') && c.command.endsWith('--json')));
   const ci = evidence.find((e) => e.type === 'ci').commands;

@@ -7,22 +7,22 @@ const cp = require('node:child_process');
 const assert = require('node:assert/strict');
 
 const ROOT = path.join(__dirname, '..');
-const BIN = path.join(ROOT, 'bin', 'gishra.js');
+const BIN = path.join(ROOT, 'bin', 'tower-crane.js');
 const HOOKS = path.join(__dirname, 'fixtures', 'hooks.js');
-const TMP_ROOT = process.env.GISHRA_TEST_TMP || os.tmpdir();
+const TMP_ROOT = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
 
 // Tests must not see the developer's git config (hooks, signing), an
-// agent's GISHRA_* variables or the developer's own ladder defaults, so every
+// agent's TOWER_CRANE_* variables or the developer's own ladder defaults, so every
 // child gets a clean, explicit env. The user file path is in the temp dir and
 // absent until a test writes it.
 function baseEnv(home) {
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (k.startsWith('GISHRA_') || k.startsWith('GIT_')) delete env[k];
+  for (const k of Object.keys(env)) if (k.startsWith('TOWER_CRANE_') || k.startsWith('GIT_')) delete env[k];
   // Existing fixtures act as the owner, so they must provide that identity.
-  env.GISHRA_AGENT = 'owner';
+  env.TOWER_CRANE_AGENT = 'owner';
   env.GIT_CONFIG_GLOBAL = path.join(home, 'gitconfig');
   env.GIT_CONFIG_NOSYSTEM = '1';
-  env.GISHRA_CONFIG = path.join(home, 'user-config', 'config.json');
+  env.TOWER_CRANE_CONFIG = path.join(home, 'user-config', 'config.json');
   return env;
 }
 
@@ -32,10 +32,10 @@ function git(args, cwd, env) {
 
 function makeRepo(t) {
   fs.mkdirSync(TMP_ROOT, { recursive: true });
-  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'gishra-')));
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-')));
   fs.writeFileSync(
     path.join(base, 'gitconfig'),
-    '[user]\n\tname = gishra test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n',
+    '[user]\n\tname = tower-crane test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n',
   );
   const env = baseEnv(base);
   const repo = path.join(base, 'repo');
@@ -48,8 +48,8 @@ function makeRepo(t) {
     base,
     repo,
     env,
-    userConfig: env.GISHRA_CONFIG,
-    state: path.join(repo, '.gishra'),
+    userConfig: env.TOWER_CRANE_CONFIG,
+    state: path.join(repo, '.tower-crane'),
     detached: () => {
       const dir = path.join(base, 'detached');
       return fs.existsSync(dir) ? fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))) : [];
@@ -62,12 +62,12 @@ function makeRepo(t) {
     runAsync: (args, opts = {}) => runAsync(args, withHooks(ctx, opts)),
     json: (args, opts) => {
       const r = ctx.run([...args, '--json'], opts);
-      if (r.code !== 0) throw new Error(`gishra ${args.join(' ')} exited ${r.code}: ${r.stderr}`);
+      if (r.code !== 0) throw new Error(`tower-crane ${args.join(' ')} exited ${r.code}: ${r.stderr}`);
       return JSON.parse(r.stdout);
     },
     ok: (args, opts) => {
       const r = ctx.run(args, opts);
-      if (r.code !== 0) throw new Error(`gishra ${args.join(' ')} exited ${r.code}: ${r.stderr}`);
+      if (r.code !== 0) throw new Error(`tower-crane ${args.join(' ')} exited ${r.code}: ${r.stderr}`);
       return r.stdout.trim();
     },
     readState: (file) => JSON.parse(fs.readFileSync(path.join(ctx.state, file), 'utf8')),

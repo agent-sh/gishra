@@ -3,7 +3,7 @@
 // Drives a page in headless Chrome over the DevTools protocol, for the tests
 // that check what the serve pages do in a browser. Node's own fetch and
 // WebSocket are enough, so it adds no dependency; tests skip when no Chrome
-// is installed (GISHRA_TEST_CHROME names one that is not on PATH).
+// is installed (TOWER_CRANE_TEST_CHROME names one that is not on PATH).
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -13,7 +13,7 @@ const cp = require('node:child_process');
 const NAMES = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome'];
 
 function findChrome() {
-  if (process.env.GISHRA_TEST_CHROME) return process.env.GISHRA_TEST_CHROME;
+  if (process.env.TOWER_CRANE_TEST_CHROME) return process.env.TOWER_CRANE_TEST_CHROME;
   if (typeof WebSocket === 'undefined') return null;
   for (const dir of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
     for (const name of NAMES) {
@@ -42,7 +42,7 @@ async function until(fn, what, ms = 15000) {
 }
 
 async function openBrowser(t) {
-  const profile = fs.mkdtempSync(path.join(process.env.GISHRA_TEST_TMP || os.tmpdir(), 'gishra-chrome-'));
+  const profile = fs.mkdtempSync(path.join(process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), 'tower-crane-chrome-'));
   const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
   if (process.getuid && process.getuid() === 0) args.push('--no-sandbox');
   const proc = cp.spawn(CHROME, [...args, 'about:blank'], { stdio: 'ignore' });

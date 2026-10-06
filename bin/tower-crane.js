@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { GishraError, usage } = require('../lib/util');
+const { TowerCraneError, usage } = require('../lib/util');
 const S = require('../lib/state');
 const P = require('../lib/project');
 const T = require('../lib/tasks');
@@ -15,8 +15,8 @@ const many = (arg, help) => ({ type: 'multi', arg, help });
 const bool = (help) => ({ type: 'bool', help });
 
 const GLOBAL = {
-  state: str('DIR', 'state directory (default: GISHRA_STATE, then .gishra/ in the main checkout)'),
-  agent: str('NAME', 'who is acting (default: GISHRA_AGENT; owner only on an interactive terminal outside a task)'),
+  state: str('DIR', 'state directory (default: TOWER_CRANE_STATE, then .tower-crane/ in the main checkout)'),
+  agent: str('NAME', 'who is acting (default: TOWER_CRANE_AGENT; owner only on an interactive terminal outside a task)'),
   json: bool('machine output on stdout'),
   help: bool('show help'),
 };
@@ -95,7 +95,7 @@ const COMMANDS = [
   }, run: T.spend },
   { section: 'Run', name: 'owner-done', pos: ['ID'], usage: 'ID [--note T]', summary: 'the owner did what needs_owner asked; clears it', flags: { note: str('T', 'what was done') }, run: T.ownerDone },
   { section: 'Run', name: 'wait', usage: '[--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]', summary: 'block until one matching event; print one JSON line (timeout exits 2)', flags: { after: str('CURSOR', 'event id or byte offset (default now)'), for: str('NAME', 'recipient (default orchestrator)'), task: str('ID', 'only this task or decisions blocking it'), types: str('TYPES', 'comma-separated event types'), timeout: num('SEC', 'maximum wait in seconds') }, run: run('../lib/events', 'wait') },
-  { section: 'Run', name: 'msg', pos: ['TEXT...'], usage: '--to NAME [--task ID] TEXT', summary: 'send a worker message through the event log', flags: { to: str('NAME', 'recipient, usually orchestrator'), task: str('ID', 'task (default GISHRA_TASK)') }, required: ['to'], run: run('../lib/events', 'message') },
+  { section: 'Run', name: 'msg', pos: ['TEXT...'], usage: '--to NAME [--task ID] TEXT', summary: 'send a worker message through the event log', flags: { to: str('NAME', 'recipient, usually orchestrator'), task: str('ID', 'task (default TOWER_CRANE_TASK)') }, required: ['to'], run: run('../lib/events', 'message') },
 
   { section: 'Decisions', name: 'ask', usage: '--question Q --option A --option B [--recommend A] [--why W] [--blocks ID]...', summary: 'open a decision; prints its id', flags: { question: str('Q', 'the question'), option: many('A', 'an allowed answer; repeat'), recommend: str('A', 'the recommended option'), why: str('W', 'the reasoning'), blocks: many('ID', 'a task that waits for the answer; repeat') }, required: ['question'], run: D.ask },
   { section: 'Decisions', name: 'decision note', pos: ['DID', 'TEXT...'], usage: 'DID TEXT', summary: 'append a comment on a decision', run: D.comment },
@@ -124,19 +124,19 @@ function flagLine(name, spec) {
 }
 
 function generalHelp() {
-  const lines = ['gishra: plan, dispatch, review and merge agent work, with state in plain files', '', 'usage: gishra <command> [args] [--state DIR] [--agent NAME] [--json]'];
+  const lines = ['tower-crane: plan, dispatch, review and merge agent work, with state in plain files', '', 'usage: tower-crane <command> [args] [--state DIR] [--agent NAME] [--json]'];
   for (const section of SECTIONS) {
     lines.push('', `${section}:`);
     for (const c of COMMANDS.filter((x) => x.section === section)) lines.push(`  ${c.name.padEnd(16)} ${c.summary}`);
   }
   lines.push('', 'global options:', ...Object.entries(GLOBAL).map(([n, s]) => flagLine(n, s)));
   lines.push('', 'exit status: 0 done, 1 refused (reason on stderr), 2 usage error, 3 lock not acquired within 10 s');
-  lines.push('run gishra <command> --help for its options; docs/cli.md and docs/state.md hold the contract');
+  lines.push('run tower-crane <command> --help for its options; docs/cli.md and docs/state.md hold the contract');
   return lines.join('\n');
 }
 
 function commandHelp(c) {
-  const lines = [`usage: gishra ${c.name}${c.usage ? ` ${c.usage}` : ''}`, '', c.summary];
+  const lines = [`usage: tower-crane ${c.name}${c.usage ? ` ${c.usage}` : ''}`, '', c.summary];
   const flags = Object.entries(c.flags || {});
   if (flags.length) lines.push('', 'options:', ...flags.map(([n, s]) => flagLine(n, s)));
   lines.push('', 'global options:', ...Object.entries(GLOBAL).map(([n, s]) => flagLine(n, s)));
@@ -144,7 +144,7 @@ function commandHelp(c) {
 }
 
 function groupHelp(group) {
-  const lines = [`usage: gishra ${group} <subcommand> ...`, ''];
+  const lines = [`usage: tower-crane ${group} <subcommand> ...`, ''];
   for (const c of COMMANDS.filter((x) => x.name.startsWith(`${group} `))) lines.push(`  ${c.name.padEnd(16)} ${c.summary}`);
   return lines.join('\n');
 }
@@ -184,7 +184,7 @@ function parseOptions(tokens, specs, where) {
     const eq = tok.indexOf('=');
     const name = eq === -1 ? tok.slice(2) : tok.slice(2, eq);
     const spec = specs[name];
-    if (!spec) throw usage(`unknown option --${name}${where ? ` for ${where}` : ''}; see gishra ${where ? `${where} ` : ''}--help`);
+    if (!spec) throw usage(`unknown option --${name}${where ? ` for ${where}` : ''}; see tower-crane ${where ? `${where} ` : ''}--help`);
     if (spec.type === 'bool') {
       if (eq !== -1) throw usage(`--${name} takes no value`);
       flags[name] = true;
@@ -240,12 +240,12 @@ function resolveCommand(argv) {
     if (!cmd) {
       const rest = argv.slice(i + 1);
       if (rest.includes('--help') || rest.includes('-h') || sub === undefined) return { groupHelp: word, lead, bare: sub === undefined };
-      throw usage(`unknown command "${word} ${sub}"; run gishra ${word} --help`);
+      throw usage(`unknown command "${word} ${sub}"; run tower-crane ${word} --help`);
     }
     return { cmd, rest: argv.slice(i + 2), lead };
   }
   const cmd = COMMANDS.find((c) => c.name === word);
-  if (!cmd) throw usage(`unknown command "${word}"; run gishra --help`);
+  if (!cmd) throw usage(`unknown command "${word}"; run tower-crane --help`);
   return { cmd, rest: argv.slice(i + 1), lead };
 }
 
@@ -253,7 +253,7 @@ function checkPositionals(cmd, pos) {
   const spec = cmd.pos || [];
   const required = spec.filter((p) => !p.startsWith('[')).length;
   const variadic = spec.some((p) => p.endsWith('...'));
-  if (pos.length < required) throw usage(`${cmd.name} needs ${spec.filter((p) => !p.startsWith('[')).join(' ')}; usage: gishra ${cmd.name} ${cmd.usage || ''}`.trim());
+  if (pos.length < required) throw usage(`${cmd.name} needs ${spec.filter((p) => !p.startsWith('[')).join(' ')}; usage: tower-crane ${cmd.name} ${cmd.usage || ''}`.trim());
   if (!variadic && pos.length > spec.length) throw usage(`unexpected argument "${pos[spec.length]}" for ${cmd.name}`);
 }
 
@@ -275,7 +275,7 @@ async function main(argv) {
       const c = COMMANDS.find((x) => x.name === resolved.help);
       if (c) out(commandHelp(c));
       else if (GROUPS.has(resolved.help)) out(groupHelp(resolved.help));
-      else throw usage(`no help for "${resolved.help}"; run gishra --help`);
+      else throw usage(`no help for "${resolved.help}"; run tower-crane --help`);
       return 0;
     }
     if (resolved.groupHelp) {
@@ -296,16 +296,16 @@ async function main(argv) {
     }
     checkPositionals(cmd, parsed.pos);
     for (const r of cmd.required || []) {
-      if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: gishra ${cmd.name} ${cmd.usage}`);
+      if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: tower-crane ${cmd.name} ${cmd.usage}`);
     }
-    let agent = globals.agent ?? process.env.GISHRA_AGENT;
+    let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
     // Terminal fallback identifies ordinary actions; owner powers need a named identity.
     const agentExplicit = agent !== undefined;
     if (agent === undefined) {
-      if (process.stdin.isTTY && process.stdout.isTTY && process.env.GISHRA_TASK === undefined) agent = 'owner';
-      else throw usage('no agent: pass --agent NAME or set GISHRA_AGENT');
+      if (process.stdin.isTTY && process.stdout.isTTY && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
+      else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     }
-    if (!agent.trim()) throw usage('no agent: pass --agent NAME or set GISHRA_AGENT');
+    if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     const ctx = {
       cwd: process.cwd(),
       env: process.env,
@@ -323,11 +323,11 @@ async function main(argv) {
     }
     return (res && res.code) || 0;
   } catch (e) {
-    if (e instanceof GishraError) {
-      process.stderr.write(`gishra: ${e.message}\n`);
+    if (e instanceof TowerCraneError) {
+      process.stderr.write(`tower-crane: ${e.message}\n`);
       return e.code;
     }
-    process.stderr.write(`gishra: ${jsonOut ? e.message : e.stack || e.message}\n`);
+    process.stderr.write(`tower-crane: ${jsonOut ? e.message : e.stack || e.message}\n`);
     return 1;
   }
 }

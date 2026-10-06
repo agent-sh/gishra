@@ -18,7 +18,7 @@ function cliCopy(h) {
     recursive: true,
     filter: (src) => src !== gatesDir && !src.startsWith(gatesDir + path.sep),
   });
-  const bin = path.join(dir, 'bin', 'gishra.js');
+  const bin = path.join(dir, 'bin', 'tower-crane.js');
   return {
     gates: path.join(dir, 'lib', 'gates'),
     run: (args, env = {}) => {

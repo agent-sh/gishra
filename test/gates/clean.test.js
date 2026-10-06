@@ -8,8 +8,8 @@ const { scratch, isolateGit, git, commit, initRepo, worktrees, quote } = require
 
 const tmp = scratch('gates-clean');
 isolateGit(tmp);
-process.env.GISHRA_TMP = path.join(tmp, 'gishra-tmp');
-fs.mkdirSync(process.env.GISHRA_TMP);
+process.env.TOWER_CRANE_TMP = path.join(tmp, 'tower-crane-tmp');
+fs.mkdirSync(process.env.TOWER_CRANE_TMP);
 const root = path.join(tmp, 'repo');
 const base = initRepo(root, { 'lib/a.js': 'module.exports = 1;\n' });
 git(root, 'checkout', '-q', '-b', 'task');
@@ -40,7 +40,7 @@ function restore(...keys) {
   }
 }
 test.beforeEach(() => {
-  for (const k of ['GISHRA_CLEAN_CMD', 'FAKE_CLEAN_MODE', 'FAKE_CLEAN_VIA']) delete process.env[k];
+  for (const k of ['TOWER_CRANE_CLEAN_CMD', 'FAKE_CLEAN_MODE', 'FAKE_CLEAN_VIA']) delete process.env[k];
   restore('PATH', 'HOME', 'USERPROFILE');
   process.env.FAKE_CLEAN_LOG = logFile;
   process.env.FAKE_CLEAN_REPORT = reportFile;
@@ -68,12 +68,12 @@ function item(severity, check, file, line, message) {
 }
 
 function assertCleanedUp() {
-  assert.deepEqual(fs.readdirSync(process.env.GISHRA_TMP), []);
+  assert.deepEqual(fs.readdirSync(process.env.TOWER_CRANE_TMP), []);
   assert.equal(worktrees(root), 1);
 }
 
 test('a HIGH finding: not ok, listing the first 10 HIGH items and counts by check', async () => {
-  process.env.GISHRA_CLEAN_CMD = fakeCmd;
+  process.env.TOWER_CRANE_CLEAN_CMD = fakeCmd;
   const high = Array.from({ length: 12 }, (_, i) => item('high', i ? 'secret' : 'merge-residue', 'lib/a.js', i + 1, `finding ${i + 1}`));
   report([...high, item('review', 'no-caller', 'lib/b.js', 7, 'nothing calls b')]);
   const r = await gate.run(ctx());
@@ -88,12 +88,12 @@ test('a HIGH finding: not ok, listing the first 10 HIGH items and counts by chec
   const c = called();
   assert.equal(c.head, sha);
   assert.deepEqual(c.rest, [`--base=${base}`, '--json']);
-  assert.ok(c.dir.startsWith(process.env.GISHRA_TMP));
+  assert.ok(c.dir.startsWith(process.env.TOWER_CRANE_TMP));
   assertCleanedUp();
 });
 
 test('only review and verify findings: ok', async () => {
-  process.env.GISHRA_CLEAN_CMD = fakeCmd;
+  process.env.TOWER_CRANE_CLEAN_CMD = fakeCmd;
   report([item('review', 'no-caller', 'lib/b.js', 7, 'nothing calls b'), item('verify', 'stale-mention', 'README.md', 3, 'mentions a')]);
   const r = await gate.run(ctx());
   assert.equal(r.ok, true, r.summary);
@@ -102,7 +102,7 @@ test('only review and verify findings: ok', async () => {
 });
 
 test('a scan with checks that did not run: not ok, naming them', async () => {
-  process.env.GISHRA_CLEAN_CMD = fakeCmd;
+  process.env.TOWER_CRANE_CLEAN_CMD = fakeCmd;
   const cases = [
     [{ errors: ['secrets: could not read tracked files'] }, /secrets: could not read tracked files/],
     [{ detectorErrors: [{ check: 'refs', error: 'git grep failed' }] }, /git grep failed/],
@@ -128,7 +128,7 @@ test('no cleanup tool installed: not ok', async () => {
   assert.match(r.summary, /cleanup tool not installed/);
 });
 
-test('deslop on PATH is used when GISHRA_CLEAN_CMD is unset, and GISHRA_CLEAN_CMD wins over it', { skip: process.platform === 'win32' }, async () => {
+test('deslop on PATH is used when TOWER_CRANE_CLEAN_CMD is unset, and TOWER_CRANE_CLEAN_CMD wins over it', { skip: process.platform === 'win32' }, async () => {
   const bin = path.join(tmp, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'deslop'), `#!/bin/sh\nFAKE_CLEAN_VIA=path exec ${fakeCmd} "$@"\n`, { mode: 0o755 });
@@ -137,7 +137,7 @@ test('deslop on PATH is used when GISHRA_CLEAN_CMD is unset, and GISHRA_CLEAN_CM
   const r = await gate.run(ctx());
   assert.equal(r.ok, true, r.summary);
   assert.equal(called().via, 'path');
-  process.env.GISHRA_CLEAN_CMD = fakeCmd;
+  process.env.TOWER_CRANE_CLEAN_CMD = fakeCmd;
   assert.equal((await gate.run(ctx())).ok, true);
   assert.equal(called().via, 'env');
   assertCleanedUp();
@@ -159,7 +159,7 @@ test('the deslop plugin script under ~/.agentsys is the last resort', async (t) 
 });
 
 test('a tool that fails or prints no JSON: not ok', async () => {
-  process.env.GISHRA_CLEAN_CMD = fakeCmd;
+  process.env.TOWER_CRANE_CLEAN_CMD = fakeCmd;
   process.env.FAKE_CLEAN_MODE = 'crash';
   const crashed = await gate.run(ctx());
   assert.equal(crashed.ok, false);

@@ -44,13 +44,13 @@ async function start(t, h, { claim = true, submit = false, wait = false, env = {
   const script = `
 const fs = require('node:fs');
 const cp = require('node:child_process');
-const task = process.env.GISHRA_TASK;
+const task = process.env.TOWER_CRANE_TASK;
 ${claim ? "cp.execFileSync(process.execPath, [process.argv[2], 'claim', task]);" : ''}
 fs.writeSync(1, Array.from({ length: 30 }, (_, i) => 'progress ' + i).join('\\n') + '\\n');
 fs.writeSync(2, 'last diagnostic before exit\\n');
 fs.writeSync(2, ${JSON.stringify(PRIVATE_LOG + '\n')});
 ${submit ? "cp.execFileSync(process.execPath, [process.argv[2], 'submit', task, '--sha', 'abcdef1']);" : ''}
-fs.writeFileSync(process.argv[3], JSON.stringify({ agent: process.env.GISHRA_AGENT, pid: process.pid }));
+fs.writeFileSync(process.argv[3], JSON.stringify({ agent: process.env.TOWER_CRANE_AGENT, pid: process.pid }));
 ${wait ? 'process.exit(7);' : 'setInterval(() => {}, 1000);'}
 `;
   fs.writeFileSync(worker, script);
@@ -103,10 +103,10 @@ test('a killed spawned claimant is reported with its log tail and released for r
     assert.match(text, /exited without submit/);
     assert.ok(text.includes(spawned.log), text);
     assert.match(text, /last diagnostic before exit/);
-    assert.match(text, /gishra release T1 --reason/);
+    assert.match(text, /tower-crane release T1 --reason/);
     assert.doesNotMatch(text, /--agent owner/);
     const workerText = h.ok([...args, '--agent', 'orchestrator']);
-    assert.match(workerText, /gishra release T1 --reason/);
+    assert.match(workerText, /tower-crane release T1 --reason/);
     assert.doesNotMatch(workerText, /--agent owner/);
     assert.deepEqual(data.ready, [], 'the claim stays held until release or lease expiry');
   }
@@ -205,7 +205,7 @@ test('terminal fallback cannot release another live claim', { skip: !PTY_AVAILAB
   const spawned = await start(t, h);
   const args = ['release', 'T1', '--reason', 'cancel live worker'];
   const env = { ...h.env };
-  delete env.GISHRA_AGENT;
+  delete env.TOWER_CRANE_AGENT;
   const refused = runPty(args, { cwd: h.repo, env });
   assert.equal(refused.code, 1, refused.stdout + refused.stderr);
   const result = runPty([...args, '--agent', 'owner'], { cwd: h.repo, env });
@@ -224,8 +224,8 @@ test('Linux zombie and reused pid diagnostics do not mistake the process for a l
   assert.equal(event.detail.start_ticks, ticks);
   assert.deepEqual(h.json(['status']).exited_claims, []);
   const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
-  const baseEnv = { NODE_OPTIONS: `--require "${hook}"`, GISHRA_TEST_PROC_PID: String(spawned.pid) };
-  for (const change of [{ GISHRA_TEST_PROC_STATE: 'Z' }, { GISHRA_TEST_PROC_STATE: 'X' }, { GISHRA_TEST_PROC_TICKS: String(BigInt(ticks) + 1n) }]) {
+  const baseEnv = { NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_PROC_PID: String(spawned.pid) };
+  for (const change of [{ TOWER_CRANE_TEST_PROC_STATE: 'Z' }, { TOWER_CRANE_TEST_PROC_STATE: 'X' }, { TOWER_CRANE_TEST_PROC_TICKS: String(BigInt(ticks) + 1n) }]) {
     for (const args of [['status'], ['ready']]) {
       const data = h.json(args, { env: { ...baseEnv, ...change } });
       assert.equal(data.exited_claims.length, 1);
@@ -248,7 +248,7 @@ test('reclaiming an expired lease under the same identity does not inherit its o
   await until(() => (h.json(['status']).exited_claims || []).length === 1, 'old claim exit was not reported');
   const hook = path.join(__dirname, 'fixtures', 'clock.js').replace(/\\/g, '/');
   h.ok(['claim', 'T1', '--agent', agent], {
-    env: { NODE_OPTIONS: `--require "${hook}"`, GISHRA_TEST_NOW: String(Date.parse(oldClaim.until) + 1) },
+    env: { NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_NOW: String(Date.parse(oldClaim.until) + 1) },
   });
   assert.notEqual(h.readState('tasks.json').tasks[0].claim.since, oldClaim.since);
   for (const args of [['status'], ['ready'], ['ready', '--all']]) {
@@ -267,7 +267,7 @@ test('a spawned replacement can claim after another worker lease expires', async
   const previousClaim = h.readState('tasks.json').tasks[0].claim;
   const hook = path.join(__dirname, 'fixtures', 'clock.js').replace(/\\/g, '/');
   const spawned = await start(t, h, {
-    env: { NODE_OPTIONS: `--require "${hook}"`, GISHRA_TEST_NOW: String(Date.parse(previousClaim.until) + 1) },
+    env: { NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_NOW: String(Date.parse(previousClaim.until) + 1) },
   });
   assert.equal(h.readState('tasks.json').tasks[0].claim.agent, spawned.agent);
   assert.deepEqual(h.json(['status']).exited_claims, []);

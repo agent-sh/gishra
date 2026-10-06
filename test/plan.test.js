@@ -131,7 +131,7 @@ test('notes and briefs round-trip', (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'A', '--acceptance', 'a']);
-  h.ok(['task', 'note', 'T1', 'found', 'the', 'flaky', 'test'], { env: { GISHRA_AGENT: 'w-1' } });
+  h.ok(['task', 'note', 'T1', 'found', 'the', 'flaky', 'test'], { env: { TOWER_CRANE_AGENT: 'w-1' } });
   const note = h.readState('tasks.json').tasks[0].notes[0];
   assert.equal(note.text, 'found the flaky test');
   assert.equal(note.agent, 'w-1');

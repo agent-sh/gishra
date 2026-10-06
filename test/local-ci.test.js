@@ -10,7 +10,7 @@ const { gateFixture } = require('./gate-helpers');
 
 function fixture(t, script) {
   const h = makeRepo(t);
-  h.env.GISHRA_TMP = path.join(h.base, 'gate-tmp');
+  h.env.TOWER_CRANE_TMP = path.join(h.base, 'gate-tmp');
   h.log = path.join(h.base, 'check.json');
   h.command = [process.execPath, 'ci.js', h.log, 'literal argument; $(exit 1)'];
   h.init(['--ci-local', JSON.stringify({ command: h.command, timeout: 5 })]);
@@ -103,7 +103,7 @@ test('local CI runs argv on the merged tree and records audited evidence without
   const trace = JSON.parse(fs.readFileSync(h.log, 'utf8'));
   assert.equal(trace.head, h.sha);
   assert.equal(trace.argument, h.command[3]);
-  assert.ok(trace.cwd.startsWith(h.env.GISHRA_TMP));
+  assert.ok(trace.cwd.startsWith(h.env.TOWER_CRANE_TMP));
   assert.ok(!fs.existsSync(trace.cwd), 'temporary merged worktree removed');
   assert.equal(h.git(['worktree', 'list', '--porcelain']).match(/^worktree /gm).length, 1);
   assert.equal(fs.readFileSync(path.join(h.repo, 'head.txt'), 'utf8'), 'old\n');
@@ -145,8 +145,8 @@ test('local CI receipt for an older merged tree cannot satisfy acceptance or mer
   const merge = h.run(['merge', 'T1']);
   assert.equal(merge.code, 1);
   assert.match(merge.stderr, /local CI receipt.*merged tree/);
-  assert.match(merge.stderr, /gishra check ci T1/);
-  assert.doesNotMatch(merge.stderr, /gishra rework/);
+  assert.match(merge.stderr, /tower-crane check ci T1/);
+  assert.doesNotMatch(merge.stderr, /tower-crane rework/);
 });
 
 for (const changedTree of [true, false]) {
@@ -167,8 +167,8 @@ for (const changedTree of [true, false]) {
     const refused = h.run(['merge', 'T1']);
     assert.equal(refused.code, 1, refused.stdout);
     assert.match(refused.stderr, /local CI receipt.*base.*moved/);
-    assert.match(refused.stderr, /gishra check ci T1/);
-    assert.doesNotMatch(refused.stderr, /gishra rework/);
+    assert.match(refused.stderr, /tower-crane check ci T1/);
+    assert.doesNotMatch(refused.stderr, /tower-crane rework/);
     assert.equal(h.git(['rev-parse', 'origin/main']), remote);
     assert.equal(h.git(['rev-parse', 'main']), h.baseSha);
     assert.ok(!fs.existsSync(h.merged), 'GitHub merge never ran');
@@ -271,7 +271,7 @@ test('local CI receipt edits lose their gate proof and manual verdicts remain re
   }
   const manual = h.run(['evidence', 'T1', '--type', 'ci', '--ok', '--sha', h.sha]);
   assert.equal(manual.code, 1);
-  assert.match(manual.stderr, /only gishra check ci/);
+  assert.match(manual.stderr, /only tower-crane check ci/);
 });
 
 test('matching audit copies cannot bind a receipt to another head or tree', (t) => {
@@ -315,7 +315,7 @@ test('failed, missing and timed out local commands record failure and clean thei
     assert.match(r.stdout, pattern);
     assert.equal(h.readState('tasks.json').tasks[0].evidence.at(-1).ok, false);
     assert.equal(h.git(['worktree', 'list', '--porcelain']).match(/^worktree /gm).length, 1);
-    assert.deepEqual(fs.readdirSync(h.env.GISHRA_TMP), []);
+    assert.deepEqual(fs.readdirSync(h.env.TOWER_CRANE_TMP), []);
   }
 });
 

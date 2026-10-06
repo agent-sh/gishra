@@ -31,7 +31,7 @@ test('worktree creates the task branch from base and is idempotent', (t) => {
   const first = h.json(['worktree', 'T1']);
   const expected = path.join(h.base, 'repo-worktrees', 'T1-idempotency-key-on-retries');
   assert.equal(real(first.path), real(expected));
-  assert.equal(first.branch, 'gishra/T1-idempotency-key-on-retries');
+  assert.equal(first.branch, 'tower-crane/T1-idempotency-key-on-retries');
   assert.equal(first.created, true);
   assert.equal(h.git(['rev-parse', '--abbrev-ref', 'HEAD'], first.path), first.branch);
   assert.equal(h.git(['rev-parse', 'HEAD'], first.path), h.git(['rev-parse', 'main']));
@@ -62,7 +62,7 @@ test('spawn --dry-run builds each harness command', (t) => {
   fs.mkdirSync(empty);
   for (const [flags, expected] of cases) {
     setRung(h, 'small', flags);
-    const out = dry(h, 'small', { GISHRA_PLUGIN_ROOT: empty });
+    const out = dry(h, 'small', { TOWER_CRANE_PLUGIN_ROOT: empty });
     const prompt = out.argv.find((a) => a.includes('## Task'));
     assert.ok(prompt, `prompt present for ${flags.join(' ')}`);
     assert.deepEqual(out.argv, expected(prompt), flags.join(' '));
@@ -70,45 +70,45 @@ test('spawn --dry-run builds each harness command', (t) => {
   const out = dry(h, 'small');
   assert.equal(out.agent, 'small-T1-1');
   assert.equal(out.rung, 'small');
-  assert.deepEqual(Object.keys(out.env).sort(), ['GISHRA_AGENT', 'GISHRA_STATE', 'GISHRA_TASK']);
-  assert.equal(out.env.GISHRA_AGENT, 'small-T1-1');
-  assert.equal(out.env.GISHRA_TASK, 'T1');
-  assert.equal(real(out.env.GISHRA_STATE), real(h.state));
+  assert.deepEqual(Object.keys(out.env).sort(), ['TOWER_CRANE_AGENT', 'TOWER_CRANE_STATE', 'TOWER_CRANE_TASK']);
+  assert.equal(out.env.TOWER_CRANE_AGENT, 'small-T1-1');
+  assert.equal(out.env.TOWER_CRANE_TASK, 'T1');
+  assert.equal(real(out.env.TOWER_CRANE_STATE), real(h.state));
   assert.equal(out.worktree_exists, false);
   assert.ok(!fs.existsSync(path.join(h.base, 'repo-worktrees')), 'a dry run creates nothing');
 });
 
-test('the prompt is the brief, then the task, then how to use gishra', (t) => {
+test('the prompt is the brief, then the task, then how to use tower-crane', (t) => {
   const h = setup(t);
   setRung(h, 'medium', ['--harness', 'opencode', '--model', 'a/b']);
   const p = dry(h).argv.find((a) => a.includes('## Task'));
   assert.ok(p.startsWith('\n- start from the webhook handler'), 'a leading dash is not read as a flag');
   const iBrief = p.indexOf('start from the webhook handler');
   const iTask = p.indexOf('"acceptance": [');
-  const iUse = p.indexOf('Use the gishra CLI for every state change');
+  const iUse = p.indexOf('Use the tower-crane CLI for every state change');
   assert.ok(iBrief < iTask && iTask < iUse, 'brief, task JSON, instruction in order');
   const json = JSON.parse(p.slice(p.indexOf('```json\n') + 8, p.indexOf('\n```', p.indexOf('```json'))));
   assert.deepEqual(json, { id: 'T1', title: 'Idempotency key on retries', acceptance: ['processed once', 'test proves it'], kind: 'code' });
-  assert.match(p, /GISHRA_STATE, GISHRA_TASK and GISHRA_AGENT are set/);
+  assert.match(p, /TOWER_CRANE_STATE, TOWER_CRANE_TASK and TOWER_CRANE_AGENT are set/);
   assert.ok(p.includes('you are not the owner; never pass --agent owner'));
-  assert.ok(p.endsWith('run gishra with --agent worker-T1-1 if GISHRA_AGENT is missing.'));
+  assert.ok(p.endsWith('run tower-crane with --agent worker-T1-1 if TOWER_CRANE_AGENT is missing.'));
 });
 
-test('a spawned reviewer that loses all GISHRA variables cannot record evidence as owner', (t) => {
+test('a spawned reviewer that loses all TOWER_CRANE variables cannot record evidence as owner', (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'lost-agent.json');
   const script = `
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const env = { ...process.env };
-const agent = env.GISHRA_AGENT;
-const task = env.GISHRA_TASK;
-const state = env.GISHRA_STATE;
-for (const key of Object.keys(env)) if (key.startsWith('GISHRA_')) delete env[key];
+const agent = env.TOWER_CRANE_AGENT;
+const task = env.TOWER_CRANE_TASK;
+const state = env.TOWER_CRANE_STATE;
+for (const key of Object.keys(env)) if (key.startsWith('TOWER_CRANE_')) delete env[key];
 const r = cp.spawnSync(process.execPath, [process.argv[1], 'evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1', '--state', state], {
   env, encoding: 'utf8', timeout: 10000,
 });
-fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('GISHRA_')), code: r.status, stderr: r.stderr }));
+fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('TOWER_CRANE_')), code: r.status, stderr: r.stderr }));
 process.exit(r.status === null ? 1 : r.status);
 `;
   commandRung(h, 'review', [process.execPath, '-e', script, BIN, out]);
@@ -120,14 +120,14 @@ process.exit(r.status === null ? 1 : r.status);
     task: 'T1',
     remaining: [],
     code: 2,
-    stderr: 'gishra: no agent: pass --agent NAME or set GISHRA_AGENT\n',
+    stderr: 'tower-crane: no agent: pass --agent NAME or set TOWER_CRANE_AGENT\n',
   });
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
   assert.ok(!events.some((e) => e.cmd === 'evidence'));
 });
 
-test('a spawned reviewer losing all GISHRA variables in a terminal cannot clear owner work', { skip: !PTY_AVAILABLE }, (t) => {
+test('a spawned reviewer losing all TOWER_CRANE variables in a terminal cannot clear owner work', { skip: !PTY_AVAILABLE }, (t) => {
   const h = setup(t);
   h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'approved', '--needs-owner', 'approve access']);
   const out = path.join(h.base, 'lost-agent-terminal.json');
@@ -135,12 +135,12 @@ test('a spawned reviewer losing all GISHRA variables in a terminal cannot clear 
 const fs = require('node:fs');
 const { runPty } = require(process.argv[1]);
 const env = { ...process.env };
-const agent = env.GISHRA_AGENT;
-const task = env.GISHRA_TASK;
-const state = env.GISHRA_STATE;
-for (const key of Object.keys(env)) if (key.startsWith('GISHRA_')) delete env[key];
+const agent = env.TOWER_CRANE_AGENT;
+const task = env.TOWER_CRANE_TASK;
+const state = env.TOWER_CRANE_STATE;
+for (const key of Object.keys(env)) if (key.startsWith('TOWER_CRANE_')) delete env[key];
 const r = runPty(['owner-done', 'T2', '--state', state], { cwd: process.cwd(), env });
-fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('GISHRA_')), ...r }));
+fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('TOWER_CRANE_')), ...r }));
 process.exit(r.code === null ? 99 : r.code);
 `;
   commandRung(h, 'review', [process.execPath, '-e', script, require.resolve('./helpers'), out]);
@@ -159,27 +159,27 @@ process.exit(r.code === null ? 99 : r.code);
   assert.ok(!events.some((e) => e.cmd === 'owner-done'));
 });
 
-test('pi rungs load the gishra skill for workers and reviewers when it is installed', (t) => {
+test('pi rungs load the tower-crane skill for workers and reviewers when it is installed', (t) => {
   const h = setup(t);
   const plugin = path.join(h.base, 'plugin');
-  for (const s of ['gishra-work', 'gishra-review']) fs.mkdirSync(path.join(plugin, 'skills', s), { recursive: true });
-  const env = { GISHRA_PLUGIN_ROOT: plugin };
+  for (const s of ['tower-crane-work', 'tower-crane-review']) fs.mkdirSync(path.join(plugin, 'skills', s), { recursive: true });
+  const env = { TOWER_CRANE_PLUGIN_ROOT: plugin };
   for (const rung of ['easy', 'medium', 'review', 'small']) setRung(h, rung, ['--model', 'm']);
   h.ok(['ladder', 'harness', 'pi']);
   const at = (argv) => argv.slice(argv.indexOf('--skill'));
-  assert.deepEqual(at(dry(h, 'medium', env).argv), ['--skill', path.join(plugin, 'skills', 'gishra-work')]);
-  assert.deepEqual(at(dry(h, 'easy', env).argv), ['--skill', path.join(plugin, 'skills', 'gishra-work')]);
-  assert.deepEqual(at(dry(h, 'review', env).argv), ['--skill', path.join(plugin, 'skills', 'gishra-review')]);
+  assert.deepEqual(at(dry(h, 'medium', env).argv), ['--skill', path.join(plugin, 'skills', 'tower-crane-work')]);
+  assert.deepEqual(at(dry(h, 'easy', env).argv), ['--skill', path.join(plugin, 'skills', 'tower-crane-work')]);
+  assert.deepEqual(at(dry(h, 'review', env).argv), ['--skill', path.join(plugin, 'skills', 'tower-crane-review')]);
   assert.ok(!dry(h, 'small', env).argv.includes('--skill'), 'other rungs get no skill');
   const missing = path.join(h.base, 'empty-plugin');
   fs.mkdirSync(missing);
-  assert.ok(!dry(h, 'medium', { GISHRA_PLUGIN_ROOT: missing }).argv.includes('--skill'), 'no skill when it is not installed');
+  assert.ok(!dry(h, 'medium', { TOWER_CRANE_PLUGIN_ROOT: missing }).argv.includes('--skill'), 'no skill when it is not installed');
 });
 
-test('spawn --wait runs the command rung in the task worktree with the gishra environment', (t) => {
+test('spawn --wait runs the command rung in the task worktree with the tower-crane environment', (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'seen.json');
-  const script = 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), task: process.argv[2], brief: process.argv[3], cwdArg: process.argv[4], prompt: process.argv[5], env: { s: process.env.GISHRA_STATE, t: process.env.GISHRA_TASK, a: process.env.GISHRA_AGENT } })); process.exit(7)';
+  const script = 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ cwd: process.cwd(), task: process.argv[2], brief: process.argv[3], cwdArg: process.argv[4], prompt: process.argv[5], env: { s: process.env.TOWER_CRANE_STATE, t: process.env.TOWER_CRANE_TASK, a: process.env.TOWER_CRANE_AGENT } })); process.exit(7)';
   commandRung(h, 'medium', [process.execPath, '-e', script, out, '{task}', '{brief}', '{cwd}', 'P:{prompt}']);
   const r = h.run(['spawn', '--task', 'T1', '--wait']);
   assert.equal(r.code, 7, r.stderr);
@@ -201,7 +201,7 @@ test('spawn --wait runs the command rung in the task worktree with the gishra en
 
 test('spawn in the background detaches, logs output and numbers agents', async (t) => {
   const h = setup(t);
-  commandRung(h, 'small', [process.execPath, '-e', 'console.log("hello from " + process.env.GISHRA_AGENT)']);
+  commandRung(h, 'small', [process.execPath, '-e', 'console.log("hello from " + process.env.TOWER_CRANE_AGENT)']);
   const started = h.json(['spawn', '--role', 'small', '--task', 'T1']);
   assert.equal(started.agent, 'small-T1-1');
   assert.ok(Number.isInteger(started.pid));
@@ -215,14 +215,14 @@ test('spawn in the background detaches, logs output and numbers agents', async (
   assert.match(fs.readFileSync(started.log, 'utf8'), /hello from small-T1-1/);
   assert.equal(h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run']).agent, 'small-T1-2');
 
-  commandRung(h, 'review', ['gishra-no-such-program']);
+  commandRung(h, 'review', ['tower-crane-no-such-program']);
   const missing = h.run(['spawn', '--role', 'review', '--task', 'T1']);
   assert.equal(missing.code, 1);
-  assert.match(missing.stderr, /could not start gishra-no-such-program/);
+  assert.match(missing.stderr, /could not start tower-crane-no-such-program/);
   h.ok(['task', 'add', '--title', 'No brief', '--acceptance', 'x']);
   const noBrief = h.run(['spawn', '--role', 'small', '--task', 'T2', '--dry-run']);
   assert.equal(noBrief.code, 1);
-  assert.match(noBrief.stderr, /T2 has no brief; write one with gishra brief set T2/);
+  assert.match(noBrief.stderr, /T2 has no brief; write one with tower-crane brief set T2/);
 });
 
 // Everything a spawn could leave behind: state files, events, logs, the
@@ -234,13 +234,13 @@ function footprint(h) {
     events: read('events.jsonl'),
     logs: fs.existsSync(path.join(h.state, 'logs')) ? fs.readdirSync(path.join(h.state, 'logs')) : null,
     worktrees: fs.existsSync(path.join(h.base, 'repo-worktrees')),
-    branches: h.git(['branch', '--list', 'gishra/*']),
+    branches: h.git(['branch', '--list', 'tower-crane/*']),
   };
 }
 
 test('a spawn refused for a missing program creates and writes nothing', (t) => {
   const h = setup(t);
-  for (const command of [['gishra-no-such-program', '{prompt}'], [path.join(h.base, 'missing', 'agent')]]) {
+  for (const command of [['tower-crane-no-such-program', '{prompt}'], [path.join(h.base, 'missing', 'agent')]]) {
     commandRung(h, 'small', command);
     const before = footprint(h);
     assert.equal(h.readState('tasks.json').tasks[0].branch, null);
@@ -264,14 +264,14 @@ test('a spawn whose program fails to start records nothing and leaves its worktr
     assert.equal(r.code, 1, r.stderr);
     const now = footprint(h);
     assert.ok(fs.existsSync(leftover(h)), 'the worktree stays');
-    assert.equal(now.branches.replace(/^[*+ ]+/, ''), 'gishra/T1-idempotency-key-on-retries', 'the branch stays');
+    assert.equal(now.branches.replace(/^[*+ ]+/, ''), 'tower-crane/T1-idempotency-key-on-retries', 'the branch stays');
     assert.deepEqual([now.tasks, now.events, now.logs || []], [tasks, events, []], `${mode.join(' ') || 'background'}: no spawn is recorded`);
     assert.match(r.stderr, /could not start .*; its worktree stays at .*T1-idempotency-key-on-retries for the next spawn/);
   }
   const next = h.json(['spawn', '--role', 'small', '--task', 'T1', '--wait']);
   assert.equal(next.code, 0);
   assert.equal(real(next.cwd), real(leftover(h)), 'the next spawn reuses it');
-  assert.equal(h.readState('tasks.json').tasks[0].branch, 'gishra/T1-idempotency-key-on-retries');
+  assert.equal(h.readState('tasks.json').tasks[0].branch, 'tower-crane/T1-idempotency-key-on-retries');
 });
 
 test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', async (t) => {
@@ -328,7 +328,7 @@ fs.writeFileSync(${JSON.stringify(output)}, "work in progress");`;
   await waitForFile(path.join(b.cwd, output));
 
   // T2 already names a branch but has no worktree. A creates the worktree
-  // and stops; B gets it from gishra worktree, claims T2 and works there
+  // and stops; B gets it from tower-crane worktree, claims T2 and works there
   // before writing anything. Then A fails.
   h.git(['branch', 'feature/second']);
   h.ok(['task', 'add', '--title', 'Second', '--acceptance', 'b']);
@@ -381,7 +381,7 @@ test('spawn runs the rung of the tier and ladder it finds under the lock, not th
   fs.writeFileSync(`${stopped2}.go`, '');
   const rb = await b;
   assert.equal(rb.code, 1);
-  assert.match(rb.stderr, /could not start .*no-such-program: no executable file by that name; install it, or fix the rung with gishra ladder set hard/);
+  assert.match(rb.stderr, /could not start .*no-such-program: no executable file by that name; install it, or fix the rung with tower-crane ladder set hard/);
   assert.ok(!fs.existsSync(out));
   const spawns = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.cmd === 'spawn');
   assert.equal(spawns.length, 1);

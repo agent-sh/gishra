@@ -70,7 +70,7 @@ test('the Settings view edits the ladder and task tiers only with the page token
   try {
     const page = await request(`${s.url}settings`);
     assert.equal(page.status, 200);
-    const token = /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec(page.text)[1];
+    const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page.text)[1];
     assert.match(page.text, /<label for="harness">Default harness<\/label>/);
     assert.match(page.text, /<input name="model" value="opus" data-initial="opus" aria-labelledby="r-hard c-model"/);
     assert.match(page.text, /<select name="tier" aria-labelledby="t-T1 c-tier" data-initial="medium">/);
@@ -83,9 +83,9 @@ test('the Settings view edits the ladder and task tiers only with the page token
     const change = ladderBody(loaded, { rungs: { easy: { harness: '', model: 'gpt-x', profile: '', provider: '', effort: 'low', args: '["--skip-git-repo-check"]', command: '' } } });
     const refused = [
       [{}, 403, /missing or wrong token/],
-      [{ 'x-gishra-token': 'f'.repeat(48) }, 403, /missing or wrong token/],
-      [{ 'x-gishra-token': token, origin: 'http://evil.example' }, 403, /other origins/],
-      [{ 'x-gishra-token': token, host: 'evil.example' }, 403, /forbidden host/],
+      [{ 'x-tower-crane-token': 'f'.repeat(48) }, 403, /missing or wrong token/],
+      [{ 'x-tower-crane-token': token, origin: 'http://evil.example' }, 403, /other origins/],
+      [{ 'x-tower-crane-token': token, host: 'evil.example' }, 403, /forbidden host/],
     ];
     for (const [headers, status, message] of refused) {
       const r = await request(ladder, { method: 'POST', body: change, headers });
@@ -94,15 +94,15 @@ test('the Settings view edits the ladder and task tiers only with the page token
     }
     assert.equal(read(h, 'project.json'), project, 'a POST without the token writes nothing');
 
-    const invalid = await request(ladder, { method: 'POST', headers: { 'x-gishra-token': token }, body: ladderBody(loaded, { rungs: { easy: { harness: 'pi', model: '', profile: 'luna', effort: 'medium' } } }) });
+    const invalid = await request(ladder, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: ladderBody(loaded, { rungs: { easy: { harness: 'pi', model: '', profile: 'luna', effort: 'medium' } } }) });
     assert.equal(invalid.status, 400);
     assert.match(invalid.json.error, /^ladder easy \(pi\): profile applies only to codex, needs a model$/);
-    const badArgs = await request(ladder, { method: 'POST', headers: { 'x-gishra-token': token }, body: ladderBody(loaded, { rungs: { small: { args: 'not json' } } }) });
+    const badArgs = await request(ladder, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: ladderBody(loaded, { rungs: { small: { args: 'not json' } } }) });
     assert.equal(badArgs.status, 400);
     assert.match(badArgs.json.error, /^ladder small: args must be a JSON array of strings/);
     assert.equal(read(h, 'project.json'), project, 'a refused value leaves project.json unchanged');
 
-    const saved = await request(ladder, { method: 'POST', headers: { 'x-gishra-token': token }, body: change });
+    const saved = await request(ladder, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: change });
     assert.equal(saved.status, 200, saved.text);
     assert.deepEqual([saved.json.ok, saved.json.harness, saved.json.ladder.easy.model, saved.json.ladder.easy.from], [true, 'codex', 'gpt-x', 'project'], 'the reply is the ladder as ladder show prints it');
     assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'low', args: ['--skip-git-repo-check'] });
@@ -111,18 +111,18 @@ test('the Settings view edits the ladder and task tiers only with the page token
     assert.match(read(h, 'sketch.html'), /<td class="id">easy<\/td><td>codex \(default\)<\/td><td>gpt-x<\/td>/, 'the write re-rendered the sketch');
 
     loaded = await loadedOf(s.url);
-    const harness = await request(ladder, { method: 'POST', headers: { 'x-gishra-token': token }, body: ladderBody(loaded, { harness: 'agy', rungs: { medium: { model: 'gemini-3-pro', profile: '' }, review: { model: 'gemini-3-pro', profile: '' }, small: { model: 'gemini-3-flash', profile: '' }, easy: { model: 'gemini-3-flash' } } }) });
+    const harness = await request(ladder, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: ladderBody(loaded, { harness: 'agy', rungs: { medium: { model: 'gemini-3-pro', profile: '' }, review: { model: 'gemini-3-pro', profile: '' }, small: { model: 'gemini-3-flash', profile: '' }, easy: { model: 'gemini-3-flash' } } }) });
     assert.equal(harness.status, 200, harness.text);
     assert.equal(h.json(['ladder', 'show']).ladder.medium.harness, 'agy', 'the default harness and rungs change in one write');
 
     const tiers = `${s.url}api/tiers`;
     const tasks = read(h, 'tasks.json');
     assert.equal((await request(tiers, { method: 'POST', body: tierBody(loaded, { T1: 'hard' }) })).status, 403);
-    const badTier = await request(tiers, { method: 'POST', headers: { 'x-gishra-token': token }, body: tierBody(loaded, { T1: 'expert' }) });
+    const badTier = await request(tiers, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: tierBody(loaded, { T1: 'expert' }) });
     assert.equal(badTier.status, 400);
     assert.match(badTier.json.error, /^T1: tier must be one of easy, medium, hard, research/);
     assert.equal(read(h, 'tasks.json'), tasks);
-    const tier = await request(tiers, { method: 'POST', headers: { 'x-gishra-token': token }, body: tierBody(loaded, { T1: 'hard' }) });
+    const tier = await request(tiers, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: tierBody(loaded, { T1: 'hard' }) });
     assert.equal(tier.status, 200, tier.text);
     assert.deepEqual([tier.json.ok, tier.json.tiers], [true, [{ id: 'T1', tier: 'hard' }]]);
     assert.match(tier.json.version, /^[0-9a-f]{16}$/, 'the reply carries the state version the page compares reload events to');
@@ -141,8 +141,8 @@ test('a save made against a rung, default harness or tier that changed since the
   h.ok(['task', 'add', '--title', 'Webhook retries', '--acceptance', 'a']);
   const s = await startServe(h);
   try {
-    const token = /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec((await request(`${s.url}settings`)).text)[1];
-    const post = (api, body) => request(`${s.url}api/${api}`, { method: 'POST', headers: { 'x-gishra-token': token }, body });
+    const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec((await request(`${s.url}settings`)).text)[1];
+    const post = (api, body) => request(`${s.url}api/${api}`, { method: 'POST', headers: { 'x-tower-crane-token': token }, body });
     const loaded = await loadedOf(s.url);
     // The page loaded easy as luna; the form sends every field of the rung,
     // so its stale profile would undo a model chosen through the CLI.
@@ -279,7 +279,7 @@ async function startAgain(h) {
   const s = await startServe(h);
   try {
     const page = await request(`${s.url}settings`);
-    return { token: /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec(page.text)[1] };
+    return { token: /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page.text)[1] };
   } finally {
     await s.stop();
   }

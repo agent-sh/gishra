@@ -23,7 +23,7 @@ test('init creates the state files and excludes them from git', (t) => {
   assert.deepEqual(p.limits, { workers: 6, lease_minutes: 60 });
   assert.deepEqual(h.readState('tasks.json'), { version: 1, next: 1, tasks: [] });
   const exclude = fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8');
-  assert.match(exclude, /^\.gishra\/$/m);
+  assert.match(exclude, /^\.tower-crane\/$/m);
   assert.equal(h.git(['status', '--porcelain']), '');
 
   const again = h.run(['init', '--name', 'x', '--goal', 'y']);
@@ -51,10 +51,10 @@ test('state is found from a subdirectory and from a linked worktree', (t) => {
   assert.deepEqual(list.map((x) => x.title), ['from sub']);
   assert.equal(h.ok(['task', 'add', '--title', 'from worktree', '--acceptance', 'b'], { cwd: wt }), 'T2');
   assert.equal(h.readState('tasks.json').tasks.length, 2);
-  assert.ok(!fs.existsSync(path.join(wt, '.gishra')), 'no second state in the worktree');
+  assert.ok(!fs.existsSync(path.join(wt, '.tower-crane')), 'no second state in the worktree');
 });
 
-test('--state and GISHRA_STATE override discovery, and outside a repo one is required', (t) => {
+test('--state and TOWER_CRANE_STATE override discovery, and outside a repo one is required', (t) => {
   const h = makeRepo(t);
   const outside = path.join(h.base, 'elsewhere');
   fs.mkdirSync(outside);
@@ -65,7 +65,7 @@ test('--state and GISHRA_STATE override discovery, and outside a repo one is req
   const dir = path.join(h.base, 'state-dir');
   h.ok(['init', '--name', 'n', '--goal', 'g', '--state', dir], { cwd: outside });
   assert.ok(fs.existsSync(path.join(dir, 'project.json')));
-  h.ok(['task', 'add', '--title', 'via env', '--acceptance', 'a'], { cwd: outside, env: { GISHRA_STATE: dir } });
+  h.ok(['task', 'add', '--title', 'via env', '--acceptance', 'a'], { cwd: outside, env: { TOWER_CRANE_STATE: dir } });
   const viaFlag = h.json(['task', 'list', '--state', dir], { cwd: outside });
   assert.equal(viaFlag[0].title, 'via env');
   assert.ok(!fs.existsSync(h.state), 'the repo default state was never created');

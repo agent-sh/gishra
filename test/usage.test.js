@@ -110,7 +110,7 @@ async function collected(h, length = 1, timeout = 15000) {
 
 test('native usage uses one CLI call and preserves rung metadata across ladder changes', (t) => {
   const h = setup(t, 'claude');
-  const s = h.json(['spend', 'T1', '--tokens', '100', '--input', '80', '--cached', '60', '--output', '20', '--rung', 'easy'], { env: { GISHRA_AGENT: 'native-worker' } }).spend;
+  const s = h.json(['spend', 'T1', '--tokens', '100', '--input', '80', '--cached', '60', '--output', '20', '--rung', 'easy'], { env: { TOWER_CRANE_AGENT: 'native-worker' } }).spend;
   assert.equal(s.tokens, 100);
   assert.equal(s.input, 80);
   assert.equal(s.cached, 60);
@@ -384,7 +384,7 @@ for (const scenario of ['host', 'signal', 'stat']) {
     const { code, stderr } = await runMonitor(t, h, {
       pid: process.pid,
       ...(scenario === 'host' ? { host: require('node:os').hostname() + '-other' } : {}),
-    }, { clock: true, env: { GISHRA_TEST_MONITOR_PERMISSION: scenario, GISHRA_TEST_MONITOR_PID: String(process.pid) } });
+    }, { clock: true, env: { TOWER_CRANE_TEST_MONITOR_PERMISSION: scenario, TOWER_CRANE_TEST_MONITOR_PID: String(process.pid) } });
     assert.equal(code, 1, stderr);
     assert.match(stderr, /cannot observe.*retry spend T1 --from-spawn worker-T1-1/);
     assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before, 'unknown is not proof of exit');
@@ -408,8 +408,8 @@ test('a monitor bounds failed collection with a fractional monotonic deadline', 
   const { code, stderr } = await runMonitor(t, h, { pid: process.pid }, {
     clock: true,
     env: {
-      GISHRA_TEST_MONITOR_PERMISSION: 'exited', GISHRA_TEST_MONITOR_PID: String(process.pid),
-      GISHRA_TEST_MONITOR_STEP: '590000.5',
+      TOWER_CRANE_TEST_MONITOR_PERMISSION: 'exited', TOWER_CRANE_TEST_MONITOR_PID: String(process.pid),
+      TOWER_CRANE_TEST_MONITOR_STEP: '590000.5',
     },
   });
   assert.equal(code, 1);
