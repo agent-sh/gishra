@@ -8,7 +8,7 @@ const SHA = 'a'.repeat(40);
 const OTHER = 'b'.repeat(40);
 const REPO = 'acme/app';
 
-const run = (name, conclusion = 'success', status = 'completed') => ({ name, status, conclusion });
+const run = (name, conclusion = 'success', status = 'completed', app = 'github-actions') => ({ name, status, conclusion, app });
 const suite = (app, conclusion = 'success', status = 'completed', runs = 1) => ({ app, status, conclusion, runs });
 // gh --jq prints one JSON value per line, across all pages.
 const lines = (items) => items.map((i) => JSON.stringify(i)).join('\n') + (items.length ? '\n' : '');
@@ -64,13 +64,23 @@ test('a run still in progress: not ok', async () => {
 });
 
 test('a suite that is queued or failed: not ok even when the listed runs are green', async () => {
-  const queued = await gate.run(ctx(github({ runs: GREEN_RUNS, suites: [...GREEN_SUITES, suite('circleci', null, 'queued', 0)] })));
+  // A second workflow of the same CI app has its suite but no runs yet.
+  const queued = await gate.run(ctx(github({ runs: GREEN_RUNS, suites: [...GREEN_SUITES, suite('github-actions', null, 'queued', 0)] })));
   assert.equal(queued.ok, false);
-  assert.match(queued.summary, /check suites not green: circleci \(queued, 0 runs\)/);
-  assert.match(queued.summary, /waive ci/);
+  assert.match(queued.summary, /check suites not green: github-actions \(queued, 0 runs\)/);
   const failed = await gate.run(ctx(github({ runs: GREEN_RUNS, suites: [...GREEN_SUITES, suite('github-actions', 'failure')] })));
   assert.equal(failed.ok, false);
   assert.match(failed.summary, /github-actions \(failure, 1 runs\)/);
+});
+
+test('a queued suite with no runs from an app that reports nothing on the commit is not CI', async () => {
+  const suites = [...GREEN_SUITES, suite('claude', null, 'queued', 0), suite('cursor', null, 'queued', 0)];
+  const r = await gate.run(ctx(github({ runs: GREEN_RUNS, suites })));
+  assert.equal(r.ok, true, r.summary);
+  assert.match(r.summary, /Ignored 2 queued suites with no runs .*: claude, cursor/);
+  // The same app with a run still going is CI in progress.
+  const busy = await gate.run(ctx(github({ runs: [...GREEN_RUNS, run('review', null, 'queued', 'claude')], suites })));
+  assert.equal(busy.ok, false);
 });
 
 test('no check runs at all: not ok', async () => {
