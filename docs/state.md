@@ -43,7 +43,7 @@ Every command that writes in the state directory holds the lock while it reads a
 
 A writer takes the lock by renaming a directory it prepared to `lock`. That directory holds one file named after the writer's random nonce, with its pid, host and time. The rename fails while `lock` holds such a file, so one writer holds it at a time; the others retry with backoff for up to 10 s, then exit 3.
 
-A lock is stale when its holder process is gone (same host) or its file is older than 60 s. The next writer breaks it by deleting that file by its name, then the directory if it is empty. A name is never reused, so breaking a stale lock cannot remove a newer holder's, however the writers interleave. If a stale lock cannot be removed, writers still exit 3 after 10 s and say so.
+A marker's holder and modification time are read through one opened file descriptor, so they refer to the same file even if its path is replaced. A lock is stale when its holder process is gone (same host) or its file is older than 60 s. The next writer breaks it by deleting that file by its name, then the directory if it is empty. A name is never reused, so breaking a stale lock cannot remove a newer holder's, however the writers interleave. If a stale lock cannot be removed, writers still exit 3 after 10 s and say so.
 
 ## project.json
 

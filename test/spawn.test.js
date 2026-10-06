@@ -199,6 +199,37 @@ test('spawn --wait runs the command rung in the task worktree with the tower-cra
   assert.equal(events.find((e) => e.cmd === 'spawn exit').detail.code, 7);
 });
 
+test('background spawn refuses occupied log names without writing or recording a spawn', (t) => {
+  for (const linked of [false, true]) {
+    const h = setup(t);
+    commandRung(h, 'small', [process.execPath, '-e', 'console.log("agent output")']);
+    const logs = path.join(h.state, 'logs');
+    fs.mkdirSync(logs);
+    const log = path.join(logs, 'T1-small-T1-1.log');
+    const target = path.join(h.base, 'unrelated-file');
+    fs.writeFileSync(target, 'preserve this file\n');
+    if (linked) {
+      try {
+        fs.symlinkSync(target, log);
+      } catch (e) {
+        if (process.platform === 'win32' && e.code === 'EPERM') continue;
+        throw e;
+      }
+    } else {
+      fs.writeFileSync(log, 'preserve this log\n');
+    }
+    const tasks = fs.readFileSync(path.join(h.state, 'tasks.json'), 'utf8');
+    const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+    const result = h.run(['spawn', '--role', 'small', '--task', 'T1', '--json']);
+    assert.notEqual(result.code, 0, result.stdout);
+    assert.match(result.stderr, /log already exists/);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'preserve this file\n');
+    assert.equal(fs.readFileSync(log, 'utf8'), linked ? 'preserve this file\n' : 'preserve this log\n');
+    assert.equal(fs.readFileSync(path.join(h.state, 'tasks.json'), 'utf8'), tasks);
+    assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), events);
+  }
+});
+
 test('spawn in the background detaches, logs output and numbers agents', async (t) => {
   const h = setup(t);
   commandRung(h, 'small', [process.execPath, '-e', 'console.log("hello from " + process.env.TOWER_CRANE_AGENT)']);
@@ -207,6 +238,7 @@ test('spawn in the background detaches, logs output and numbers agents', async (
   assert.ok(Number.isInteger(started.pid));
   assert.equal(real(path.dirname(started.log)), real(path.join(h.state, 'logs')));
   assert.equal(path.basename(started.log), 'T1-small-T1-1.log');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(started.log).mode & 0o777, 0o600);
   const deadline = Date.now() + 10000;
   while (!(fs.existsSync(started.log) && fs.readFileSync(started.log, 'utf8').includes('hello'))) {
     if (Date.now() > deadline) throw new Error('the background agent wrote nothing to its log');
@@ -270,6 +302,7 @@ test('a spawn whose program fails to start records nothing and leaves its worktr
   }
   const next = h.json(['spawn', '--role', 'small', '--task', 'T1', '--wait']);
   assert.equal(next.code, 0);
+  assert.equal(next.agent, 'small-T1-1', 'a failed spawn does not consume an agent name');
   assert.equal(real(next.cwd), real(leftover(h)), 'the next spawn reuses it');
   assert.equal(h.readState('tasks.json').tasks[0].branch, 'tower-crane/T1-idempotency-key-on-retries');
 });
