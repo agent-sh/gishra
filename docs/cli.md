@@ -97,6 +97,9 @@ The engine watches the state directory with `fs.watch`. A one-second internal st
 | `/api/tasks/T1/owner-done` | `{"note":"what was done"}` (note optional) | `owner-done T1 --agent owner` |
 | `/api/decisions/D1/comments` | `{"text":"comment"}` | `decision note D1 TEXT --agent owner` |
 | `/api/decisions/D1/answer` | `{"choice":"option","note":"context"}` (note optional) | `answer D1 --choice C --agent owner` |
+| `/api/tasks/T1/rework` | `{"reason":"what to fix"}` | `rework T1 --reason R --agent owner` |
+
+A task sheet's tier control posts to `/api/tiers` (below), as Settings does, for any serve identity. The board has no route that accepts, merges, waives, claims, releases, submits, records evidence or edits the plan: those stay CLI commands, and the board shows the command where it would help, such as `accept T1 --waive review --reason R --agent owner` on a submitted task's sheet.
 
 Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the page's `tower-crane-token` meta value as `x-tower-crane-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
 
@@ -109,8 +112,12 @@ The token protects against foreign web origins. Local processes can read it from
 | Command | Does |
 |---|---|
 | `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
-| `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html` (self-contained, no network) from the state as it stands under the lock |
-| `serve [--port P]` | serve the sketch and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and reload open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use |
+| `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock |
+| `serve [--port P]` | serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use |
+
+The board is one HTML document with four views (Board, Plan, History, Spend) and a sheet per task, linked as `#board`, `#plan`, `#history`, `#spend` and `#T7`; docs/design.md is its design. `sketch.html` loads nothing from the network: no fonts, scripts, styles or images outside the file, and its inline script makes no request. Every view and task sheet opens by its link with scripts disabled. Links in evidence (`--ref`) open only when clicked. The snapshot has no token and no forms; where serve would offer a write, it shows the CLI command. The script adds local times, keyboard keys (`b`, `p`, `h`, `s`, Escape), copy buttons and a digest of what changed since the browser last showed the board, kept in the browser's local storage and never in the state directory. The snapshot embeds the newest 400 events for History.
+
+On the served board, a state change replaces the parts of the page that changed, without a reload, and marks the items that changed. A part holding a form with focus or typed text is not replaced; the page says updates are waiting and applies them once the form is sent or cleared. The page title counts the items that need the owner.
 
 The Settings view (`/settings`) edits the default harness, every rung and each task's tier. While a form has unsaved edits, a change on disk shows a notice instead of reloading the page. A form is read-only while its save is in flight, with its Save button showing `Saving...`. Saving a form reloads the page only when the other form has nothing unsaved; otherwise the saved form shows the server's state in place and the other keeps its edits. A save sends the values its edit was based on, so one made against a rung, default harness or tier that changed since the page loaded is refused, and the page says to reload.
 
@@ -118,7 +125,7 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 
 | Method and path | Does |
 |---|---|
-| `GET /`, `GET /sketch.html` | the sketch, rendered from the state on each request, with links to the views |
+| `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request; carries the run's token, and the owner forms when serve runs as the owner |
 | `GET /settings` | the Settings view; carries the run's token in `<meta name="tower-crane-token">` |
 | `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
 | `POST /api/ladder` | change the default harness and rungs, as `ladder harness` and `ladder set` do |
@@ -126,7 +133,7 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 
 Every POST needs:
 
-- `x-tower-crane-token: <token>`, the random token of this serve run, which only the Settings page carries;
+- `x-tower-crane-token: <token>`, the random token of this serve run, which only the served board and Settings pages carry;
 - `content-type: application/json` and a body of at most 64 KiB;
 - an `Origin`, if the browser sends one, of `http://127.0.0.1:<port>` or `http://localhost:<port>`.
 

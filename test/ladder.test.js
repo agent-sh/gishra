@@ -214,9 +214,9 @@ test('a ladder write is evented and re-renders the sketch with the ladder and ea
   assert.deepEqual([ev.agent, ev.detail], ['w-1', { rung: 'easy', model: 'gpt-x', effort: 'medium' }]);
   assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'medium' });
   const html = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
-  assert.match(html, /<td class="id">easy<\/td><td>codex \(default\)<\/td><td>gpt-x<\/td><td>medium<\/td>/);
-  assert.match(html, /<td class="id">research<\/td><td>claude<\/td><td>opus<\/td><td>max<\/td>/);
-  assert.match(html, /T1<tspan class="ntier" dx="8">easy<\/tspan>/, 'the graph shows the task tier');
+  assert.match(html, /<tr data-rung="easy"><th scope="row">easy<\/th><td>codex \(default\)<\/td><td>gpt-x<\/td><td>medium<\/td>/);
+  assert.match(html, /<tr data-rung="research"><th scope="row">research<\/th><td>claude<\/td><td>opus<\/td><td>max<\/td>/);
+  assert.match(html, /<a href="#T1" class="node s-ready"[^>]*aria-label="T1 Small fix, ready, tier easy"/, 'the graph shows the task tier');
   const md = fs.readFileSync(path.join(h.state, 'sketch.md'), 'utf8');
   assert.match(md, /^\| easy \| codex \(default\) \| gpt-x \| medium \|$/m);
   assert.match(md, /^\| T1 \| Small fix \| code \| S \| easy \| 0 \|$/m, 'the ready table shows the tier');

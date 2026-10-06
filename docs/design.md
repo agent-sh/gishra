@@ -157,7 +157,7 @@ Neutrals are cool concrete and steel, so the yellow reads as the only warm thing
 | `--rule-2` | `#a7afb7` | `#4a5560` | stronger rules, edges in the graph, hover borders |
 | `--ink` | `#14181c` | `#e7ebee` | text; fill for done |
 | `--ink-2` | `#48515a` | `#b2bbc3` | secondary text |
-| `--ink-3` | `#68717a` | `#8c96a0` | tertiary text, timestamps (4.6:1 or better on plate) |
+| `--ink-3` | `#5c656e` | `#8c96a0` | tertiary text, timestamps |
 | `--signal` | `#ffc800` | `#ffc800` | owner-needed fill |
 | `--signal-edge` | `#c99a00` | `#ffd84a` | rule around signal plates |
 | `--on-signal` | `#14181c` | `#14181c` | text and controls on signal |
@@ -167,7 +167,7 @@ Neutrals are cool concrete and steel, so the yellow reads as the only warm thing
 | `--fault-wash` | `#fbe6e3` | `#3a1e1b` | stuck rows, invalid inputs |
 | `--focus` | `#1d5fd0` | `#78a6ff` | focus ring |
 
-All text pairs meet WCAG AA: ink, ink-2 and ink-3 on plate and paper, live and fault on plate, on-signal on signal (about 13:1). The theme follows `prefers-color-scheme`.
+All text pairs meet WCAG AA (4.5:1) in both themes: ink, ink-2, ink-3, live and fault on paper, plate, plate-2 and both washes, on-signal on signal (11.5:1). The theme follows `prefers-color-scheme`.
 
 ### Type
 
@@ -187,7 +187,7 @@ All text pairs meet WCAG AA: ink, ink-2 and ink-3 on plate and paper, live and f
 | What | Duration | Easing |
 |---|---|---|
 | Hover and press feedback | 120 ms | `cubic-bezier(.2,.7,.2,1)` |
-| Task sheet in and out | 200 ms | same |
+| Task sheet sliding in | 200 ms | same |
 | Changed item flash (blue wash to plate) | 1600 ms | ease-out |
 | Live dot breathing while connected | 2400 ms, repeating | ease-in-out |
 
@@ -215,7 +215,7 @@ Columns scroll on their own on screens tall enough to hold the board; on short o
 - **Top bar.** Product mark and project name, the goal on one line, the plan rail, spend against budget, connection state and the view switcher. The plan rail is one bar split by status in the plan's order of done to blocked; its legend is the count list under it.
 - **Connection state.** `Live` with a breathing dot while serve's stream is connected, `Reconnecting` in fault red when it drops, `Snapshot` with its time in a rendered file.
 - **Status glyph** (12 px SVG): ready, an ink ring; blocked, a dashed ink ring; in progress, a live ring half filled; submitted, an ink ring with a center dot; accepted, a solid ink disc; rework, a fault ring with a gap; cancelled, a ring with a slash. A signal square at the corner marks a task that needs the owner.
-- **Signal plate.** A decision, owner task or message to the owner: kind and what it blocks, the question, the reasoning, the recommendation, and the options as buttons in serve or the command in a snapshot. "Blocking now" when a blocked task would otherwise be ready.
+- **Signal plate.** A decision, owner task, message to the owner, or a budget at 90% or more: kind and what it blocks, the question, the reasoning, the recommendation, and the options as buttons in serve or the command in a snapshot. "Blocking now" when a blocked task would otherwise be ready.
 - **Stuck row.** A plate with a fault rule on its left edge: what is wrong, since when, and the command that resolves it.
 - **Work card.** Id, title, agent and rung (harness and model), the phase track, the lease bar with time left, the last message with its age and author, and tokens so far. A submitted task's card shows gate pips instead of the lease.
 - **Phase track.** Six steps: claimed, working, submitted, gates, accepted, merged. Past steps are ink, the current step is live, future steps are rules. It is a real sequence, so it is drawn as one.
@@ -223,7 +223,8 @@ Columns scroll on their own on screens tall enough to hold the board; on short o
 - **Queue row.** Glyph, id, title, tier, and either "unblocks N" or the blocking reason.
 - **Digest.** A summary line ("3 accepted, 1 sent back, 5 messages"), then events grouped by meaning, newest first, each with a link to its task. Spend, renew and other bookkeeping are left out here and kept in History.
 - **Task sheet.** Opens over the current view from the right (full screen on a phone). Header with glyph, id, title, tier, kind, size and revision; acceptance; what blocks it; gates at the submitted commit; evidence grouped by commit, newest first, with summaries and command receipts; the conversation (notes, messages, owner comments); spend entries; dependencies both ways; and, in serve as owner, comment, mark done, send back and tier controls. The terminal override for gates (`accept --waive`) is shown as a command, never as a button.
-- **Command.** A monospace command with a copy button. The copy confirmation is the only toast.
+- **Command.** A monospace command with a copy button.
+- **Toast.** One line at the bottom of the window, read by screen readers: a copy or a write confirmed ("Answered D1"), or, in serve, an accept, rework or new decision that just arrived. It leaves after a few seconds and is the only floating element besides the task sheet.
 - **Buttons.** Primary is an ink fill with plate text; secondary is a rule outline; on a signal plate the primary is ink with signal text and the secondary an ink outline. Destructive (send back) is a fault outline that fills on hover. Disabled is 45% opacity with no hover.
 - **Inputs.** Plate-2 fill, rule border, 2 px radius; hover darkens the rule; focus shows the focus ring; invalid shows a fault border with the message linked through `aria-describedby`; busy disables the whole form and the button says what it is doing.
 - **Empty states.** Each column says what its emptiness means and what comes next: "Nothing needs you. Decisions and owner tasks appear here." A fresh project with no tasks tells the person the first command to run.
@@ -233,11 +234,15 @@ Columns scroll on their own on screens tall enough to hold the board; on short o
 | View | Answers | Notes |
 |---|---|---|
 | Board | is it moving, does anything need me, what changed | the default; columns above |
-| Plan | the shape of the plan | the graph by dependency depth, edges of the focused task highlighted, done tasks dimmed; a list by depth on narrow screens |
+| Plan | the shape of the plan | the graph by dependency depth; the edges of the hovered or focused task turn live blue; accepted and cancelled tasks recede, and a toggle dims them further; a list by depth on narrow screens |
 | History | what happened | events by day, filterable by kind and task; the snapshot embeds the newest 400 |
-| Spend | what it costs | totals against budget, then by rung, by model and by task; tokens and agent time only |
+| Spend | what it costs | totals against budget, then by rung, by model, the ladder each rung runs on, and by task; tokens and agent time only |
 | Settings | how work is dispatched | the ladder and task tiers; serve only |
 | Task sheet | everything about one task | over any view; its own link |
+
+### Keyboard
+
+Every control is a link, button or form field in reading order, with the focus ring above. Outside a text field, `b`, `p`, `h` and `s` open Board, Plan, History and Spend; Escape closes a task sheet and returns focus to the link that opened it. A skip link leads past the top bar.
 
 ### Live behavior
 
