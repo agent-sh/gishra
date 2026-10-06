@@ -428,6 +428,28 @@ test('wait skips its own writes and advances timeout cursors past filtered event
   assert.equal((await event(Promise.resolve(result), 'worker-message')).detail.text, 'worker result');
 });
 
+test('owner identity waits retain owner comments, answers, owner-done and messages', async (t) => {
+  const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--needs-owner', 'access']);
+  h.ok(['ask', '--question', 'which?', '--option', 'a', '--option', 'b', '--blocks', 'T1']);
+  const snapshot = h.run(['wait', '--agent', 'owner', '--timeout', '0']);
+  assert.equal(snapshot.code, 2, snapshot.stderr);
+  let after = JSON.parse(snapshot.stdout).offset;
+  for (const [args, type, task] of [
+    [['task', 'note', 'T1', 'owner task comment'], 'owner-comment', 'T1'],
+    [['decision', 'note', 'D1', 'owner decision comment'], 'owner-comment', null],
+    [['answer', 'D1', '--choice', 'b'], 'decision-answer', null],
+    [['owner-done', 'T1', '--note', 'provided'], 'owner-done', 'T1'],
+    [['msg', '--to', 'orchestrator', '--task', 'T1', 'owner message'], 'worker-message', 'T1'],
+  ]) {
+    h.ok([...args, '--agent', 'owner']);
+    const r = h.run(['wait', '--agent', 'owner', '--after', String(after), '--task', 'T1', '--types', type, '--timeout', '0.1']);
+    const e = await event(Promise.resolve(r), type, task);
+    assert.equal(e.agent, 'owner');
+    after = e.offset;
+  }
+});
+
 for (const hook of ['HOOK_NO_WATCH', 'HOOK_SILENT_WATCH']) {
   test(`stat fallback wakes when directory notifications fail (${hook})`, async (t) => {
     const h = setup(t);
@@ -471,42 +493,44 @@ test('non-owner serve hides owner forms and refuses all owner write routes', asy
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
 });
 
-test('serve posts task and decision comments, answers and owner-done through locked CLI functions', async (t) => {
-  const h = setup(t);
-  h.ok(['task', 'update', 'T1', '--needs-owner', 'access']);
-  h.ok(['ask', '--question', 'which?', '--option', 'a', '--option', 'b', '--blocks', 'T1']);
-  const url = await board(t, h);
-  const page = await (await fetch(url)).text();
-  const token = /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec(page)[1];
-  assert.match(page, /data-api="\/api\/tasks\/T1\/comments"/);
-  assert.match(page, /data-api="\/api\/decisions\/D1\/answer"/);
-  for (const [route, body, type, task] of [
-    ['tasks/T1/comments', { text: 'UI task comment <script>' }, 'owner-comment', 'T1'],
-    ['decisions/D1/comments', { text: 'UI decision comment' }, 'owner-comment', null],
-    ['decisions/D1/answer', { choice: 'b', note: 'UI answer' }, 'decision-answer', null],
-    ['tasks/T1/owner-done', { note: 'UI done' }, 'owner-done', 'T1'],
-  ]) {
-    const result = await waiting(t, h, ['--task', 'T1', '--types', type]);
-    const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-gishra-token': token }, body: JSON.stringify(body) });
-    assert.equal(response.status, 200, await response.text());
-    assert.equal((await event(result, type, task)).agent, 'owner');
-  }
-  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
-  assert.equal(h.readState('decisions.json').decisions[0].answer, 'b');
-  const rendered = await (await fetch(url)).text();
-  assert.match(rendered, /UI task comment &lt;script&gt;/);
-  assert.match(rendered, /UI decision comment/);
-  h.ok(['msg', '--to', 'orchestrator', 'worker news', '--agent', 'worker']);
-  assert.match(await (await fetch(url)).text(), /worker news/);
-  const count = log(h).length;
-  for (const [route, body] of [['tasks/T99/comments', { text: 'missing' }], ['decisions/D1/answer', { choice: 'a' }], ['tasks/T1/comments', { text: '' }]]) {
-    const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-gishra-token': token }, body: JSON.stringify(body) });
-    assert.ok(response.status >= 400);
-  }
-  const crossSite = await fetch(`${url}api/tasks/T1/comments`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://other.invalid' }, body: '{"text":"cross-site"}' });
-  assert.equal(crossSite.status, 403);
-  assert.equal(log(h).length, count, 'refused writes emit no event');
-});
+for (const agent of ['orchestrator', 'owner']) {
+  test(`serve posts task and decision comments, answers and owner-done to ${agent} waits through locked CLI functions`, async (t) => {
+    const h = setup(t);
+    h.ok(['task', 'update', 'T1', '--needs-owner', 'access']);
+    h.ok(['ask', '--question', 'which?', '--option', 'a', '--option', 'b', '--blocks', 'T1']);
+    const url = await board(t, h);
+    const page = await (await fetch(url)).text();
+    const token = /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec(page)[1];
+    assert.match(page, /data-api="\/api\/tasks\/T1\/comments"/);
+    assert.match(page, /data-api="\/api\/decisions\/D1\/answer"/);
+    for (const [route, body, type, task] of [
+      ['tasks/T1/comments', { text: 'UI task comment <script>' }, 'owner-comment', 'T1'],
+      ['decisions/D1/comments', { text: 'UI decision comment' }, 'owner-comment', null],
+      ['decisions/D1/answer', { choice: 'b', note: 'UI answer' }, 'decision-answer', null],
+      ['tasks/T1/owner-done', { note: 'UI done' }, 'owner-done', 'T1'],
+    ]) {
+      const result = await waiting(t, h, ['--agent', agent, '--task', 'T1', '--types', type]);
+      const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-gishra-token': token }, body: JSON.stringify(body) });
+      assert.equal(response.status, 200, await response.text());
+      assert.equal((await event(result, type, task)).agent, 'owner');
+    }
+    assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
+    assert.equal(h.readState('decisions.json').decisions[0].answer, 'b');
+    const rendered = await (await fetch(url)).text();
+    assert.match(rendered, /UI task comment &lt;script&gt;/);
+    assert.match(rendered, /UI decision comment/);
+    h.ok(['msg', '--to', 'orchestrator', 'worker news', '--agent', 'worker']);
+    assert.match(await (await fetch(url)).text(), /worker news/);
+    const count = log(h).length;
+    for (const [route, body] of [['tasks/T99/comments', { text: 'missing' }], ['decisions/D1/answer', { choice: 'a' }], ['tasks/T1/comments', { text: '' }]]) {
+      const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-gishra-token': token }, body: JSON.stringify(body) });
+      assert.ok(response.status >= 400);
+    }
+    const crossSite = await fetch(`${url}api/tasks/T1/comments`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://other.invalid' }, body: '{"text":"cross-site"}' });
+    assert.equal(crossSite.status, 403);
+    assert.equal(log(h).length, count, 'refused writes emit no event');
+  });
+}
 
 test('serve preserves an owner comment fragmented inside UTF-8 bytes', async (t) => {
   const h = setup(t);
