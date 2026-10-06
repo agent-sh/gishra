@@ -121,7 +121,7 @@ function detachedAlive(child) {
   if (process.platform === 'linux') {
     let stat;
     try { stat = fs.readFileSync(`/proc/${child.pid}/stat`, 'utf8'); }
-    catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+    catch (e) { if (['ENOENT', 'ESRCH'].includes(e.code)) return false; throw e; }
     const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
     if (['Z', 'X'].includes(fields[0]) || (child.startTicks && fields[19] !== child.startTicks)) return false;
   }
