@@ -14,7 +14,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 |---|---|
 | `init --name N --goal G [--repo O/R] [--base B] [settings]` | create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid |
 | `project set [--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--ci-ignore-apps JSON]` | change settings, limits and budget |
-| `project show` | print settings and the resolved ladder |
+| `project show` | print settings, including `tests.paths` and `ci.ignore_apps`, and the resolved ladder |
 | `ladder show` | print each rung as it resolves: harness (and whether it is the default), model, profile, provider, effort, args, and where the rung comes from (project, user file or built-in); also the default harness, its source, the user file path, and every rung that cannot run (`problems` under `--json`) |
 | `ladder set RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--clear FIELD]...` | change the named fields of one rung and keep the rest; `--clear` removes a field (a cleared harness follows the default). A rung the project left out starts from the one it fell back to. Refused if it leaves a rung unable to run that could run before (state.md lists the checks); rungs already broken do not block it |
 | `ladder harness H` | set the default harness; every rung without its own moves to it. Refused, naming the rungs, if one of them cannot run there (a codex profile on pi, a missing model) |
@@ -31,7 +31,9 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 
 `project set --ci-ignore-apps '["claude","cursor"]'` replaces `ci.ignore_apps` with a JSON array of non-blank strings naming GitHub apps. `--ci-ignore-apps '[]'` stores an empty ignore list; `--ci-ignore-apps null` removes the field. Both make the CI gate check every app again.
 
-These options also work with `init`. Omitted options leave their fields unchanged. Removing a field keeps other settings in its section and removes the section itself only when empty. Invalid JSON, a value other than an array or `null`, or a blank or non-string array entry exits 2 and writes no state or event, including when combined with valid settings.
+Both list settings trim leading and trailing whitespace from each entry. Setting a list replaces a non-object `tests` or `ci` section; clearing it removes that malformed section. Object sections keep their other fields. Text output from `project set` and `project show` prints both lists, with `default layouts` for absent test paths and `[]` when no CI apps are ignored. Test and CI gate hints name the corresponding `project set` flags.
+
+These options also work with `init`. Omitted options leave their fields unchanged. Removing a field keeps other settings in its object section and removes the section itself only when empty. Invalid JSON, a value other than an array or `null`, or a blank or non-string array entry exits 2 and writes no state or event, including when combined with valid settings.
 
 ## Run
 

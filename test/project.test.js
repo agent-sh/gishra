@@ -91,3 +91,58 @@ test('project set and init help document the JSON settings and clearing value', 
     assert.match(help, /--ci-ignore-apps JSON.*null/);
   }
 });
+
+test('project set and init trim padded test paths and ignored CI apps', (t) => {
+  const h = makeRepo(t);
+  h.init(['--tests-paths', '[" qa/\\t"]', '--ci-ignore-apps', '[" claude "]']);
+  const initial = h.json(['project', 'show']);
+  assert.deepEqual(initial.tests, { paths: ['qa/'] });
+  assert.deepEqual(initial.ci, { ignore_apps: ['claude'] });
+
+  const set = h.json(['project', 'set', '--tests-paths', '[" checks/**/*.js ", "\\t**/*Test.java\\n"]', '--ci-ignore-apps', '[" claude ", "\\tcursor\\n"]']);
+  assert.deepEqual(set.tests, { paths: ['checks/**/*.js', '**/*Test.java'] });
+  assert.deepEqual(set.ci, { ignore_apps: ['claude', 'cursor'] });
+  assert.deepEqual(h.readState('project.json'), set);
+});
+
+test('project set replaces and clears non-object list sections while preserving object siblings', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const original = h.readState('project.json');
+  for (const section of ['broken', ['broken'], true, 42, null]) {
+    h.writeState('project.json', { ...original, tests: section, ci: section });
+    const set = h.json(['project', 'set', '--tests-paths', '["qa/"]', '--ci-ignore-apps', '["claude"]']);
+    assert.deepEqual(set, { ...original, tests: { paths: ['qa/'] }, ci: { ignore_apps: ['claude'] } });
+
+    h.writeState('project.json', { ...original, tests: section, ci: section });
+    const cleared = h.json(['project', 'set', '--tests-paths', 'null', '--ci-ignore-apps', 'null']);
+    assert.deepEqual(cleared, original);
+  }
+
+  h.writeState('project.json', { ...original, tests: { extra: 'keep', paths: ['old/'] }, ci: { extra: 'keep', ignore_apps: ['old'] } });
+  const set = h.json(['project', 'set', '--tests-paths', '["qa/"]', '--ci-ignore-apps', '["claude"]']);
+  assert.deepEqual(set.tests, { extra: 'keep', paths: ['qa/'] });
+  assert.deepEqual(set.ci, { extra: 'keep', ignore_apps: ['claude'] });
+  const cleared = h.json(['project', 'set', '--tests-paths', 'null', '--ci-ignore-apps', 'null']);
+  assert.deepEqual(cleared.tests, { extra: 'keep' });
+  assert.deepEqual(cleared.ci, { extra: 'keep' });
+});
+
+test('project set and show text print configured lists and their defaults alongside the ladder', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const defaults = h.ok(['project', 'show']);
+  assert.match(defaults, /tests\.paths: default layouts/);
+  assert.match(defaults, /ci\.ignore_apps: \[\]/);
+  assert.match(defaults, /ladder \(default harness /);
+
+  const set = h.ok(['project', 'set', '--tests-paths', '["qa/"]', '--ci-ignore-apps', '["claude","cursor"]']);
+  assert.match(set, /tests\.paths: \["qa\/"\]/);
+  assert.match(set, /ci\.ignore_apps: \["claude","cursor"\]/);
+  assert.equal(h.ok(['project', 'show']), set);
+
+  const empty = h.ok(['project', 'set', '--ci-ignore-apps', '[]']);
+  assert.match(empty, /ci\.ignore_apps: \[\]/);
+  const cleared = h.ok(['project', 'set', '--tests-paths', 'null', '--ci-ignore-apps', 'null']);
+  assert.equal(cleared, defaults);
+});

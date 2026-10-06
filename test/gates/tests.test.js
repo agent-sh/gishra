@@ -94,6 +94,7 @@ test('a code task that changes no test: not ok', async () => {
   const r = await gate.run(ctx(sha));
   assert.equal(r.ok, false);
   assert.match(r.summary, /no test covers this change/);
+  assert.match(r.summary, /gishra project set --tests-paths/);
   assertCleanedUp();
 });
 
@@ -246,5 +247,7 @@ test('a malformed tests.paths: not ok, naming the field', async () => {
     const r = await gate.run(ctx(sha, { project: { tests } }));
     assert.equal(r.ok, false, JSON.stringify(tests));
     assert.match(r.summary, /tests\.paths must be a non-empty array of globs/);
+    assert.match(r.summary, /gishra project set --tests-paths/);
+    assert.match(r.summary, /--tests-paths null/);
   }
 });
