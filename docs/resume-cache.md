@@ -18,14 +18,28 @@ Three pairs ran per harness.
 
 The Codex result confirms cache reuse on the first rework turn. Claude kept
 the same session id in all three pairs but showed no median cache-read gain
-in this setup. Resume preserves its conversation; a cache-read gain is not
-guaranteed. These counts describe a synthetic one-turn fixture, not a full
-Ginza task or a cost forecast.
+in this setup. Its resumed cache creation was about 19.2k tokens, so most of
+the conversation was written again. Native rework therefore resumes Codex
+and starts Claude fresh with the brief and review note. These counts describe
+a synthetic one-turn fixture, not a full Ginza task or a cost forecast.
+
+The independent T36 review repeated the Claude pair on 2026-10-06.
+Fresh cache read was 544 tokens and cache creation was 20,710; resumed cache
+read was 2,171 and cache creation was 19,185. This single validation pair
+agrees with the three-pair measurement. Claude resume stays disabled until
+a measurement shows it is cheaper for the configured route.
 
 The task brief also reports a separate 2026-10-06 Codex observation: about
 19.6k cached input tokens with `codex exec resume`, and 0 with `codex exec fork`.
 That supplied observation is a single run, separate from the three-pair
 measurement above. This implementation resumes directly and never forks.
+
+A harmless validation pair during T36 rework on 2026-10-06 used the same
+fixture and codex-cli 0.160.0. Fresh input was 22,027 tokens with 0 cached;
+the resumed turn added 22,060 input tokens with 21,985 cached and 33 cache
+writes. Both turns returned `READY`, used no tools and reported the same
+thread id. This single validation pair agrees with the three-pair result
+above; it does not replace that median.
 
 ## Method
 

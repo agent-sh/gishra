@@ -19,7 +19,7 @@ function setup(t, format = 'codex', session = true) {
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const [bin, out, prior, prompt, format, enabled] = process.argv.slice(2);
-fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.GISHRA_AGENT }));
+fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.TOWER_CRANE_AGENT }));
 const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { stdio: 'pipe' });
 const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
 if (!task.claim) cli('claim', 'T1');
@@ -54,6 +54,30 @@ function sendBack(h, agent = 'worker-T1-1') {
   h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef2', '--agent', 'reviewer-T1-2',
     '--summary', 'Unrelated older head']);
   h.ok(['rework', 'T1', '--reason', 'Add the worktree guard']);
+}
+
+function nativeHarness(h, script, seen, harness) {
+  const bins = path.join(h.base, 'bin');
+  fs.mkdirSync(bins, { recursive: true });
+  fs.writeFileSync(path.join(bins, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
+  const hook = path.join(h.base, 'native-harness.js');
+  fs.writeFileSync(hook, `
+const cp = require('node:child_process');
+const spawn = cp.spawn;
+cp.spawn = function(command, args, options) {
+  if (command !== '${harness}') return spawn.call(this, command, args, options);
+  const flag = args.indexOf('--resume');
+  const prior = flag >= 0 ? args[flag + 1] : args.includes('worker-session-1') ? 'worker-session-1' : '';
+  const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework'));
+  return spawn.call(this, process.execPath, ${JSON.stringify([script, BIN, seen])}.concat([prior, prompt, '${harness}', 'true']), options);
+};
+`);
+  h.env.PATH = bins + path.delimiter + (h.env.PATH || h.env.Path || '');
+  // NODE_OPTIONS treats backslashes as escapes even inside its quoted value.
+  h.env.NODE_OPTIONS = `--require "${hook.replace(/\\/g, '/')}"`;
+  h.env.RESUME_USAGE = '1';
+  h.ok(['ladder', 'set', 'medium', '--harness', harness, '--clear', 'command',
+    ...(harness === 'codex' ? ['--profile', 'sol', '--effort', 'high'] : ['--model', 'opus', '--effort', 'high'])]);
 }
 
 for (const format of ['codex', 'claude']) {
@@ -132,23 +156,36 @@ test('no session record or a changed rung starts a fresh worker', (t) => {
   }
 });
 
-test('a changed harness or moved worktree refuses without writing state or starting work', (t) => {
+test('a changed harness or moved worktree starts fresh with the failed review note', (t) => {
   for (const change of ['harness', 'worktree']) {
-    const { h } = setup(t);
+    const { h, script, seen } = setup(t);
     const first = h.json(['spawn', '--task', 'T1', '--wait']);
     sendBack(h);
+    let cwd = first.cwd;
     if (change === 'harness') {
-      h.ok(['ladder', 'set', 'medium', '--harness', 'claude', '--model', 'opus', '--clear', 'command']);
+      nativeHarness(h, script, seen, 'codex');
     } else {
-      h.git(['worktree', 'move', first.cwd, path.join(h.base, 'moved-worker')]);
+      cwd = path.join(h.base, 'moved-worker');
+      h.git(['worktree', 'move', first.cwd, cwd]);
     }
     const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
-    for (const flags of [['--dry-run'], []]) {
-      const result = h.run(['spawn', '--task', 'T1', ...flags]);
-      assert.equal(result.code, 1, result.stderr);
-      assert.match(result.stderr, change === 'harness' ? /cannot resume across harnesses/ : /cannot resume in a different worktree/);
-      assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
-    }
+    const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);
+    assert.equal(dry.resumed, false);
+    assert.equal(dry.session_id, null);
+    assert.equal(dry.agent, 'worker-T1-2');
+    assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+    const next = h.json(['spawn', '--task', 'T1', '--wait']);
+    assert.equal(next.resumed, false);
+    assert.equal(next.agent, 'worker-T1-2');
+    assert.equal(next.cwd, cwd);
+    const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
+    assert.equal(input.prior, '');
+    assert.match(input.prompt, /Add the worktree guard/);
+    assert.match(input.prompt, /Missing worktree validation/);
+    assert.match(input.prompt, /review-receipt/);
+    assert.ok(!input.prompt.includes('worker-session-1'));
+    assert.ok(!input.prompt.includes('Unrelated older head'));
+    assert.equal(h.json(['task', 'show', 'T1']).claim.agent, next.agent);
   }
 });
 
@@ -185,51 +222,40 @@ test('resume obeys worker limits and blockers before restoring a claim', (t) => 
 });
 
 for (const harness of ['codex', 'claude']) {
-  test(`${harness} native argv resumes the recorded id without forking or putting it in the prompt`, (t) => {
+  test(`${harness} native rework ${harness === 'codex' ? 'resumes' : 'starts fresh'} without putting the recorded id in the prompt`, (t) => {
     const { h, script, seen } = setup(t, harness);
-    const bins = path.join(h.base, 'bin');
-    fs.mkdirSync(bins);
-    fs.writeFileSync(path.join(bins, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-    const hook = path.join(h.base, 'native-harness.js');
-    fs.writeFileSync(hook, `
-const cp = require('node:child_process');
-const spawn = cp.spawn;
-cp.spawn = function(command, args, options) {
-  if (command !== '${harness}') return spawn.call(this, command, args, options);
-  const flag = args.indexOf('--resume');
-  const prior = flag >= 0 ? args[flag + 1] : args.includes('worker-session-1') ? 'worker-session-1' : '';
-  const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework'));
-  return spawn.call(this, process.execPath, ${JSON.stringify([script, BIN, seen])}.concat([prior, prompt, '${harness}', 'true']), options);
-};
-`);
-    h.env.PATH = bins + path.delimiter + h.env.PATH;
-    h.env.NODE_OPTIONS = `--require "${hook}"`;
-    h.env.RESUME_USAGE = '1';
-    h.ok(['ladder', 'set', 'medium', '--harness', harness, '--clear', 'command',
-      ...(harness === 'codex' ? ['--profile', 'sol', '--effort', 'high'] : ['--model', 'opus', '--effort', 'high'])]);
+    nativeHarness(h, script, seen, harness);
     h.json(['spawn', '--task', 'T1', '--wait']);
+    const receipt = events(h).find((e) => e.cmd === 'spawn session');
+    assert.equal(receipt.detail.session_id, 'worker-session-1');
+    assert.equal(receipt.detail.harness, harness);
     sendBack(h);
     const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);
     assert.equal(dry.harness, harness);
-    assert.equal(dry.resumed, true);
-    assert.equal(dry.session_id, 'worker-session-1');
+    assert.equal(dry.resumed, harness === 'codex');
+    assert.equal(dry.session_id, harness === 'codex' ? 'worker-session-1' : null);
     if (harness === 'codex') {
       assert.deepEqual(dry.argv.slice(0, 5), ['codex', 'exec', '-p', 'sol', 'resume']);
       assert.ok(dry.argv.includes('--json'));
     } else {
-      assert.deepEqual(dry.argv.slice(0, 3), ['claude', '--resume', 'worker-session-1']);
+      assert.deepEqual(dry.argv.slice(0, 2), ['claude', '-p']);
+      assert.ok(!dry.argv.includes('--resume'));
       assert.ok(!dry.argv.includes('--fork-session'));
     }
     const next = h.json(['spawn', '--task', 'T1', '--wait']);
-    assert.equal(next.resumed, true);
+    assert.equal(next.resumed, harness === 'codex');
+    assert.equal(next.agent, harness === 'codex' ? 'worker-T1-1' : 'worker-T1-2');
     const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
-    assert.equal(input.prior, 'worker-session-1');
+    assert.equal(input.prior, harness === 'codex' ? 'worker-session-1' : '');
+    assert.match(input.prompt, /Add the worktree guard/);
+    assert.match(input.prompt, /Missing worktree validation/);
+    assert.match(input.prompt, /review-receipt/);
     assert.ok(!input.prompt.includes('worker-session-1'));
     const spend = h.json(['task', 'show', 'T1']).spend;
-    assert.equal(spend.tokens, harness === 'codex' ? 275 : 127);
-    assert.equal(spend.cached, harness === 'codex' ? 70 : 60);
-    assert.deepEqual(spend.entries.map((e) => e.source), ['spawn:worker-T1-1', 'spawn:worker-T1-1:attempt:2']);
-    h.json(['spend', 'T1', '--from-spawn', 'worker-T1-1']);
+    assert.equal(spend.tokens, harness === 'codex' ? 275 : 130);
+    assert.equal(spend.cached, harness === 'codex' ? 70 : 40);
+    assert.deepEqual(spend.entries.map((e) => e.source), ['spawn:worker-T1-1', harness === 'codex' ? 'spawn:worker-T1-1:attempt:2' : 'spawn:worker-T1-2']);
+    h.json(['spend', 'T1', '--from-spawn', next.agent]);
     assert.deepEqual(h.json(['task', 'show', 'T1']).spend, spend, 'a repeated collector cannot double count either attempt');
     const reviewer = h.json(['spawn', '--task', 'T1', '--role', 'review', '--dry-run']);
     assert.equal(reviewer.resumed, false);
@@ -240,7 +266,7 @@ test('a still-running worker cannot be resumed', async (t) => {
   const { h, script } = setup(t);
   fs.appendFileSync(script, '\nsetInterval(() => {}, 1000);\n');
   const first = h.json(['spawn', '--task', 'T1']);
-  t.after(() => { try { process.kill(first.pid, 'SIGKILL'); } catch {} });
+  t.after(() => { try { process.kill(first.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; } });
   const deadline = Date.now() + 10000;
   while (!events(h).some((e) => e.cmd === 'spawn session')) {
     if (Date.now() > deadline) throw new Error('worker did not start');
@@ -250,6 +276,90 @@ test('a still-running worker cannot be resumed', async (t) => {
   const result = h.run(['spawn', '--task', 'T1', '--wait']);
   assert.equal(result.code, 1, result.stderr);
   assert.match(result.stderr, /still running or its exit is unverified/);
+  assert.match(result.stderr, /wait for its exit, then retry tower-crane spawn --task T1/);
+});
+
+test('a foreground exit receipt permits resume even when its pid is reused', (t) => {
+  const { h } = setup(t);
+  const first = h.json(['spawn', '--task', 'T1', '--wait']);
+  sendBack(h);
+  const hook = path.join(h.base, 'reused-pid.js');
+  fs.writeFileSync(hook, `
+const kill = process.kill;
+process.kill = function(pid, signal) {
+  if (pid === ${first.pid} && signal === 0) return true;
+  return kill.call(this, pid, signal);
+};
+`);
+  h.env.NODE_OPTIONS = `--require "${hook.replace(/\\/g, '/')}"`;
+  const next = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(next.resumed, true);
+  assert.equal(next.agent, first.agent);
+});
+
+test('the shared eligibility check compares route values independent of key order', (t) => {
+  const { h } = setup(t);
+  h.json(['spawn', '--task', 'T1', '--wait']);
+  sendBack(h);
+  const hook = path.join(h.base, 'route-order.js');
+  fs.writeFileSync(hook, `
+const fs = require('node:fs');
+const read = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  const value = read.call(this, file, ...args);
+  if (!String(file).endsWith('events.jsonl') || typeof value !== 'string') return value;
+  return value.split('\\n').map((line) => {
+    if (!line) return line;
+    const event = JSON.parse(line);
+    if (event.cmd === 'spawn') event.detail.route = Object.fromEntries(Object.entries(event.detail.route).reverse());
+    return JSON.stringify(event);
+  }).join('\\n');
+};
+`);
+  const dry = h.json(['spawn', '--task', 'T1', '--dry-run'], {
+    env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` },
+  });
+  assert.equal(dry.resumed, true);
+});
+
+test('an earlier attempt exit cannot collect or resume a live attempt with a reused pid', async (t) => {
+  const { h, script } = setup(t);
+  const first = h.json(['spawn', '--task', 'T1', '--wait']);
+  sendBack(h);
+  fs.appendFileSync(script, '\nsetInterval(() => {}, 1000);\n');
+  const live = h.json(['spawn', '--task', 'T1']);
+  const deadline = Date.now() + 10000;
+  while (!events(h).some((e) => e.cmd === 'spawn session' && e.detail.attempt === live.attempt)) {
+    if (Date.now() > deadline) throw new Error('resumed worker did not start');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  h.ok(['submit', 'T1', '--sha', 'abcdef3', '--agent', live.agent]);
+  h.ok(['rework', 'T1', '--reason', 'Finish next attempt']);
+  const hook = path.join(h.base, 'reused-spawn.js');
+  fs.writeFileSync(hook, `
+const fs = require('node:fs');
+const read = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  const value = read.call(this, file, ...args);
+  if (String(file).endsWith('events.jsonl') && typeof value === 'string') {
+    return value.split('\\n').map((line) => {
+      if (!line) return line;
+      const event = JSON.parse(line);
+      if (event.cmd === 'spawn exit' && event.detail.pid === ${first.pid}) event.detail.pid = ${live.pid};
+      return JSON.stringify(event);
+    }).join('\\n');
+  }
+  return value;
+};
+`);
+  for (const args of [
+    ['spend', 'T1', '--from-spawn', live.agent],
+    ['spawn', '--task', 'T1', '--dry-run'],
+  ]) {
+    const result = h.run(args, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } });
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /still running or its exit is unverified/);
+  }
 });
 
 test('an expired resumed claim needs room and keeps its original since', (t) => {
