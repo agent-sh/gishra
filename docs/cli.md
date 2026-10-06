@@ -68,9 +68,11 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 `gishra wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
 
 - `--after` is an event `id` or a byte `offset` returned by a previous wait. The default, `now`, starts at the log's current end; `0` replays from the beginning. Cursors are exclusive. A numeric cursor must be zero or immediately after a complete line, within the current log. Unknown ids and invalid offsets exit 2.
-- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined.
-- No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is exactly `{"type":"timeout"}` followed by a newline and the exit code is 2. Interrupting the wait exits 130 and closes its watchers.
+- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined. The wait skips writes from its own agent identity, except engine observations (`worker-exited` and `stall`), which must wake their observer too.
+- No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is `{"type":"timeout","offset":N}` followed by a newline and the exit code is 2. The offset follows the last complete line scanned, including filtered events. Interrupting the wait exits 130 and closes its watchers.
 - An event line contains `id`, `type`, `to`, `at`, `agent`, `cmd`, `task`, `detail`, and `offset`. `offset` is the byte position after that event's newline. Use either returned cursor for the next wait to retain events that arrived while handling the first.
+
+On startup or resume without a saved cursor, run `gishra wait --timeout 0` once. It exits 2 with a timeout and the current cursor, without observing worker exits or stalls. Save that offset, read state once, then start the background wait with `--after <offset>`. Events during the state read remain available, and the blocking wait observes current exits and stalls. With an explicit earlier `--after`, a zero timeout returns an already available matching event or a timeout cursor.
 
 Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review and gate results). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
 
@@ -84,7 +86,7 @@ The engine watches the state directory with `fs.watch`. A one-second internal st
 
 ## Board writes
 
-`serve` binds to `127.0.0.1`. Its owner forms submit JSON to the following POST endpoints. Each calls the same locked task or decision function as its CLI command, with explicit `owner` identity.
+`serve` binds to `127.0.0.1`. Owner forms and routes require serve itself to run with explicit `--agent owner` or `GISHRA_AGENT=owner`. Other identities see messages and comments without owner forms, and these POST routes return 403 without writing. Each permitted request calls the same locked task or decision function as its CLI command, using the serve process's identity.
 
 | Endpoint | JSON body | CLI write path |
 |---|---|---|
@@ -94,6 +96,8 @@ The engine watches the state directory with `fs.watch`. A one-second internal st
 | `/api/decisions/D1/answer` | `{"choice":"option","note":"context"}` (note optional) | `answer D1 --choice C --agent owner` |
 
 Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the page's `gishra-token` meta value as `x-gishra-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
+
+The token protects against foreign web origins. Local processes can read it from the page, just as they can supply an owner identity to the CLI.
 
 ## Views
 

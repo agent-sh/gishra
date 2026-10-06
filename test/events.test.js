@@ -20,7 +20,7 @@ function setup(t, flags = []) {
   h.workerPids = [];
   t.after(async () => {
     for (const pid of h.workerPids) {
-      try { process.kill(pid, 'SIGKILL'); } catch {}
+      try { process.kill(pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
     }
     for (const { p } of h.children) {
       if (p.exitCode === null && p.signalCode === null) p.kill();
@@ -72,7 +72,8 @@ function created(file) {
 async function waiting(t, h, args = [], hooks = {}) {
   const signal = path.join(h.base, `watch-${require('node:crypto').randomUUID()}`);
   const ready = created(signal);
-  const c = child(t, h, ['wait', '--timeout', '5', ...args], { ...hooks, HOOK_WATCH_READY: signal });
+  const actor = args.includes('--agent') ? [] : ['--agent', 'orchestrator'];
+  const c = child(t, h, ['wait', ...actor, '--timeout', '5', ...args], { ...hooks, HOOK_WATCH_READY: signal });
   // A baseline CLI that lacks wait closes immediately; never wait for a marker
   // it cannot write.
   await Promise.race([ready, c.result.then((r) => { throw new Error(`wait exited before watch setup: ${r.code} ${r.stderr}`); })]);
@@ -168,11 +169,11 @@ test('worker messages use recipient and task filters, and can resume by id or of
   assert.equal(first.detail.text, 'need input\nnext line');
   h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'during handling']);
   for (const after of [first.id, String(first.offset)]) {
-    const replay = h.run(['wait', '--after', after, '--types', 'worker-message', '--timeout', '0.1']);
+    const replay = h.run(['wait', '--agent', 'orchestrator', '--after', after, '--types', 'worker-message', '--timeout', '0.1']);
     const e = await event(Promise.resolve(replay), 'worker-message');
     assert.equal(e.detail.text, 'during handling');
   }
-  const direct = h.run(['wait', '--after', '0', '--for', 'another-agent', '--timeout', '0.1']);
+  const direct = h.run(['wait', '--agent', 'orchestrator', '--after', '0', '--for', 'another-agent', '--timeout', '0.1']);
   assert.equal(JSON.parse(direct.stdout).detail.text, 'other recipient');
 });
 
@@ -253,13 +254,13 @@ setInterval(() => {}, 1000);\n`);
   assert.match(ea.detail.tail, /worker alive/);
   assert.equal(log(h).filter((e) => e.type === 'worker-exited').length, 1);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'in_progress');
-  assert.deepEqual(h.run(['wait', '--types', 'worker-exited', '--timeout', '0.1']).stdout.trim(), '{"type":"timeout"}');
-  const recovery = await waiting(t, h, ['--types', 'released']);
+  assert.equal(h.run(['wait', '--agent', 'orchestrator', '--types', 'worker-exited', '--timeout', '0.1']).code, 2);
+  const recovery = await waiting(t, h, ['--types', 'released', '--agent', 'observer']);
   h.ok(['release', 'T1', '--reason', 'spawned worker exited', '--agent', 'orchestrator']);
   assert.equal((await event(recovery, 'released')).detail.exited_spawn.pid, spawned.pid);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'todo');
   h.ok(['claim', 'T1', '--agent', 'replacement']);
-  assert.equal(h.run(['wait', '--types', 'worker-exited', '--timeout', '0.1']).code, 2, 'recovery does not report the old spawn against a replacement');
+  assert.equal(h.run(['wait', '--agent', 'orchestrator', '--types', 'worker-exited', '--timeout', '0.1']).code, 2, 'recovery does not report the old spawn against a replacement');
 });
 
 test('submitted spawned workers never emit worker-exited', async (t) => {
@@ -272,9 +273,9 @@ const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, ...args], { en
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
   commandWorker(h, [process.execPath, script]);
   h.ok(['spawn', '--task', 'T1', '--wait']);
-  const r = h.run(['wait', '--types', 'worker-exited', '--timeout', '0.1']);
+  const r = h.run(['wait', '--agent', 'orchestrator', '--types', 'worker-exited', '--timeout', '0.1']);
   assert.equal(r.code, 2);
-  assert.equal(r.stdout, '{"type":"timeout"}\n');
+  assert.deepEqual(JSON.parse(r.stdout), { type: 'timeout', offset: fs.statSync(path.join(h.state, 'events.jsonl')).size });
 });
 
 test('a spawned worker that exits before claiming wakes without waiting for a lease', async (t) => {
@@ -287,7 +288,7 @@ test('a spawned worker that exits before claiming wakes without waiting for a le
   assert.equal(e.detail.pid, started.pid);
   assert.equal(e.detail.agent, started.agent);
   assert.equal(h.readState('tasks.json').tasks[0].claim, null);
-  assert.equal(h.run(['wait', '--types', 'worker-exited', '--timeout', '0.1']).code, 2);
+  assert.equal(h.run(['wait', '--agent', 'orchestrator', '--types', 'worker-exited', '--timeout', '0.1']).code, 2);
 });
 
 test('a lease stale without progress emits stall only once across waiters', async (t) => {
@@ -315,10 +316,10 @@ test('worker progress after lease expiry postpones stall until progress is stale
   h.ok(['claim', 'T1', '--lease', '1', '--agent', 'worker'], { hooks });
   fs.writeFileSync(clock, String(start + 60001));
   h.ok(['task', 'note', 'T1', 'making progress', '--agent', 'worker'], { hooks });
-  const r = h.run(['wait', '--types', 'stall', '--timeout', '0.1'], { hooks });
+  const r = h.run(['wait', '--agent', 'orchestrator', '--types', 'stall', '--timeout', '0.1'], { hooks });
   assert.equal(r.code, 2, r.stderr || r.stdout);
   fs.writeFileSync(clock, String(start + 120002));
-  const e = h.run(['wait', '--types', 'stall', '--timeout', '0.1'], { hooks });
+  const e = h.run(['wait', '--agent', 'orchestrator', '--types', 'stall', '--timeout', '0.1'], { hooks });
   await event(Promise.resolve(e), 'stall');
 });
 
@@ -335,9 +336,9 @@ test('an observer waiting for the state lock does not block its timeout', async 
   await ready;
   fs.writeFileSync(clock, String(start + 60001));
   const before = performance.now();
-  const r = h.run(['wait', '--types', 'stall', '--timeout', '0.1'], { hooks });
+  const r = h.run(['wait', '--agent', 'orchestrator', '--types', 'stall', '--timeout', '0.1'], { hooks });
   assert.equal(r.code, 2, r.stderr);
-  assert.equal(r.stdout, '{"type":"timeout"}\n');
+  assert.deepEqual(JSON.parse(r.stdout), { type: 'timeout', offset: fs.statSync(path.join(h.state, 'events.jsonl')).size });
   assert.ok(performance.now() - before < 2000, 'timeout is not held by the lock retry deadline');
   fs.writeFileSync(`${paused}.go`, '');
   assert.equal((await writer.result).code, 0);
@@ -346,13 +347,61 @@ test('an observer waiting for the state lock does not block its timeout', async 
 test('timeout and invalid cursors have bounded exits and default now ignores history', async (t) => {
   const h = setup(t);
   h.ok(['msg', '--to', 'orchestrator', 'already handled']);
-  const r = h.run(['wait', '--timeout', '0.05', '--json']);
+  const r = h.run(['wait', '--agent', 'orchestrator', '--timeout', '0.05', '--json']);
   assert.equal(r.code, 2);
-  assert.equal(r.stdout, '{"type":"timeout"}\n');
+  assert.deepEqual(JSON.parse(r.stdout), { type: 'timeout', offset: fs.statSync(path.join(h.state, 'events.jsonl')).size });
   assert.equal(r.stderr, '');
   for (const args of [['--timeout', '-1'], ['--after', 'unknown'], ['--after', '1'], ['--after', '999999999'], ['--types', ','], ['--for', '']]) {
     assert.equal(h.run(['wait', ...args]).code, 2, args.join(' '));
   }
+});
+
+test('startup takes a current cursor before reading state and retains events during reconciliation', async (t) => {
+  const h = setup(t);
+  h.ok(['msg', '--to', 'orchestrator', 'historical message', '--agent', 'worker']);
+  const snapshot = h.run(['wait', '--agent', 'orchestrator', '--timeout', '0']);
+  assert.equal(snapshot.code, 2, snapshot.stderr);
+  const cursor = JSON.parse(snapshot.stdout);
+  assert.equal(cursor.type, 'timeout');
+  assert.equal(cursor.offset, fs.statSync(path.join(h.state, 'events.jsonl')).size);
+  h.json(['status']);
+  h.ok(['task', 'note', 'T1', 'during state reconciliation']);
+  const r = h.run(['wait', '--agent', 'orchestrator', '--after', String(cursor.offset), '--timeout', '0.1']);
+  assert.equal((await event(Promise.resolve(r), 'owner-comment')).detail.text, 'during state reconciliation');
+});
+
+test('startup snapshots leave stale leases for the subsequent blocking wait to observe', async (t) => {
+  const h = setup(t);
+  const clock = path.join(h.base, 'clock');
+  const start = Date.now();
+  const hooks = { HOOK_CLOCK_FILE: clock };
+  fs.writeFileSync(clock, String(start));
+  h.ok(['claim', 'T1', '--lease', '1', '--agent', 'worker'], { hooks });
+  fs.writeFileSync(clock, String(start + 60001));
+  const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const snapshot = h.run(['wait', '--agent', 'orchestrator', '--timeout', '0'], { hooks });
+  assert.equal(snapshot.code, 2, snapshot.stderr || snapshot.stdout);
+  const cursor = JSON.parse(snapshot.stdout);
+  assert.equal(cursor.type, 'timeout');
+  assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+  const r = h.run(['wait', '--agent', 'orchestrator', '--after', String(cursor.offset), '--types', 'stall', '--timeout', '0.1'], { hooks });
+  assert.equal((await event(Promise.resolve(r), 'stall')).agent, 'orchestrator');
+});
+
+test('wait skips its own writes and advances timeout cursors past filtered events', async (t) => {
+  const h = setup(t);
+  const after = fs.statSync(path.join(h.state, 'events.jsonl')).size;
+  h.ok(['task', 'note', 'T1', 'own progress', '--agent', 'orchestrator']);
+  h.ok(['msg', '--to', 'orchestrator', 'own message', '--agent', 'orchestrator']);
+  h.ok(['msg', '--to', 'someone-else', 'other recipient', '--agent', 'worker']);
+  const r = h.run(['wait', '--agent', 'orchestrator', '--after', String(after), '--timeout', '0.05']);
+  assert.equal(r.code, 2, r.stdout || r.stderr);
+  const cursor = JSON.parse(r.stdout);
+  assert.equal(cursor.type, 'timeout');
+  assert.equal(cursor.offset, fs.statSync(path.join(h.state, 'events.jsonl')).size);
+  h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'worker result', '--agent', 'worker']);
+  const result = h.run(['wait', '--agent', 'orchestrator', '--after', String(cursor.offset), '--timeout', '0.1']);
+  assert.equal((await event(Promise.resolve(result), 'worker-message')).detail.text, 'worker result');
 });
 
 for (const hook of ['HOOK_NO_WATCH', 'HOOK_SILENT_WATCH']) {
@@ -365,10 +414,38 @@ for (const hook of ['HOOK_NO_WATCH', 'HOOK_SILENT_WATCH']) {
 }
 
 async function board(t, h) {
-  const c = child(t, h, ['serve', '--port', '0', '--json']);
+  const c = child(t, h, ['serve', '--port', '0', '--json'], { GISHRA_AGENT: h.serveAgent || 'owner' });
   const [data] = await once(c.p.stdout, 'data');
   return JSON.parse(String(data)).url;
 }
+
+test('non-owner serve hides owner forms and refuses all owner write routes', async (t) => {
+  const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--needs-owner', 'access']);
+  h.ok(['ask', '--question', 'which?', '--option', 'a', '--option', 'b', '--blocks', 'T1']);
+  h.serveAgent = 'worker-evil';
+  const url = await board(t, h);
+  const page = await (await fetch(url)).text();
+  const token = /<meta name="gishra-token" content="([0-9a-f]{48})">/.exec(page)[1];
+  assert.doesNotMatch(page, /data-api="\/api\/(?:tasks|decisions)\//);
+  const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  for (const [route, body] of [
+    ['tasks/T1/comments', { text: 'forged task comment' }],
+    ['decisions/D1/comments', { text: 'forged decision comment' }],
+    ['decisions/D1/answer', { choice: 'b' }],
+    ['tasks/T1/owner-done', { note: 'forged owner action' }],
+  ]) {
+    const response = await fetch(`${url}api/${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-gishra-token': token },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 403, `${route}: ${await response.text()}`);
+  }
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'access');
+  assert.equal(h.readState('decisions.json').decisions[0].status, 'open');
+  assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+});
 
 test('serve posts task and decision comments, answers and owner-done through locked CLI functions', async (t) => {
   const h = setup(t);
