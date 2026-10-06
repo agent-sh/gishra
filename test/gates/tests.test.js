@@ -45,12 +45,12 @@ function task(files, from = 'main') {
   return sha;
 }
 
-function ctx(sha, { kind = 'code', args = {} } = {}) {
+function ctx(sha, { kind = 'code', args = {}, project = {} } = {}) {
   return {
     root,
     worktree: null,
     task: { id: 'T1', kind, sha, status: 'submitted' },
-    project: { repo: 'acme/app', base: 'main' },
+    project: { repo: 'acme/app', base: 'main', ...project },
     args: { cmd: CMD, ...args },
     log() {},
   };
@@ -185,11 +185,66 @@ test('a commit that is not in the repository: not ok', async () => {
   assert.match(r.summary, /is not in/);
 });
 
+test('a capitalized Tests/ directory holds tests: the gate runs them', async () => {
+  const sha = task({ 'lib/add.js': FIX, 'Tests/AddTests.js': ADD_TEST });
+  const r = await gate.run(ctx(sha, { args: { cmd: `${NODE} Tests/AddTests.js` } }));
+  assert.equal(r.ok, true, r.summary);
+  assert.match(r.summary, /Tests: Tests\/AddTests\.js/);
+  assertCleanedUp();
+});
+
+// One layout per language convention the default patterns must know.
+for (const [layout, p] of [
+  ['SwiftPM', 'Tests/AppTests/FooTests.swift'],
+  ['.NET', 'MyApp.Tests/FooTests.cs'],
+  ['Java outside src/test', 'src/FooTest.java'],
+  ['Kotlin in Test/', 'Test/FooTest.kt'],
+  ['JavaScript in Tests/', 'Tests/ValueTests.js'],
+  ['Maven integration tests', 'src/it/OrderIT.java'],
+  ['Android instrumented tests', 'app/src/androidTest/java/MainTest.java'],
+  ['Flutter integration_test', 'integration_test/app_test.dart'],
+  ['RSpec', 'lib/foo_spec.rb'],
+]) {
+  test(`${layout} test files are tests: ${p}`, () => {
+    assert.equal(gate.isTestFile(p), true);
+  });
+}
+
 test('test file patterns', () => {
-  for (const p of ['test/a.js', 'src/tests/b.py', 'a/__tests__/c.ts', 'spec/d.rb', 'pkg/e_test.go', 'f.test.js', 'g.spec.ts', 'py/test_h.py', 'test_i.py']) {
+  for (const p of ['test/a.js', 'src/tests/b.py', 'a/__tests__/c.ts', 'spec/d.rb', 'pkg/e_test.go', 'f.test.js', 'g.spec.ts', 'py/test_h.py', 'test_i.py', 'TestFoo.java', 'MyApp.UnitTests/A.cs']) {
     assert.equal(gate.isTestFile(p), true, p);
   }
-  for (const p of ['lib/a.js', 'contest/b.js', 'latest/c.js', 'testdata/d.json', 'test_e.js', 'f_test/g.js', 'respec/h.js']) {
+  // A code file taken for a test would never be reverted, so near misses stay code.
+  for (const p of ['lib/a.js', 'contest/b.js', 'latest/c.js', 'testdata/d.json', 'respec/h.js', 'src/latest.js', 'contest.py', 'attest.go', 'docs/testing.md', 'src/Testimony.js', 'AUDIT.md']) {
     assert.equal(gate.isTestFile(p), false, p);
+  }
+});
+
+test('project.json tests.paths replaces the default layouts', async () => {
+  const project = { tests: { paths: ['checks/**/*.chk.js'] } };
+  const chk = task({ 'lib/add.js': FIX, 'checks/add.chk.js': ADD_TEST });
+  const r = await gate.run(ctx(chk, { project, args: { cmd: `${NODE} checks/add.chk.js` } }));
+  assert.equal(r.ok, true, r.summary);
+  assert.match(r.summary, /Tests: checks\/add\.chk\.js/);
+  // With the override set, a default-layout test no longer counts.
+  const dflt = task({ 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST });
+  const d = await gate.run(ctx(dflt, { project }));
+  assert.equal(d.ok, false);
+  assert.match(d.summary, /no test covers this change: .*by project\.json tests\.paths/);
+  assertCleanedUp();
+});
+
+test('globs in tests.paths', () => {
+  const { match } = gate.testMatcher({ tests: { paths: ['src/test/**', '**/*Test.java', '{unit,e2e}/case?.js', 'qa/'] } });
+  for (const p of ['src/test/a/B.java', 'FooTest.java', 'm/n/FooTest.java', 'unit/case1.js', 'e2e/case2.js', 'qa/x/y.txt']) assert.equal(match(p), true, p);
+  for (const p of ['src/main/A.java', 'test/a.test.js', 'FooTest.kt', 'int/case1.js', 'unit/case10.js', 'qaz/x']) assert.equal(match(p), false, p);
+});
+
+test('a malformed tests.paths: not ok, naming the field', async () => {
+  const sha = task({ 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST });
+  for (const tests of [{ paths: [] }, { paths: 'test/**' }, { paths: [''] }, ['test/**'], 'test/**']) {
+    const r = await gate.run(ctx(sha, { project: { tests } }));
+    assert.equal(r.ok, false, JSON.stringify(tests));
+    assert.match(r.summary, /tests\.paths must be a non-empty array of globs/);
   }
 });
