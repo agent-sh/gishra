@@ -49,7 +49,7 @@ const timer = setInterval(() => {
 }, 25);
 `);
   h.ok(['ladder', 'set', 'easy', '--harness', 'command',
-    '--command', JSON.stringify([process.execPath, script, BIN, h.base]), '--clear', 'profile', '--clear', 'effort']);
+    '--command', JSON.stringify([process.execPath, script, BIN, h.base]), '--clear', 'model', '--clear', 'profile', '--clear', 'effort']);
 }
 
 test('five held worker slots refuse dispatch before process, home or spend', (t) => {
@@ -312,7 +312,7 @@ test('sandboxed claims and expired renewals cannot discard hidden live reservati
 test('a reservation ends at its monitor exit or lease horizon, the same for every observer', (t) => {
   const h = setup(t, 1);
   h.ok(['ladder', 'set', 'easy', '--harness', 'command',
-    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)']), '--clear', 'profile', '--clear', 'effort']);
+    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)']), '--clear', 'model', '--clear', 'profile', '--clear', 'effort']);
   const spawned = h.json(['spawn', '--task', 'T1', '--wait']);
   assert.ok(events(h).some((e) => e.cmd === 'spawn phase' && e.detail.agent === spawned.agent && e.detail.active === false));
   // No exit receipt was recorded; MONITOR_SILENT also drops the monitor's

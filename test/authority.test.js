@@ -322,7 +322,8 @@ test('moving a sandboxed rung, the fallback routes that follow it or the default
   for (const [args, change] of [
     [['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'anthropic/claude-x'], { ladder: { hard: unconfined('opencode') } }],
     [['ladder', 'set', 'research', '--harness', 'pi', '--model', 'm'], { ladder: { research: { unconfined: [{ harness: 'pi' }, { harness: 'pi', args: ['--verbose'] }] } } }],
-    [['ladder', 'harness', 'opencode'], { harness: 'opencode', ladder: { easy: unconfined('opencode'), medium: unconfined('opencode'), review: unconfined('opencode'), small: unconfined('opencode') } }],
+    // easy, review and small pin claude, so only the rung that follows the default harness moves.
+    [['ladder', 'harness', 'opencode'], { harness: 'opencode', ladder: { medium: unconfined('opencode') } }],
     [['ladder', 'set', 'orchestrator', '--harness', 'pi', '--model', 'm', '--args', '["--anything"]'], { ladder: { orchestrator: unconfined('pi', ['--anything']) } }],
   ]) {
     const before = h.readState('project.json');

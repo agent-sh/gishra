@@ -38,11 +38,17 @@ test('init copies the built-in ladder, and a rung the project leaves out falls b
   assert.deepEqual(show.ladder.medium, { profile: 'sol', effort: 'high', harness: 'codex', harness_from: 'default', from: 'project' });
   assert.deepEqual(show.ladder.hard, { harness: 'claude', model: 'opus', effort: 'medium', harness_from: 'rung', from: 'project' });
   assert.deepEqual(show.ladder.research, { harness: 'claude', model: 'opus', effort: 'high', harness_from: 'rung', from: 'project' });
+  assert.deepEqual(show.ladder.review, { harness: 'claude', model: 'claude-haiku-5-5', effort: 'high', harness_from: 'rung', from: 'project' });
+  assert.deepEqual(show.ladder.small, { harness: 'claude', model: 'claude-haiku-5-5', effort: 'high', harness_from: 'rung', from: 'project' });
+  assert.deepEqual(show.ladder.orchestrator, { harness: 'claude', model: 'opus', effort: 'high', harness_from: 'rung', from: 'project' });
   const printed = h.ok(['ladder', 'show']);
+  assert.match(printed, /^ {2}orchestrator +claude +model opus, effort high +from project$/m);
   assert.match(printed, /^ {2}easy +claude +model claude-haiku-5-5, effort high +from project$/m);
   assert.match(printed, /^ {2}medium +codex \(default\) +profile sol, effort high +from project$/m);
   assert.match(printed, /^ {2}hard +claude +model opus, effort medium +from project$/m);
   assert.match(printed, /^ {2}research +claude +model opus, effort high +from project$/m);
+  assert.match(printed, /^ {2}review +claude +model claude-haiku-5-5, effort high +from project$/m);
+  assert.match(printed, /^ {2}small +claude +model claude-haiku-5-5, effort high +from project$/m);
 
   delete p.ladder.easy;
   delete p.harness;
