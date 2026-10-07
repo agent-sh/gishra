@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, ROOT } = require('./helpers');
+const { makeRepo, ROOT, BIN } = require('./helpers');
 const A = require('../lib/agents');
 const TOML = require('../lib/toml');
 
@@ -62,7 +62,15 @@ function plant(h) {
   }
   // gh is not on every CI runner; this one stands in for the real program
   // the agent's gh shim hands allowed calls to.
-  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\necho fake gh\n', { mode: 0o755 });
+  // Like a gh whose login is in the system keyring: `auth token` answers
+  // outside a sandbox, and a write without GH_TOKEN gets the 401 a sandboxed
+  // agent got when the keyring was out of its reach.
+  fs.writeFileSync(path.join(bin, 'gh'), [
+    '#!/bin/sh',
+    'if [ "$1" = auth ] && [ "$2" = token ]; then echo stub-gh-token; exit 0; fi',
+    'if [ "$1" = pr ] && [ "$2" = comment ] && [ "$GH_TOKEN" != stub-gh-token ]; then echo "HTTP 401: Requires authentication" >&2; exit 1; fi',
+    'echo fake gh', '',
+  ].join('\n'), { mode: 0o755 });
   const out = path.join(h.base, 'stub.json');
   const runEnv = { ...h.env, HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_OUT: out };
   // The developer's own harness homes must not leak in.
@@ -213,17 +221,20 @@ test('a codex agent writes only where its agent file says; reviewer and small ch
   }
 });
 
-test('git and gh allow reads and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
+test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
-  const remote = path.join(h.base, 'remote.git');
-  h.git(['init', '-q', '--bare', remote]);
-  h.git(['remote', 'add', 'origin', remote]);
-  h.git(['push', '-q', 'origin', 'main']);
+  const local = path.join(h.base, 'local.git');
+  h.git(['init', '-q', '--bare', local]);
+  // A remote on another machine; nothing listens there, so a push the shim
+  // lets through fails in git itself, not with the shim's 126.
+  h.git(['remote', 'add', 'origin', 'https://127.0.0.1:9/r.git']);
+  const NET = 'net';
   const cases = [
     [['git', 'status'], 0, 0],
     [['git', '-C', wt, 'log', '-1'], 0, 0],
-    [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 126],
-    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 0, 126],
+    [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 0],
+    [['git', 'push', '-q', local, 'HEAD:refs/heads/fixture', '--force'], 0, 0],
+    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], NET, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
     [['git', 'push', 'origin', '+HEAD:refs/heads/forced'], 126, 126],
@@ -243,10 +254,44 @@ test('git and gh allow reads and the role\'s own writes, and refuse everything e
       isolated(h, rung, harness);
       spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
       const ran = u.report().ran;
-      assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+      const codes = ran.map((r, i) => (cases[i][column] === NET && r.code !== 126 && r.code !== 0 ? NET : r.code));
+      assert.deepEqual(codes, cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
     }
   }
-  for (const b of ['forced', 'alias']) assert.equal(h.git(['--git-dir', remote, 'branch', '--list', b]), '', `no ${b} push landed`);
+});
+
+test('an isolated reviewer posts through gh, records evidence in a symlinked state dir and runs a git fixture', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  // The state directory reached through a symlink, as .tower-crane -> .gishra was.
+  const realState = path.join(h.base, 'real-state');
+  fs.renameSync(h.state, realState);
+  fs.symlinkSync(realState, h.state);
+  h.ok(['claim', 'T1', '--agent', 'worker-T1-1']);
+  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'worker-T1-1']);
+  const fixture = path.join(h.base, 'fixture');
+  const run = [
+    ['gh', 'pr', 'comment', '1', '--body', 'Review (tower-crane, clean context)'],
+    [process.execPath, BIN, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1', '--summary', 'nothing blocks'],
+    ['git', 'init', '-q', fixture],
+    ['git', '-C', fixture, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'fixture'],
+    ['git', 'init', '-q', '--bare', `${fixture}.git`],
+    ['git', '-C', fixture, 'push', '-q', `${fixture}.git`, 'HEAD:refs/heads/main'],
+  ];
+  const real = fs.realpathSync(realState);
+  for (const harness of ['claude', 'codex']) {
+    fs.rmSync(fixture, { recursive: true, force: true });
+    fs.rmSync(`${fixture}.git`, { recursive: true, force: true });
+    isolated(h, 'review', harness);
+    const dry = h.json(['spawn', '--role', 'review', '--task', 'T1', '--dry-run'], { env: u.env });
+    assert.ok(!JSON.stringify(dry).includes('stub-gh-token'), 'the token is not in the command or its shown env');
+    spawn(h, u, 'review', { STUB_RUN: JSON.stringify(run) });
+    const seen = u.report();
+    assert.deepEqual(seen.ran.map((r) => r.code), run.map(() => 0), `${harness}: ${JSON.stringify(seen.ran.map((r) => r.stderr))}`);
+    if (harness === 'claude') assert.ok(seen.settings.sandbox.filesystem.allowWrite.includes(real), 'claude may write the real state dir');
+    else assert.equal(seen.config.permissions['tower-crane'].filesystem[real], 'write', 'codex may write the real state dir');
+  }
+  assert.equal(h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'review').length, 2);
+  for (const f of walk(realState)) assert.ok(!fs.readFileSync(f, 'utf8').includes('stub-gh-token'), `${f} holds the gh token`);
 });
 
 test('a codex rework resumes in a fresh isolated home and finds its first session', { skip: NO_STUBS }, (t) => {
