@@ -80,8 +80,8 @@ const COMMANDS = [
   { section: 'Plan', name: 'task show', pos: ['ID'], usage: 'ID', summary: 'show one task with its gates, evidence and notes', run: T.taskShow },
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, run: T.taskList },
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', run: T.planImport },
-  { section: 'Plan', name: 'brief set', pos: ['ID', '[-]'], usage: 'ID (--file F | -)', summary: "write the task's brief", flags: { file: str('F', 'read the brief from F') }, run: T.briefSet },
-  { section: 'Plan', name: 'brief get', pos: ['ID'], usage: 'ID', summary: "print the task's brief", run: T.briefGet },
+  { section: 'Plan', name: 'brief set', pos: ['ID', '[-]'], usage: 'ID (--file F | -)', summary: "write the task's brief; warn when reviewer text has no worker section", flags: { file: str('F', 'read the brief from F') }, run: T.briefSet },
+  { section: 'Plan', name: 'brief get', pos: ['ID'], usage: 'ID [--role worker|reviewer]', summary: "print the full or role-filtered task brief", flags: { role: str('ROLE', 'select worker or reviewer text; otherwise infer from the agent name') }, run: T.briefGet },
   { section: 'Plan', name: 'validate', summary: 'report cycles, unknown dependencies, tasks without acceptance, unsplit L tasks, oversize budgets and rungs that cannot run (exit 1 if any); warn when review runs the same model as a tier in use', run: T.validate },
 
   { section: 'Run', name: 'ready', usage: '[--all]', summary: 'ready tasks, those that unblock the most first; --all adds blocked ones with the reason', flags: { all: bool('also list blocked tasks and why') }, run: T.ready },
