@@ -34,7 +34,7 @@ fs.writeFileSync(process.argv[2], JSON.stringify(attempts));
 console.log(JSON.stringify({ type: 'thread.started', thread_id: '${rung}-thread' }));
 console.log(JSON.stringify({ type: 'result', modelUsage: { luna: {} },
   usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 20 } }));
-${index === 0 && trigger === 'cleanup' ? `
+${index === 0 && ['cleanup', 'orphan'].includes(trigger) ? `
 cp.spawn(process.execPath, ['-e', \`
 const fs = require('node:fs');
 process.on('SIGTERM', () => fs.writeFileSync(process.argv[1] + '.term', 'stopping'));
@@ -42,7 +42,7 @@ fs.writeFileSync(process.argv[1] + '.ready', String(process.pid));
 setInterval(() => {}, 1000);
 \`, process.argv[2]], { stdio: 'ignore' });
 ` : ''}
-${index === 0 && ['stall', 'hold'].includes(trigger) ? 'setInterval(() => {}, 1000);'
+${index === 0 && ['stall', 'hold', 'orphan'].includes(trigger) ? 'setInterval(() => {}, 1000);'
     : index === 0 && trigger === 'outage' ? "console.error('HTTP 503 service unavailable'); process.exit(1);"
       : index === 0 && trigger === 'refusal' ? "console.log(JSON.stringify({ type: 'refusal' })); process.exit(1);"
         : trigger === 'top' || index === 0 && ['exit', 'preclaim'].includes(trigger) ? 'process.exit(0);'
@@ -154,6 +154,39 @@ test('wait recovers a verified worker exit after its supervisor is lost', {
   h.ok(['wait', '--after', '0', '--types', 'worker-exited', '--agent', 'orchestrator', '--timeout', '10']);
   await until(() => h.json(['task', 'show', 'T1']).status === 'submitted');
   assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
+});
+
+test('lost-supervisor recovery waits for redirected orphan descendants to stop', {
+  skip: process.platform !== 'linux' && 'Linux process group observation',
+}, async (t) => {
+  const h = setup(t, 'orphan');
+  h.ok(['ladder', 'set', 'easy', '--supervision', '{"stall_ms":60000}']);
+  const spawn = h.json(['spawn', '--task', 'T1']);
+  await until(() => fs.existsSync(h.attempts + '.ready'));
+  const P = require('../lib/processes');
+  const pid = Number(fs.readFileSync(h.attempts + '.ready', 'utf8'));
+  const child = { pid, ...P.identity(pid) };
+  try {
+    process.kill(spawn.monitor_pid, 'SIGKILL');
+    process.kill(spawn.pid, 'SIGKILL');
+    await until(() => h.run(['spend', 'T1', '--from-spawn', spawn.agent]).code === 0);
+    assert.equal(P.processState(child), 'running');
+    const result = h.run(['wait', '--types', 'submitted', '--task', 'T1', '--agent', 'orchestrator', '--timeout', '2']);
+    assert.equal(result.code, 2, 'a parent exit must not dispatch while its orphan descendant is alive');
+    const waiting = h.json(['recover', 'T1', '--agent', 'orchestrator']);
+    assert.match(waiting.waiting, /process group.*still running/i);
+    assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy');
+    assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 0);
+    assert.equal(events(h).filter((e) => e.cmd === 'spawn exit' && e.detail.agent === spawn.agent).length, 0);
+    assert.ok(events(h).some((e) => e.cmd === 'recover waiting' && /process group/.test(e.detail.reason)));
+    process.kill(child.pid, 'SIGKILL');
+    await until(() => P.processState(child) === 'exited');
+    h.ok(['wait', '--types', 'submitted', '--task', 'T1', '--agent', 'orchestrator', '--timeout', '10']);
+    assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
+    assert.equal(events(h).filter((e) => e.cmd === 'worker-exited').length, 1);
+  } finally {
+    if (P.processState(child) !== 'exited') process.kill(child.pid, 'SIGKILL');
+  }
 });
 
 test('a failed review waits for the monitor to finish cleaning submitted worker descendants', {
