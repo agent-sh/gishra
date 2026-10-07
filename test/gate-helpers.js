@@ -24,6 +24,7 @@ function gateFixture(h) {
   fs.writeFileSync(gh, `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
+if (process.env.FIXTURE_GH_LOG) fs.appendFileSync(process.env.FIXTURE_GH_LOG, JSON.stringify(args) + '\\n');
 const merged = process.env.FIXTURE_MERGED;
 if (args[0] === 'pr' && args[1] === 'merge') {
   fs.writeFileSync(merged, 'merged');
