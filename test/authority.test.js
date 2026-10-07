@@ -143,7 +143,7 @@ test('owner-required changes by the orchestrator open one decision and change no
   assert.equal(answer.code, 1, answer.stderr);
   assert.match(answer.stderr, /only the owner answers it/);
   h.ok(['project', 'set', '--merge-admin', 'true', '--budget-hours', '9']);
-  h.ok(['answer', 'D1', '--choice', 'done']);
+  h.ok(['answer', 'D1', '--choice', 'decline']);
   h.ok(['ladder', 'set', 'easy', '--scope', '{}']);
   assert.equal(h.readState('project.json').merge.admin, true);
   assert.equal(h.readState('project.json').budget.hours, 9);
