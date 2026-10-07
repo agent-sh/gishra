@@ -147,3 +147,84 @@ test('notes and briefs round-trip', (t) => {
   assert.equal(fs.readFileSync(path.join(h.state, 'briefs', 'T1.md'), 'utf8'), 'from a file\n');
   assert.equal(h.run(['brief', 'set', 'T1']).code, 2);
 });
+
+test('brief get selects the caller role and ignores headings inside fenced code', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Role brief', '--acceptance', 'sections stay private']);
+  h.ok(['brief', 'set', 'T1', '-'], {
+    input: [
+      'SHARED_PREAMBLE_SENTINEL',
+      '```md',
+      '## Reviewer',
+      'FENCED_REVIEWER_SENTINEL',
+      '## Worker',
+      'FENCED_WORKER_SENTINEL',
+      '```',
+      '## Shared',
+      'SHARED_SECTION_SENTINEL',
+      '## wOrKeR',
+      'WORKER_SECTION_SENTINEL',
+      '## rEvIeWeR',
+      'REVIEWER_SECTION_SENTINEL',
+    ].join('\n'),
+  });
+
+  const get = (agent, args = []) => h.run(['brief', 'get', 'T1', ...args], { env: { TOWER_CRANE_AGENT: agent } });
+  const worker = get('worker-T1-1');
+  assert.equal(worker.code, 0, worker.stderr);
+  assert.match(worker.stdout, /SHARED_PREAMBLE_SENTINEL/);
+  assert.match(worker.stdout, /SHARED_SECTION_SENTINEL/);
+  assert.match(worker.stdout, /FENCED_REVIEWER_SENTINEL/);
+  assert.match(worker.stdout, /FENCED_WORKER_SENTINEL/);
+  assert.match(worker.stdout, /WORKER_SECTION_SENTINEL/);
+  assert.ok(!worker.stdout.includes('REVIEWER_SECTION_SENTINEL'));
+
+  const reviewer = get('reviewer-T1-1');
+  assert.equal(reviewer.code, 0, reviewer.stderr);
+  assert.match(reviewer.stdout, /SHARED_PREAMBLE_SENTINEL/);
+  assert.match(reviewer.stdout, /SHARED_SECTION_SENTINEL/);
+  assert.match(reviewer.stdout, /FENCED_REVIEWER_SENTINEL/);
+  assert.match(reviewer.stdout, /FENCED_WORKER_SENTINEL/);
+  assert.match(reviewer.stdout, /REVIEWER_SECTION_SENTINEL/);
+  assert.ok(!reviewer.stdout.includes('WORKER_SECTION_SENTINEL'));
+
+  const owner = get('owner');
+  const orchestrator = get('orchestrator-T1-1');
+  assert.match(owner.stdout, /WORKER_SECTION_SENTINEL/);
+  assert.match(owner.stdout, /REVIEWER_SECTION_SENTINEL/);
+  assert.match(orchestrator.stdout, /WORKER_SECTION_SENTINEL/);
+  assert.match(orchestrator.stdout, /REVIEWER_SECTION_SENTINEL/);
+
+  const explicit = get('owner', ['--role', 'reviewer']);
+  assert.equal(explicit.code, 0, explicit.stderr);
+  assert.match(explicit.stdout, /REVIEWER_SECTION_SENTINEL/);
+  assert.ok(!explicit.stdout.includes('WORKER_SECTION_SENTINEL'));
+});
+
+test('brief get keeps an unsectioned brief shared with workers and reviewers', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Shared brief', '--acceptance', 'plain briefs remain shared']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'PLAIN_SHARED_BRIEF\n' });
+  assert.equal(h.ok(['brief', 'get', 'T1'], { env: { TOWER_CRANE_AGENT: 'worker-T1-1' } }), 'PLAIN_SHARED_BRIEF');
+  assert.equal(h.ok(['brief', 'get', 'T1'], { env: { TOWER_CRANE_AGENT: 'reviewer-T1-1' } }), 'PLAIN_SHARED_BRIEF');
+});
+
+test('brief set warns when a reviewer section has no worker section', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Role brief', '--acceptance', 'warn on incomplete roles']);
+
+  const fenced = h.run(['brief', 'set', 'T1', '-'], {
+    input: ['```md', '## Reviewer', 'FENCED_ONLY_SENTINEL', '```'].join('\n'),
+  });
+  assert.equal(fenced.code, 0, fenced.stderr);
+  assert.equal(fenced.stderr, '');
+
+  const missingWorker = h.run(['brief', 'set', 'T1', '-'], {
+    input: ['~~~md', '## Worker', 'FENCED_WORKER_SENTINEL', '~~~', '## rEvIeWeR', 'REVIEWER_SECTION_SENTINEL'].join('\n'),
+  });
+  assert.equal(missingWorker.code, 0, missingWorker.stderr);
+  assert.match(missingWorker.stderr, /Reviewer section.*without a .*Worker section/i);
+});
