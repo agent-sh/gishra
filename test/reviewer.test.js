@@ -137,6 +137,8 @@ test('arbitrary Codex profiles resolve configured models without inheriting the 
   fs.writeFileSync(path.join(home, 'custom-review.config.toml'), 'model = "vendor/replacement-2100"\n');
   assert.ok(prompt().includes('builder model vendor/replacement-2100'));
   fs.rmSync(path.join(home, 'custom-review.config.toml'));
+  fs.writeFileSync(path.join(home, 'config.toml'), 'model = "caller-model"\n[profiles.custom-review]\nmodel_reasoning_effort = "high"\n');
+  assert.ok(prompt().includes('builder model caller-model'));
   fs.writeFileSync(path.join(home, 'config.toml'), 'model = "caller-model"\n');
   assert.ok(prompt().includes('builder model custom-review'));
 });
