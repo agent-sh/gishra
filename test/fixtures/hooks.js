@@ -27,6 +27,26 @@ if (env.HOOK_DEAD_PID) {
   };
 }
 
+// A sandbox may share state files while hiding sibling workers and monitors.
+if (env.HOOK_HIDDEN_PIDS) {
+  const hidden = new Set(JSON.parse(env.HOOK_HIDDEN_PIDS));
+  const kill = process.kill;
+  const read = fs.readFileSync;
+  process.kill = function hiddenPid(pid, signal) {
+    if (hidden.has(pid) && signal === 0) {
+      throw Object.assign(new Error('process is outside the pid view'), { code: 'ESRCH' });
+    }
+    return kill.call(this, pid, signal);
+  };
+  fs.readFileSync = function hiddenProc(file, ...args) {
+    const pid = typeof file === 'string' && /^\/proc\/(\d+)\//.exec(file);
+    if (pid && hidden.has(Number(pid[1]))) {
+      throw Object.assign(new Error('process is outside the pid view'), { code: 'ENOENT' });
+    }
+    return read.call(this, file, ...args);
+  };
+}
+
 if (env.HOOK_CLOCK_FILE) {
   const DateClass = Date;
   const clock = () => Number(fs.readFileSync(env.HOOK_CLOCK_FILE, 'utf8'));
