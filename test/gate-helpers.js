@@ -41,6 +41,10 @@ if (args[0] === 'pr' && args[1] === 'merge') {
 } else {
   const ok = process.env.FIXTURE_GATE_OK !== '0';
   console.log(JSON.stringify({name: 'fixture', app: 'fixture', status: 'completed', conclusion: ok ? 'success' : 'failure', runs: 1}));
+  // A review app that hit its usage limit, for ci.capped_review.
+  if (process.env.FIXTURE_CAPPED && args.some((a) => a.includes('/check-runs'))) {
+    console.log(JSON.stringify({name: 'bot-review', app: 'reviewbot', status: 'completed', conclusion: 'failure', suite: 9, output: {title: 'usage limit reached'}}));
+  }
 }
 `);
   fs.chmodSync(gh, 0o755);
