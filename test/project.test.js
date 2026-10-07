@@ -192,6 +192,30 @@ test('test modes, kind overrides and expensive suites can be set, replaced and c
   assert.ok(!Object.hasOwn(h.json(['project', 'show']), 'tests'));
 });
 
+for (const [flag, value] of [
+  ['--tests-mode', 'none'], ['--tests-by-kind', '{"code":"run-only"}'],
+  ['--tests-expensive', 'true'], ['--tests-paths', '["src/**"]'], ['--tests-keep', '["lib/**"]'],
+]) {
+  test(`${flag} requires explicit owner on init and project set without writing state`, (t) => {
+    const h = makeRepo(t);
+    const init = h.run(['init', '--name', 'demo', '--goal', 'owner policy', flag, value, '--agent', 'worker-T9-1']);
+    assert.equal(init.code, 1, init.stderr);
+    assert.match(init.stderr, /only the owner/);
+    assert.ok(!fs.existsSync(h.state), 'refused init creates no state directory');
+    h.init();
+    const files = ['project.json', 'tasks.json', 'decisions.json', 'events.jsonl', 'sketch.md', 'sketch.html'];
+    const snapshot = () => files.map((f) => fs.readFileSync(path.join(h.state, f), 'utf8'));
+    const before = snapshot();
+    for (const input of [value, 'null']) {
+      const denied = h.run(['project', 'set', '--name', 'must not persist', flag, input, '--agent', 'worker-T9-1']);
+      assert.equal(denied.code, 1, denied.stderr);
+      assert.match(denied.stderr, /only the owner/);
+      assert.deepEqual(snapshot(), before);
+    }
+    assert.equal(h.run(['project', 'set', flag, value]).code, 0, 'explicit owner from env may set policy');
+  });
+}
+
 for (const [flag, invalid] of [
   ['--tests-mode', ['skip', '', 'true', 'PROVE']],
   ['--tests-by-kind', ['[', '[]', '"none"', '{"tooling":"none"}', '{"code":null}', '{"docs":"skip"}', '{"__proto__":"none"}']],

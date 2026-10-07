@@ -25,7 +25,7 @@ The way Tower Crane works unless the project names its own profile in `project.j
 
 ## Tests
 
-- For code changes, a test proves something only if it fails before the change and passes after it. `tower-crane check tests` enforces this by default in `prove` mode. A project can select `run-only` or `none` per task kind, or mark its suite expensive for a single head run, per `docs/state.md`. Other task kinds use the verification in their brief and independent review.
+- For code changes, a test proves something only if it fails before the change and passes after it. `tower-crane check tests` enforces this by default in `prove` mode. The owner can select `run-only` or `none` per task kind, or mark a suite expensive to run it once at head and retain proof through scoped changed-test runs, per `docs/state.md`. Other task kinds use the verification in their brief and independent review.
 - Prefer one integration test that exercises the behavior over many unit tests. Keep a unit test only for pure logic nothing else reaches.
 - Run the tests the change touches, not the whole suite, while working. CI stays thin: lint, build and the checks that guard a merge.
 - When the same mistake shows up twice in review or CI, add a lint rule or check for it.
