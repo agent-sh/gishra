@@ -12,7 +12,7 @@ const prices = {
   'openai.gpt-6.1-sol': { input: 2, cache_write: 2.50, cache_read: 0.10, output: 10 },
   'claude-opus-5-5': { input: 4, cache_write: 5, cache_read: 0.20, output: 20 },
 };
-const windowsConcurrency = process.platform === 'win32' ? 2 : false;
+const windowsConcurrency = process.platform === 'win32' ? 3 : false;
 
 function rung(h, name, model) {
   h.ok(['ladder', 'set', name, '--harness', 'opencode', '--model', model, '--clear', 'profile', '--clear', 'effort']);

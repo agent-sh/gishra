@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, makeTaskRepo, BIN } = require('./helpers');
 const Sessions = require('../lib/spawn-session');
-const windowsConcurrency = process.platform === 'win32' ? 2 : false;
+const windowsConcurrency = process.platform === 'win32' ? 3 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 
