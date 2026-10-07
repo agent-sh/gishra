@@ -1,10 +1,10 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
+const { makeRepo, makeProjectRepo, makeTaskRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 const prices = {
@@ -12,18 +12,18 @@ const prices = {
   'openai.gpt-6.1-sol': { input: 2, cache_write: 2.50, cache_read: 0.10, output: 10 },
   'claude-opus-5-5': { input: 4, cache_write: 5, cache_read: 0.20, output: 20 },
 };
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 function rung(h, name, model) {
   h.ok(['ladder', 'set', name, '--harness', 'opencode', '--model', model, '--clear', 'profile', '--clear', 'effort']);
 }
 
 function setup(t, tier = 'easy', builder = 'other', profile) {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Change', '--acceptance', 'value becomes one', '--tier', tier],
+    brief: 'BUILDER-HISTORY that the reviewer does not need\n\n## Reviewer\nREVIEWER-ONLY instruction\n\n## Worker\nWORKER-HISTORY that the reviewer does not need\n',
+  }], { projectArgs: ['--repo', 'acme/demo'] });
   h.sha = gateFixture(h);
-  h.ok(['project', 'set', '--repo', 'acme/demo']);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'value becomes one', '--tier', tier]);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'BUILDER-HISTORY that the reviewer does not need\n\n## Reviewer\nREVIEWER-ONLY instruction\n\n## Worker\nWORKER-HISTORY that the reviewer does not need\n' });
   if (profile) {
     const bin = path.join(h.base, 'bin');
     const codexHome = path.join(h.base, 'codex');
@@ -71,6 +71,21 @@ function sample(h, name, input, cached, output, cacheWrite = 0) {
     '--cached', String(cached), '--cache-write', String(cacheWrite), '--output', String(output), '--rung', 'review', '--model', name]);
 }
 
+function commandReviewer(h, out) {
+  const script = `const fs = require('node:fs'); const cp = require('node:child_process');
+fs.writeFileSync(process.argv[1], process.argv[2]);
+const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', ${JSON.stringify(h.sha)}, '--summary', 'reviewed'], {env: process.env});
+process.exit(r.status ?? 1);`;
+  h.ok(['project', 'set', '--review-policy', 'null']);
+  const command = [process.execPath, '-e', script, out, '{prompt}'];
+  for (const name of ['easy', 'medium', 'hard', 'research']) {
+    h.ok(['ladder', 'set', name, '--harness', 'command', '--clear', 'model', '--clear', 'profile',
+      '--clear', 'provider', '--clear', 'effort', '--command', JSON.stringify(command)]);
+  }
+  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
+}
+
+describe('reviewer integration cases', { concurrency: windowsConcurrency }, () => {
 test('review selection also uses tier and diff defaults without a price table', (t) => {
   const h = setup(t);
   h.ok(['project', 'set', '--review-policy', 'null']);
@@ -226,20 +241,6 @@ test('review packet uses role headings consistently and ignores fenced headings'
   for (const secret of ['BUILDER-HISTORY', 'FAKE-REVIEWER', 'SHARED-HISTORY']) assert.ok(!prompt.includes(secret));
 });
 
-function commandReviewer(h, out) {
-  const script = `const fs = require('node:fs'); const cp = require('node:child_process');
-fs.writeFileSync(process.argv[1], process.argv[2]);
-const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', ${JSON.stringify(h.sha)}, '--summary', 'reviewed'], {env: process.env});
-process.exit(r.status ?? 1);`;
-  h.ok(['project', 'set', '--review-policy', 'null']);
-  const command = [process.execPath, '-e', script, out, '{prompt}'];
-  for (const name of ['easy', 'medium', 'hard', 'research']) {
-    h.ok(['ladder', 'set', name, '--harness', 'command', '--clear', 'model', '--clear', 'profile',
-      '--clear', 'provider', '--clear', 'effort', '--command', JSON.stringify(command)]);
-  }
-  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
-}
-
 test('review dispatch computes its diff once outside the state lock', (t) => {
   const h = setup(t);
   ready(h);
@@ -250,6 +251,7 @@ test('review dispatch computes its diff once outside the state lock', (t) => {
   });
   const calls = fs.readFileSync(report, 'utf8').trim().split('\n').map(JSON.parse);
   assert.deepEqual(calls, Array.from({ length: 3 }, () => ({ locked: false })));
+});
 });
 
 test('review dispatch refuses a submitted head or configured base changed after diff preparation', async (t) => {
@@ -305,6 +307,7 @@ test('accept runs tests, clean and CI before dispatch, and records review pendin
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
 });
 
+describe('remaining reviewer integration cases', { concurrency: windowsConcurrency }, () => {
 test('a failed automatic gate never starts a reviewer', (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'review-context.txt');
@@ -383,8 +386,7 @@ test('the review packet flags changed files outside the paths the brief names', 
 });
 
 test('review policy validates price and diff settings through the CLI', (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   for (const bad of [{ prices: { 'openai.gpt-6.1-sol': { input: -1 } } },
     { prices: { sol: prices['openai.gpt-6.1-sol'], 'openai.gpt-6.1-sol': prices['openai.gpt-6.1-sol'] } },
     { small_lines: -1 }, { risk_paths: [3] }, { surprise: true }]) {
@@ -420,8 +422,7 @@ test('review policy and prices are the orchestrator\'s or the explicit owner\'s'
 });
 
 test('terminal owner fallback cannot change review policy', { skip: !PTY_AVAILABLE }, (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   const env = { ...h.env };
   delete env.TOWER_CRANE_AGENT;
   const result = runPty(['project', 'set', '--review-policy', 'null'], { cwd: h.repo, env });
@@ -439,4 +440,5 @@ test('review uses the nearest base when only origin has it or the local base is 
   h.git(['branch', 'main', `${base}~1`]);
   const prompt = choice(h).argv.find((arg) => arg.includes('## Task'));
   assert.ok(prompt.includes(`Base: ${base}.`));
+});
 });
