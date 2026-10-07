@@ -262,9 +262,7 @@ test('sandbox cleanup preserves and reports a pre-existing empty read-only file 
   fs.writeFileSync(globalIgnore, 'explicitly-ignored/\n');
   fs.mkdirSync(path.join(wt, 'explicitly-ignored'));
   fs.writeFileSync(path.join(wt, 'explicitly-ignored', 'file.txt'), 'ignored by the configured core.excludesFile\n');
-  u.env.GIT_CONFIG_COUNT = '1';
-  u.env.GIT_CONFIG_KEY_0 = 'core.excludesFile';
-  u.env.GIT_CONFIG_VALUE_0 = globalIgnore;
+  u.env.GIT_CONFIG_PARAMETERS = `'core.excludesFile'='${globalIgnore.replace(/\\/g, '/')}'`;
   const status = (cwd) => cp.execFileSync('git', ['status', '--short', '--untracked-files=all'], {
     cwd, env: u.env, encoding: 'utf8',
   }).trim();
@@ -282,6 +280,43 @@ test('sandbox cleanup preserves and reports a pre-existing empty read-only file 
   }
   assert.equal(status(started.cwd), '?? .bash_profile');
   assert.equal(u.env.GIT_CONFIG_GLOBAL, global, 'Git uses the test-only global config');
+});
+
+test('sandbox cleanup refuses placeholder paths under a symlinked parent', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolateGitEnvironment(h, u);
+  isolated(h, 'small', 'claude');
+  fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
+  const outside = path.join(h.base, 'outside-claude');
+  fs.mkdirSync(outside);
+  const outsideFile = path.join(outside, 'loop.md');
+  fs.writeFileSync(outsideFile, '');
+  fs.chmodSync(outsideFile, 0o444);
+  const claudeDir = path.join(wt, '.claude');
+  const replaceParent = [
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    `fs.rmSync(path.join(process.cwd(), ".claude"), { recursive: true, force: true });`,
+    `fs.symlinkSync(${JSON.stringify(outside)}, path.join(process.cwd(), ".claude"), "dir");`,
+  ].join('\n');
+
+  const started = spawn(h, u, 'small', {
+    STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(CLAUDE_SANDBOX_PLACEHOLDERS),
+    STUB_RUN: JSON.stringify([[process.execPath, '-e', replaceParent]]),
+  });
+  assert.equal(u.report().ran[0].code, 0);
+  assert.equal(fs.lstatSync(claudeDir).isSymbolicLink(), true, 'the parent symlink remains');
+  assert.equal(fs.existsSync(outsideFile), true, 'cleanup leaves the outside file alone');
+  assert.equal(fs.statSync(outsideFile).size, 0);
+  assert.equal(fs.statSync(outsideFile).mode & 0o222, 0, 'the outside file keeps its read-only mode');
+
+  fs.unlinkSync(claudeDir);
+  fs.mkdirSync(claudeDir);
+  fs.copyFileSync(path.join(h.repo, '.claude', 'settings.json'), path.join(claudeDir, 'settings.json'));
+  const status = cp.execFileSync('git', ['status', '--short', '--untracked-files=all'], {
+    cwd: started.cwd, env: u.env, encoding: 'utf8',
+  }).trim();
+  assert.equal(status, '', 'restoring the tracked project settings leaves the worktree clean');
 });
 
 test('a spawned codex agent is pointed at the user\'s global rules, loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
