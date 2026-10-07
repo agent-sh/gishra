@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, BIN } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { shellQuote } = require('../lib/gates/common');
 
 const ghStub = path.join(__dirname, 'fixtures', 'automation-gh.js');
 const harness = path.join(__dirname, 'fixtures', 'automation-harness.js');
@@ -410,4 +411,120 @@ test('a supervised worker submission runs gates and dispatches the offline revie
   assert.ok(review > exit);
   assert.equal(events.filter((e) => e.cmd === 'spawn' && e.detail.role === 'reviewer').length, 1);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
+});
+
+// A second PR that touches other files, and a suite command that logs each
+// run with PR #7's state at that moment.
+function queueFixture(t) {
+  const h = setup(t);
+  h.git(['switch', '-qc', 'second-change', 'main']);
+  fs.writeFileSync(path.join(h.repo, 'other.js'), 'module.exports = 2;\n');
+  fs.mkdirSync(path.join(h.repo, 'test'), { recursive: true });
+  fs.writeFileSync(path.join(h.repo, 'test', 'other.test.js'), "require('node:assert/strict').equal(require('../other'), 2);\n");
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'second change']);
+  h.second = h.git(['rev-parse', 'HEAD']);
+  h.git(['switch', '-q', 'main']);
+  h.ok(['task', 'add', '--title', 'Second', '--acceptance', 'works']);
+  const github = h.github();
+  github.prs['8'] = { ...github.prs['7'], headRefOid: h.second, headRefName: 'second-change' };
+  github.ci[h.second] = 'success';
+  h.saveGithub(github);
+  h.suiteLog = path.join(h.base, 'suites.jsonl');
+  const suite = path.join(h.base, 'suite.js');
+  fs.writeFileSync(suite, `const fs = require('node:fs'), path = require('node:path');
+const gh = JSON.parse(fs.readFileSync(${JSON.stringify(h.env.AUTOMATION_GITHUB)}, 'utf8'));
+fs.appendFileSync(${JSON.stringify(h.suiteLog)}, JSON.stringify({ pr7: gh.prs['7'].state }) + '\\n');
+for (const f of fs.readdirSync('test')) if (f.endsWith('.test.js')) require(path.resolve('test', f));
+`);
+  h.ok(['project', 'set', '--tests-cmd', `${shellQuote(process.execPath)} ${shellQuote(suite)}`]);
+  h.suites = () => (fs.existsSync(h.suiteLog)
+    ? fs.readFileSync(h.suiteLog, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []);
+  h.moveMain = (file = 'README.md', text = 'Independent base update.\n') => {
+    h.git(['switch', '-q', 'main']);
+    fs.appendFileSync(path.join(h.repo, file), text);
+    h.git(['add', file]);
+    h.git(['commit', '-qm', 'advance main']);
+  };
+  h.submit();
+  h.submit('T2', h.second, '8');
+  h.consume();
+  for (const id of ['T1', 'T2']) {
+    const gates = h.json(['task', 'show', id]).gates.gates;
+    assert.ok(gates.filter((g) => g.type !== 'review').every((g) => g.ok), JSON.stringify(gates));
+  }
+  return h;
+}
+
+const headChecks = (h) => h.logs().filter((e) => e.cmd === 'head check');
+const softwareEvidence = (h, id) => h.readState('tasks.json').tasks.find((x) => x.id === id).evidence
+  .filter((e) => ['tests', 'clean', 'ci'].includes(e.type));
+
+function acceptBoth(h) {
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T2', '--type', 'review', '--sha', h.second, '--ok', '--agent', 'reviewer']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  h.ok(['accept', 'T2', '--agent', 'orchestrator']);
+}
+
+test('main moves: a mergeable PR keeps its evidence and merges after one head-of-line check', (t) => {
+  const h = queueFixture(t);
+  const before = softwareEvidence(h, 'T1');
+  h.moveMain();
+  const suites = h.suites().length;
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  assert.deepEqual(softwareEvidence(h, 'T1'), before, 'a base move reruns no gate and resets no evidence');
+  assert.equal(h.github().prs['7'].state, 'MERGED');
+  assert.equal(h.suites().length - suites, 1);
+  const checks = headChecks(h);
+  assert.deepEqual(checks.map((e) => [e.task, e.detail.ok, e.detail.base_sha]), [['T1', true, h.git(['rev-parse', 'main'])]]);
+  assert.ok(checks[0].detail.commands.some((c) => c.args.includes('merge')));
+  h.consume();
+  assert.equal(headChecks(h).length, 1, 'a repeated reaction does not run the suite again');
+});
+
+test('the head of the line that turns CONFLICTING goes to rework with its files and the next PR merges', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 3;\n');
+  h.moveMain('value.js', '');
+  const github = h.github();
+  github.prs['7'].mergeable = 'CONFLICTING';
+  github.prs['7'].mergeStateStatus = 'DIRTY';
+  h.saveGithub(github);
+  h.consume();
+  const [t1, t2] = h.readState('tasks.json').tasks;
+  assert.equal(t1.status, 'rework');
+  assert.match(t1.notes.at(-1).text, /conflicts with main: value\.js/);
+  assert.equal(h.github().prs['7'].state, 'OPEN');
+  assert.equal(t2.evidence.at(-1).type, 'merge');
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+  assert.deepEqual(headChecks(h).map((e) => e.task), ['T2']);
+});
+
+test('two queued PRs run exactly one full suite each at their turn and none before', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  h.moveMain();
+  const suites = h.suites().length;
+  const blocked = h.github();
+  blocked.prs['7'].mergeable = blocked.prs['7'].mergeStateStatus = 'UNKNOWN';
+  blocked.advanceBase = true;
+  h.saveGithub(blocked);
+  h.consume();
+  assert.equal(h.suites().length, suites, 'nothing runs while the head of the line waits');
+  assert.equal(headChecks(h).length, 0);
+  assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false, 'the second PR does not jump the line');
+
+  const ready = h.github();
+  ready.prs['7'].mergeable = 'MERGEABLE';
+  ready.prs['7'].mergeStateStatus = 'CLEAN';
+  h.saveGithub(ready);
+  h.ok(['wait', '--types', 'merged', '--task', 'T2', '--timeout', '10', '--agent', 'orchestrator']);
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['7', '8']);
+  assert.deepEqual(h.suites().slice(suites), [{ pr7: 'OPEN' }, { pr7: 'MERGED' }],
+    'T1 runs its suite before merging; T2 runs its suite only after T1 merged');
+  assert.deepEqual(headChecks(h).map((e) => [e.task, e.detail.ok]), [['T1', true], ['T2', true]]);
+  assert.equal(headChecks(h)[1].detail.base_sha, h.sha, 'T2 is checked against main after T1 landed');
 });

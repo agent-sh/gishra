@@ -27,7 +27,7 @@ are commands recorded in the log, not estimates of model turns.
 | Read owner input, edit acceptance and plan dependencies | agent judgment | Product intent, task boundaries and priorities come from the owner. Software validates the graph and records revisions. |
 | Set model defaults, budgets, sandbox rules, permissions and gate waivers | agent judgment | These are owner or operational decisions under the authority table. Software enforces that table and records approvals. |
 | Answer a blocked worker, deliver rework notes and update its brief | agent judgment | The answer may change product behavior. Message delivery and brief persistence are software. |
-| Fetch main, merge a clean base update, push and refresh a PR | software | Git and GitHub can perform clean updates. Any conflict returns to agent judgment; no force push is inferred. |
+| Fetch main, merge a clean base update, push and refresh a PR | not needed | Evidence binds to the PR's diff and GitHub's `pull_request` run tests the merge ref, so a clean base update adds nothing. The merge queue checks the head of the line against the current base. A conflict returns to agent judgment. |
 | Rerun a flaky CI job | agent judgment | Completion handling is software. Deciding that a failure is flaky requires evidence; automation does not conceal a failing job. |
 | Remove finished runner/review worktrees and remote branches | software | Verified process exit, merge state and retention policy determine cleanup. Existing worktree and merge commands own it. |
 | Inspect the board, capture UI evidence and assess usability | agent judgment | Browser transport is software, but appearance and interaction quality need inspection. |
@@ -63,6 +63,16 @@ Failures remain visible in gate receipts and task notes. Conflicting PRs
 return to rework with a file list. Unknown mergeability, failed transport,
 pending CI, moved heads and missing review never authorize a merge.
 Stack-head reconciliation, scope calculation and changelog fragments stay
-with T94, T95 and T86 respectively. T99 owns merge-line ordering and fresh
-full-suite checks at the head of that line. Reconciliation here preserves
-existing evidence at an unchanged, mergeable head.
+with T94, T95 and T86 respectively. Reconciliation preserves existing
+evidence at an unchanged, mergeable head.
+
+## Merge queue
+
+After T85 merged, the orchestrator merged main into 15 open PRs. Each merge
+made a new head, which reset every gate and ran 15 full suites, although
+only the next PR to merge needed one. Evidence now belongs to the PR's own
+diff at its submitted sha, and a base move alone keeps it. Accepted PRs
+merge in acceptance order. Only the head of the line runs the full suite,
+once, on its merge with the current base, and only when its head does not
+already contain that base. A conflicting head goes to rework with its files.
+The rest of the line waits without running anything.

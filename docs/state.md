@@ -538,6 +538,18 @@ base moved while no watcher ran. Matching gate evidence is reused rather
 than rerun because of reconciliation. An idle startup writes no request.
 A busy state lock defers the request to the existing watch notification
 or fallback tick without holding the wait timeout.
+`merge queue` events have no task and record `{phase}`: `running` with the
+executor `pid`, `host` and Linux `start_ticks`, `requested` from a reaction
+that found a live executor, then `done`, or `error` with `error`. A
+`requested` after the executor's latest `running` makes it record another
+`running` and drain again. The line is accepted, unmerged PR tasks ordered
+by their latest `accept` event at the current sha and revision.
+`head check` records the head-of-line suite run on a task:
+`{sha, revision, base_sha, command, ok, summary, commands}`, where
+`base_sha` is the base tip merged into the head and `commands` lists the
+Git and shell executions with their status. An ok check at the same sha,
+revision, `base_sha` and command is reused. It is a merge precondition, not
+gate evidence; it never changes `evidence`.
 
 The append-only log is the event source of truth. One JSON object per line: `{ "id", "type", "to", "at", "agent", "cmd", "task", "detail" }`, plus `"via": "broker"` on an event the state broker wrote for a sandboxed agent or `"via": "automation"` on a software reaction (provenance, not proof). Every append occurs under the state lock after validation and state writes. Refused commands append nothing, except the `ask` an orchestrator's owner-required change opens ([Authority](#authority)). Each new event has a unique `E<uuid>` id. `cmd` preserves the command name (`task add`, `claim`, `spawn`, `check tests` and so on); `tower-crane spawn` counts its earlier `spawn` events to number agents. Older audit lines without ids remain readable; `wait` exposes their byte offsets for resuming.
 

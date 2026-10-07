@@ -177,6 +177,25 @@ the task to rework with Git's filenames in its note and brief. Trial merges
 do not resolve conflicts or update worker branches. Unknown PR heads,
 unknown mergeability and failed GitHub transport cannot authorize merging.
 
+Accepted PRs merge through a merge queue in the order of their `accept`
+events. A stacked task joins once every lower task is accepted. Only the
+head of the line runs anything. A head GitHub reports `CONFLICTING` or
+`DIRTY` goes to rework with its files and leaves the line. A head with
+unknown mergeability, a moved head or failing gates stops the line until a
+later reaction. Gate evidence belongs to the submitted sha, so a base move
+alone reruns no gate. The fail-before proof reruns only for a new head.
+Before merging, the head runs the pinned `gates.tests_cmd` once on its
+merge with the current base tip, unless its head already contains that tip
+or an earlier `head check` covered the same head, revision, base tip and
+command. Tasks without a tests gate, or with tests mode `none`, skip it. A
+failing check sends the head to rework with the output tail. The rest of
+the line runs no gate and no suite. Hosted CI evidence comes from GitHub's
+`pull_request` run, which already tests the merge ref; never merge the base
+into a PR to refresh evidence or pick up a workflow change. One executor
+drains the queue; a reaction that finds it busy records a request, and the
+executor makes another pass before releasing. Manual `merge ID` keeps its
+own guards and does not consult the queue.
+
 CI completion requires notification delivery by the host's webhook or job
 integration, using `ci webhook` or `ci completed`. No listener or CI polling
 loop is installed. The notification's conclusion is never evidence: the
