@@ -469,6 +469,28 @@ test('failure ' + process.env.T83_PROCESS_TOKEN, () => {
   }
 });
 
+test('a token that straddles the output tail cut is redacted, not kept as a fragment', (t) => {
+  const h = makeRepo(t);
+  const body = 'T83BoundaryBody0123456789';
+  // After the marker the tail keeps 8167 characters of this one line, so the cut falls right after
+  // the "sk-" prefix. Spaces keep the body out of any longer run.
+  const line = `${' '.repeat(100)}sk-${body}${' '.repeat(8166 - body.length)}!`;
+  const sha = manifestTask(h, { submitted: {
+    'print-leak.js': `process.stdout.write(${JSON.stringify(line)});\nprocess.exit(1);\n`,
+  } });
+  submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', `${shellQuote(process.execPath)} print-leak.js`]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker']);
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.match(evidence.test_failure.output_tail, /\[redacted:API_KEY\]/);
+  assert.ok(evidence.test_failure.output_tail.length <= 8192);
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const output = [result.stdout, result.stderr, JSON.stringify(evidence), events, h.ok(['task', 'show', 'T1'])].join('\n');
+  assert.equal(output.includes(body), false, 'the token body leaked past the output tail cut');
+});
+
 test('none mode for docs and ops needs no command but still verifies the submitted sha', (t) => {
   const h = makeRepo(t);
   const sha = manifestTask(h, { submitted: {} });
