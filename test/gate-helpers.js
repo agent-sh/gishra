@@ -64,12 +64,18 @@ cp.spawnSync = (command, args, opts) => command === 'gh'
     FIXTURE_SHA: sha,
     FIXTURE_MERGED: path.join(h.base, 'merged'),
   });
+  h.gateSettings = ['--tests-cmd', 'node test/value.test.js', '--clean-cmd', h.env.TOWER_CRANE_CLEAN_CMD];
+  if (fs.existsSync(path.join(h.state, 'project.json'))) h.ok(['project', 'set', ...h.gateSettings]);
   return sha;
 }
 
 function gateEvidence(h, type, agent, ok = true) {
   const args = ['check', type, 'T1', '--agent', agent];
-  if (type === 'tests') args.push('--cmd', ok ? 'node test/value.test.js' : 'node -e "process.exit(1)"');
+  if (type === 'tests') {
+    const cmd = ok ? 'node test/value.test.js' : 'node -e "process.exit(1)"';
+    h.ok(['project', 'set', '--tests-cmd', cmd]);
+    args.push('--cmd', cmd);
+  }
   const r = h.run(args, { env: { FIXTURE_GATE_OK: ok ? '1' : '0' } });
   if (r.code !== (ok ? 0 : 1)) throw new Error(`gate ${type}: ${r.stderr}\n${r.stdout}`);
   return r;
