@@ -782,17 +782,20 @@ test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-r
   assert.match(pi.stderr, /tools applies only to claude and codex, mcp applies only to claude and codex/);
 });
 
-test('only the owner widens a rung, and args hold only allowlisted flags', (t) => {
+test('only the orchestrator or the owner widens a rung, a command needs the owner, and args hold only allowlisted flags', (t) => {
   const { h } = setup(t);
   isolated(h, 'small', 'claude');
   const as = (agent, flags) => h.run(['ladder', 'set', 'small', ...flags, '--agent', agent]);
   for (const flags of [['--tools', '["Agent"]'], ['--mcp', '["planted"]'], ['--args', '["--verbose"]'], ['--harness', 'command', '--command', '["sh"]', '--clear', 'model']]) {
     const r = as('worker-T1-1', flags);
     assert.equal(r.code, 1, flags.join(' '));
-    assert.match(r.stderr, /only the owner can change a rung's harness, args, command, tools, mcp/);
+    assert.match(r.stderr, flags.includes('--command') ? /only the owner with an explicit identity can change ladder\.command/ : /operational: only the orchestrator or the owner/);
   }
-  h.ok(['ladder', 'set', 'small', '--model', 'sonnet', '--agent', 'orchestrator-1']);
-  assert.equal(as('owner', ['--tools', '["Agent"]']).code, 0);
+  const command = as('orchestrator', ['--harness', 'command', '--command', '["sh"]', '--clear', 'model']);
+  assert.equal(command.code, 1);
+  assert.match(command.stderr, /ladder\.command, ladder\.reach are owner-required; opened D1/);
+  h.ok(['ladder', 'set', 'small', '--model', 'sonnet', '--agent', 'orchestrator']);
+  assert.equal(as('orchestrator', ['--tools', '["Agent"]']).code, 0);
   assert.equal(as('owner', ['--args', '["--verbose","--max-turns","40"]']).code, 0);
   const refused = [
     ['claude', '["--dangerously-skip-permissions"]'], ['claude', '["--settings","{}"]'], ['claude', '["--setting-sources=user,project"]'],

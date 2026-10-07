@@ -387,21 +387,22 @@ test('review policy validates price and diff settings through the CLI', (t) => {
   }
 });
 
-test('review policy and prices require an explicit owner identity', (t) => {
+test('review policy and prices are the orchestrator\'s or the explicit owner\'s', (t) => {
   const h = makeRepo(t);
   const policy = JSON.stringify({ prices });
   const init = h.run(['init', '--name', 'demo', '--goal', 'prove the engine', '--review-policy', policy, '--agent', 'worker']);
   assert.equal(init.code, 1);
-  assert.match(init.stderr, /only the owner with an explicit identity/);
+  assert.match(init.stderr, /only the orchestrator or the owner/);
   assert.ok(!fs.existsSync(h.state), 'a refused init writes no state');
 
   h.init();
   const before = h.readState('project.json');
   const denied = h.run(['project', 'set', '--review-policy', policy, '--agent', 'worker']);
   assert.equal(denied.code, 1);
-  assert.match(denied.stderr, /only the owner with an explicit identity/);
+  assert.match(denied.stderr, /only the orchestrator or the owner/);
   assert.deepEqual(h.readState('project.json'), before);
   assert.equal(h.run(['project', 'set', '--review-policy', 'null', '--agent', 'worker']).code, 1);
+  h.ok(['project', 'set', '--review-policy', 'null', '--agent', 'orchestrator']);
   h.ok(['project', 'set', '--review-policy', policy, '--agent', 'owner']);
   assert.deepEqual(h.json(['project', 'show']).review.prices, prices);
 });
@@ -413,7 +414,7 @@ test('terminal owner fallback cannot change review policy', { skip: !PTY_AVAILAB
   delete env.TOWER_CRANE_AGENT;
   const result = runPty(['project', 'set', '--review-policy', 'null'], { cwd: h.repo, env });
   assert.equal(result.code, 1);
-  assert.match(result.stdout, /only the owner with an explicit identity/);
+  assert.match(result.stdout, /only the orchestrator or the owner/);
 });
 
 test('review uses the nearest base when only origin has it or the local base is stale', (t) => {

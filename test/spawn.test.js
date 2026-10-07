@@ -358,7 +358,7 @@ process.exit(r.code === null ? 99 : r.code);
   assert.equal(seen.task, 'T1');
   assert.deepEqual(seen.remaining, []);
   assert.equal(seen.code, 1, seen.stdout + seen.stderr);
-  assert.match(seen.stdout, /only the owner/);
+  assert.match(seen.stdout, /only the orchestrator or the owner/);
   const task = h.readState('tasks.json').tasks[1];
   assert.equal(task.needs_owner, 'approve access');
   assert.deepEqual(task.notes, []);
