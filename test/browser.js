@@ -53,7 +53,10 @@ async function openBrowser(t) {
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const portFile = path.join(profile, 'DevToolsActivePort');
-  const port = await until(() => fs.existsSync(portFile) && fs.readFileSync(portFile, 'utf8').split('\n')[0], 'Chrome to start');
+  // A first start on a fresh machine builds the font cache, which takes 10 s
+  // or more on a busy CI runner; a Chrome killed before it finishes leaves the
+  // next start cold too.
+  const port = await until(() => fs.existsSync(portFile) && fs.readFileSync(portFile, 'utf8').split('\n')[0], 'Chrome to start', 60000);
   const targets = await until(async () => {
     const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
     return list.find((x) => x.type === 'page');
@@ -65,8 +68,11 @@ async function openBrowser(t) {
   });
   let id = 0;
   const pending = new Map();
+  // Protocol events (Network.requestWillBeSent and the like), in order.
+  const seen = [];
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
+    if (msg.method) seen.push(msg);
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id)(msg);
       pending.delete(msg.id);
@@ -85,6 +91,8 @@ async function openBrowser(t) {
     return r.result.value;
   };
   return {
+    send,
+    seen,
     inPage,
     // Types into whatever has focus, as a keyboard would: a disabled field
     // cannot hold focus, so nothing lands there.

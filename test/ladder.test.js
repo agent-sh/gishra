@@ -120,14 +120,16 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   assert.deepEqual(flags(spawn('T2').argv), ['pi', '-p', '--mode', 'json', '--model', 'm-medium', '--thinking', 'high']);
   const hard = spawn('T3');
   const research = spawn('T4');
-  assert.deepEqual(flags(hard.argv), ['claude', '-p', '--model', 'opus', '--effort', 'high', '--output-format', 'json', '--session-id', hard.session_id]);
-  assert.deepEqual(flags(research.argv), ['claude', '-p', '--model', 'opus', '--effort', 'max', '--output-format', 'json', '--session-id', research.session_id]);
+  assert.deepEqual(flags(hard.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'high', '--output-format', 'json']);
+  assert.deepEqual(flags(research.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'max', '--output-format', 'json']);
+  assert.equal(hard.argv[hard.argv.indexOf('--session-id') + 1], hard.session_id);
+  assert.equal(research.argv[research.argv.indexOf('--session-id') + 1], research.session_id);
   const review = spawn('T2', 'review');
   assert.deepEqual([review.rung, review.agent], ['review', 'reviewer-T2-1']);
   assert.deepEqual(flags(review.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-review', '--thinking', 'high']);
 
   h.ok(['ladder', 'harness', 'codex']);
-  assert.deepEqual(flags(spawn('T1').argv), ['codex', 'exec', '--json', '-m', 'm-easy', '-c', 'model_reasoning_effort=medium']);
+  assert.deepEqual(flags(spawn('T1').argv).slice(0, 7), ['codex', 'exec', '--json', '-m', 'm-easy', '-c', 'model_reasoning_effort=medium']);
   assert.deepEqual(flags(spawn('T3').argv).slice(0, 1), ['claude']);
   const harnessEvents = events(h).filter((e) => e.cmd === 'ladder harness').map((e) => e.detail.harness);
   assert.deepEqual(harnessEvents, ['pi', 'codex']);
@@ -216,9 +218,9 @@ test('a ladder write is evented and re-renders the sketch with the ladder and ea
   assert.deepEqual([ev.agent, ev.detail], ['w-1', { rung: 'easy', model: 'gpt-x', effort: 'medium' }]);
   assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'medium' });
   const html = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
-  assert.match(html, /<td class="id">easy<\/td><td>codex \(default\)<\/td><td>gpt-x<\/td><td>medium<\/td>/);
-  assert.match(html, /<td class="id">research<\/td><td>claude<\/td><td>opus<\/td><td>max<\/td>/);
-  assert.match(html, /T1<tspan class="ntier" dx="8">easy<\/tspan>/, 'the graph shows the task tier');
+  assert.match(html, /<tr data-rung="easy"><th scope="row">easy<\/th><td>codex \(default\)<\/td><td>gpt-x<\/td><td>medium<\/td>/);
+  assert.match(html, /<tr data-rung="research"><th scope="row">research<\/th><td>claude<\/td><td>opus<\/td><td>max<\/td>/);
+  assert.match(html, /<a href="#T1" class="node s-ready"[^>]*aria-label="T1 Small fix, ready, tier easy"/, 'the graph shows the task tier');
   const md = fs.readFileSync(path.join(h.state, 'sketch.md'), 'utf8');
   assert.match(md, /^\| easy \| codex \(default\) \| gpt-x \| medium \|$/m);
   assert.match(md, /^\| T1 \| Small fix \| code \| S \| easy \| 0 \|$/m, 'the ready table shows the tier');

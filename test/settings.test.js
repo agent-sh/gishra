@@ -74,7 +74,7 @@ test('the Settings view edits the ladder and task tiers only with the page token
     assert.match(page.text, /<label for="harness">Default harness<\/label>/);
     assert.match(page.text, /<input name="model" value="opus" data-initial="opus" aria-labelledby="r-hard c-model"/);
     assert.match(page.text, /<select name="tier" aria-labelledby="t-T1 c-tier" data-initial="medium">/);
-    assert.match((await request(s.url)).text, /<a href="settings">Settings<\/a>/, 'the sketch links to Settings');
+    assert.match((await request(s.url)).text, /<a href="settings" data-view="settings">Settings<\/a>/, 'the board links to Settings');
     assert.notEqual((await startAgain(h)).token, token, 'each run has its own token');
 
     const ladder = `${s.url}api/ladder`;
@@ -108,7 +108,7 @@ test('the Settings view edits the ladder and task tiers only with the page token
     assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'low', args: ['--skip-git-repo-check'] });
     const ev = events(h).find((e) => e.cmd === 'ladder set');
     assert.deepEqual([ev.agent, ev.detail.rung, ev.detail.via], ['owner', 'easy', 'serve']);
-    assert.match(read(h, 'sketch.html'), /<td class="id">easy<\/td><td>codex \(default\)<\/td><td>gpt-x<\/td>/, 'the write re-rendered the sketch');
+    assert.match(read(h, 'sketch.html'), /<tr data-rung="easy"><th scope="row">easy<\/th><td>codex \(default\)<\/td><td>gpt-x<\/td>/, 'the write re-rendered the sketch');
 
     loaded = await loadedOf(s.url);
     const harness = await request(ladder, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: ladderBody(loaded, { harness: 'agy', rungs: { medium: { model: 'gemini-3-pro', profile: '' }, review: { model: 'gemini-3-pro', profile: '' }, small: { model: 'gemini-3-flash', profile: '' }, easy: { model: 'gemini-3-flash' } } }) });

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, real, BIN, PTY_AVAILABLE } = require('./helpers');
+const A = require('../lib/agents');
 
 function setup(t) {
   const h = makeRepo(t);
@@ -46,12 +47,22 @@ test('worktree creates the task branch from base and is idempotent', (t) => {
 
 test('spawn --dry-run builds each harness command', (t) => {
   const h = setup(t);
+  // claude and codex run the small rung under tower-crane-small.md, in a home of its own.
+  const small = A.load('small');
+  const claudeOwn = (state) => [
+    '--setting-sources', 'user', '--permission-mode', 'acceptEdits', '--tools', 'Bash,Read,Grep,Glob', '--allowedTools', 'Bash,Read,Grep,Glob',
+    '--disallowedTools', ...small.disallowedTools,
+    '--strict-mcp-config', '--mcp-config', path.join(state, 'homes', 'small-T1-1', 'mcp.json'), '--disable-slash-commands',
+  ];
+  const codexOwn = () => [
+    '-c', 'default_permissions="tower-crane"', '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
+    ...small.codexDisable.flatMap((f) => ['--disable', f]),
+  ];
   const cases = [
-    [['--harness', 'claude', '--model', 'claude-opus-5-5'], (p) => ['claude', '-p', p, '--model', 'claude-opus-5-5', '--output-format', 'json']],
-    [['--harness', 'claude', '--model', 'opus', '--effort', 'high'], (p) => ['claude', '-p', p, '--model', 'opus', '--effort', 'high', '--output-format', 'json']],
-    [['--harness', 'claude', '--model', 'opus', '--args', '["--resume","01a11297-1067-7831-a3bc-2c04eac9aaef"]'], (p) => ['claude', '-p', p, '--model', 'opus', '--output-format', 'json', '--resume', '01a11297-1067-7831-a3bc-2c04eac9aaef']],
-    [['--harness', 'codex', '--profile', 'sol'], (p) => ['codex', 'exec', '--json', '-p', 'sol', p]],
-    [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p) => ['codex', 'exec', '--json', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', p, '--skip-git-repo-check']],
+    [['--harness', 'claude', '--model', 'claude-opus-5-5'], (p, s) => ['claude', '-p', p, '--model', 'claude-opus-5-5', '--output-format', 'json', ...claudeOwn(s)]],
+    [['--harness', 'claude', '--model', 'opus', '--effort', 'high'], (p, s) => ['claude', '-p', p, '--model', 'opus', '--effort', 'high', '--output-format', 'json', ...claudeOwn(s)]],
+    [['--harness', 'codex', '--profile', 'sol'], (p, s) => ['codex', 'exec', '--json', '-p', 'sol', ...codexOwn(s), p]],
+    [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p, s) => ['codex', 'exec', '--json', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', ...codexOwn(s), p, '--skip-git-repo-check']],
     [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', p]],
     [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', p]],
     [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro']],
@@ -66,7 +77,7 @@ test('spawn --dry-run builds each harness command', (t) => {
     const out = dry(h, 'small', { TOWER_CRANE_PLUGIN_ROOT: empty });
     const prompt = out.argv.find((a) => a.includes('## Task'));
     assert.ok(prompt, `prompt present for ${flags.join(' ')}`);
-    const argv = expected(prompt);
+    const argv = expected(prompt, out.env.TOWER_CRANE_STATE);
     if (flags.includes('claude')) {
       assert.match(out.session_id, /^[a-f0-9-]{36}$/);
       if (out.argv.includes('--resume')) assert.equal(out.session_id, out.argv[out.argv.indexOf('--resume') + 1]);

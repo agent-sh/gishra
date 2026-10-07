@@ -39,7 +39,7 @@ test('project set stores, replaces and clears test paths and ignored CI apps', (
   assert.deepEqual(h.json(['project', 'set', '--tests-paths', 'null', '--ci-ignore-apps', 'null']), cleared);
 });
 
-for (const flag of ['--tests-paths', '--ci-ignore-apps']) {
+for (const flag of ['--tests-paths', '--tests-keep', '--ci-ignore-apps']) {
   test(`project set validates ${flag} and writes nothing on invalid input`, (t) => {
     const h = makeRepo(t);
     h.init();
@@ -88,8 +88,25 @@ test('project set and init help document the JSON settings and clearing value', 
   for (const command of [['project', 'set'], ['init']]) {
     const help = h.ok([...command, '--help']);
     assert.match(help, /--tests-paths JSON.*null/);
+    assert.match(help, /--tests-keep JSON.*null/);
     assert.match(help, /--ci-ignore-apps JSON.*null/);
   }
+});
+
+test('tests.keep is configured through init and project set without replacing tests.paths', (t) => {
+  const h = makeRepo(t);
+  h.init(['--tests-paths', '["qa/"]', '--tests-keep', '[" Makefile ", " tools/**/*.gradle "]']);
+  assert.deepEqual(h.json(['project', 'show']).tests, { paths: ['qa/'], keep: ['Makefile', 'tools/**/*.gradle'] });
+  assert.match(h.ok(['project', 'show']), /tests\.keep: \["Makefile","tools\/\*\*\/\*\.gradle"\]/);
+  const set = h.json(['project', 'set', '--tests-keep', '["setup.py"]']);
+  assert.deepEqual(set.tests, { paths: ['qa/'], keep: ['setup.py'] });
+  assert.deepEqual(h.readState('project.json').tests, set.tests);
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.at(-1).detail, { 'tests-keep': '["setup.py"]' });
+  assert.deepEqual(h.json(['project', 'set', '--tests-paths', 'null']).tests, { keep: ['setup.py'] });
+  assert.deepEqual(h.json(['project', 'set', '--tests-keep', '[]']).tests, { keep: [] });
+  assert.ok(!Object.hasOwn(h.json(['project', 'set', '--tests-keep', 'null']), 'tests'));
+  assert.match(h.ok(['project', 'show']), /tests\.keep: \[\]/);
 });
 
 test('project set and init trim padded test paths and ignored CI apps', (t) => {
