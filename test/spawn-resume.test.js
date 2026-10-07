@@ -322,7 +322,7 @@ test('a missing isolated codex rollout falls back to a fresh worker and records 
   const { h, script, seen } = setup(t, 'codex');
   nativeHarness(h, script, seen, 'codex');
   const first = h.json(['spawn', '--task', 'T1', '--wait']);
-  const rollout = path.join(h.state, 'homes', '.codex', 'sessions', 'rollout-test-worker-session-1.jsonl');
+  const rollout = path.join(first.codex_home, 'sessions', 'rollout-test-worker-session-1.jsonl');
   assert.ok(fs.existsSync(rollout));
   fs.unlinkSync(rollout);
   sendBack(h);
@@ -361,7 +361,7 @@ test('a pre-launch fallback failure restores the old claim and permits retry', (
   sendBack(h);
   h.ok(['claim', 'T1', '--agent', first.agent]);
   const before = h.json(['task', 'show', 'T1']).claim;
-  fs.unlinkSync(path.join(h.state, 'homes', '.codex', 'sessions', 'rollout-test-worker-session-1.jsonl'));
+  fs.unlinkSync(path.join(first.codex_home, 'sessions', 'rollout-test-worker-session-1.jsonl'));
 
   const occupiedLog = path.join(h.state, 'logs', 'T1-worker-T1-2.log');
   fs.writeFileSync(occupiedLog, 'preserve this log\n');

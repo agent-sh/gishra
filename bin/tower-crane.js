@@ -1,6 +1,25 @@
 #!/usr/bin/env node
 'use strict';
 
+const OUTPUT_PIPE_CLOSED = 'tower-crane:output-pipe-closed';
+let outputPipeClosed = false;
+
+for (const stream of [process.stdout, process.stderr]) {
+  let broken = false;
+  stream.on('error', (error) => {
+    if (error.code === 'EPIPE') {
+      broken = true;
+      stream.destroy();
+      if (!outputPipeClosed) {
+        outputPipeClosed = true;
+        process.emit(OUTPUT_PIPE_CLOSED);
+      }
+      return;
+    }
+    if (!broken) throw error;
+  });
+}
+
 const { TowerCraneError, usage } = require('../lib/util');
 const S = require('../lib/state');
 const P = require('../lib/project');
@@ -115,6 +134,7 @@ const COMMANDS = [
   { section: 'Run', name: 'owner-done', pos: ['ID'], usage: 'ID [--note T]', summary: 'the owner did what needs_owner asked; clears it', flags: { note: str('T', 'what was done') }, run: T.ownerDone },
   { section: 'Run', name: 'wait', usage: '[--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]', summary: 'block until one matching event; print one JSON line (timeout exits 2)', flags: { after: str('CURSOR', 'event id or byte offset (default now)'), for: str('NAME', 'recipient (default orchestrator)'), task: str('ID', 'only this task or decisions blocking it'), types: str('TYPES', 'comma-separated event types'), timeout: num('SEC', 'maximum wait in seconds') }, run: run('../lib/events', 'wait') },
   { section: 'Run', name: 'msg', pos: ['TEXT...'], usage: '--to NAME [--task ID] TEXT', summary: 'send a worker message through the event log', flags: { to: str('NAME', 'recipient, usually orchestrator'), task: str('ID', 'task (default TOWER_CRANE_TASK)') }, required: ['to'], run: run('../lib/events', 'message') },
+  { section: 'Run', name: 'hook', pos: ['ACTION'], usage: 'ACTION --binding FILE [--payload JSON|-]', summary: 'deliver harness messages and record activity under the home identity', flags: { binding: str('FILE', 'protected hook binding in the agent home'), payload: str('JSON|-', 'harness event data (- reads stdin)') }, required: ['binding'], run: run('../lib/harness-hooks', 'hook') },
 
   { section: 'Decisions', name: 'ask', usage: '--question Q --option A --option B [--recommend A] [--why W] [--blocks ID]...', summary: 'open a decision; prints its id', flags: { question: str('Q', 'the question'), option: many('A', 'an allowed answer; repeat'), recommend: str('A', 'the recommended option'), why: str('W', 'the reasoning'), blocks: many('ID', 'a task that waits for the answer; repeat') }, required: ['question'], run: D.ask },
   { section: 'Decisions', name: 'decision note', pos: ['DID', 'TEXT...'], usage: 'DID TEXT', summary: 'append a comment on a decision', run: D.comment },
@@ -351,9 +371,23 @@ async function main(argv) {
   }
 }
 
+// A queued no-op write completes after prior bytes, so natural exit waits for healthy output.
+function flushStream(stream) {
+  if (stream.destroyed) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      stream.removeListener('close', done);
+      resolve();
+    };
+    stream.once('close', done);
+    stream.write('', done);
+  });
+}
+
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
+    return Promise.all([flushStream(process.stdout), flushStream(process.stderr)]);
   });
 }
 
