@@ -14,7 +14,7 @@ const TMP_ROOT = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
 // Tests must not see the developer's git config (hooks, signing), an
 // agent's TOWER_CRANE_* variables or the developer's own ladder defaults, so every
 // child gets a clean, explicit env. The user file path is in the temp dir and
-// absent until a test writes it.
+// absent between calls unless a test writes it.
 function baseEnv(home) {
   const env = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith('TOWER_CRANE_') || k.startsWith('GIT_')) delete env[k];
@@ -30,7 +30,64 @@ function git(args, cwd, env) {
   return cp.execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
-function makeRepo(t) {
+function fixtureLadder() {
+  return {
+    harness: 'codex',
+    ladder: {
+      orchestrator: { harness: 'claude', model: 'fixture-large', effort: 'high' },
+      easy: { profile: 'fixture-light', effort: 'medium' },
+      medium: { profile: 'fixture-main', effort: 'high' },
+      hard: { harness: 'claude', model: 'fixture-large', effort: 'high' },
+      research: { harness: 'claude', model: 'fixture-large', effort: 'max' },
+      review: { profile: 'fixture-main', effort: 'high' },
+      small: { profile: 'fixture-light', effort: 'low' },
+    },
+  };
+}
+
+function pinRung(h, name, rung) {
+  const args = ['ladder', 'set', name];
+  for (const key of ['harness', 'model', 'profile', 'provider', 'effort', 'args', 'command']) {
+    args.push(...(rung[key] === undefined ? ['--clear', key]
+      : [`--${key}`, Array.isArray(rung[key]) ? JSON.stringify(rung[key]) : rung[key]]));
+  }
+  h.ok(args);
+}
+
+function pinLiveRung(h, harness) {
+  const field = harness === 'codex' ? 'profile' : 'model';
+  const variable = `TOWER_CRANE_LIVE_${field.toUpperCase()}`;
+  assert.ok(process.env[variable], `set ${variable} to run a live ${harness} probe`);
+  pinRung(h, 'small', { harness, [field]: process.env[variable] });
+}
+
+// Init copies defaults from the user layer. Seed that layer only for the call,
+// so fixtures keep testing absent user files and later personal overrides.
+function fixtureInit(ctx, args, opts, call) {
+  if (args[0] !== 'init' || ctx.builtin) return call(args, opts);
+  let original;
+  try { original = fs.readFileSync(ctx.userConfig, 'utf8'); }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  let user;
+  try { user = original === undefined ? {} : JSON.parse(original); }
+  catch { return call(args, opts); }
+  if (!user || typeof user !== 'object' || Array.isArray(user)) return call(args, opts);
+  if (user.ladder !== undefined && (!user.ladder || typeof user.ladder !== 'object' || Array.isArray(user.ladder))) return call(args, opts);
+  const pinned = fixtureLadder();
+  for (const [name, rung] of Object.entries(user.ladder || {})) {
+    pinned.ladder[name] = rung && Object.keys(rung).every(k => k === 'fallbacks')
+      ? { ...pinned.ladder[name], ...rung } : rung;
+  }
+  fs.mkdirSync(path.dirname(ctx.userConfig), { recursive: true });
+  fs.writeFileSync(ctx.userConfig, JSON.stringify({ ...pinned, ...user, ladder: pinned.ladder }));
+  try { return call(args, opts); }
+  finally {
+    if (original === undefined) fs.rmSync(ctx.userConfig);
+    else fs.writeFileSync(ctx.userConfig, original);
+  }
+}
+
+function makeRepo(t, options = {}) {
   fs.mkdirSync(TMP_ROOT, { recursive: true });
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-')));
   fs.writeFileSync(
@@ -44,7 +101,7 @@ function makeRepo(t) {
   fs.writeFileSync(path.join(repo, 'README.md'), '# test\n');
   git(['add', '.'], repo, env);
   git(['commit', '-q', '-m', 'init'], repo, env);
-  return context(t, base);
+  return context(t, base, options);
 }
 
 // A test context over a copy of another context's directory, for files that
@@ -56,13 +113,14 @@ function copyRepo(t, source) {
   return context(t, base);
 }
 
-function context(t, base) {
+function context(t, base, options = {}) {
   const env = baseEnv(base);
   const repo = path.join(base, 'repo');
   const ctx = {
     base,
     repo,
     env,
+    builtin: options.builtin,
     userConfig: env.TOWER_CRANE_CONFIG,
     state: path.join(repo, '.tower-crane'),
     detached: () => {
@@ -76,7 +134,7 @@ function context(t, base) {
       try { await stopDetached(ctx.detached()); }
       finally { fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
     },
-    run: (args, opts = {}) => run(args, withHooks(ctx, opts)),
+    run: (args, opts = {}) => fixtureInit(ctx, args, opts, (a, o) => run(a, withHooks(ctx, o))),
     runAsync: (args, opts = {}) => runAsync(args, withHooks(ctx, opts)),
     json: (args, opts) => {
       const r = ctx.run([...args, '--json'], opts);
@@ -175,4 +233,4 @@ async function stopDetached(children) {
   }
 }
 
-module.exports = { makeRepo, copyRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
+module.exports = { makeRepo, copyRepo, fixtureLadder, pinRung, pinLiveRung, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };

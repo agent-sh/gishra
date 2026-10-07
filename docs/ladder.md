@@ -2,6 +2,24 @@
 
 Every task has a tier, and the ladder in `project.json` says which harness, model and effort runs each tier and each other job. `tower-crane ladder show` prints it and where each rung comes from; `docs/state.md` has the full shape and the precedence (project, then the user file `~/.config/tower-crane/config.json`, then built-in).
 
+## Swap a model
+
+Change the `model` value on one rung in `~/.config/tower-crane/config.json`. For example, this line chooses the easy model for new projects:
+
+```json
+"easy": { "harness": "claude", "model": "global.anthropic.claude-haiku-5-5", "effort": "high" }
+```
+
+Put it inside the file's `"ladder": { ... }` object. Replacing the model ID needs no code changes. Keep the harness and effort valid for the CLI you use. Claude models on Bedrock need the `global.anthropic.` inference profile ID, rather than a regional `us.` ID. On Codex, use `model` for an explicit ID or change `profile` to the name of your configured profile.
+
+Existing projects keep the ladder copied at initialization. Swap a project rung through the CLI in one command:
+
+```sh
+tower-crane ladder set easy --model YOUR_MODEL_ID --clear profile
+```
+
+This keeps that rung's harness and effort. `ladder show` confirms the resolved model and its source. [builtin-ladder.json](builtin-ladder.json) records the shipped defaults. Tests pin their own rungs through `fixtureLadder()` and `pinRung()` in `test/helpers.js`; only the defaults test checks that snapshot. `node scripts/probe-model-swap.js` changes every built-in rung to a fictional model on another harness in a temporary copy and checks that only the defaults test fails. Live probes require `TOWER_CRANE_LIVE_MODEL` or `TOWER_CRANE_LIVE_PROFILE` explicitly.
+
 | Rung | Does | Good fit |
 |---|---|---|
 | `orchestrator` | plans, writes briefs, dispatches, runs gates, merges | the strongest model you have, in the harness you talk to |
@@ -139,4 +157,4 @@ OpenCode, agy, pi and command receive researcher instructions, but have no Tower
 
 `tower-crane accept` refuses review evidence recorded by the agent that submitted the task. Review dispatch gives the reviewer a clean context, so its model may match the builder. Selection starts at the task tier, raises for a broad or risky diff, and promotes to a stronger tier when T31 review spend shows its median cost is no higher. Unknown usage leaves the complexity choice intact. The `review` rung is used when no tier rung at the needed level can run. `tower-crane validate` warns only when no reviewer rung can run.
 
-Only an explicitly identified owner can set `project set --review-policy JSON`. Its prices use canonical model identities shared by rungs and spend entries: `sol` resolves to `openai.gpt-6.1-sol`, `luna` to `openai.gpt-6-luna`, and `opus` to `claude-opus-5-5`.
+Only an explicitly identified owner can set `project set --review-policy JSON`. Its prices use the configured model IDs shared by rungs and spend entries, with whitespace trimmed and case folded. Provider prefixes remain distinct. Codex profiles resolve their actual model from `<profile>.config.toml` or `[profiles.<profile>]` in `config.toml`; an unknown profile keeps its configured identity. No release-specific model aliases are inferred.

@@ -48,7 +48,7 @@ const OPERATIONAL = [
   ['project', 'set', '--tests-mode', 'run-only', '--tests-paths', '["test/**"]', '--tests-keep', '[]', '--tests-by-kind', '{}', '--tests-expensive', 'false'],
   ['project', 'set', '--workers', '3', '--lease-minutes', '45', '--budget-hours', '10'],
   ['project', 'set', '--review-policy', '{"small_lines":50}'],
-  ['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'sonnet', '--effort', 'high', '--args', '[]', '--tools', '["web_search"]', '--mcp', '["docs"]'],
+  ['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'fixture-other', '--effort', 'high', '--args', '[]', '--tools', '["web_search"]', '--mcp', '["docs"]'],
   ['task', 'update', 'T1', '--kind', 'docs', '--tier', 'medium'],
   ['task', 'update', 'T1', '--needs-owner', 'approve other access'],
   ['owner-done', 'T1'],
@@ -135,7 +135,7 @@ test('the orchestrator changes operational settings under its own identity; a wo
   assert.equal(p.gates.tests_cmd, 'npm test');
   assert.deepEqual(p.ci.capped_review, [{ app: 'cursor', pattern: 'usage limit' }]);
   assert.equal(p.limits.workers, 3);
-  assert.equal(p.ladder.easy.model, 'sonnet');
+  assert.equal(p.ladder.easy.model, 'fixture-other');
   assert.equal(events(h).findLast((e) => e.cmd === 'project set').detail.authority, 'orchestrator');
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
   assert.equal(h.readState('decisions.json').decisions.length, 0);
@@ -246,7 +246,7 @@ test('an unpinned project does not block: the orchestrator pins detected gate co
 
 test('the orchestrator opts a rung in only to MCP servers the owner already defines', (t) => {
   const h = setup(t);
-  h.ok(['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'sonnet']);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'fixture-other']);
   const before = h.readState('project.json');
   for (const [args, missing] of [
     [['ladder', 'set', 'easy', '--mcp', '["shell"]'], /ladder easy opts in MCP server shell, which .*config\.toml does not define/],
@@ -260,8 +260,8 @@ test('the orchestrator opts a rung in only to MCP servers the owner already defi
   // Moving a rung, with the owner's fallback route that follows its harness,
   // to a harness whose config lacks the route's MCP server is a new opt-in too.
   h.ok(['ladder', 'set', 'easy', '--mcp', '["docs"]'], as('orchestrator'));
-  writeUser(h, { ladder: { easy: { fallbacks: [{ model: 'opus', mcp: ['docs'] }] } } });
-  const moved = h.run(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'opus', '--clear', 'mcp'], as('orchestrator'));
+  writeUser(h, { ladder: { easy: { fallbacks: [{ model: 'fixture-large', mcp: ['docs'] }] } } });
+  const moved = h.run(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'fixture-large', '--clear', 'mcp'], as('orchestrator'));
   assert.equal(moved.code, 1, moved.stderr);
   assert.match(moved.stderr, /ladder easy opts in MCP server docs, which .*mcp\.json or .*\.claude\.json does not define/);
   writeUser(h, {});
@@ -275,19 +275,19 @@ test('the orchestrator opts a rung in only to MCP servers the owner already defi
 
 test('a tool that is not a harness built-in or changes the rung sandbox is owner-required', (t) => {
   const h = setup(t);
-  h.ok(['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'sonnet']);
-  h.ok(['ladder', 'set', 'review', '--harness', 'claude', '--model', 'opus', '--clear', 'profile', '--clear', 'args']);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'fixture-other']);
+  h.ok(['ladder', 'set', 'review', '--harness', 'claude', '--model', 'fixture-large', '--clear', 'profile', '--clear', 'args']);
   // Built-ins that keep the sandbox are the orchestrator's.
   h.ok(['ladder', 'set', 'easy', '--tools', '["web_search","multi_agent"]'], as('orchestrator'));
   h.ok(['ladder', 'set', 'review', '--tools', '["WebFetch","Agent"]'], as('orchestrator'));
-  writeUser(h, { ladder: { medium: { fallbacks: [{ model: 'opus', tools: ['Edit'] }] } } });
+  writeUser(h, { ladder: { medium: { fallbacks: [{ model: 'fixture-large', tools: ['Edit'] }] } } });
   let opened = 0;
   for (const [args, tools] of [
     [['ladder', 'set', 'easy', '--tools', '["web_search","computer_use"]'], { easy: { tools: ['computer_use'] } }],
     [['ladder', 'set', 'review', '--tools', '["WebFetch","Edit"]'], { review: { tools: ['Edit'] } }],
     [['ladder', 'set', 'review', '--tools', '["Bash(gh pr merge:*)"]'], { review: { tools: ['Bash(gh pr merge:*)'] } }],
     // The owner's fallback route follows the primary to claude, where Edit is reach.
-    [['ladder', 'set', 'medium', '--harness', 'claude', '--model', 'opus', '--clear', 'profile'], { medium: { tools: ['Edit'] } }],
+    [['ladder', 'set', 'medium', '--harness', 'claude', '--model', 'fixture-large', '--clear', 'profile'], { medium: { tools: ['Edit'] } }],
   ]) {
     const before = h.readState('project.json');
     const r = h.run(args, as('orchestrator'));
@@ -315,12 +315,12 @@ test('moving a sandboxed rung, the fallback routes that follow it or the default
   const unconfined = (harness, args) => ({ unconfined: [{ harness, ...(args ? { args } : {}) }] });
   // The owner's own fallback routes: one follows research's harness, one already runs on pi.
   writeUser(h, { ladder: {
-    research: { fallbacks: [{ model: 'opus', args: ['--verbose'] }] },
+    research: { fallbacks: [{ model: 'fixture-large', args: ['--verbose'] }] },
     small: { fallbacks: [{ harness: 'pi', model: 'm', args: ['--anything'] }] },
   } });
   let opened = 0;
   for (const [args, change] of [
-    [['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'anthropic/claude-x'], { ladder: { hard: unconfined('opencode') } }],
+    [['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'provider/fixture-model'], { ladder: { hard: unconfined('opencode') } }],
     [['ladder', 'set', 'research', '--harness', 'pi', '--model', 'm'], { ladder: { research: { unconfined: [{ harness: 'pi' }, { harness: 'pi', args: ['--verbose'] }] } } }],
     [['ladder', 'harness', 'opencode'], { harness: 'opencode', ladder: { easy: unconfined('opencode'), medium: unconfined('opencode'), review: unconfined('opencode'), small: unconfined('opencode') } }],
     [['ladder', 'set', 'orchestrator', '--harness', 'pi', '--model', 'm', '--args', '["--anything"]'], { ladder: { orchestrator: unconfined('pi', ['--anything']) } }],
@@ -339,11 +339,11 @@ test('moving a sandboxed rung, the fallback routes that follow it or the default
   // A route the owner already put off claude and codex does not block tuning its rung.
   h.ok(['ladder', 'set', 'small', '--effort', 'medium'], as('orchestrator'));
   // The orchestrator runs unsandboxed, so moving its rung without args drops nothing.
-  h.ok(['ladder', 'set', 'orchestrator', '--harness', 'opencode', '--model', 'anthropic/claude-x'], as('orchestrator'));
+  h.ok(['ladder', 'set', 'orchestrator', '--harness', 'opencode', '--model', 'provider/fixture-model'], as('orchestrator'));
   // Once the owner moved a rung, the orchestrator tunes it.
-  h.ok(['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'anthropic/claude-x']);
-  h.ok(['ladder', 'set', 'hard', '--model', 'anthropic/claude-y', '--effort', 'high'], as('orchestrator'));
-  assert.equal(h.readState('project.json').ladder.hard.model, 'anthropic/claude-y');
+  h.ok(['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'provider/fixture-model']);
+  h.ok(['ladder', 'set', 'hard', '--model', 'provider/fixture-next', '--effort', 'high'], as('orchestrator'));
+  assert.equal(h.readState('project.json').ladder.hard.model, 'provider/fixture-next');
   assert.equal(h.readState('decisions.json').decisions.length, opened);
 });
 

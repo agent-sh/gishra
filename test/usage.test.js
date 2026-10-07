@@ -18,20 +18,20 @@ test('codex captured footer and repeated session totals are counted once', () =>
   });
   const session = text('codex-session.jsonl');
   assert.deepEqual(parse('codex', text('codex.log'), session + session), {
-    tokens: 24675, input: 24670, cached: 0, output: 5, model: 'openai.gpt-6.1-sol',
+    tokens: 24675, input: 24670, cached: 0, output: 5, model: 'fixture-main',
   });
   assert.deepEqual(parse('codex', text('codex.log'), text('codex-cache-session.jsonl')), {
-    tokens: 1529656, input: 1516556, cached: 1398443, output: 13100, model: 'openai.gpt-6.1-sol',
+    tokens: 1529656, input: 1516556, cached: 1398443, output: 13100, model: 'fixture-main',
   });
   const writes = text('codex-cache-write-session.jsonl');
   assert.deepEqual(parse('codex', '', writes + writes), {
-    tokens: 668176, input: 660162, cached: 575581, output: 8014, model: 'openai.gpt-6.1-sol',
+    tokens: 668176, input: 660162, cached: 575581, output: 8014, model: 'fixture-main',
   }, 'cache writes and reasoning are already included in input and output');
 });
 
 test('claude captured usage includes cache reads and writes in input', () => {
   assert.deepEqual(parse('claude', text('claude.jsonl')), {
-    tokens: 31948, input: 31773, cached: 31771, output: 175, model: 'claude-opus-5-5',
+    tokens: 31948, input: 31773, cached: 31771, output: 175, model: 'fixture-large',
   });
   assert.deepEqual(parse('claude', text('claude.jsonl') + text('claude.jsonl')), parse('claude', text('claude.jsonl')));
   assert.deepEqual(parse('claude', text('claude-result.json')), {
@@ -40,7 +40,7 @@ test('claude captured usage includes cache reads and writes in input', () => {
   assert.deepEqual(parse('claude', text('claude.jsonl') + text('claude-result.json')), parse('claude', text('claude-result.json')), 'a result is not added to assistant usage');
   const result = text('claude-print-result.json');
   assert.deepEqual(parse('claude', result + result), {
-    tokens: 788527, input: 780011, cached: 719614, output: 8516, model: 'claude-opus-5-5',
+    tokens: 788527, input: 780011, cached: 719614, output: 8516, model: 'fixture-large',
   });
 });
 
@@ -65,7 +65,7 @@ test('agy captured json reports inclusive input and separate thinking', () => {
 
 test('pi captured message usage includes cache writes in input', () => {
   assert.deepEqual(parse('pi', text('pi.jsonl')), {
-    tokens: 12559, input: 12394, cached: 0, output: 165, model: 'global.anthropic.claude-fable-5',
+    tokens: 12559, input: 12394, cached: 0, output: 165, model: 'provider.fixture-model',
   });
 });
 

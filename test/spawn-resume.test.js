@@ -119,7 +119,7 @@ cp.spawn = function(command, args, options) {
   h.env.CLAUDE_CONFIG_DIR = path.join(h.base, 'claude-config');
   h.env.RESUME_USAGE = '1';
   h.ok(['ladder', 'set', 'medium', '--harness', harness, '--clear', 'command',
-    ...(harness === 'codex' ? ['--profile', 'sol', '--effort', 'high'] : ['--model', 'opus', '--effort', 'high'])]);
+    ...(harness === 'codex' ? ['--profile', 'fixture-main', '--effort', 'high'] : ['--model', 'fixture-large', '--effort', 'high'])]);
 }
 
 for (const format of ['codex', 'claude']) {
@@ -284,7 +284,7 @@ for (const harness of ['codex', 'claude']) {
       assert.notEqual(dry.session_id, first.session_id);
     }
     if (harness === 'codex') {
-      assert.deepEqual(dry.argv.slice(0, 5), ['codex', 'exec', '-p', 'sol', 'resume']);
+      assert.deepEqual(dry.argv.slice(0, 5), ['codex', 'exec', '-p', 'fixture-main', 'resume']);
       assert.ok(dry.argv.includes('--json'));
     } else {
       assert.deepEqual(dry.argv.slice(0, 2), ['claude', '-p']);

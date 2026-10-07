@@ -42,7 +42,7 @@ function plant(h) {
     '[mcp_servers.planted]', 'command = "planted-mcp"', '',
     '[mcp_servers.planted.env]', `TOKEN = "${SECRET}-MCP"`, '',
   ].join('\n'));
-  put('.codex/sol.config.toml', [
+  put('.codex/fixture-main.config.toml', [
     'model = "s"', `experimental_bearer_token = "${SECRET}-PROFILE"`,
     `model_instructions_file = ${JSON.stringify(path.join(home, 'instructions.md'))}`,
     `model_providers = { r = { name = "R", experimental_bearer_token = "${SECRET}-PROFILE-INLINE" } }`, '',
@@ -142,7 +142,7 @@ function spawn(h, u, role, env = {}) {
 }
 
 const isolated = (h, rung, harness) => {
-  const model = harness === 'claude' ? ['--model', 'opus', '--clear', 'profile'] : ['--profile', 'sol', '--clear', 'model'];
+  const model = harness === 'claude' ? ['--model', 'fixture-large', '--clear', 'profile'] : ['--profile', 'fixture-main', '--clear', 'model'];
   h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
 
@@ -287,7 +287,7 @@ test('a spawned codex agent is pointed at the user\'s global rules, loads none o
   assert.deepEqual(Object.keys(seen.config.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
   const home = path.join(h.state, 'homes', started.agent);
   for (const f of ['auth.json', '.env']) assert.ok(fs.lstatSync(path.join(home, f)).isSymbolicLink(), `${f} is linked`);
-  assert.equal(fs.readFileSync(path.join(home, 'sol.config.toml'), 'utf8'), 'model = "s"\n\n[model_providers.r]\nname = "R"\n', 'the profile without its tokens or instructions');
+  assert.equal(fs.readFileSync(path.join(home, 'fixture-main.config.toml'), 'utf8'), 'model = "s"\n\n[model_providers.r]\nname = "R"\n', 'the profile without its tokens or instructions');
   assert.equal(fs.statSync(path.join(home, 'config.toml')).mode & 0o777, 0o600);
   assert.equal(seen.home, path.join(home, 'home'), 'HOME is the agent\'s own');
   assert.deepEqual(seen.skills, [], 'no user skill from ~/.agents/skills, and the small role has none of its own');
@@ -344,7 +344,7 @@ test('browser tasks attach the user kit on every rung with approved tools and no
   fs.writeFileSync(path.join(u.home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers: definitions }));
   const config = path.join(u.home, '.codex', 'config.toml');
   fs.appendFileSync(config, '\n' + TOML.stringify({ mcp_servers: definitions }));
-  fs.appendFileSync(path.join(u.home, '.codex', 'sol.config.toml'), '\n' + TOML.stringify({
+  fs.appendFileSync(path.join(u.home, '.codex', 'fixture-main.config.toml'), '\n' + TOML.stringify({
     mcp_servers: { playwright: {
       command: 'profile-browser-mcp', enabled: false, default_tools_approval_mode: 'prompt',
       env_vars: [SECRET], env_http_headers: { Authorization: SECRET },
@@ -369,7 +369,7 @@ test('browser tasks attach the user kit on every rung with approved tools and no
       assert.deepEqual(seen.config.mcp_servers.playwright, {
         command: 'browser-mcp', args: ['--headless'], enabled: true, default_tools_approval_mode: 'approve',
       });
-      const profile = TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, 'sol.config.toml'), 'utf8')).mcp_servers.playwright;
+      const profile = TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, 'fixture-main.config.toml'), 'utf8')).mcp_servers.playwright;
       assert.equal(profile.enabled, true);
       assert.equal(profile.default_tools_approval_mode, 'approve');
       assert.equal(profile.tools.browser_navigate.approval_mode, 'approve');
@@ -819,7 +819,7 @@ test('a spawn started inside another agent links to the user\'s own files, so re
 
 test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-run', (t) => {
   const { h, u } = setup(t);
-  h.ok(['ladder', 'set', 'small', '--harness', 'claude', '--model', 'opus', '--clear', 'profile', '--clear', 'effort', '--tools', '["WebFetch"]', '--mcp', '["planted"]']);
+  h.ok(['ladder', 'set', 'small', '--harness', 'claude', '--model', 'fixture-large', '--clear', 'profile', '--clear', 'effort', '--tools', '["WebFetch"]', '--mcp', '["planted"]']);
   let dry = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
   assert.equal(dry.argv[dry.argv.indexOf('--tools') + 1], 'Bash,Read,Grep,Glob,WebFetch');
   assert.ok(!dry.argv.includes('WebFetch'), 'no longer denied');
@@ -832,7 +832,7 @@ test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-r
     assert.deepEqual(u.report().mcp, { planted: { command: 'planted-mcp', args: ['x'] } }, 'the server, without its env');
   }
 
-  h.ok(['ladder', 'set', 'small', '--harness', 'codex', '--profile', 'sol', '--clear', 'model', '--tools', '["web_search","multi_agent"]', '--mcp', '["planted"]']);
+  h.ok(['ladder', 'set', 'small', '--harness', 'codex', '--profile', 'fixture-main', '--clear', 'model', '--tools', '["web_search","multi_agent"]', '--mcp', '["planted"]']);
   dry = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
   assert.ok(!dry.argv.includes('web_search="disabled"'));
   assert.ok(!dry.argv.join(' ').includes('--disable multi_agent'));
@@ -867,7 +867,7 @@ test('only the orchestrator or the owner widens a rung, a command needs the owne
   const command = as('orchestrator', ['--harness', 'command', '--command', '["sh"]', '--clear', 'model']);
   assert.equal(command.code, 1);
   assert.match(command.stderr, /ladder\.command, ladder\.reach are owner-required; opened D1/);
-  h.ok(['ladder', 'set', 'small', '--model', 'sonnet', '--agent', 'orchestrator']);
+  h.ok(['ladder', 'set', 'small', '--model', 'fixture-other', '--agent', 'orchestrator']);
   assert.equal(as('orchestrator', ['--tools', '["Agent"]']).code, 0);
   assert.equal(as('owner', ['--args', '["--verbose","--max-turns","40"]']).code, 0);
   const refused = [

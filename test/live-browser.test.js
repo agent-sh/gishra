@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
-const { makeRepo, ROOT } = require('./helpers');
+const { pinLiveRung, makeRepo, ROOT } = require('./helpers');
 const { CHROME } = require('./browser');
 const { shellQuote } = require('../lib/gates/common');
 const BrowserKit = require('../lib/browser-kit');
@@ -59,8 +59,8 @@ assert.match(receipt.stdout || '', /# fail 0\\b/, 'board browser test did not re
     assert.ok(kit.length, 'configure a browser kit server before running the live probe');
     h.ok(['browser-kit', 'set', '--servers', JSON.stringify(kit)]);
     h.ok(['task', 'add', '--title', 'Headless Chrome probe', '--kind', 'design', '--acceptance', 'MCP screenshot and one board browser test pass']);
-    const model = harness === 'claude' ? ['--model', process.env.TOWER_CRANE_LIVE_MODEL || 'opus', '--clear', 'profile']
-      : ['--profile', process.env.TOWER_CRANE_LIVE_PROFILE || 'sol', '--clear', 'model'];
+    const model = harness === 'claude' ? ['--model', process.env.TOWER_CRANE_LIVE_MODEL || 'fixture-large', '--clear', 'profile']
+      : ['--profile', process.env.TOWER_CRANE_LIVE_PROFILE || 'fixture-main', '--clear', 'model'];
     h.ok(['ladder', 'set', 'medium', '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args', '--supervision', '{"retries":0}']);
     const wt = h.json(['worktree', 'T1']).path;
     const command = [process.execPath, path.join(wt, 'browser-probe.js')].map(shellQuote).join(' ');

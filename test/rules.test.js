@@ -45,7 +45,7 @@ function setup(t, brief = 'probe\n') {
 }
 
 const rung = (h, harness) => {
-  const model = harness === 'claude' ? ['--model', 'opus', '--clear', 'profile'] : ['--profile', 'sol', '--clear', 'model'];
+  const model = harness === 'claude' ? ['--model', 'fixture-large', '--clear', 'profile'] : ['--profile', 'fixture-main', '--clear', 'model'];
   h.ok(['ladder', 'set', 'small', '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
 
