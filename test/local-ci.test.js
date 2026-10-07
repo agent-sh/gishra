@@ -95,6 +95,7 @@ test('local CI runs argv on the merged tree and records audited evidence without
   assert.equal(e.receipt.head_sha, h.sha);
   assert.equal(e.receipt.base_sha, h.baseSha);
   assert.equal(e.receipt.exit, 0);
+  assert.equal(e.receipt.variant, 'default');
   assert.deepEqual(e.receipt.command, h.command);
   assert.equal(e.receipt.timeout, 5);
   assert.ok(e.receipt.duration_ms >= 0);
@@ -264,7 +265,7 @@ test('local CI receipt edits lose their gate proof and manual verdicts remain re
   h.ok(['check', 'ci', 'T1']);
   const doc = h.readState('tasks.json');
   const original = structuredClone(doc);
-  for (const patch of [{ head_sha: 'f'.repeat(40) }, { tree_hash: 'e'.repeat(40) }, { source_digest: 'd'.repeat(64) }]) {
+  for (const patch of [{ head_sha: 'f'.repeat(40) }, { tree_hash: 'e'.repeat(40) }, { source_digest: 'd'.repeat(64) }, { variant: 'task:T1' }]) {
     const forged = structuredClone(original);
     Object.assign(forged.tasks[0].evidence.at(-1).receipt, patch);
     h.writeState('tasks.json', forged);
@@ -340,6 +341,139 @@ test('changed local CI policy invalidates its earlier receipt', (t) => {
   assert.match(h.run(['accept', 'T1']).stderr, /configured command or timeout/);
   h.ok(['project', 'set', '--ci-local', 'null']);
   assert.equal(h.run(['accept', 'T1']).code, 1);
+});
+
+test('local CI selects kind args, replacement commands and the default with audited variants', (t) => {
+  const h = fixture(t, "require('node:fs').writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\n");
+  const local = {
+    command: h.command, timeout: 5,
+    by_kind: {
+      docs: { args: ['--native-extended', '', 'literal; $(exit 1)'] },
+      ops: { command: [process.execPath, 'ci.js', h.log, '--lab'], timeout: 10 },
+    },
+  };
+  h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  for (const [kind, variant, command, timeout] of [
+    ['docs', 'kind:docs', [...h.command, ...local.by_kind.docs.args], 5],
+    ['ops', 'kind:ops', local.by_kind.ops.command, 10],
+    ['research', 'default', h.command, 5],
+  ]) {
+    h.ok(['task', 'update', 'T1', '--kind', kind]);
+    const e = h.json(['check', 'ci', 'T1']);
+    assert.equal(e.receipt.variant, variant);
+    assert.deepEqual(e.receipt.command, command);
+    assert.equal(e.receipt.timeout, timeout);
+    assert.deepEqual(JSON.parse(fs.readFileSync(h.log, 'utf8')), command.slice(3));
+    const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(events.findLast((v) => v.cmd === 'check ci').detail.receipt, e.receipt);
+    assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+  }
+});
+
+test('owner task override takes precedence and clearing restores the kind variant', (t) => {
+  const h = fixture(t);
+  const local = { command: h.command, timeout: 5, by_kind: { docs: { args: ['--lab'] } } };
+  h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  h.ok(['check', 'ci', 'T1']);
+  const override = { args: ['--s3'] };
+  const updated = h.json(['task', 'update', 'T1', '--ci-local', JSON.stringify(override)]);
+  assert.deepEqual(updated.ci_local, override);
+  assert.match(h.ok(['task', 'show', 'T1']), /ci\.local override:/);
+  assert.match(h.run(['accept', 'T1']).stderr, /receipt.*variant/);
+  let e = h.json(['check', 'ci', 'T1']);
+  assert.equal(e.receipt.variant, 'task:T1');
+  assert.deepEqual(e.receipt.command, [...h.command, '--s3']);
+  assert.equal(e.receipt.timeout, 5);
+
+  local.by_kind.docs = { args: ['--native-extended'] };
+  h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true, 'unselected kind policy does not invalidate the override');
+  const replacement = { command: [...h.command, '--lab'], timeout: 10 };
+  h.ok(['task', 'update', 'T1', '--ci-local', JSON.stringify(replacement)]);
+  assert.match(h.run(['accept', 'T1']).stderr, /configured command or timeout/);
+  e = h.json(['check', 'ci', 'T1']);
+  assert.deepEqual(e.receipt.command, replacement.command);
+  assert.equal(e.receipt.timeout, 10);
+
+  const cleared = h.json(['task', 'update', 'T1', '--ci-local', 'null']);
+  assert.ok(!Object.hasOwn(cleared, 'ci_local'));
+  assert.match(h.run(['accept', 'T1']).stderr, /receipt.*variant/);
+  e = h.json(['check', 'ci', 'T1']);
+  assert.equal(e.receipt.variant, 'kind:docs');
+  assert.deepEqual(e.receipt.command, [...h.command, '--native-extended']);
+  h.ok(['accept', 'T1']);
+  const refused = h.run(['task', 'update', 'T1', '--ci-local', JSON.stringify(override)]);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /accepted.*local CI override/);
+});
+
+test('kind variants with identical argv cannot reuse receipts or merge under a different variant', (t) => {
+  const h = mergeFixture(t);
+  const local = { command: h.command, timeout: 5, by_kind: { docs: { args: [] }, ops: { args: [] } } };
+  h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  h.ok(['check', 'ci', 'T1']);
+  h.ok(['task', 'update', 'T1', '--kind', 'ops']);
+  assert.match(h.run(['accept', 'T1']).stderr, /receipt.*variant/);
+  h.ok(['check', 'ci', 'T1']);
+  h.ok(['accept', 'T1']);
+  delete local.by_kind.ops;
+  h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  const refused = h.run(['merge', 'T1']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /receipt.*variant/);
+  assert.ok(!fs.existsSync(h.merged), 'GitHub merge never ran');
+  h.ok(['check', 'ci', 'T1']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+});
+
+test('local CI variant settings validate atomically and task overrides require explicit owner identity', (t) => {
+  const h = fixture(t);
+  const project = h.readState('project.json');
+  const tasks = h.readState('tasks.json');
+  const audit = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const invalid = [null, [], {}, { args: 'x' }, { args: [2] }, { args: ['\0'] },
+    { command: [] }, { command: [' '] }, { command: ['node', '\0'] },
+    { command: ['node'], args: [] }, { args: [], timeout: 0 },
+    { args: [], timeout: 2147483648 }, { args: [], typo: true }];
+  for (const by_kind of [null, [], { tooling: { args: [] } }, ...invalid.map((v) => ({ docs: v }))]) {
+    const r = h.run(['project', 'set', '--name', 'changed', '--ci-local', JSON.stringify({ command: h.command, timeout: 5, by_kind })]);
+    assert.equal(r.code, 2, JSON.stringify(by_kind));
+    assert.match(r.stderr, /--ci-local/);
+    assert.deepEqual(h.readState('project.json'), project);
+  }
+  for (const override of ['{', ...invalid.filter((v) => v !== null).map((v) => JSON.stringify(v))]) {
+    const r = h.run(['task', 'update', 'T1', '--title', 'changed', '--ci-local', override]);
+    assert.equal(r.code, 2, override);
+    assert.match(r.stderr, /--ci-local/);
+    assert.deepEqual(h.readState('tasks.json'), tasks);
+  }
+  for (const value of ['{"args":["--s3"]}', 'null']) {
+    for (const identity of [
+      { flags: ['--agent', 'worker'], env: {}, code: 1, pattern: /only the owner/ },
+      { flags: [], env: { TOWER_CRANE_AGENT: '' }, code: 2, pattern: /no agent/ },
+    ]) {
+      const r = h.run(['task', 'update', 'T1', '--ci-local', value, ...identity.flags], { env: identity.env });
+      assert.equal(r.code, identity.code);
+      assert.match(r.stderr, identity.pattern);
+      assert.deepEqual(h.readState('tasks.json'), tasks);
+    }
+  }
+  assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), audit);
+  assert.match(h.ok(['task', 'update', '--help']), /--ci-local JSON/);
+});
+
+test('malformed task override fails local CI closed before command execution', (t) => {
+  const h = fixture(t);
+  h.ok(['check', 'ci', 'T1']);
+  fs.rmSync(h.log);
+  const tasks = h.readState('tasks.json');
+  tasks.tasks[0].ci_local = { args: 'invalid' };
+  h.writeState('tasks.json', tasks);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
+  const r = h.run(['check', 'ci', 'T1']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /invalid.*override/);
+  assert.ok(!fs.existsSync(h.log));
 });
 
 test('tracked changes made by a successful local check cannot pass', (t) => {

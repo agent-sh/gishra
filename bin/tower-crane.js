@@ -37,7 +37,7 @@ const SETTINGS = {
   'tests-by-kind': str('JSON', 'owner only: task kind to tests mode overrides; null clears overrides'),
   'tests-expensive': str('JSON', 'owner only: true runs the full suite once with scoped proof; false or null restores normal proof'),
   'ci-ignore-apps': str('JSON', 'array of GitHub app slugs to skip; [] or null clears the list'),
-  'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds}; null restores hosted CI'),
+  'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds, by_kind?: overrides}; null restores hosted CI'),
   'review-policy': str('JSON', 'owner-only review diff limits and canonical model prices; null clears the policy'),
 };
 
@@ -77,7 +77,7 @@ const COMMANDS = [
   { section: 'Plan', name: 'ladder harness', pos: ['HARNESS'], usage: 'HARNESS', summary: 'set the default harness every rung without its own runs on', run: P.ladderHarness },
   { section: 'Plan', name: 'ladder save-user', summary: "write this project's ladder to the user file, the default for new projects", run: P.ladderSaveUser },
   { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--tier T] [--dep ID] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
-  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--tier T] [--needs-owner REASON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies and kind wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request requires explicit owner identity"), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
+  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies, kind and local CI override wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request requires explicit owner identity"), 'ci-local': str('JSON', 'owner only: local CI override with command or args and optional timeout; null restores kind or default policy'), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
   { section: 'Plan', name: 'task note', pos: ['ID', 'TEXT...'], usage: 'ID TEXT', summary: 'append a note', run: T.taskNote },
   { section: 'Plan', name: 'task show', pos: ['ID'], usage: 'ID', summary: 'show one task with its gates, evidence and notes', run: T.taskShow },
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, run: T.taskList },
