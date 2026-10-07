@@ -20,7 +20,7 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
-const { TowerCraneError, usage } = require('../lib/util');
+const { TowerCraneError, usage, refuse } = require('../lib/util');
 const S = require('../lib/state');
 const P = require('../lib/project');
 const T = require('../lib/tasks');
@@ -41,7 +41,7 @@ const SPAWN_SETTINGS = {
 
 const GLOBAL = {
   state: str('DIR', 'state directory (default: TOWER_CRANE_STATE, then .tower-crane/ in the main checkout)'),
-  agent: str('NAME', 'who is acting (default: TOWER_CRANE_AGENT; owner only on an interactive terminal outside a task)'),
+  agent: str('NAME', 'who is acting (default: TOWER_CRANE_AGENT; task processes cannot use owner; fallback needs an interactive terminal outside a task)'),
   json: bool('machine output on stdout'),
   help: bool('show help'),
 };
@@ -354,8 +354,21 @@ async function main(argv) {
     for (const r of cmd.required || []) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: tower-crane ${cmd.name} ${cmd.usage}`);
     }
+    let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
+    // Terminal fallback identifies ordinary actions; owner powers need a named identity.
+    const agentExplicit = agent !== undefined;
+    if (agent === undefined) {
+      if (process.stdin.isTTY && process.stdout.isTTY && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
+      else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
+    }
+    if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
+    const identity = agent.trim();
+    if (identity === 'owner' && process.env.TOWER_CRANE_TASK !== undefined) {
+      throw refuse('owner acts from an interactive terminal; task processes cannot use owner identity');
+    }
     const locate = () => S.locateStateDir(globals.state, process.env, process.cwd());
-    // A sandboxed agent cannot write the state; its spawn's broker does.
+    // Check the resolved identity before forwarding; the broker separately
+    // verifies requests against the identity it spawned.
     if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {
       const input = argv.includes('-') ? require('node:fs').readFileSync(0, 'utf8') : undefined;
       const res = await require('../lib/broker').forward(process.env.TOWER_CRANE_BROKER, argv, locate(), input);
@@ -365,18 +378,10 @@ async function main(argv) {
         return res.code;
       }
     }
-    let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
-    // Terminal fallback identifies ordinary actions; owner powers need a named identity.
-    const agentExplicit = agent !== undefined;
-    if (agent === undefined) {
-      if (process.stdin.isTTY && process.stdout.isTTY && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
-      else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
-    }
-    if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     const ctx = {
       cwd: process.cwd(),
       env: process.env,
-      agent: agent.trim(),
+      agent: identity,
       agentExplicit,
       json: !!globals.json,
       flags: own,
