@@ -54,8 +54,9 @@ const SETTINGS = {
   base: str('B', 'base branch for task branches (default: the current branch)'),
   workers: int('N', 'worker slots held by live leases or unclaimed spawns (default 6)'),
   'lease-minutes': int('MIN', 'default claim lease (default 60)'),
-  'budget-hours': num('H', 'hours budget'),
-  'budget-tokens': int('N', 'token budget'),
+  paused: str('REASON', 'pause new claims and dispatches with a reason; empty resumes'),
+  'budget-hours': { ...num('H', 'hours budget; null removes the limit'), nullable: true },
+  'budget-tokens': { ...int('N', 'token budget; null removes the limit'), nullable: true },
   standards: str('S', '"default" or a path to a standards Markdown file'),
   'tests-cmd': str('CMD', 'operational (orchestrator or owner): pin the test command; null clears it'),
   'clean-cmd': str('CMD', 'operational (orchestrator or owner): pin the cleanup command prefix; null clears it'),
@@ -113,6 +114,7 @@ const COMMANDS = [
   { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
   { section: 'Plan', name: 'ladder harness', pos: ['HARNESS'], usage: 'HARNESS', summary: 'set the default harness every rung without its own runs on', run: P.ladderHarness },
   { section: 'Plan', name: 'ladder save-user', summary: "write this project's ladder to the user file, the default for new projects", run: P.ladderSaveUser },
+  { section: 'Plan', name: 'ladder fallbacks', pos: ['RUNG'], usage: 'RUNG --routes JSON', summary: 'owner-required: replace personal fallback routes for a rung; [] clears them', flags: { routes: str('JSON', 'array of fallback routes in priority order') }, required: ['routes'], run: P.ladderFallbacks },
   { section: 'Plan', name: 'authority', summary: 'list every guarded setting, its class (operational or owner-required) and the command that changes it', run: run('../lib/authority', 'show') },
   { section: 'Plan', name: 'browser-kit show', summary: 'show the user browser kit MCP server list (default playwright)', run: run('../lib/browser-kit', 'show') },
   { section: 'Plan', name: 'browser-kit set', usage: '--servers JSON', summary: 'owner-required: save the browser kit server list in the user configuration', flags: { servers: str('JSON', 'MCP server names; [] disables the kit') }, required: ['servers'], run: run('../lib/browser-kit', 'set') },
@@ -130,6 +132,7 @@ const COMMANDS = [
   { section: 'Run', name: 'claim', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'take a ready task for --agent', flags: { lease: int('MIN', 'lease length (default limits.lease_minutes)') }, run: T.claim },
   { section: 'Run', name: 'renew', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'extend your lease; an expired one only while the workers limit has room', flags: { lease: int('MIN', 'new lease length from now') }, run: T.renew },
   { section: 'Run', name: 'release', pos: ['ID'], usage: 'ID --reason R', summary: 'give a claimed task back; it returns to todo or rework', flags: { reason: str('R', 'why') }, required: ['reason'], run: T.release },
+  { section: 'Run', name: 'interrupt', pos: ['ID'], usage: 'ID --reason R', summary: 'stop a verified local task supervisor and block the task until owner-done', flags: { reason: str('R', 'why the task is interrupted') }, required: ['reason'], run: T.interrupt },
   { section: 'Run', name: 'submit', pos: ['ID'], usage: 'ID --sha S [--branch B] [--pr N] [--summary T]', summary: 'mark submitted as the claimant or replace a submitted head as its submitter', flags: { sha: str('S', 'commit to review'), branch: str('B', 'branch holding it'), pr: int('N', 'pull request number'), summary: str('T', 'what changed') }, required: ['sha'], run: T.submit },
   { section: 'Run', name: 'evidence', pos: ['ID'], usage: 'ID --type T (--ok | --fail) [--sha S] [--summary T] [--ref URL]', summary: 'record review or note evidence; review needs --sha, note defaults to the submitted sha', flags: { type: str('T', 'review or note; tests, clean, ci and merge require gate commands'), ok: bool('it passed'), fail: bool('it failed'), sha: str('S', 'commit the evidence is about; required for review'), summary: str('T', 'one line'), ref: str('URL', 'link to the run, review or log') }, required: ['type'], run: T.evidence },
   { section: 'Run', name: 'accept', pos: ['ID'], usage: 'ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]', summary: 'run missing software gates, dispatch review when green, accept when all gates pass', flags: { cmd: str('CMD', 'must match the pinned gates.tests_cmd'), 'proof-cmd': str('CMD', 'must match pinned gates.tests_proof_cmd'), waive: many('TYPE', 'waive tests, clean, review or ci: review is operational (orchestrator or owner), the rest owner-required'), reason: str('R', 'why the waived gate does not apply') }, run: T.accept },
@@ -204,6 +207,7 @@ function groupHelp(group) {
 }
 
 function convert(name, spec, raw) {
+  if (spec.nullable && raw === 'null') return null;
   if (spec.type === 'int') {
     if (!/^-?\d+$/.test(raw)) throw usage(`--${name} needs a whole number, got "${raw}"`);
     return parseInt(raw, 10);
@@ -394,6 +398,7 @@ async function main(argv) {
       json: !!globals.json,
       flags: own,
       pos: parsed.pos,
+      request: { command: cmd.name, flags: own, pos: parsed.pos },
       stateDir: locate(),
     };
     const res = await cmd.run(ctx);

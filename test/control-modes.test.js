@@ -151,8 +151,10 @@ test('an approved waiver lets the orchestrator accept, and only that approval ma
   assert.deepEqual(decisions(h)[0].escalation, { settings: ['waive.tests'], change: { accept: 'T1', sha, waive: ['tests'], reason: 'no harness yet' } });
   h.ok(['answer', 'D1', '--choice', 'approve']);
   // A failed gate keeps the approval for the next try.
+  const beforeFailedAccept = audits(h).length;
   assert.equal(h.run(waive, { env: { TOWER_CRANE_AGENT: 'orchestrator', FIXTURE_GATE_OK: '0' } }).code, 1);
   assert.equal(decisions(h)[0].applied, undefined);
+  assert.equal(audits(h).length, beforeFailedAccept, 'a failed acceptance did not change a setting');
   h.ok(['check', 'clean', 'T1'], as('orchestrator'));
   h.ok(waive, as('orchestrator'));
   const task = h.readState('tasks.json').tasks[0];
@@ -160,6 +162,7 @@ test('an approved waiver lets the orchestrator accept, and only that approval ma
   assert.deepEqual(task.evidence.filter((e) => e.waived).map((e) => [e.type, e.agent, e.approved_by]), [['tests', 'orchestrator', 'D1']]);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
   assert.equal(decisions(h)[0].applied.by, 'orchestrator');
+  assert.equal(audits(h).filter((e) => e.detail.command === 'accept').length, 1, 'only the accepted waiver is audited');
   // A waiver naming a decision the owner never approved does not count.
   const tasks = h.readState('tasks.json');
   tasks.tasks[0].evidence.find((e) => e.waived).approved_by = 'D2';

@@ -53,6 +53,8 @@ The owner can run a project in either of two modes, and both reach every row bel
 
 Every allowed change of a guarded setting appends one `setting` event in the same write as the command's own event, just before it: `detail: { command, actor, mode, settings, approved_by? }`. `actor` is `owner` or `orchestrator`, `mode` is `board` for a write through `serve` and `cli` otherwise, and `settings` maps each guarded setting the command changed to its class. A refused or escalated request records none; unguarded fields such as `name` and `goal` record none.
 
+The Controls page uses this same check and event for every authority row. Owner-required submissions there first open an escalation; approving it applies its recorded request as the owner, once. CLI and Controls escalations may carry `request: {command, flags, pos}` alongside `escalation`, so the board can run the existing command handler after answering. No browser-supplied actor, state path or alternate authority class is accepted. An older decision without a request is answerable but still needs the orchestrator's rerun. Failed application leaves an approved decision unapplied. Waiver and delegation preflight checks authority without auditing; successful acceptance or launch records the setting event and consumes the approval in its final write.
+
 Workers, reviewers and every other identity are refused both. For an operational change they ask the orchestrator (`tower-crane msg --to orchestrator` or a task note), not the owner; owner-required changes they request with `tower-crane ask`.
 
 | Setting | Class | Changed by |
@@ -61,7 +63,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `ci.required`, `ci.ignore_apps`, `ci.capped_review` | operational | `project set --ci-required`, `--ci-ignore-apps`, `--ci-capped-review` |
 | `ci.local` | operational | `project set --ci-local`, `task update --ci-local` |
 | `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive` | operational | `project set --tests-*` |
-| `limits.workers`, `limits.lease_minutes` | operational | `project set --workers`, `--lease-minutes` |
+| `limits.workers`, `limits.lease_minutes`, `limits.paused` | operational | `project set --workers`, `--lease-minutes`, `--paused REASON` (empty resumes) |
 | `budget.lower` | operational | `project set --budget-hours`, `--budget-tokens` to a lower limit, or a limit where there was none |
 | `merge.keep_branch` | operational | `project set --merge-keep-branch` |
 | `review` | operational | `project set --review-policy` |
@@ -71,7 +73,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `task.needs_owner` | operational | `owner-done`; `task update --needs-owner` clearing or replacing an existing reason |
 | `waive.review` | operational | `accept --waive review` when the reviewer is capped or down at the submitted head: a `check ci` there recorded a capped review run (`ci.capped_review`, kept as `capped_review` on the evidence), or a review spawn there exited without a verdict |
 | `merge.admin` | owner-required | `project set --merge-admin` |
-| `claim.release` | owner-required | `release` of another agent's claim while its process is live or unverified |
+| `claim.release` | owner-required | `release` of another agent's claim while its process is live or unverified; `interrupt` stops a verified local supervisor |
 | `sandbox`, `env`, `env_file`, `scope` | owner-required | `project set` or `ladder set` |
 | `ladder.command` | owner-required | `ladder set --command`: the program a rung runs |
 | `ladder.reach` | owner-required | `ladder set --tools` opting in to a tool that is not a harness built-in (such as a `Bash(...)` rule) or that changes the rung's sandbox: claude `Edit`, `Write`, `NotebookEdit`; codex `memories`, `plugins`, `apps`, `browser_use`, `computer_use`; a `ladder set` or `ladder harness` that moves a worker, reviewer or small rung, or a user-file fallback route that follows its harness, off claude and codex, the only harnesses that enforce a sandbox; args on a harness other than claude and codex, which check them against no list |
@@ -79,7 +81,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `delegation` | owner-required | `spawn --role orchestrator`, which hands orchestrator authority to a new agent |
 | `waive.review_live` | owner-required | `accept --waive review` when no reviewer is capped or down at the submitted head |
 | `waive.tests`, `waive.clean`, `waive.ci` | owner-required | `accept --waive tests`, `clean`, `ci` |
-| `ladder.save_user` | owner-required | `ladder save-user`, the default for every project |
+| `ladder.save_user` | owner-required | `ladder save-user`, the default for every project; `ladder fallbacks` changes a rung's personal routes |
 | `browser_kit` | owner-required | `browser-kit set`, the MCP servers browser tasks get in every project |
 | `publish` | owner-required | `ask --setting publish`: anything that publishes outside the repository, such as a release or a package; the orchestrator publishes once the owner approves |
 
@@ -142,7 +144,7 @@ A marker's holder and modification time are read through one opened file descrip
 }
 ```
 
-`tower-crane init` writes the default harness and ladder (see below), `limits` as shown, and `budget` values of `null` (no budget) until `tower-crane project set` gives them. `limits.workers` caps worker slots held by live leases and unclaimed worker spawns; `lease_minutes` is the default lease. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
+`tower-crane init` writes the default harness and ladder (see below), `limits` as shown, and `budget` values of `null` (no budget) until `tower-crane project set` gives them. `limits.workers` caps worker slots held by live leases and unclaimed worker spawns; `lease_minutes` is the default lease. Optional `limits.paused` is a non-blank reason blocking new claims and dispatches; clearing it resumes the project. Existing processes continue until interrupted separately. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
 
 Worker dispatch, claim and expired-lease renewal use the same slot count under the state lock. A successful worker `spawn` event without a claim of its own records `reserved: true` and reserves one slot until that task's generated agent claims, a matching exit receipt is recorded, the monitor records the attempt with `active: false`, or `lease_minutes` pass with no claim since the attempt's latest `spawn`, `spawn retry`, `spawn fallback` or `spawn phase` event, counted from the scheduled relaunch when a `retrying` phase records `backoff_ms`. `spawn session` receipts replay an earlier attempt's detail and neither move the reservation's pid nor extend it. A lapsed reservation stays lapsed: later monitor records do not revive it, because another holder may have taken the slot. The claim consumes its own reservation and then holds the slot by lease, without counting twice. Reservations persist through supervised retries, route fallbacks and backoff. Launch failure commits no spawn event and holds no reservation. A full limit refuses dispatch before launching a process, writing a home or recording spend, and names the task and agent holding each slot. Reviewer and other non-worker jobs do not reserve worker slots.
 

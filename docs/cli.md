@@ -219,7 +219,7 @@ The engine watches the state directory with `fs.watch`. A one-second internal st
 | `/api/decisions/D1/answer` | `{"choice":"option","note":"context"}` (note optional) | `answer D1 --choice C --agent owner` |
 | `/api/tasks/T1/rework` | `{"reason":"what to fix"}` | `rework T1 --reason R --agent owner` |
 
-A task sheet's tier control posts to `/api/tiers` (below), as Settings does. Both `/api/tiers` and `/api/ladder` require the same explicit owner identity as the other board writes. Other serve identities see the ladder and tiers as read-only values. The board has no route that accepts, merges, waives, claims, releases, submits, records evidence or edits the plan: those stay CLI commands, and the board shows the command where it would help, such as `accept T1 --waive review --reason R --agent owner` on a submitted task's sheet.
+A task sheet's tier control posts to `/api/tiers` (below), as Settings does. Both `/api/tiers` and `/api/ladder` require the same explicit owner identity as the other board writes. Other serve identities see the ladder and tiers as read-only values. The Controls view adds project and task settings, approvals, claim release, interrupt, acceptance with waivers and orchestrator delegation. Merge, claim, submit and evidence remain CLI operations.
 
 Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the page's `tower-crane-token` meta value as `x-tower-crane-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
 
@@ -249,9 +249,29 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 |---|---|
 | `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request; carries the run's token, and the owner forms when serve runs as the owner |
 | `GET /settings` | the Settings view; carries the run's token in `<meta name="tower-crane-token">` |
+| `GET /controls` | owner controls for every authority row, pending approvals and blocked work; viewers see no write forms |
+| `GET /api/controls` | authority rows with control anchors, project, resolved ladder, browser kit, decisions and task blockers/gates |
 | `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
 | `POST /api/ladder` | owner only: change the default harness and rungs, as `ladder harness` and `ladder set` do |
 | `POST /api/tiers` | owner only: change task tiers, as `task update --tier` does |
+| `POST /api/controls` | owner only: invoke a control's existing CLI handler with `{command, flags, pos}` |
+| `POST /api/controls/answer` | owner only: `{decision: "D1", choice: "approve"}` or `decline`; approve also applies a recorded supported request |
+
+The Controls page links every row of `tower-crane authority` to its form. Project controls cover limits, budgets, test and cleanup commands, CI and review policies, merge options and spawn grants. Rung controls cover every ladder field; Settings keeps its ladder table and default harness selector. Personal controls edit fallback routes, save the ladder defaults, and set the browser kit. Task controls edit kind, tier, owner blockers and CI overrides, release claims, interrupt supervised work, accept with gate waivers, and delegate orchestration. The publication form records approval; publication itself remains the orchestrator's work.
+
+`POST /api/controls` accepts `project set`, `ladder set`, `ladder harness`, `ladder save-user`, `ladder fallbacks`, `browser-kit set`, `task update`, `owner-done`, `release`, `interrupt`, `accept`, `spawn` (role `orchestrator`, without wait/dry-run), and `ask` (setting `publish`). Flag values are strings, repeatable flags are arrays of strings, and positional arguments are strings. Global options and unknown commands or flags are refused. For example:
+
+```json
+{"command":"project set","flags":{"workers":"4"},"pos":[]}
+```
+
+The command parser and handler perform the same validation as the CLI; `Authority.enforce` checks and audits the write. Operational writes return `{ok: true, data, message, version}`. Owner-required writes return `{ok: true, decision: "D1", message, version}` after opening the shared escalation, without changing the setting. Approve runs the recorded request through the same handler as the owner, consumes the approval once and records `approved_by`; decline makes no setting change. A failed application leaves the approval available for retry, with the refusal shown inline. CLI escalations created by this version carry the request too, so the board can apply them. Older decisions without it can still be answered for the orchestrator to apply. Ordinary decisions use the board's existing answer form.
+
+Controls send `x-tower-crane-version` with the page's version; a mismatch returns 409 before the command runs. Unsaved input delays live reloads. Saving disables the submitted form until its reply, and preserves edits in other forms. The JSON API also accepts clients that omit this optional version header.
+
+`project set --paused REASON` records `limits.paused` and blocks new claims and task dispatches. Existing processes and retries continue; `--paused ''` resumes dispatch. Dry-run previews remain available. `interrupt ID --reason R` verifies a local supervisor's host, PID and Linux start ticks, puts the task behind an owner blocker, then signals that supervisor to stop its process group and retries. Unknown, remote, reused or exited supervisor PIDs are refused; platforms without Linux start ticks cannot interrupt through this command. The claim remains until its process exits and is released. Use `owner-done ID` to clear the blocker before dispatching again. Interrupt requires owner approval under `claim.release`.
+
+`ladder fallbacks RUNG --routes JSON` replaces that rung's personal fallback array in the user file, retaining other settings; `[]` clears it. Shape and route validation run before writing, and `ladder.save_user` governs the change. The board and CLI both use this handler. `project set --budget-hours null` and `--budget-tokens null` remove a limit and require the same approval as a budget raise.
 
 Every POST needs:
 
