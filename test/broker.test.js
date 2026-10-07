@@ -71,7 +71,8 @@ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   let started = [];
   t.after(() => {
     for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    for (const pid of started) try { process.kill(pid, 'SIGKILL'); } catch {}
+    // Only a test that failed leaves them running.
+    for (const pid of started.filter((p) => detachedAlive({ pid: p }))) process.kill(pid, 'SIGKILL');
   });
 
   const broker = await B.start(job);
