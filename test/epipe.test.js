@@ -2,7 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const cp = require('node:child_process');
+const path = require('node:path');
 const { makeRepo, BIN } = require('./helpers');
 
 function waitForExit(child, timeoutMs = 10000) {
@@ -64,6 +66,33 @@ test('a closed stderr pipe preserves the command exit code', async (t) => {
   const result = await exited;
   assert.equal(result.signal, null);
   assert.equal(result.code, 2);
+});
+
+test('a closed stderr pipe does not truncate large stdout output', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const sketch = path.join(h.state, 'sketch.html');
+  fs.rmSync(sketch);
+  fs.mkdirSync(sketch);
+
+  const title = 'y'.repeat(1024 * 1024);
+  const child = cp.spawn(process.execPath, [BIN, 'plan', 'import', '-', '--json'], {
+    cwd: h.repo,
+    env: h.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const exited = waitForExit(child);
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.once('spawn', () => child.stderr.destroy());
+  child.stdin.end(JSON.stringify([{ title, acceptance: ['ready'] }]));
+
+  const result = await exited;
+  assert.equal(result.signal, null);
+  assert.equal(result.code, 0);
+  assert.ok(stdout.length > title.length, 'large JSON output drained from the healthy stream');
+  assert.equal(JSON.parse(stdout).added[0].title, title);
 });
 
 test('serve stops when its stdout pipe closes', async (t) => {

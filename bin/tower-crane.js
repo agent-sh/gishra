@@ -3,7 +3,6 @@
 
 const OUTPUT_PIPE_CLOSED = 'tower-crane:output-pipe-closed';
 let outputPipeClosed = false;
-let mainComplete = false;
 
 for (const stream of [process.stdout, process.stderr]) {
   let broken = false;
@@ -15,7 +14,6 @@ for (const stream of [process.stdout, process.stderr]) {
         outputPipeClosed = true;
         process.emit(OUTPUT_PIPE_CLOSED);
       }
-      if (mainComplete) process.exit(process.exitCode ?? 0);
       return;
     }
     if (!broken) throw error;
@@ -375,8 +373,6 @@ async function main(argv) {
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
-    mainComplete = true;
-    if (outputPipeClosed) process.exit(code);
   });
 }
 
