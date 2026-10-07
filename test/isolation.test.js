@@ -118,6 +118,21 @@ function setup(t) {
   return { h, u: plant(h), wt };
 }
 
+function isolateGitEnvironment(h, u) {
+  const global = path.join(h.base, 'gitconfig');
+  const xdg = path.join(u.home, 'test-xdg');
+  for (const env of [h.env, u.env]) {
+    for (const key of Object.keys(env)) {
+      if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|SYSTEM)$/i.test(key)) delete env[key];
+    }
+    Object.assign(env, {
+      HOME: u.home, USERPROFILE: u.home, XDG_CONFIG_HOME: xdg,
+      GIT_CONFIG_GLOBAL: global, GIT_CONFIG_NOSYSTEM: '1',
+    });
+  }
+  return { global, xdg };
+}
+
 // Every regular file under dir, without following links into the user's home.
 function walk(dir, out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -192,11 +207,12 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
 
 test('a sandboxed claude removes its ignored cwd placeholders after exit', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
+  const { xdg } = isolateGitEnvironment(h, u);
   isolated(h, 'small', 'claude');
   fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
   const gitignoreFile = path.join(h.repo, '.gitignore');
   const gitignore = fs.existsSync(gitignoreFile) ? fs.readFileSync(gitignoreFile, 'utf8') : null;
-  const globalIgnore = path.join(u.home, '.config', 'git', 'ignore');
+  const globalIgnore = path.join(xdg, 'git', 'ignore');
   fs.mkdirSync(path.dirname(globalIgnore), { recursive: true });
   fs.writeFileSync(globalIgnore, 'globally-ignored/\n');
   fs.mkdirSync(path.join(wt, 'globally-ignored'));
@@ -233,11 +249,22 @@ test('a sandboxed claude removes its ignored cwd placeholders after exit', { ski
 
 test('sandbox cleanup preserves and reports a pre-existing empty read-only file with a placeholder name', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
+  const { global } = isolateGitEnvironment(h, u);
   isolated(h, 'small', 'claude');
   fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
   const realFile = path.join(wt, '.bash_profile');
   fs.writeFileSync(realFile, '');
   fs.chmodSync(realFile, 0o444);
+  const globalIgnore = path.join(h.base, 'explicit-global-ignore');
+  fs.writeFileSync(globalIgnore, 'explicitly-ignored/\n');
+  fs.mkdirSync(path.join(wt, 'explicitly-ignored'));
+  fs.writeFileSync(path.join(wt, 'explicitly-ignored', 'file.txt'), 'ignored by the configured core.excludesFile\n');
+  u.env.GIT_CONFIG_COUNT = '1';
+  u.env.GIT_CONFIG_KEY_0 = 'core.excludesFile';
+  u.env.GIT_CONFIG_VALUE_0 = globalIgnore;
+  const status = (cwd) => cp.execFileSync('git', ['status', '--short', '--untracked-files=all'], {
+    cwd, env: u.env, encoding: 'utf8',
+  }).trim();
 
   const started = spawn(h, u, 'small', {
     STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(CLAUDE_SANDBOX_PLACEHOLDERS),
@@ -250,7 +277,8 @@ test('sandbox cleanup preserves and reports a pre-existing empty read-only file 
   for (const relative of CLAUDE_SANDBOX_PLACEHOLDERS.slice(1)) {
     assert.equal(fs.existsSync(path.join(wt, relative)), false, `${relative} placeholder is removed`);
   }
-  assert.equal(h.git(['status', '--short', '--untracked-files=all'], started.cwd), '?? .bash_profile');
+  assert.equal(status(started.cwd), '?? .bash_profile');
+  assert.equal(u.env.GIT_CONFIG_GLOBAL, global, 'Git uses the test-only global config');
 });
 
 test('a spawned codex agent loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
