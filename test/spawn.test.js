@@ -28,6 +28,64 @@ function setRung(h, rung, flags) {
 
 const commandRung = (h, rung, argv) => setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(argv)]);
 
+test('design tasks dispatch without a kit on unsupported worker, review and small harnesses and report the omission', (t) => {
+  const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--kind', 'design']);
+  for (const harness of ['pi', 'opencode', 'command']) {
+    for (const role of ['medium', 'review', 'small']) {
+      setRung(h, role, harness === 'command'
+        ? ['--harness', harness, '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]
+        : ['--harness', harness, '--model', 'fixture']);
+      const seen = dry(h, role);
+      assert.deepEqual(seen.home.mcp, []);
+      assert.deepEqual(seen.browser_kit.omitted, ['playwright']);
+      assert.match(seen.browser_kit.warning, /browser kit.*without it/);
+      assert.match(h.ok(['spawn', '--role', role, '--task', 'T1', '--dry-run']), /browser kit.*without it/);
+    }
+  }
+  const started = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(started.code, 0);
+  assert.match(started.browser_kit.warning, /command.*without it/);
+  const recorded = h.readState('tasks.json');
+  assert.equal(recorded.tasks[0].kind, 'design');
+  const event = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).find((e) => e.cmd === 'spawn');
+  assert.deepEqual(event.detail.browser_kit, started.browser_kit);
+});
+
+test('explicit browser needs refuse only when no route can provide the kit', (t) => {
+  const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
+  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)']);
+  const missing = h.run(['spawn', '--task', 'T1', '--dry-run']);
+  assert.notEqual(missing.code, 0);
+  assert.match(missing.stderr, /browser/);
+  assert.equal(fs.existsSync(path.join(h.base, 'repo-worktrees')), false);
+  const home = path.join(h.base, 'user');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers: { playwright: { command: 'browser-server' } } }));
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { medium: { fallbacks: [{ harness: 'claude', model: 'fixture' }] } } }));
+  const routed = h.json(['spawn', '--task', 'T1', '--dry-run'], {
+    env: { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: '' },
+  });
+  assert.match(routed.browser_kit.warning, /command.*without it/);
+});
+
+test('design tasks with an unconfigured kit still dispatch on supported harnesses', (t) => {
+  const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--kind', 'design']);
+  const home = path.join(h.base, 'unconfigured-user');
+  fs.mkdirSync(home);
+  for (const harness of ['claude', 'codex']) {
+    setRung(h, 'medium', ['--harness', harness, '--model', 'fixture']);
+    const seen = h.json(['spawn', '--task', 'T1', '--dry-run'], {
+      env: { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex') },
+    });
+    assert.deepEqual(seen.home.mcp, []);
+    assert.match(seen.browser_kit.warning, /playwright.*without it/);
+  }
+});
+
 function writeSkill(plugin, name, body) {
   const file = path.join(plugin, 'skills', name, 'SKILL.md');
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -363,6 +421,41 @@ test('spawn --wait runs the command rung in the task worktree with the tower-cra
   assert.equal(spawnEv.detail.rung, 'medium');
   assert.ok(Number.isInteger(spawnEv.detail.pid));
   assert.equal(events.find((e) => e.cmd === 'spawn exit').detail.code, 7);
+});
+
+test('spawn removes outer Node test runner variables so an agent can run its own test suite', (t) => {
+  const h = setup(t);
+  const out = path.join(h.base, 'nested-run.json');
+  const marker = path.join(h.base, 'nested-test-ran');
+  const file = path.join(h.repo, 'nested.test.js');
+  fs.writeFileSync(file, `
+const test = require('node:test');
+test('the agent runs a real nested test', () => {
+  require('node:assert/strict').equal(process.env.NESTED_KEEP, 'kept');
+  require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');
+});
+`);
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'nested runner fixture']);
+  const script = `
+const cp = require('node:child_process');
+const result = cp.spawnSync(process.execPath, ['--test', '--test-reporter=tap', ${JSON.stringify(file)}], { encoding: 'utf8', timeout: 10000 });
+require('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({
+  runnerEnv: Object.keys(process.env).filter((key) => /^NODE_TEST_/i.test(key)),
+  code: result.status, stdout: result.stdout, stderr: result.stderr,
+}));
+`;
+  commandRung(h, 'medium', [process.execPath, '-e', script]);
+  h.ok(['project', 'set', '--env', '{"NODE_TEST_CONTEXT":"child-v8","NESTED_KEEP":"kept"}']);
+  h.ok(['spawn', '--task', 'T1', '--wait'], {
+    env: { NODE_TEST_WORKER_ID: 'outer-worker', NODE_TEST_REPORTER: 'outer-reporter', NODE_TEST_FUTURE: 'outer-value' },
+  });
+  const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.deepEqual(seen.runnerEnv, []);
+  assert.equal(seen.code, 0, seen.stderr);
+  assert.equal(seen.stderr, '');
+  assert.match(seen.stdout, /# pass 1\b/);
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'ran');
 });
 
 test('command brief placeholders point to role-filtered temporary copies', async (t) => {
