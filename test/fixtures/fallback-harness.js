@@ -38,10 +38,17 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   const modelFlag = args.includes('-m') ? '-m' : harness === 'codex' ? '-p' : '--model';
   const model = args[args.indexOf(modelFlag) + 1];
   if (!attempts.length) cli(['claim', process.env.TOWER_CRANE_TASK]);
+  const claudeHome = process.env.CLAUDE_CONFIG_DIR;
+  const claude = harness === 'claude' ? {
+    mcp: JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8')).mcpServers,
+    sandbox: JSON.parse(fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8')).sandbox,
+    policy: JSON.parse(fs.readFileSync(path.join(claudeHome, 'policy.json'), 'utf8')),
+  } : {};
   attempts.push({
     harness, model, args, session: process.env.TOWER_CRANE_SESSION, retry: process.env.TOWER_CRANE_RETRY,
     agent: process.env.TOWER_CRANE_AGENT, claim: JSON.parse(cli(['task', 'show', process.env.TOWER_CRANE_TASK, '--json'])).claim,
     env: process.env.ROUTE_ENV || null, broker: Boolean(process.env.TOWER_CRANE_BROKER),
+    ...claude,
     node_test: Object.keys(process.env).filter((key) => /^NODE_TEST_/i.test(key)),
   });
   if (process.env.TOWER_CRANE_TEST_FALLBACK_NOTE) cli(['task', 'note', process.env.TOWER_CRANE_TASK, `${harness} ${model} ${process.env.TOWER_CRANE_RETRY}`]);
