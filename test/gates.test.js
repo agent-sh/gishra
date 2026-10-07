@@ -19,6 +19,8 @@ function cliCopy(h) {
     recursive: true,
     filter: (src) => src !== gatesDir && !src.startsWith(gatesDir + path.sep),
   });
+  fs.mkdirSync(path.join(dir, 'lib', 'gates'));
+  fs.copyFileSync(path.join(gatesDir, 'common.js'), path.join(dir, 'lib', 'gates', 'common.js'));
   const bin = path.join(dir, 'bin', 'tower-crane.js');
   return {
     gates: path.join(dir, 'lib', 'gates'),
@@ -136,7 +138,7 @@ function installTestsGate(cli) {
 }
 
 function submitTestsFixture(h, sha, keep) {
-  h.init(['--repo', 'acme/demo', '--base', 'main']);
+  h.init(['--repo', 'acme/demo', '--base', 'main', '--tests-cmd', `${shellQuote(process.execPath)} verify-build.js`]);
   if (keep) h.ok(['project', 'set', '--tests-keep', JSON.stringify(keep)]);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'test the behavior']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
@@ -153,6 +155,7 @@ for (const [ecosystem, manifests] of BUILD_MANIFEST_FIXTURES) {
     installTestsGate(cli);
     const required = Object.keys(manifests.submitted).map(shellQuote).join(' ');
     const cmd = `${shellQuote(process.execPath)} verify-build.js ${required}`;
+    h.ok(['project', 'set', '--tests-cmd', cmd]);
     const result = cli.run(['check', 'tests', 'T1', '--cmd', cmd, '--agent', 'checker']);
     const output = `${result.stdout}\n${result.stderr}`;
 
@@ -172,6 +175,7 @@ for (const [ecosystem, manifests] of BUILD_MANIFEST_FIXTURES) {
     submitTestsFixture(h, sha, manifests.keep);
     const required = Object.keys(manifests.submitted).map(shellQuote).join(' ');
     const cmd = `${shellQuote(process.execPath)} verify-build.js ${required}`;
+    h.ok(['project', 'set', '--tests-cmd', cmd]);
     const output = h.ok(['check', 'tests', 'T1', '--cmd', cmd, '--agent', 'checker']);
     assert.match(output, /Tests: test\/value\.test\.js/);
     assert.match(output, /only tests and kept build files/);
@@ -198,6 +202,7 @@ for (const file of ['Makefile', 'setup.py', 'build.bzl', 'build.gradle', 'vite.c
     });
     submitTestsFixture(h, sha);
     const cmd = `${shellQuote(process.execPath)} verify-build.js`;
+    h.ok(['project', 'set', '--tests-cmd', cmd]);
     const output = h.ok(['check', 'tests', 'T1', '--cmd', cmd, '--agent', 'checker']);
     assert.match(output, /1 non-test file reverted .*: exit 1/);
     assert.ok(output.includes(file), output);
@@ -213,6 +218,7 @@ test('check tests keeps manifest-like test paths as tests, not build files', (t)
   } });
   submitTestsFixture(h, sha, ['test/**']);
   const cmd = `${shellQuote(process.execPath)} verify-build.js package.json test/package.json`;
+  h.ok(['project', 'set', '--tests-cmd', cmd]);
   const output = h.ok(['check', 'tests', 'T1', '--cmd', cmd, '--agent', 'checker']);
   assert.match(output, /Tests: test\/package\.json, test\/value\.test\.js/);
   assert.match(output, /Build files kept at submitted sha [a-f0-9]+: package\.json/);
@@ -229,6 +235,7 @@ test('check tests accepts a Cargo.lock bump and tests without reverting', (t) =>
     codeChange: false,
   });
   submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-cmd', `${shellQuote(process.execPath)} verify-build.js Cargo.lock`]);
   const output = h.ok(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js Cargo.lock`, '--agent', 'checker']);
   assert.match(output, /Build files kept at submitted sha [a-f0-9]+: Cargo\.lock/);
   assert.match(output, /only tests and kept build files/);
@@ -242,6 +249,7 @@ test('check tests still rejects a failing head when only tests and build files c
     'test/value.test.js': "require('node:assert/strict').equal(require('../value'), 1);\n",
   } });
   submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-cmd', `${shellQuote(process.execPath)} verify-build.js Cargo.lock`]);
   const r = h.run(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js Cargo.lock`, '--agent', 'checker']);
   assert.equal(r.code, 1, r.stdout + r.stderr);
   assert.match(r.stdout + r.stderr, /at [a-f0-9]+: exit 1/);
@@ -269,6 +277,7 @@ for (const [name, settings, runs] of [
     const cmd = `${shellQuote(process.execPath)} count-runs.js ${shellQuote(marker)}`;
     const scoped = `${shellQuote(process.execPath)} {tests}`;
     const expensive = settings.includes('true') && runs === 1;
+    h.ok(['project', 'set', '--tests-cmd', cmd, '--tests-proof-cmd', scoped]);
     const evidence = h.json(['check', 'tests', 'T1', '--cmd', cmd, ...(expensive ? ['--proof-cmd', scoped] : []), '--agent', 'checker']);
     assert.equal(evidence.ok, true, evidence.summary);
     assert.equal(evidence.sha, sha);
@@ -310,10 +319,12 @@ test('run-only accepts Rust inline tests in source files without a changed test 
   h.git(['switch', '-q', 'main']);
   submitTestsFixture(h, sha);
   const cmd = `${shellQuote(process.execPath)} check-inline.js`;
+  h.ok(['project', 'set', '--tests-cmd', cmd]);
   const prove = h.run(['check', 'tests', 'T1', '--cmd', cmd]);
   assert.equal(prove.code, 1);
   assert.match(prove.stdout, /no test covers this change/);
   h.ok(['project', 'set', '--tests-mode', 'run-only']);
+  h.ok(['project', 'set', '--tests-cmd', cmd]);
   const evidence = h.json(['check', 'tests', 'T1', '--cmd', cmd]);
   assert.match(evidence.summary, /mode run-only/);
   assert.equal(evidence.commands.filter((c) => c.command === cmd).length, 1);
@@ -328,6 +339,7 @@ test('run-only still fails when the suite fails at the submitted head', (t) => {
   submitTestsFixture(h, sha);
   h.ok(['project', 'set', '--tests-mode', 'run-only']);
   const cmd = `${shellQuote(process.execPath)} verify-build.js`;
+  h.ok(['project', 'set', '--tests-cmd', cmd]);
   const result = h.run(['check', 'tests', 'T1', '--cmd', cmd, '--json']);
   assert.equal(result.code, 1, result.stderr);
   const evidence = JSON.parse(result.stdout);
@@ -358,11 +370,12 @@ test('prove and run-only require a command, and malformed policy fails before ru
   const h = makeRepo(t);
   const sha = manifestTask(h, { submitted: {} });
   submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-cmd', 'null']);
   for (const mode of ['prove', 'run-only']) {
     h.ok(['project', 'set', '--tests-mode', mode]);
     const missing = h.run(['check', 'tests', 'T1']);
     assert.equal(missing.code, 1);
-    assert.match(missing.stdout, /no test command given/);
+    assert.match(missing.stdout, /no test command pinned/);
   }
   const project = h.readState('project.json');
   for (const [key, value] of [['mode', 'skip'], ['by_kind', { docs: null }], ['by_kind', { tooling: 'none' }], ['expensive', 'true']]) {
@@ -433,7 +446,7 @@ test('acceptance and merge refuse a mode change after an audited tests pass', (t
   h.ok(['accept', 'T1']);
   h.ok(['project', 'set', '--tests-mode', 'prove']);
   const cli = cliCopy(h);
-  fs.mkdirSync(cli.gates);
+  fs.mkdirSync(cli.gates, { recursive: true });
   fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
   const out = path.join(h.base, 'gate.json');
   const merge = cli.run(['merge', 'T1'], { GATE_OUT: out, GATE_OK: '1' });
@@ -448,10 +461,11 @@ test('expensive prove requires a scoped command before running the full suite', 
   submitTestsFixture(h, sha);
   h.ok(['project', 'set', '--tests-expensive', 'true']);
   for (const extra of [[], ['--proof-cmd', 'node test/value.test.js']]) {
+    h.ok(['project', 'set', '--tests-proof-cmd', extra.length ? extra[1] : 'null']);
     const r = h.run(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`, ...extra, '--json']);
     assert.equal(r.code, 1, r.stderr);
     const evidence = JSON.parse(r.stdout);
-    assert.match(evidence.summary, /--proof-cmd.*\{tests\}/);
+    assert.match(evidence.summary, /tests_proof_cmd.*\{tests\}/);
     assert.equal(evidence.commands.some((c) => c.command.includes('verify-build')), false);
   }
 });
@@ -465,6 +479,7 @@ test('expensive prove rejects a scoped command that fails at head or passes afte
     [`${shellQuote(process.execPath)} -e "process.exit(1)" {tests}`, /scoped proof.*at.*exit 1/],
     [`${shellQuote(process.execPath)} -e "process.exit(0)" {tests}`, /tests pass without the change/],
   ]) {
+    h.ok(['project', 'set', '--tests-proof-cmd', cmd]);
     const r = h.run(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`, '--proof-cmd', cmd, '--json']);
     assert.equal(r.code, 1, r.stderr);
     assert.match(JSON.parse(r.stdout).summary, message);
@@ -480,6 +495,7 @@ test('scoped proof receives only changed test paths and quotes spaces', (t) => {
   });
   submitTestsFixture(h, sha);
   h.ok(['project', 'set', '--tests-expensive', 'true']);
+  h.ok(['project', 'set', '--tests-proof-cmd', `${shellQuote(process.execPath)} proof.js {tests}`]);
   const evidence = h.json(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`, '--proof-cmd', `${shellQuote(process.execPath)} proof.js {tests}`]);
   assert.match(evidence.summary, /kept a scoped proof/);
   assert.equal(evidence.commands.filter((c) => c.command.includes('proof.js')).length, 2);
@@ -503,7 +519,7 @@ test('a gate gets its context and its result is recorded as evidence', (t) => {
   submittedTask(h);
   const wt = h.json(['worktree', 'T1']).path;
   const cli = cliCopy(h);
-  fs.mkdirSync(cli.gates);
+  fs.mkdirSync(cli.gates, { recursive: true });
   for (const g of ['tests', 'ci', 'merge']) fs.writeFileSync(path.join(cli.gates, `${g}.js`), FAKE_GATE);
   const out = path.join(h.base, 'gate.json');
 
@@ -540,7 +556,7 @@ test('merge refuses a task of any kind whose PR has no passing ci at the submitt
   gateEvidence(h, 'ci', 'ci');
   h.ok(['accept', 'T1']);
   const cli = cliCopy(h);
-  fs.mkdirSync(cli.gates);
+  fs.mkdirSync(cli.gates, { recursive: true });
   fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
   const out = path.join(h.base, 'gate.json');
 
@@ -563,7 +579,7 @@ test('merge checks the gates as they stand, not only the accepted status', (t) =
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
   h.ok(['accept', 'T1']);
   const cli = cliCopy(h);
-  fs.mkdirSync(cli.gates);
+  fs.mkdirSync(cli.gates, { recursive: true });
   fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
   const out = path.join(h.base, 'gate.json');
 
