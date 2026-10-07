@@ -852,7 +852,7 @@ test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-r
   assert.match(r.stderr, /opts in MCP server missing, but .*config\.toml defines no \[mcp_servers\.missing\]/);
   const pi = h.run(['ladder', 'set', 'small', '--harness', 'pi', '--model', 'x', '--clear', 'profile']);
   assert.equal(pi.code, 1);
-  assert.match(pi.stderr, /tools applies only to claude and codex, mcp applies only to claude and codex/);
+  assert.match(pi.stderr, /tools applies only to claude and codex and opencode, mcp applies only to claude and codex and opencode/);
 });
 
 test('only the orchestrator or the owner widens a rung, a command needs the owner, and args hold only allowlisted flags', (t) => {

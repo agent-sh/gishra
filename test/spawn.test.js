@@ -134,8 +134,8 @@ test('spawn --dry-run builds each harness command', (t) => {
     [['--harness', 'claude', '--model', 'opus', '--effort', 'high'], (p, s) => ['claude', '-p', p, '--model', 'opus', '--effort', 'high', '--output-format', 'json', ...claudeOwn(s)]],
     [['--harness', 'codex', '--profile', 'sol'], (p, s) => ['codex', 'exec', '--json', '-p', 'sol', ...codexOwn(s), p]],
     [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p, s) => ['codex', 'exec', '--json', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', ...codexOwn(s), p, '--skip-git-repo-check']],
-    [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', p]],
-    [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', p]],
+    [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', '--agent', 'gishra-small', p]],
+    [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', '--agent', 'gishra-small', p]],
     [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro']],
     [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--output-format","json"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--output-format', 'json']],
     [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--extension', path.join(s, 'homes', 'small-T1-1', 'hook.mjs')]],
@@ -167,7 +167,7 @@ test('spawn --dry-run builds each harness command', (t) => {
   assert.ok(!fs.existsSync(path.join(h.base, 'repo-worktrees')), 'a dry run creates nothing');
 });
 
-test('opencode inline config keeps caller fields and plugins when adding the home plugin', (t) => {
+test('opencode replaces caller inline config with the generated hook plugin', (t) => {
   const h = setup(t);
   setRung(h, 'small', ['--harness', 'opencode', '--model', 'anthropic/claude']);
   const original = {
@@ -179,7 +179,7 @@ test('opencode inline config keeps caller fields and plugins when adding the hom
   const out = dry(h, 'small', { OPENCODE_CONFIG_CONTENT: JSON.stringify(original) });
   const config = JSON.parse(out.env.OPENCODE_CONFIG_CONTENT);
   const generated = pathToFileURL(path.join(h.state, 'homes', out.agent, 'hook.mjs')).href;
-  assert.deepEqual(config, { ...original, plugin: [...original.plugin, generated] });
+  assert.deepEqual(config, { plugin: [generated] });
 });
 
 test('spawn embeds the role skill before the brief for claude, codex, opencode and agy', (t) => {
