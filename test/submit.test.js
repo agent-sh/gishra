@@ -16,16 +16,37 @@ function pass(h, type, agent, sha) {
   else gateEvidence(h, type, agent);
 }
 
+function t68Rework(t) {
+  const h = makeRepo(t);
+  const oldSha = gateFixture(h);
+  h.init(['--repo', 'acme/demo', '--base', 'main']);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works', '--kind', 'docs']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  const oldBranch = 'tower-crane/T68';
+  const newBranch = 'tower-crane/T68-rework';
+  h.ok(['submit', 'T1', '--sha', oldSha, '--branch', oldBranch, '--pr', '34', '--agent', 'w-1']);
+  h.ok(['rework', 'T1', '--reason', 'T68 rework', '--agent', 'owner']);
+  h.ok(['claim', 'T1', '--agent', 'w-2']);
+
+  fs.appendFileSync(path.join(h.repo, 'README.md'), 'Reworked on a new branch.\n');
+  h.git(['add', 'README.md']);
+  h.git(['commit', '-q', '-m', 'rework']);
+  const newSha = h.git(['rev-parse', 'HEAD']);
+  h.env.FIXTURE_PR_HEAD_34 = oldBranch;
+  h.env.FIXTURE_PR_STATE_34 = 'OPEN';
+  return { h, oldBranch, newBranch, newSha };
+}
+
 test('the claimant resubmits a newer head and its gates need evidence at that head', (t) => {
   const h = makeRepo(t);
   const oldSha = gateFixture(h);
   h.init(['--repo', 'acme/demo', '--base', 'main']);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
-  h.ok(['submit', 'T1', '--sha', oldSha, '--branch', 'feature/change', '--pr', '7', '--agent', 'w-1']);
+  h.ok(['submit', 'T1', '--sha', oldSha, '--branch', 'fixture-change', '--pr', '7', '--agent', 'w-1']);
   assert.deepEqual(
     events(h).find((event) => event.cmd === 'submit').detail,
-    { previous_sha: null, sha: oldSha, branch: 'feature/change', pr: 7, summary: null },
+    { previous_sha: null, sha: oldSha, branch: 'fixture-change', pr: 7, summary: null },
   );
   const gates = [['tests', 'w-1'], ['clean', 'w-1'], ['review', 'r-1'], ['ci', 'ci']];
   for (const [type, agent] of gates) pass(h, type, agent, oldSha);
@@ -36,10 +57,11 @@ test('the claimant resubmits a newer head and its gates need evidence at that he
   h.git(['add', 'README.md']);
   h.git(['commit', '-q', '-m', 'newer change']);
   const newSha = h.git(['rev-parse', 'HEAD']);
-  const submitted = h.json(['submit', 'T1', '--sha', newSha.toUpperCase(), '--summary', 'fixed review feedback', '--agent', 'w-1']);
+  const submitted = h.json(['submit', 'T1', '--sha', newSha.toUpperCase(), '--branch', 'fixture-change', '--pr', '7',
+    '--summary', 'fixed review feedback', '--agent', 'w-1']);
   assert.deepEqual(
     [submitted.status, submitted.sha, submitted.branch, submitted.pr, submitted.submitted_by, submitted.claim, submitted.revision],
-    ['submitted', newSha, 'feature/change', 7, 'w-1', null, before.revision],
+    ['submitted', newSha, 'fixture-change', 7, 'w-1', null, before.revision],
   );
   assert.deepEqual(submitted.evidence, before.evidence);
   assert.equal(submitted.notes.at(-1).text, 'submitted: fixed review feedback');
@@ -89,8 +111,8 @@ test('resubmission belongs to the current submitter and stops after acceptance o
   assert.deepEqual(events(h), beforeEvents);
 
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
-  const again = h.json(['submit', 'T1', '--sha', sha.toUpperCase(), '--branch', 'feature/new', '--pr', '8', '--agent', 'w-1']);
-  assert.deepEqual([again.sha, again.branch, again.pr], [sha, 'feature/new', 8]);
+  const again = h.json(['submit', 'T1', '--sha', sha.toUpperCase(), '--agent', 'w-1']);
+  assert.deepEqual([again.sha, again.branch, again.pr], [sha, 'feature/old', 7]);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((gate) => gate.type === 'review').ok, true);
   gateEvidence(h, 'ci', 'ci');
   h.ok(['accept', 'T1']);
@@ -109,6 +131,71 @@ test('resubmission belongs to the current submitter and stops after acceptance o
   assert.deepEqual([afterRework.detail.previous_sha, afterRework.detail.sha], [sha, 'abcdef2']);
   assert.equal(h.run(['submit', 'T1', '--sha', 'abcdef3', '--agent', 'w-1']).code, 1);
   assert.equal(h.json(['submit', 'T1', '--sha', 'abcdef3', '--agent', 'w-2']).submitted_by, 'w-2');
+});
+
+test('submit refuses changing only the PR while its old PR is open', (t) => {
+  const { h, oldBranch, newSha } = t68Rework(t);
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
+
+  const refused = h.run(['submit', 'T1', '--sha', newSha, '--pr', '39', '--agent', 'w-2']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stderr, /open PR #34/);
+  assert.ok(refused.stderr.includes(oldBranch), refused.stderr);
+  assert.match(refused.stderr, /PR #39/);
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+});
+
+test('submit refuses changing only the branch while the task PR is open', (t) => {
+  const { h, oldBranch, newBranch, newSha } = t68Rework(t);
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
+
+  const refused = h.run(['submit', 'T1', '--sha', newSha, '--branch', newBranch, '--agent', 'w-2']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stderr, /open PR #34/);
+  assert.ok(refused.stderr.includes(oldBranch), refused.stderr);
+  assert.ok(refused.stderr.includes(newBranch), refused.stderr);
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+});
+
+test('submit refuses changing both PR and branch beside an open PR', (t) => {
+  const { h, oldBranch, newBranch, newSha } = t68Rework(t);
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
+
+  const refused = h.run(['submit', 'T1', '--sha', newSha, '--branch', newBranch, '--pr', '39', '--agent', 'w-2']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stderr, /open PR #34/);
+  assert.match(refused.stderr, /PR #39/);
+  assert.ok(refused.stderr.includes(oldBranch), refused.stderr);
+  assert.ok(refused.stderr.includes(newBranch), refused.stderr);
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+});
+
+test('after closing the old PR, a new PR supplies or verifies the submitted branch', (t) => {
+  const { h, oldBranch, newBranch, newSha } = t68Rework(t);
+  h.env.FIXTURE_PR_STATE_34 = 'CLOSED';
+  h.env.FIXTURE_PR_HEAD_39 = newBranch;
+  h.env.FIXTURE_PR_STATE_39 = 'OPEN';
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
+
+  const wrongBranch = 'tower-crane/T68-wrong';
+  const refused = h.run(['submit', 'T1', '--sha', newSha, '--branch', wrongBranch, '--pr', '39', '--agent', 'w-2']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.ok(refused.stderr.includes(newBranch), refused.stderr);
+  assert.ok(refused.stderr.includes(wrongBranch), refused.stderr);
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+
+  const submitted = h.json(['submit', 'T1', '--sha', newSha, '--pr', '39', '--agent', 'w-2']);
+  assert.deepEqual([submitted.status, submitted.sha, submitted.branch, submitted.pr], ['submitted', newSha, newBranch, 39]);
+  const checked = h.json(['submit', 'T1', '--sha', newSha, '--branch', newBranch, '--pr', '39', '--agent', 'w-2']);
+  assert.deepEqual([checked.branch, checked.pr], [newBranch, 39]);
 });
 
 test('review evidence must pin the reviewed sha when a worker resubmits during review', (t) => {
