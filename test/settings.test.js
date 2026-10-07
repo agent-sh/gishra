@@ -144,14 +144,14 @@ test('a save made against a rung, default harness or tier that changed since the
     const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec((await request(`${s.url}settings`)).text)[1];
     const post = (api, body) => request(`${s.url}api/${api}`, { method: 'POST', headers: { 'x-tower-crane-token': token }, body });
     const loaded = await loadedOf(s.url);
-    // The page loaded easy as luna; the form sends every field of the rung,
-    // so its stale profile would undo a model chosen through the CLI.
+    // The page loaded easy as the built-in Haiku rung; the form sends every
+    // field of the rung, so its stale model would undo a model chosen through the CLI.
     h.ok(['ladder', 'set', 'easy', '--model', 'chosen-by-cli', '--clear', 'profile']);
     const project = read(h, 'project.json');
-    const edit = { rungs: { easy: { harness: '', model: '', profile: 'luna', provider: '', effort: 'high', args: '', command: '' } } };
+    const edit = { rungs: { easy: { harness: 'claude', model: 'claude-haiku-5-5', profile: '', provider: '', effort: 'high', args: '', command: '' } } };
     const r = await post('ladder', ladderBody(loaded, edit));
     assert.equal(r.status, 409, r.text);
-    assert.equal(r.json.error, 'the ladder changed since this page loaded: ladder easy is now model chosen-by-cli, effort max; reload the page and make the edit again');
+    assert.equal(r.json.error, 'the ladder changed since this page loaded: ladder easy is now model chosen-by-cli, effort high on claude; reload the page and make the edit again');
     assert.equal(read(h, 'project.json'), project);
     assert.equal(h.json(['ladder', 'show']).ladder.easy.model, 'chosen-by-cli');
 
@@ -201,12 +201,12 @@ test("in a browser, saving one form keeps the other form's unsaved edits, and a 
   const settle = () => new Promise((r) => setTimeout(r, 800));
   await b.inPage('window.firstLoad = true');
 
-  await set(easyEffort, 'high', 'input');
+  await set(easyEffort, 'medium', 'input');
   await set(tierSelect, 'hard', 'change');
   await click('ladder-form');
   await b.until(saved('ladder-form'), 'the ladder save');
   await settle();
-  assert.equal(h.readState('project.json').ladder.easy.effort, 'high');
+  assert.equal(h.readState('project.json').ladder.easy.effort, 'medium');
   assert.deepEqual(
     await b.inPage(`[window.firstLoad === true, ${tierSelect}.value, ${tierSelect}.closest('tr').classList.contains('dirty'), document.getElementById('stale').hidden]`),
     [true, 'hard', true, true],
@@ -220,7 +220,7 @@ test("in a browser, saving one form keeps the other form's unsaved edits, and a 
   await b.until(`!document.getElementById('stale').hidden`, 'the stale banner');
   await click('ladder-form');
   await b.until(`document.getElementById('ladder-err').textContent.includes('changed since this page loaded')`, 'the refusal');
-  assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'chosen-by-cli', effort: 'high' });
+  assert.deepEqual(h.readState('project.json').ladder.easy, { harness: 'claude', model: 'chosen-by-cli', effort: 'medium' });
 
   await click('tier-form');
   await b.until(saved('tier-form'), 'the tier save');
@@ -252,7 +252,7 @@ test('in a browser, a form is read-only while its save waits, so typing then los
   for (const [round, otherDirty] of [[1, false], [2, true]]) {
     await b.goto(`${s.url}settings`);
     if (otherDirty) await set(tierSelect, 'hard', 'change');
-    await set(easyEffort, round === 1 ? 'high' : 'low', 'input');
+    await set(easyEffort, round === 1 ? 'medium' : 'low', 'input');
     await b.inPage(`${easyModel}.focus()`);
     // A CLI write holds the lock, so the save waits for it.
     const paused = path.join(h.base, `holder-${round}`);
@@ -261,15 +261,16 @@ test('in a browser, a form is read-only while its save waits, so typing then los
     await b.inPage(`document.querySelector('#ladder-form button[type="submit"]').click()`);
     await b.until(`document.querySelector('#ladder-form button[type="submit"]').textContent === 'Saving...'`, 'the save to start');
     assert.deepEqual(await b.inPage(`[${easyModel}.disabled, ${easyEffort}.disabled, document.getElementById('harness').disabled, document.getElementById('ladder-form').getAttribute('aria-busy')]`), [true, true, true, 'true']);
+    const before = await b.inPage(`${easyModel}.value`);
     await b.type('typed-while-saving');
     const typed = await b.inPage(`${easyModel}.value`);
     fs.writeFileSync(`${paused}.go`, '');
     assert.equal((await holder).code, 0);
     await b.until(`document.readyState === 'complete' && !document.querySelector('#ladder-form[aria-busy]') && ${easyModel} && !${easyModel}.disabled && (${otherDirty} || document.documentElement.hasAttribute('data-position-restored'))`, 'the save to finish');
     await new Promise((r) => setTimeout(r, 300));
-    assert.equal(h.readState('project.json').ladder.easy.effort, round === 1 ? 'high' : 'low');
+    assert.equal(h.readState('project.json').ladder.easy.effort, round === 1 ? 'medium' : 'low');
     assert.equal(await b.inPage(`${easyModel}.value`), typed, `round ${round}: what was typed during the save is still there`);
-    assert.equal(typed, '', 'the read-only field took no input');
+    assert.equal(typed, before, 'the read-only field took no input');
     if (otherDirty) assert.equal(await b.inPage(`${tierSelect}.value`), 'hard', 'the other form keeps its edit');
   }
 });
