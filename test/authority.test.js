@@ -49,6 +49,7 @@ const OPERATIONAL = [
   ['project', 'set', '--workers', '3', '--lease-minutes', '45', '--budget-hours', '10'],
   ['project', 'set', '--review-policy', '{"small_lines":50}'],
   ['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'fixture-other', '--effort', 'high', '--args', '[]', '--tools', '["web_search"]', '--mcp', '["docs"]'],
+  ['ladder', 'save-user'],
   ['task', 'update', 'T1', '--kind', 'docs', '--tier', 'medium'],
   ['task', 'update', 'T1', '--needs-owner', 'approve other access'],
   ['owner-done', 'T1'],
@@ -141,6 +142,20 @@ test('the orchestrator changes operational settings under its own identity; a wo
   assert.equal(h.readState('decisions.json').decisions.length, 0);
 });
 
+test('ladder save-user is operational: the orchestrator saves with no decision and the event records it; a worker writes no user file', (t) => {
+  const h = setup(t);
+  const worker = h.run(['ladder', 'save-user'], as('worker-T1-1'));
+  assert.equal(worker.code, 1, worker.stderr);
+  assert.match(worker.stderr, /ladder\.save_user is operational: only the orchestrator or the owner/);
+  assert.equal(fs.existsSync(h.userConfig), false);
+  h.ok(['ladder', 'save-user'], as('orchestrator'));
+  assert.equal(fs.existsSync(h.userConfig), true);
+  assert.equal(h.readState('decisions.json').decisions.length, 0);
+  const saved = events(h).findLast((e) => e.cmd === 'ladder save-user');
+  assert.equal(saved.agent, 'orchestrator');
+  assert.equal(saved.detail.authority, 'orchestrator');
+});
+
 test('only a real orchestrator identity acts as orchestrator', (t) => {
   const h = setup(t);
   const args = ['project', 'set', '--workers', '2'];
@@ -167,7 +182,6 @@ test('owner-required changes by the orchestrator open one decision and change no
     [['ladder', 'set', 'easy', '--scope', '{}'], ['scope']],
     [['ladder', 'set', 'easy', '--command', '["node"]'], ['ladder.command']],
     [['project', 'set', '--budget-hours', '9'], ['budget.raise']],
-    [['ladder', 'save-user'], ['ladder.save_user']],
     [['accept', 'T1', '--waive', 'tests', '--reason', 'flaky'], ['waive.tests']],
   ];
   let opened = 0;
