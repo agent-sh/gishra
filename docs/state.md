@@ -46,9 +46,9 @@ All JSON files carry `"version": 1`. Writes go to a temp file in the same direct
 
 Every command that writes in the state directory holds the lock while it reads and writes, `render` included. Reads take no lock.
 
-A writer takes the lock by renaming a directory it prepared to `lock`. That directory holds one file named after the writer's random nonce, with its pid, host and time. The rename fails while `lock` holds such a file, so one writer holds it at a time; the others retry with backoff for up to 10 s, then exit 3.
+A writer takes the lock by renaming a directory it prepared to `lock`. That directory holds one file named after the writer's random nonce, with its pid, host, pid namespace (`pidns`, the target of `/proc/self/ns/pid`, or null where there is none) and time. The rename fails while `lock` holds such a file, so one writer holds it at a time; the others retry with backoff for up to 10 s, then exit 3.
 
-A marker's holder and modification time are read through one opened file descriptor, so they refer to the same file even if its path is replaced. A lock is stale when its holder process is gone (same host) or its file is older than 60 s. The next writer breaks it by deleting that file by its name, then the directory if it is empty. A name is never reused, so breaking a stale lock cannot remove a newer holder's, however the writers interleave. If a stale lock cannot be removed, writers still exit 3 after 10 s and say so.
+A marker's holder and modification time are read through one opened file descriptor, so they refer to the same file even if its path is replaced. A lock is stale when its holder process is gone or its file is older than 60 s. The holder is checked by pid only when it ran on the same host in the same pid namespace: a command sandbox gives each command a namespace of its own, where a live holder in another one looks gone, and breaking its lock would let two writers save over each other. A marker without `pidns`, from an older writer, counts only by age on hosts that have pid namespaces. The next writer breaks it by deleting that file by its name, then the directory if it is empty. A name is never reused, so breaking a stale lock cannot remove a newer holder's, however the writers interleave. If a stale lock cannot be removed, writers still exit 3 after 10 s and say so.
 
 ## project.json
 
@@ -261,6 +261,8 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 - `notes`: `{ "at", "agent", "text" }` entries. The orchestrator folds what matters into the brief. A note starting with `split:` on an `L` task records why it stays whole.
 
 The CLI never writes a dependency on a task that does not exist, a dependency cycle, or a task without acceptance. `validate` still checks files edited by hand.
+
+Task ids are never reused. A new task takes the larger of `next` and one past the highest task id any `events.jsonl` record names, so a task that tasks.json lost keeps its id. `validate` reconciles tasks.json with the log and reports drift: a task id the log names that tasks.json lacks, a `task note` the log records that the task lacks, and a `next` at or below a logged id.
 
 Resource lock holders are derived from the same pure event-log, lease and clock view as worker slot holders. A task holds all its locks while its lease is live or its unclaimed worker dispatch reservation holds a slot. Claim, worker spawn and expired-lease renewal refuse conflicting locks under the state lock, naming the resource, task and agent holding it; the same task and agent can consume their own reservation. `ready`, blocked views and task descriptions include conflicts with other tasks. Submission, release and lease expiry free leased locks. Unclaimed reservations free their locks on the matching exit, inactive monitor record or reservation horizon, and retain them through supervised retry and fallback backoff. No process probe can free a lock for one observer alone. Reviewer and other non-worker dispatches acquire no resource locks. Lock and environment changes do not bump the task revision.
 

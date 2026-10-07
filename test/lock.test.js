@@ -118,6 +118,59 @@ test('a writer that saw a dead lock before another broke it cannot share the loc
   assert.ok(!fs.existsSync(path.join(h.state, 'lock')), 'the lock is released');
 });
 
+// A sandboxed worker's note holds the lock in a pid namespace of its own, so to
+// the orchestrator's task add its pid looks gone. Breaking the lock let the add
+// write, then the note saved the tasks.json it had read before the add: the add
+// stayed in events.jsonl, vanished from tasks.json, and the next add reused its id.
+test('a holder in another pid namespace keeps its lock, so no write is lost and no id is reused', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'worker task', '--acceptance', 'a']);
+  const paused = path.join(h.base, 'note-holds');
+  const note = h.runAsync(['task', 'note', 'T1', 'worker progress'], {
+    hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused, HOOK_PIDNS: 'pid:[4026500001]' },
+  });
+  let add;
+  try {
+    await waitForFile(paused);
+    const holderPid = fs.readFileSync(paused, 'utf8');
+    add = h.runAsync(['task', 'add', '--title', 'orchestrator task', '--acceptance', 'a'], { hooks: { HOOK_DEAD_PID: holderPid } });
+    // Give the add time to break the lock if it would.
+    await Promise.race([add, new Promise((r) => setTimeout(r, 1500))]);
+  } finally {
+    fs.writeFileSync(`${paused}.go`, '');
+  }
+  const [noted, added] = await Promise.all([note, add]);
+  assert.equal(noted.code, 0, noted.stderr);
+  assert.equal(added.code, 0, added.stderr);
+  assert.equal(added.stdout.trim(), 'T2');
+  const tasks = h.readState('tasks.json').tasks;
+  assert.deepEqual(tasks.map((x) => x.title), ['worker task', 'orchestrator task'], 'the add survived the note');
+  assert.deepEqual(tasks[0].notes.map((n) => n.text), ['worker progress'], 'the note survived the add');
+  assert.equal(h.ok(['task', 'add', '--title', 'next', '--acceptance', 'a']), 'T3');
+  assert.equal(h.run(['validate']).code, 0);
+});
+
+test('ids continue past the event log, and validate reports tasks.json drift from it', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  for (const title of ['one', 'two', 'three']) h.ok(['task', 'add', '--title', title, '--acceptance', 'a']);
+  h.ok(['task', 'note', 'T1', 'kept in the log']);
+  // tasks.json as a writer outside the lock would leave it: T2, T3 and the note lost, next rolled back.
+  const doc = h.readState('tasks.json');
+  doc.tasks = doc.tasks.filter((x) => x.id === 'T1');
+  doc.tasks[0].notes = [];
+  doc.next = 2;
+  h.writeState('tasks.json', doc);
+  const r = h.run(['validate', '--json']);
+  assert.equal(r.code, 1, r.stderr);
+  const drift = JSON.parse(r.stdout).issues.filter((i) => i.kind === 'log-drift');
+  assert.deepEqual(drift.map((i) => i.task), ['T1', 'T2', 'T3', null]);
+  assert.match(drift[1].message, /T2 "two" is in events\.jsonl \(task add by owner at .*\) but missing from tasks\.json/);
+  assert.match(drift[3].message, /next is 2, but events\.jsonl already used T3/);
+  assert.equal(h.ok(['task', 'add', '--title', 'four', '--acceptance', 'a']), 'T4', 'a logged id is never reused');
+});
+
 test('many writers breaking one dead lock at once all write, once each', async (t) => {
   const h = makeRepo(t);
   h.init();

@@ -1,5 +1,6 @@
 # Changelog
 
+- The state lock checks a holder's pid only inside the holder's own pid namespace. A sandboxed command in a namespace of its own looked gone to writers outside it, so they broke its live lock and one write overwrote the other: a `task add` vanished from tasks.json while its event stayed in the log, and the next add reused its id. New task ids also continue past the highest id in `events.jsonl`, and `validate` reports tasks, notes and `next` that drifted from the log.
 - Worker spawns reserve a worker slot until the worker claims, its attempt ends or one lease passes; dispatch, claim and expired-lease renewal count leases and reservations from the event log alike, so a full limit refuses dispatch before launch.
 - Rungs configure ordered provider fallback routes after bounded outage retries or a structured harness policy refusal. Route switches start fresh sessions, wake the orchestrator, and keep usage attributed to the route that ran.
 - Rework waits for a live fallback worker to exit before another dispatch. Fresh same-route retries retain separate usage receipts so every invocation contributes to spend.
