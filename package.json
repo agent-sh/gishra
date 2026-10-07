@@ -9,7 +9,7 @@
   "engines": { "node": ">=24" },
   "files": ["bin/", "lib/", "skills/", "agents/", "standards/", "docs/", ".claude-plugin/", "components.json"],
   "scripts": {
-    "test": "node --test test/*.test.js test/gates/*.test.js",
+    "test": "node test/run.js",
     "docs:generate": "node scripts/cli-docs.js",
     "check:shared": "node scripts/check-shared-files.js",
     "changelog": "node scripts/changelog.js"
