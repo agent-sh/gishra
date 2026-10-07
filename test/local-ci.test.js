@@ -373,7 +373,7 @@ test('local CI selects kind args, replacement commands and the default with audi
   }
 });
 
-test('changing kind to a different local CI variant requires owner identity', (t) => {
+test('changing kind, which can select a different local CI variant, is the orchestrator\'s or the owner\'s', (t) => {
   const h = fixture(t);
   const local = {
     command: h.command, timeout: 5,
@@ -384,13 +384,13 @@ test('changing kind to a different local CI variant requires owner identity', (t
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
   const denied = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'worker']);
   assert.equal(denied.code, 1, denied.stderr);
-  assert.match(denied.stderr, /only the owner/);
+  assert.match(denied.stderr, /only the orchestrator or the owner/);
   assert.deepEqual(h.readState('tasks.json'), tasks);
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), events);
 
   const override = { args: ['--custom'] };
   h.ok(['task', 'update', 'T1', '--ci-local', JSON.stringify(override)]);
-  const allowed = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'worker']);
+  const allowed = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'orchestrator']);
   assert.equal(allowed.code, 0, allowed.stderr);
   const e = h.json(['check', 'ci', 'T1']);
   assert.equal(e.receipt.variant, 'task:T1');
@@ -476,7 +476,7 @@ test('local CI variant settings validate atomically and task overrides require e
   }
   for (const value of ['{"args":["--s3"]}', 'null']) {
     for (const identity of [
-      { flags: ['--agent', 'worker'], env: {}, code: 1, pattern: /only the owner/ },
+      { flags: ['--agent', 'worker'], env: {}, code: 1, pattern: /only the orchestrator or the owner/ },
       { flags: [], env: { TOWER_CRANE_AGENT: '' }, code: 2, pattern: /no agent/ },
     ]) {
       const r = h.run(['task', 'update', 'T1', '--ci-local', value, ...identity.flags], { env: identity.env });
