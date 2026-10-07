@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, ROOT, BIN } = require('./helpers');
+const { makeRepo, ROOT, BIN, detachedAlive } = require('./helpers');
 const A = require('../lib/agents');
 const TOML = require('../lib/toml');
 
@@ -396,7 +396,7 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
   const fixture = path.join(h.base, 'fixture-state');
   const cli = (...args) => [process.execPath, BIN, ...args];
   // Reaches the broker named in broker.json, but with a token of its own.
-  const forged = `const f=require("fs"),n=require("net");const b=JSON.parse(f.readFileSync(process.env.TOWER_CRANE_BROKER,"utf8"));const s=n.connect(b.socket,()=>s.write(JSON.stringify({token:"0".repeat(64),argv:["task","note","T1","forged"]})+"\\n"));let o="";s.on("data",d=>o+=d).on("end",()=>{process.stderr.write(o);process.exit(JSON.parse(o).code)})`;
+  const forged = `const f=require("fs"),n=require("net");const b=JSON.parse(f.readFileSync(process.env.TOWER_CRANE_BROKER,"utf8"));const s=n.connect(b.socket||{host:b.host,port:b.port},()=>s.write(JSON.stringify({token:"0".repeat(64),argv:["task","note","T1","forged"]})+"\\n"));let o="";s.on("data",d=>o+=d).on("end",()=>{process.stderr.write(o);process.exit(JSON.parse(o).code)})`;
   const cases = [
     [cli('task', 'note', 'T1', 'through the broker'), 0],
     [cli('task', 'note', 'T1', 'as the owner', '--agent', 'owner'), 1],
@@ -408,6 +408,7 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     [[process.execPath, '-e', forged], 1],
     // A test fixture's own state is not the broker's; it runs in the agent.
     [cli('init', '--name', 'fixture', '--goal', 'own state', '--state', fixture, '--agent', 'owner'), 0],
+    [[process.execPath, '-e', 'process.stderr.write(require("fs").readFileSync(process.env.TOWER_CRANE_BROKER, "utf8"))'], 0],
   ];
   const noted = [];
   for (const [n, harness] of ['claude', 'codex'].entries()) {
@@ -422,6 +423,11 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     assert.match(ran[2].stderr, /works on T1 only, not T2/);
     assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, not task add/);
     assert.match(ran[7].stderr, /without its token/);
+    // Codex's sandbox refuses connecting to a Unix socket; claude's has no
+    // host loopback.
+    const address = JSON.parse(ran[9].stderr);
+    if (harness === 'codex') assert.deepEqual([address.socket, address.host, Number.isInteger(address.port) && address.port > 0], [undefined, '127.0.0.1', true]);
+    else assert.deepEqual([typeof address.socket, address.host], ['string', undefined]);
     assert.ok(fs.existsSync(path.join(fixture, 'project.json')), `${harness}: the fixture got its own state`);
     assert.ok(!fs.existsSync(path.join(h.state, 'homes', agent, 'broker.json')), `${harness}: the broker closes with its agent`);
     fs.rmSync(fixture, { recursive: true, force: true });
@@ -440,8 +446,40 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     [...noted.flatMap((a) => [['task note', a, 'T1'], ['task note', a, 'T1']]), ['claim', worker, 'T1']], 'only brokered changes, each as its agent');
 });
 
+test('a brokered check tests still running when its agent exits is killed with its test run, and spawn --wait returns', { skip: NO_STUBS, timeout: 120000 }, async (t) => {
+  const { h, u } = setup(t);
+  h.ok(['project', 'set', '--tests-mode', 'run-only']);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  for (const harness of ['claude', 'codex']) {
+    const pidFile = path.join(h.base, `${harness}-test-run.pid`);
+    const hang = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1e9)`)}`;
+    // The agent leaves the check running in the background and exits once
+    // its test command is up.
+    const background = `const cp=require("child_process"),f=require("fs");cp.spawn(process.execPath,${JSON.stringify([BIN, 'check', 'tests', 'T1', '--cmd', hang])},{detached:true,stdio:"ignore"}).unref();const end=Date.now()+30000;while(!f.existsSync(${JSON.stringify(pidFile)})&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50)`;
+    let pid = null;
+    t.after(() => {
+      if (pid && detachedAlive({ pid })) process.kill(pid, 'SIGKILL');
+    });
+    isolated(h, 'hard', harness);
+    const run = [[process.execPath, BIN, 'claim', 'T1'], [process.execPath, BIN, 'submit', 'T1', '--sha', sha], [process.execPath, '-e', background]];
+    const started = Date.now();
+    const r = await h.runAsync(['spawn', '--role', 'hard', '--task', 'T1', '--wait', '--json'], { env: { ...u.env, STUB_RUN: JSON.stringify(run) } });
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(Date.now() - started < 60000, `${harness}: spawn --wait returned`);
+    assert.deepEqual(u.report().ran.map((x) => x.code), [0, 0, 0], JSON.stringify(u.report().ran.map((x) => x.stderr)));
+    pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    const deadline = Date.now() + 10000;
+    while (detachedAlive({ pid }) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(!detachedAlive({ pid }), `${harness}: the test run stopped with the broker`);
+    assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.filter((e) => e.type === 'tests'), [], `${harness}: no tests evidence after the spawn ended`);
+    h.ok(['rework', 'T1', '--agent', 'owner', '--reason', 'next harness']);
+  }
+});
+
 test('a sandboxed role cannot write the state directory itself', () => {
-  const text = fs.readFileSync(A.file('worker'), 'utf8').replace(/^writeOutside:\n/m, 'writeOutside:\n  - state\n');
+  // A Windows checkout has CRLF line ends.
+  const text = fs.readFileSync(A.file('worker'), 'utf8').replace(/^writeOutside:(\r?\n)/m, 'writeOutside:$1  - state$1');
+  assert.match(text, /- state/);
   assert.throws(() => A.parse(text, 'worker.md'), /state needs sandbox: false/);
   for (const job of ['worker', 'reviewer', 'small']) assert.ok(!A.load(job).writeOutside.includes('state'), job);
 });
