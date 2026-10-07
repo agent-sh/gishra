@@ -85,7 +85,7 @@ test('renewing an expired lease takes a worker slot like a claim', (t) => {
 
   const late = h.run(['renew', 'T1', '--agent', 'w-1']);
   assert.equal(late.code, 1, late.stderr);
-  assert.match(late.stderr, /T1's lease expired and the workers limit is reached \(1 worker slots held, limit 1\)/);
+  assert.match(late.stderr, /T1's lease expired and the workers limit is reached \(1 tasks in progress, limit 1\)/);
   const inProgress = h.json(['status']).in_progress.filter((x) => !x.expired);
   assert.deepEqual(inProgress.map((x) => x.id), ['T2'], 'one task in progress, as the limit says');
 
