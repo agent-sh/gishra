@@ -8,12 +8,36 @@ const cp = require('node:child_process');
 const { makeRepo, BIN } = require('./helpers');
 
 const REQUIRED = [
-  'test (ubuntu-latest, node 20)',
+  'test (ubuntu-latest, node 26)',
   'test (ubuntu-latest, node 24)',
-  'test (windows-latest, node 24)',
+  'test (windows-latest, node 26)',
 ];
 const CAP_POLICY = [{ app: 'revuto-review', pattern: 'reached the \\d+-round review limit' }];
 const github = path.join(__dirname, 'fixtures', 'github.js');
+
+test('package support, CI matrix, and required jobs target Node 24 and 26', () => {
+  const root = path.resolve(__dirname, '..');
+  const metadata = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.equal(metadata.engines.node, '>=24');
+
+  const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const matrix = [...workflow.matchAll(/^\s+- \{ os: ([^,]+), node: (\d+) \}$/gm)]
+    .map(([, os, node]) => ({ os, node: Number(node) }));
+  assert.deepEqual(matrix, [
+    { os: 'ubuntu-latest', node: 26 },
+    { os: 'ubuntu-latest', node: 24 },
+    { os: 'windows-latest', node: 26 },
+  ]);
+  assert.deepEqual(matrix.map(({ os, node }) => `test (${os}, node ${node})`), REQUIRED);
+
+  const requiredJson = JSON.stringify(REQUIRED);
+  for (const file of ['docs/state.md', 'docs/cli.md']) {
+    const text = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.ok(text.includes(requiredJson), `${file} has stale required job names`);
+  }
+  const agents = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
+  assert.match(agents, /\bNode 24 or newer\b/);
+});
 
 function run(name, conclusion = 'success', status = 'completed', app = 'github-actions', id = 1) {
   return { name, conclusion, status, app: { slug: app }, check_suite: { id } };
