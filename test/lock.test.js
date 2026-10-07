@@ -171,6 +171,26 @@ test('ids continue past the event log, and validate reports tasks.json drift fro
   assert.equal(h.ok(['task', 'add', '--title', 'four', '--acceptance', 'a']), 'T4', 'a logged id is never reused');
 });
 
+// validate reads without the lock; a commit landing between its reads of
+// tasks.json and events.jsonl must not look like a lost write.
+test('a commit while validate reads the state is not reported as drift', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'one', '--acceptance', 'a']);
+  const paused = path.join(h.base, 'validate-read');
+  const check = h.runAsync(['validate', '--json'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
+  try {
+    await waitForFile(paused);
+    assert.equal(h.ok(['task', 'add', '--title', 'two', '--acceptance', 'a']), 'T2');
+    h.ok(['task', 'note', 'T1', 'written mid-read']);
+  } finally {
+    fs.writeFileSync(`${paused}.go`, '');
+  }
+  const r = await check;
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout).issues, []);
+});
+
 test('many writers breaking one dead lock at once all write, once each', async (t) => {
   const h = makeRepo(t);
   h.init();
