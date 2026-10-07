@@ -32,7 +32,7 @@ function setup(t, tier = 'easy', builder = 'other', profile) {
     fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'codex.exe' : 'codex'), '', { mode: 0o755 });
     // An isolated caller's default must not rename another rung's known profile.
     fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model = "caller-model"\n');
-    h.reviewEnv = { CODEX_HOME: codexHome, PATH: bin + path.delimiter + h.env.PATH, USAGE_CLAIM: '1' };
+    h.reviewEnv = { CODEX_HOME: codexHome, PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), USAGE_CLAIM: '1' };
     h.ok(['ladder', 'set', tier, '--harness', 'codex', '--profile', profile, '--clear', 'model', '--clear', 'effort']);
     h.builder = h.json(['spawn', '--task', 'T1', '--wait'], {
       env: h.reviewEnv,
