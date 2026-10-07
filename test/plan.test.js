@@ -167,6 +167,8 @@ test('brief get selects the caller role and ignores headings inside fenced code'
       'WORKER_SECTION_SENTINEL',
       '## rEvIeWeR',
       'REVIEWER_SECTION_SENTINEL',
+      '## Rework notes',
+      'REWORK_SHARED_SENTINEL',
     ].join('\n'),
   });
 
@@ -178,6 +180,7 @@ test('brief get selects the caller role and ignores headings inside fenced code'
   assert.match(worker.stdout, /FENCED_REVIEWER_SENTINEL/);
   assert.match(worker.stdout, /FENCED_WORKER_SENTINEL/);
   assert.match(worker.stdout, /WORKER_SECTION_SENTINEL/);
+  assert.match(worker.stdout, /REWORK_SHARED_SENTINEL/);
   assert.ok(!worker.stdout.includes('REVIEWER_SECTION_SENTINEL'));
 
   const reviewer = get('reviewer-T1-1');
@@ -187,6 +190,7 @@ test('brief get selects the caller role and ignores headings inside fenced code'
   assert.match(reviewer.stdout, /FENCED_REVIEWER_SENTINEL/);
   assert.match(reviewer.stdout, /FENCED_WORKER_SENTINEL/);
   assert.match(reviewer.stdout, /REVIEWER_SECTION_SENTINEL/);
+  assert.match(reviewer.stdout, /REWORK_SHARED_SENTINEL/);
   assert.ok(!reviewer.stdout.includes('WORKER_SECTION_SENTINEL'));
 
   const owner = get('owner');

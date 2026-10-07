@@ -339,6 +339,8 @@ test('command brief placeholders point to role-filtered temporary copies', async
       'WORKER_ONLY_COMMAND',
       '## Reviewer',
       'REVIEWER_ONLY_COMMAND',
+      '## Rework notes',
+      'REWORK_SHARED_COMMAND',
     ].join('\n'),
   });
   const tempRoot = path.join(h.base, 'tower-crane-tmp');
@@ -360,6 +362,7 @@ test('command brief placeholders point to role-filtered temporary copies', async
   const workerCopy = JSON.parse(fs.readFileSync(workerOut, 'utf8'));
   assert.match(workerCopy.text, /SHARED_FOR_COMMANDS/);
   assert.match(workerCopy.text, /WORKER_ONLY_COMMAND/);
+  assert.match(workerCopy.text, /REWORK_SHARED_COMMAND/);
   assert.ok(!workerCopy.text.includes('REVIEWER_ONLY_COMMAND'));
   assert.ok(!fs.existsSync(workerCopy.path));
 
@@ -373,6 +376,7 @@ test('command brief placeholders point to role-filtered temporary copies', async
   const reviewerCopy = JSON.parse(fs.readFileSync(reviewerOut, 'utf8'));
   assert.match(reviewerCopy.text, /SHARED_FOR_COMMANDS/);
   assert.match(reviewerCopy.text, /REVIEWER_ONLY_COMMAND/);
+  assert.match(reviewerCopy.text, /REWORK_SHARED_COMMAND/);
   assert.ok(!reviewerCopy.text.includes('WORKER_ONLY_COMMAND'));
   while (fs.existsSync(reviewerCopy.path)) {
     if (Date.now() > deadline) throw new Error('the monitor did not remove the reviewer brief copy');
