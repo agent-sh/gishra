@@ -277,7 +277,7 @@ test('a gate failure before running commands still overrides its earlier pass', 
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.at(-1).commands, []);
   const r = h.run(['accept', 'T1']);
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /latest tests .* failed: no test command given/);
+  assert.match(r.stderr, /latest tests .* failed: --cmd differs from the pinned/);
 });
 
 test('unmarked or mismatched software evidence does not override a gate failure or pass', (t) => {
