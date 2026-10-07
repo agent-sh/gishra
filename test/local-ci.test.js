@@ -370,6 +370,30 @@ test('local CI selects kind args, replacement commands and the default with audi
   }
 });
 
+test('changing kind to a different local CI variant requires owner identity', (t) => {
+  const h = fixture(t);
+  const local = {
+    command: h.command, timeout: 5,
+    by_kind: { docs: { args: ['--lab'] }, ops: { args: ['--s3'] } },
+  };
+  h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  const tasks = h.readState('tasks.json');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const denied = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'worker']);
+  assert.equal(denied.code, 1, denied.stderr);
+  assert.match(denied.stderr, /only the owner/);
+  assert.deepEqual(h.readState('tasks.json'), tasks);
+  assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), events);
+
+  const override = { args: ['--custom'] };
+  h.ok(['task', 'update', 'T1', '--ci-local', JSON.stringify(override)]);
+  const allowed = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'worker']);
+  assert.equal(allowed.code, 0, allowed.stderr);
+  const e = h.json(['check', 'ci', 'T1']);
+  assert.equal(e.receipt.variant, 'task:T1');
+  assert.deepEqual(e.receipt.command, [...h.command, ...override.args]);
+});
+
 test('owner task override takes precedence and clearing restores the kind variant', (t) => {
   const h = fixture(t);
   const local = { command: h.command, timeout: 5, by_kind: { docs: { args: ['--lab'] } } };
