@@ -168,6 +168,26 @@ test('a sandboxed reviewer waits for a hidden live worker to exit before climbin
   assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
 });
 
+test('a reviewer without permission to create a worker home leaves the climb for a host observer', {
+  skip: process.platform === 'win32' || process.getuid?.() === 0,
+}, async (t) => {
+  const h = setup(t, 'review');
+  h.ok(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+  const homes = path.join(h.state, 'homes');
+  fs.chmodSync(homes, 0o500);
+  try {
+    h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
+      '--agent', 'reviewer', '--summary', 'needs rework']);
+    assert.equal(h.json(['task', 'show', 'T1']).escalation_pending, true);
+  } finally {
+    fs.chmodSync(homes, 0o700);
+  }
+  h.ok(['recover', 'T1', '--agent', 'orchestrator']);
+  await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
+  assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
+});
+
 test('failure at the range top opens one owner decision and blocks further dispatch', async (t) => {
   const h = setup(t, 'top', 'easy..hard');
   h.ok(['spawn', '--task', 'T1']);
