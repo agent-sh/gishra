@@ -151,7 +151,7 @@ test('a save made against a rung, default harness or tier that changed since the
     const edit = { rungs: { easy: { harness: '', model: '', profile: 'luna', provider: '', effort: 'high', args: '', command: '' } } };
     const r = await post('ladder', ladderBody(loaded, edit));
     assert.equal(r.status, 409, r.text);
-    assert.equal(r.json.error, 'the ladder changed since this page loaded: ladder easy is now model chosen-by-cli, effort medium; reload the page and make the edit again');
+    assert.equal(r.json.error, 'the ladder changed since this page loaded: ladder easy is now model chosen-by-cli, effort max; reload the page and make the edit again');
     assert.equal(read(h, 'project.json'), project);
     assert.equal(h.json(['ladder', 'show']).ladder.easy.model, 'chosen-by-cli');
 
