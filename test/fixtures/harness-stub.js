@@ -59,10 +59,12 @@ module.exports = function stub(harness) {
       const placeholders = JSON.parse(process.env.STUB_CLAUDE_SANDBOX_PLACEHOLDERS);
       for (const relative of placeholders) {
         const file = path.join(process.cwd(), relative);
-        if (fs.existsSync(file)) continue;
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, '');
-        fs.chmodSync(file, 0o444);
+        try {
+          fs.writeFileSync(file, '', { flag: 'wx', mode: 0o444 });
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+        }
       }
       const status = cp.spawnSync('git', ['status', '--short', '--untracked-files=all'], { encoding: 'utf8' });
       report.placeholderGitStatus = { code: status.status, stdout: status.stdout || '', stderr: status.stderr || '' };
