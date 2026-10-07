@@ -247,6 +247,8 @@ for (const harness of ['codex', 'claude']) {
     assert.equal(next.agent, harness === 'codex' ? 'worker-T1-1' : 'worker-T1-2');
     const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
     assert.equal(input.prior, harness === 'codex' ? 'worker-session-1' : '');
+    assert.ok(input.prompt.startsWith('## Role instructions: tower-crane-work'));
+    assert.ok(input.prompt.includes('# Tower Crane: work one task'));
     assert.match(input.prompt, /Add the worktree guard/);
     assert.match(input.prompt, /Missing worktree validation/);
     assert.match(input.prompt, /review-receipt/);

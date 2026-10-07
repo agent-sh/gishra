@@ -27,6 +27,12 @@ function setRung(h, rung, flags) {
 
 const commandRung = (h, rung, argv) => setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(argv)]);
 
+function writeSkill(plugin, name, body) {
+  const file = path.join(plugin, 'skills', name, 'SKILL.md');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `---\nname: ${name}\ndescription: fixture frontmatter\n---\n${body}\n`);
+}
+
 test('worktree creates the task branch from base and is idempotent', (t) => {
   const h = setup(t);
   const first = h.json(['worktree', 'T1']);
@@ -90,15 +96,76 @@ test('spawn --dry-run builds each harness command', (t) => {
   assert.ok(!fs.existsSync(path.join(h.base, 'repo-worktrees')), 'a dry run creates nothing');
 });
 
-test('the prompt is the brief, then the task, then how to use tower-crane', (t) => {
+test('spawn embeds the role skill before the brief for claude, codex, opencode and agy', (t) => {
+  const h = setup(t);
+  const plugin = path.join(h.base, 'plugin');
+  const bodies = {
+    worker: 'WORKER_SKILL_BODY_SENTINEL\n\nFix the task in the worktree.',
+    reviewer: 'REVIEWER_SKILL_BODY_SENTINEL\n\nReview the submitted change.',
+  };
+  writeSkill(plugin, 'tower-crane-work', bodies.worker);
+  writeSkill(plugin, 'tower-crane-review', bodies.reviewer);
+  const cases = [
+    ['claude', 'opus'],
+    ['codex', 'gpt-x'],
+    ['opencode', 'anthropic/claude'],
+    ['agy', 'gemini-3-pro'],
+  ];
+  const env = { TOWER_CRANE_PLUGIN_ROOT: plugin };
+
+  for (const [harness, model] of cases) {
+    for (const [rung, job, other] of [
+      ['easy', 'worker', 'reviewer'],
+      ['review', 'reviewer', 'worker'],
+    ]) {
+      setRung(h, rung, ['--harness', harness, '--model', model]);
+      const prompt = dry(h, rung, env).argv.find((arg) => arg.includes('## Task'));
+      assert.ok(prompt.includes(bodies[job]), `${harness} ${job} has its skill body`);
+      assert.ok(!prompt.includes(bodies[other]), `${harness} ${job} excludes the other role's skill`);
+      assert.ok(!prompt.includes(`name: tower-crane-${job === 'worker' ? 'work' : 'review'}`));
+      assert.ok(!prompt.includes('description: fixture frontmatter'), 'skill frontmatter is omitted');
+      assert.ok(prompt.indexOf(bodies[job]) < prompt.indexOf('start from the webhook handler'), 'the role skill comes before the brief');
+    }
+  }
+});
+
+test('spawn gives workers and reviewers only shared brief text and their own section', (t) => {
+  const h = setup(t);
+  h.ok(['brief', 'set', 'T1', '-'], {
+    input: [
+      'SHARED_PREAMBLE_SENTINEL',
+      '## Worker',
+      'WORKER_BRIEF_SENTINEL',
+      '## Shared',
+      'SHARED_SECTION_SENTINEL',
+      '## Reviewer',
+      'REVIEWER_BRIEF_SENTINEL',
+    ].join('\n'),
+  });
+
+  const worker = dry(h, 'medium').argv.find((arg) => arg.includes('## Task'));
+  assert.ok(worker.includes('SHARED_PREAMBLE_SENTINEL'));
+  assert.ok(worker.includes('SHARED_SECTION_SENTINEL'));
+  assert.ok(worker.includes('WORKER_BRIEF_SENTINEL'));
+  assert.ok(!worker.includes('REVIEWER_BRIEF_SENTINEL'));
+
+  const reviewer = dry(h, 'review').argv.find((arg) => arg.includes('## Task'));
+  assert.ok(reviewer.includes('SHARED_PREAMBLE_SENTINEL'));
+  assert.ok(reviewer.includes('SHARED_SECTION_SENTINEL'));
+  assert.ok(reviewer.includes('REVIEWER_BRIEF_SENTINEL'));
+  assert.ok(!reviewer.includes('WORKER_BRIEF_SENTINEL'));
+});
+
+test('the prompt is the role skill, brief, task, then how to use tower-crane', (t) => {
   const h = setup(t);
   setRung(h, 'medium', ['--harness', 'opencode', '--model', 'a/b']);
   const p = dry(h).argv.find((a) => a.includes('## Task'));
-  assert.ok(p.startsWith('\n- start from the webhook handler'), 'a leading dash is not read as a flag');
+  assert.ok(p.startsWith('## Role instructions: tower-crane-work'));
+  const iSkill = p.indexOf('# Tower Crane: work one task');
   const iBrief = p.indexOf('start from the webhook handler');
   const iTask = p.indexOf('"acceptance": [');
   const iUse = p.indexOf('Use the tower-crane CLI for every state change');
-  assert.ok(iBrief < iTask && iTask < iUse, 'brief, task JSON, instruction in order');
+  assert.ok(iSkill < iBrief && iBrief < iTask && iTask < iUse, 'role skill, brief, task JSON, instruction in order');
   const json = JSON.parse(p.slice(p.indexOf('```json\n') + 8, p.indexOf('\n```', p.indexOf('```json'))));
   assert.deepEqual(json, { id: 'T1', title: 'Idempotency key on retries', acceptance: ['processed once', 'test proves it'], kind: 'code' });
   assert.match(p, /TOWER_CRANE_STATE, TOWER_CRANE_TASK and TOWER_CRANE_AGENT are set/);
@@ -174,14 +241,19 @@ process.exit(r.code === null ? 99 : r.code);
 test('pi rungs load the tower-crane skill for workers and reviewers when it is installed', (t) => {
   const h = setup(t);
   const plugin = path.join(h.base, 'plugin');
-  for (const s of ['tower-crane-work', 'tower-crane-review']) fs.mkdirSync(path.join(plugin, 'skills', s), { recursive: true });
+  writeSkill(plugin, 'tower-crane-work', 'PI_WORK_SKILL_MUST_NOT_BE_EMBEDDED');
+  writeSkill(plugin, 'tower-crane-review', 'PI_REVIEW_SKILL_MUST_NOT_BE_EMBEDDED');
   const env = { TOWER_CRANE_PLUGIN_ROOT: plugin };
   for (const rung of ['easy', 'medium', 'review', 'small']) setRung(h, rung, ['--model', 'm']);
   h.ok(['ladder', 'harness', 'pi']);
   const at = (argv) => argv.slice(argv.indexOf('--skill'));
-  assert.deepEqual(at(dry(h, 'medium', env).argv), ['--skill', path.join(plugin, 'skills', 'tower-crane-work')]);
+  const worker = dry(h, 'medium', env).argv;
+  const reviewer = dry(h, 'review', env).argv;
+  assert.deepEqual(at(worker), ['--skill', path.join(plugin, 'skills', 'tower-crane-work')]);
   assert.deepEqual(at(dry(h, 'easy', env).argv), ['--skill', path.join(plugin, 'skills', 'tower-crane-work')]);
-  assert.deepEqual(at(dry(h, 'review', env).argv), ['--skill', path.join(plugin, 'skills', 'tower-crane-review')]);
+  assert.deepEqual(at(reviewer), ['--skill', path.join(plugin, 'skills', 'tower-crane-review')]);
+  assert.ok(!worker.find((arg) => arg.includes('## Task')).includes('PI_WORK_SKILL_MUST_NOT_BE_EMBEDDED'));
+  assert.ok(!reviewer.find((arg) => arg.includes('## Task')).includes('PI_REVIEW_SKILL_MUST_NOT_BE_EMBEDDED'));
   assert.ok(!dry(h, 'small', env).argv.includes('--skill'), 'other rungs get no skill');
   const missing = path.join(h.base, 'empty-plugin');
   fs.mkdirSync(missing);
