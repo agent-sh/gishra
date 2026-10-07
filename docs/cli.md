@@ -63,6 +63,8 @@ Dependent tasks can start while a single dependency chain is submitted or accept
 
 The dispatch supervisor links submitted PRs with `gh stack link <lower-pr> <upper-pr>` in bottom-to-top order. Native dispatches use `stack link ID` after recording the PR with `submit`. Linking verifies every member's submitted head, PR base and same-repository origin. Auto-merge must be disabled. Workers retain their existing gh permissions; linking and synchronization run under the dispatcher's policy.
 
+When stacks become available again, a successful `stack link ID` clears ordinary-merge fallback markers for that chain and restores the stack merge guard.
+
 | Command | Does |
 |---|---|
 | `stack link ID` | link a submitted task's dependency chain on GitHub, bottom to top |
