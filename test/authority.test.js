@@ -17,8 +17,19 @@ function recordSpawn(h, agent, role) {
   })}\n`);
 }
 
+// The owner's own harness config: codex defines the MCP server docs, claude
+// defines none.
+function harnessConfig(h) {
+  h.env.CODEX_HOME = path.join(h.base, 'codex');
+  h.env.CLAUDE_CONFIG_DIR = path.join(h.base, 'claude');
+  fs.mkdirSync(h.env.CODEX_HOME, { recursive: true });
+  fs.mkdirSync(h.env.CLAUDE_CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), '[mcp_servers.docs]\ncommand = "docs-server"\n');
+}
+
 function setup(t) {
   const h = makeRepo(t);
+  harnessConfig(h);
   h.init();
   h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'done', '--needs-owner', 'approve access']);
   return h;
@@ -163,4 +174,66 @@ test('an unpinned project does not block: the orchestrator pins detected gate co
   ]);
   const status = h.ok(['status']);
   assert.match(status, /pinned gate commands: tests_cmd "npm test" by orchestrator from package\.json scripts\.test/);
+});
+
+test('the orchestrator opts a rung in only to MCP servers the owner already defines', (t) => {
+  const h = setup(t);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'sonnet']);
+  const before = h.readState('project.json');
+  for (const [args, missing] of [
+    [['ladder', 'set', 'easy', '--mcp', '["shell"]'], /ladder easy opts in MCP server shell, which .*config\.toml does not define/],
+    [['ladder', 'set', 'easy', '--fallbacks', '[{"harness":"claude","model":"opus","mcp":["docs"]}]'], /ladder easy opts in MCP server docs, which .*mcp\.json or .*\.claude\.json does not define/],
+  ]) {
+    const r = h.run(args, as('orchestrator'));
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, missing);
+    assert.match(r.stderr, /only MCP servers the owner's harness config already defines/);
+    assert.deepEqual(h.readState('project.json'), before);
+  }
+  // Moving a rung with an MCP server to a harness whose config lacks it is a new opt-in too.
+  h.ok(['ladder', 'set', 'easy', '--mcp', '["docs"]'], as('orchestrator'));
+  const moved = h.run(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'opus', '--clear', 'mcp', '--fallbacks', '[{"mcp":["docs"]}]'], as('orchestrator'));
+  assert.equal(moved.code, 1, moved.stderr);
+  assert.match(moved.stderr, /MCP server docs/);
+  assert.equal(h.readState('decisions.json').decisions.length, 0);
+  // The owner can overrule the condition.
+  h.ok(['ladder', 'set', 'easy', '--mcp', '["docs","shell"]']);
+  assert.deepEqual(h.readState('project.json').ladder.easy.mcp, ['docs', 'shell']);
+  // A server the owner set earlier does not block the orchestrator's other changes.
+  h.ok(['ladder', 'set', 'easy', '--effort', 'low'], as('orchestrator'));
+});
+
+test('a tool that is not a harness built-in or changes the rung sandbox is owner-required', (t) => {
+  const h = setup(t);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'sonnet']);
+  h.ok(['ladder', 'set', 'review', '--harness', 'claude', '--model', 'opus', '--clear', 'profile', '--clear', 'args']);
+  // Built-ins that keep the sandbox are the orchestrator's.
+  h.ok(['ladder', 'set', 'easy', '--tools', '["web_search","multi_agent"]'], as('orchestrator'));
+  h.ok(['ladder', 'set', 'review', '--tools', '["WebFetch","Agent"]'], as('orchestrator'));
+  let opened = 0;
+  for (const [args, tools] of [
+    [['ladder', 'set', 'easy', '--tools', '["web_search","computer_use"]'], { easy: { tools: ['computer_use'] } }],
+    [['ladder', 'set', 'review', '--tools', '["WebFetch","Edit"]'], { review: { tools: ['Edit'] } }],
+    [['ladder', 'set', 'review', '--tools', '["Bash(gh pr merge:*)"]'], { review: { tools: ['Bash(gh pr merge:*)'] } }],
+    [['ladder', 'set', 'review', '--fallbacks', '[{"harness":"codex","model":"sol","tools":["apps"]}]'], { review: { tools: ['apps'] } }],
+  ]) {
+    const before = h.readState('project.json');
+    const r = h.run(args, as('orchestrator'));
+    opened += 1;
+    assert.equal(r.code, 1, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`ladder\\.reach is owner-required; opened D${opened} `));
+    assert.deepEqual(h.readState('project.json'), before);
+    const d = h.readState('decisions.json').decisions.at(-1);
+    assert.deepEqual(d.escalation, { settings: ['ladder.reach'], change: { ladder: tools } });
+    const worker = h.run(args, as('worker-T1-1'));
+    assert.equal(worker.code, 1);
+    assert.match(worker.stderr, /only the owner/);
+  }
+  // A tool joined with a sandbox grant escalates both.
+  const both = h.run(['ladder', 'set', 'easy', '--tools', '["browser_use"]', '--sandbox', '{"write":["/tmp/x"]}'], as('orchestrator'));
+  assert.equal(both.code, 1, both.stderr);
+  assert.deepEqual(h.readState('decisions.json').decisions.at(-1).escalation.settings, ['sandbox', 'ladder.reach']);
+  // The owner can overrule.
+  h.ok(['ladder', 'set', 'review', '--tools', '["Edit"]']);
+  assert.deepEqual(h.readState('project.json').ladder.review.tools, ['Edit']);
 });

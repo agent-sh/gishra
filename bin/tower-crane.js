@@ -71,7 +71,7 @@ const SETTINGS = {
   'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds, by_kind?: overrides}; null restores hosted CI'),
   'merge-keep-branch': str('JSON', 'true keeps merged task branches for retained worktrees; false or null restores deletion'),
   'merge-admin': str('JSON', 'owner-required: true uses gh --admin for solely owned repos; false or null disables it'),
-  'review-policy': str('JSON', 'owner-only review diff limits and canonical model prices; null clears the policy'),
+  'review-policy': str('JSON', 'operational (orchestrator or owner): review diff limits and canonical model prices; null clears the policy'),
 };
 
 const TASK_FIELDS = {
@@ -98,8 +98,8 @@ const RUNG_FLAGS = {
   command: str('JSON', 'owner-required: for the command harness: argv array; {task} {brief} {prompt} {cwd} are substituted'),
   supervision: str('JSON', 'retry, backoff, stall and progress path settings as a JSON object'),
   fallbacks: str('JSON', 'operational (orchestrator or owner): ordered fallback route objects for provider outages and harness refusals'),
-  tools: str('JSON', 'claude or codex: tools the agent file denies that this rung opts back in to (claude tool names, codex features), as a JSON array'),
-  mcp: str('JSON', 'claude or codex: MCP servers from your harness config this rung opts in to, by name, as a JSON array'),
+  tools: str('JSON', 'claude or codex: tools the agent file denies that this rung opts back in to (claude tool names, codex features), as a JSON array; operational for harness built-ins that keep the rung sandbox, other tools owner-required'),
+  mcp: str('JSON', 'claude or codex: MCP servers from your harness config this rung opts in to, by name, as a JSON array; the orchestrator names only servers the owner already defines'),
   clear: many('FIELD', 'remove a field from the rung (a cleared harness follows the default)'),
 };
 

@@ -41,7 +41,8 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `budget.lower` | operational | `project set --budget-hours`, `--budget-tokens` to a lower limit, or a limit where there was none |
 | `merge.keep_branch` | operational | `project set --merge-keep-branch` |
 | `review` | operational | `project set --review-policy` |
-| `ladder.harness`, `ladder.model`, `ladder.profile`, `ladder.provider`, `ladder.effort`, `ladder.args`, `ladder.supervision`, `ladder.fallbacks`, `ladder.tools`, `ladder.mcp` | operational | `ladder set`, `ladder harness` |
+| `ladder.harness`, `ladder.model`, `ladder.profile`, `ladder.provider`, `ladder.effort`, `ladder.args`, `ladder.supervision`, `ladder.fallbacks` | operational | `ladder set`, `ladder harness` |
+| `ladder.tools`, `ladder.mcp` | operational, with two conditions | `ladder set --tools`, `--mcp`, including in a fallback route: an MCP server the owner's harness config already defines, never a new command, and a harness built-in tool that leaves the rung's sandbox confinement (write paths, env, scope, network) unchanged |
 | `task.kind`, `task.tier` | operational | `task update --kind`, `--tier` when the value changes |
 | `task.needs_owner` | operational | `owner-done`; `task update --needs-owner` clearing or replacing an existing reason |
 | `waive.review` | operational | `accept --waive review`, for a capped or down reviewer |
@@ -49,12 +50,15 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `claim.release` | owner-required | `release` of another agent's claim while its process is live or unverified |
 | `sandbox`, `env`, `env_file`, `scope` | owner-required | `project set` or `ladder set`, including a fallback route that changes them |
 | `ladder.command` | owner-required | `ladder set --command`, including in a fallback route: the program a rung runs |
+| `ladder.reach` | owner-required | `ladder set --tools` opting in to a tool that is not a harness built-in (such as a `Bash(...)` rule) or that changes the rung's sandbox: claude `Edit`, `Write`, `NotebookEdit`; codex `memories`, `plugins`, `apps`, `browser_use`, `computer_use` |
 | `budget.raise` | owner-required | `project set --budget-hours`, `--budget-tokens` to a higher limit or none |
 | `delegation` | owner-required | `spawn --role orchestrator`, which hands orchestrator authority to a new agent |
 | `waive.tests`, `waive.clean`, `waive.ci` | owner-required | `accept --waive tests`, `clean`, `ci` |
 | `ladder.save_user` | owner-required | `ladder save-user`, the default for every project |
 | `browser_kit` | owner-required | `browser-kit set`, the MCP servers browser tasks get in every project |
 | `publish` | owner-required | anything that publishes outside the repository, such as a release or a package; no command does this |
+
+Tools and MCP servers are operational because choosing what a rung works with is running the project, and the owner's autonomy rule hands that to the orchestrator; the two conditions keep it from widening what an agent reaches. An MCP server runs outside the rung's sandbox, so the orchestrator may opt in only a server already defined in the owner's own harness config (claude `mcp.json` or `.claude.json`, codex `config.toml`); naming another is refused, and the owner adds it. A tool the agent files name (claude tool names, codex features) or codex `web_search` re-enables a harness built-in inside the same sandbox; any other tool opens a `ladder.reach` decision. Only opt-ins new to a rung and harness are checked, including rungs a `ladder harness` change moves to another harness. The owner can overrule either condition by making the change. The sandbox, env, env_file and scope grants, `merge.admin`, budget raises, delegation and publishing stay owner-required.
 
 `init` checks the same table; with no state to hold a decision, an orchestrator's owner-required `init` setting is refused and it inits without it.
 
@@ -322,7 +326,7 @@ Hosted CI evidence and its audit event also carry `ci_policy`: `{ "required": []
 
 Tests and clean evidence and their audit events carry `gate_policy`: `{tests_cmd, tests_proof_cmd}` for tests or `{clean_cmd}` for clean, captured when the check starts. Values are trimmed strings or null. Missing, malformed or changed policy makes previous evidence stale, even if the owner changes commands during a run. Successful receipts must also include the pinned test command (except none mode) or the pinned cleanup invocation with its appended arguments. Scoped proof records `receipt.proof_tests`, the changed test paths used to expand the pinned template; every test shell receipt must match the full command or that expansion. Acceptance, merge and task reports use the same check. Old receipts without this snapshot require a new check; owner waivers retain their existing behavior.
 
-The CLI refuses manual software verdicts, and software receipts require matching records in tasks.json and events.jsonl. Plain files cannot stop a writer running as the same user from forging those records or an owner waiver. Command receipts show what ran; acceptance checks them and their recorded policy against the owner-pinned commands. The reviewer checks that the configured runners verify the change.
+The CLI refuses manual software verdicts, and software receipts require matching records in tasks.json and events.jsonl. Plain files cannot stop a writer running as the same user from forging those records or an owner waiver. Command receipts show what ran; acceptance checks them and their recorded policy against the pinned commands. The reviewer checks that the configured runners verify the change.
 
 ### Ready and blocked
 
@@ -352,7 +356,7 @@ Tests modes change how `check tests` produces evidence, not which gates acceptan
 
 Successful tests evidence counts only when its audited `tests_mode` matches the mode currently resolved for the project and task kind. A mode change, a missing mode on older evidence or a malformed current policy needs a new tests check. The audit event must contain the same mode as the evidence; changing the mode in tasks.json alone cannot retarget evidence. Owner waivers still apply. Task views, board gate pips and evidence ledger (including accepted tasks), acceptance and merge use this same rule.
 
-Before acceptance, `accept ID` runs unattempted software gates in order: tests and clean for code, then CI for every task with a PR. Tests and clean use the owner-pinned commands. Without a test pin, missing tests in prove or run-only mode block acceptance. None mode records its audited tests result without a command. Optional `--cmd` and `--proof-cmd` must match the pins. Expensive prove uses the pinned template with the `{tests}` placeholder. Eligible successful receipts are reused. Failed, stale local-CI or unaudited attempted receipts require an explicit `check` rerun. Results are recorded even if a later gate refuses acceptance. A head, revision or status change during a gate refuses the attempt. Review dispatch is guarded again under the state lock.
+Before acceptance, `accept ID` runs unattempted software gates in order: tests and clean for code, then CI for every task with a PR. Tests and clean use the pinned commands. Without a test pin, missing tests in prove or run-only mode block acceptance. None mode records its audited tests result without a command. Optional `--cmd` and `--proof-cmd` must match the pins. Expensive prove uses the pinned template with the `{tests}` placeholder. Eligible successful receipts are reused. Failed, stale local-CI or unaudited attempted receipts require an explicit `check` rerun. Results are recorded even if a later gate refuses acceptance. A head, revision or status change during a gate refuses the attempt. Review dispatch is guarded again under the state lock.
 
 When software gates pass and no review has been attempted at the current head and revision, `accept` dispatches a reviewer and exits 0 with `review_pending: true` and its agent name in JSON; the task stays submitted. A repeated accept reuses a live review dispatch. Call accept again after review evidence arrives. Failed reviews require rework or an explicit stronger review dispatch. `spawn --role review` also refuses until all software gates pass; `--dry-run` checks them for a submitted task. For an unsubmitted task a dry run previews the fallback command only, and cannot dispatch a review.
 
