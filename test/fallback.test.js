@@ -24,14 +24,16 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Complete the original task brief.\n' });
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
-  for (const harness of ['codex', 'claude', 'agy']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
+  // A gh on PATH and no token in the environment make every route ask gh for
+  // one, as on a CI runner; that must happen outside the state lock.
+  for (const harness of ['codex', 'claude', 'agy', 'gh']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
   const routes = [{ harness: nextHarness, model: 'second', env: { ROUTE_ENV: 'fallback' } }];
   if (chain) routes.push({ harness: 'claude', model: 'third' });
   h.ok(['ladder', 'set', 'easy', '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
     '--env', '{"ROUTE_ENV":"primary"}', '--supervision', JSON.stringify(supervision), '--fallbacks', JSON.stringify(routes)]);
   h.file = path.join(h.base, 'attempts.json');
   h.spawnEnv = {
-    PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
+    PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), GH_TOKEN: '', GITHUB_TOKEN: '',
     NODE_OPTIONS: `--require "${path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/')}"`,
     TOWER_CRANE_TEST_FALLBACK_FILE: h.file, TOWER_CRANE_TEST_FALLBACK_REASON: reason,
     ...(chain ? { TOWER_CRANE_TEST_FALLBACK_CHAIN: '1' } : {}),
