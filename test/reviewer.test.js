@@ -72,6 +72,20 @@ function sample(h, name, input, cached, output, cacheWrite = 0) {
     '--cached', String(cached), '--cache-write', String(cacheWrite), '--output', String(output), '--rung', 'review', '--model', name]);
 }
 
+function commandReviewer(h, out) {
+  const script = `const fs = require('node:fs'); const cp = require('node:child_process');
+fs.writeFileSync(process.argv[1], process.argv[2]);
+const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', ${JSON.stringify(h.sha)}, '--summary', 'reviewed'], {env: process.env});
+process.exit(r.status ?? 1);`;
+  h.ok(['project', 'set', '--review-policy', 'null']);
+  const command = [process.execPath, '-e', script, out, '{prompt}'];
+  for (const name of ['easy', 'medium', 'hard', 'research']) {
+    h.ok(['ladder', 'set', name, '--harness', 'command', '--clear', 'model', '--clear', 'profile',
+      '--clear', 'provider', '--clear', 'effort', '--command', JSON.stringify(command)]);
+  }
+  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
+}
+
 describe('reviewer integration cases', { concurrency: windowsConcurrency }, () => {
 test('review selection also uses tier and diff defaults without a price table', (t) => {
   const h = setup(t);
@@ -216,20 +230,6 @@ test('review packet uses role headings consistently and ignores fenced headings'
   for (const secret of ['BUILDER-HISTORY', 'FAKE-REVIEWER', 'SHARED-HISTORY']) assert.ok(!prompt.includes(secret));
 });
 
-function commandReviewer(h, out) {
-  const script = `const fs = require('node:fs'); const cp = require('node:child_process');
-fs.writeFileSync(process.argv[1], process.argv[2]);
-const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', ${JSON.stringify(h.sha)}, '--summary', 'reviewed'], {env: process.env});
-process.exit(r.status ?? 1);`;
-  h.ok(['project', 'set', '--review-policy', 'null']);
-  const command = [process.execPath, '-e', script, out, '{prompt}'];
-  for (const name of ['easy', 'medium', 'hard', 'research']) {
-    h.ok(['ladder', 'set', name, '--harness', 'command', '--clear', 'model', '--clear', 'profile',
-      '--clear', 'provider', '--clear', 'effort', '--command', JSON.stringify(command)]);
-  }
-  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
-}
-
 test('review dispatch computes its diff once outside the state lock', (t) => {
   const h = setup(t);
   ready(h);
@@ -240,6 +240,7 @@ test('review dispatch computes its diff once outside the state lock', (t) => {
   });
   const calls = fs.readFileSync(report, 'utf8').trim().split('\n').map(JSON.parse);
   assert.deepEqual(calls, Array.from({ length: 3 }, () => ({ locked: false })));
+});
 });
 
 test('review dispatch refuses a submitted head or configured base changed after diff preparation', async (t) => {
@@ -295,6 +296,7 @@ test('accept runs tests, clean and CI before dispatch, and records review pendin
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
 });
 
+describe('remaining reviewer integration cases', { concurrency: windowsConcurrency }, () => {
 test('a failed automatic gate never starts a reviewer', (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'review-context.txt');

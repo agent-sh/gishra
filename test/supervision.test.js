@@ -297,7 +297,6 @@ test('a running process keeps its lease without claimant writes', async (t) => {
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'worker did not finish');
 });
 
-describe('remaining supervision cases', { concurrency: windowsConcurrency }, () => {
 test('release during backoff fences the old supervisor from a replacement claim', async (t) => {
   const h = setup(t, { failures: 9, config: { backoff_ms: 1400, max_backoff_ms: 1400 } });
   const spawned = h.json(['spawn', '--task', 'T1']);
@@ -312,6 +311,7 @@ test('release during backoff fences the old supervisor from a replacement claim'
   assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
 });
 
+describe('other supervision cases', { concurrency: windowsConcurrency }, () => {
 test('an expired previous claim does not stop supervision before a slow replacement claims', (t) => {
   const h = setup(t, { claimDelay: 350 });
   h.ok(['claim', 'T1', '--agent', 'previous-worker', '--lease', '1']);
