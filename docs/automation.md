@@ -49,6 +49,10 @@ use explicit `accept` for review dispatch. `ci completed ID --sha SHA` and
 must deliver those notifications; Tower Crane does not install a webhook
 listener. Concurrent consumers serialize reactions per task using audited
 event receipts and drain queued notifications.
+Supervisors use the dispatcher's command PATH and an explicit trusted
+authorization context. Unknown mergeability and transport errors remain
+retryable at startup. A remote merge completed before its local receipt
+is recovered through the merge gate's accepted-head confirmation.
 
 Failures remain visible in gate receipts and task notes. Conflicting PRs
 return to rework with a file list. Unknown mergeability, failed transport,

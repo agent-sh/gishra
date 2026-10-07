@@ -177,7 +177,12 @@ CI gate queries GitHub at the current submitted head. A pending or failing
 gate remains failing until an explicit retry or another completion.
 Automatic failures are recorded in `automation` events. Concurrent
 consumers serialize per task and reuse completed event receipts; commands
-execute outside the state lock. Software reactions may finish their
+execute outside the state lock. Deferred or errored reactions remain
+retryable at watcher startup. Accepted PRs already merged remotely are
+confirmed through the merge gate, preserving the accepted head check.
+Supervisors use the dispatcher's PATH and an explicit trusted
+authorization context; workers and reviewers keep their restrictive
+command shims. Software reactions may finish their
 bounded gate commands after a wait's timeout expires. The broker retains
 its command restrictions and never executes gates.
 

@@ -504,14 +504,25 @@ evidence. There is no CI polling loop or webhook listener.
 
 `automation` events record `{source, phase}` keyed by the triggering event
 ID, or a stable digest for older records without IDs.
-`running` adds executor `pid`, `host` and Linux `start_ticks`; `done`
-adds `error`, null on success. A task has at most one observable executor.
+`running` adds executor `pid`, `host` and Linux `start_ticks`. `done`
+deduplicates completed work. `deferred` keeps unknown or moved heads,
+unknown mergeability and failed merge attempts retryable; `error` records
+an exception. Terminal receipts include `error`, null without an exception.
+Startup can retry deferred or errored work without a new lifecycle event.
+A task has at most one observable executor.
 An exited executor's start can be retried, while an unobservable executor
 remains busy. `automation queued` records a blocked notification's source;
 the executor drains it after releasing the task. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
-`via: automation`. This provenance does not replace gate command receipts.
+`via: automation`. Reactions establish an explicit authorization context
+only after verifying the caller's authority or entering from the trusted
+supervisor. Supervisors restore the dispatcher's command PATH for these
+operations; agent commands retain their restrictive Git and GitHub shims.
+This provenance does not replace gate command receipts.
+An accepted PR already merged remotely goes through the merge gate's
+confirmation path. It records the matching accepted head without merging
+again, including after an executor dies before writing its receipt.
 Waiters retain automatic events even when their actor matches the waiter.
 Reactions run before event output filters, and active PRs catch up at
 watcher startup except a default zero-timeout cursor snapshot.

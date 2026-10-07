@@ -8,6 +8,13 @@ const task = process.env.TOWER_CRANE_TASK;
 const state = JSON.parse(fs.readFileSync(process.env.AUTOMATION_GITHUB, 'utf8'));
 const pr = state.prs['7'];
 const run = (args) => cp.execFileSync(process.execPath, [bin, ...args], { stdio: 'pipe' });
+if (process.env.AUTOMATION_POLICY_PROBE) {
+  const denials = [['api', 'repos/acme/demo'], ['pr', 'merge', '7']].map((args) => {
+    const r = cp.spawnSync('gh', args, { encoding: 'utf8' });
+    return { status: r.status, stderr: r.stderr };
+  });
+  fs.appendFileSync(process.env.AUTOMATION_POLICY_PROBE, JSON.stringify({ path: process.env.PATH || process.env.Path, denials }) + '\n');
+}
 const taskState = JSON.parse(fs.readFileSync(require('node:path').join(process.env.TOWER_CRANE_STATE, 'tasks.json'), 'utf8'))
   .tasks.find((t) => t.id === task);
 if (mode === 'worker' || mode === 'auto' && taskState.status !== 'submitted') {

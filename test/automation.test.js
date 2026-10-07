@@ -14,10 +14,29 @@ function setup(t, { kind = 'code', ci = 'success' } = {}) {
   const h = makeRepo(t);
   h.sha = gateFixture(h);
   h.init(['--repo', 'acme/demo', '--base', 'main']);
-  const preload = path.join(h.base, 'offline-gh.js');
-  fs.writeFileSync(preload, `const cp=require('node:child_process'),run=cp.spawnSync;
-cp.spawnSync=(cmd,args,opts)=>cmd==='gh'?run(process.execPath,[${JSON.stringify(ghStub)},...args],opts):run(cmd,args,opts);\n`);
-  h.env.NODE_OPTIONS = `--require=${JSON.stringify(preload)}`;
+  const tools = path.join(h.base, 'tools');
+  fs.writeFileSync(path.join(tools, 'gh'), `#!/usr/bin/env node\nrequire(${JSON.stringify(ghStub)});\n`);
+  fs.chmodSync(path.join(tools, 'gh'), 0o755);
+  delete h.env.NODE_OPTIONS;
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(tools, 'gh.cmd'), `@"${process.execPath}" "${ghStub}" %*\r\n`);
+    const preload = path.join(h.base, 'offline-gh.js');
+    // Windows cannot spawn a .cmd directly. Resolve PATH first so agent
+    // policy shims still run before the offline GitHub executable.
+    fs.writeFileSync(preload, `const cp=require('node:child_process'),fs=require('node:fs'),path=require('node:path'),run=cp.spawnSync;
+cp.spawnSync=(cmd,args,opts)=>{
+  if(cmd!=='gh')return run(cmd,args,opts);
+  const env=opts?.env||process.env;
+  for(const dir of String(env.PATH||env.Path||'').split(path.delimiter)){
+    for(const ext of ['.exe','.cmd','.bat']){
+      const file=path.join(dir,cmd+ext);
+      if(fs.existsSync(file))return run(file,args,{...opts,shell:ext!=='.exe'});
+    }
+  }
+  return run(cmd,args,opts);
+};\n`);
+    h.env.NODE_OPTIONS = `--require=${JSON.stringify(preload)}`;
+  }
   h.env.AUTOMATION_GITHUB = path.join(h.base, 'github.json');
   h.github = () => JSON.parse(fs.readFileSync(h.env.AUTOMATION_GITHUB, 'utf8'));
   h.saveGithub = (state) => fs.writeFileSync(h.env.AUTOMATION_GITHUB, JSON.stringify(state));
@@ -172,15 +191,114 @@ test('concurrent event consumers execute each submission gate only once', async 
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.map((e) => e.type), ['tests', 'clean', 'ci']);
 });
 
+for (const reason of ['unknown mergeability', 'transport error']) {
+  test(`startup retries ${reason} without a new lifecycle event`, (t) => {
+    const h = setup(t, { kind: 'docs' });
+    h.submit();
+    h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+    const state = h.github();
+    if (reason === 'transport error') state.failView = true;
+    else state.prs['7'].mergeable = state.prs['7'].mergeStateStatus = 'UNKNOWN';
+    h.saveGithub(state);
+    h.consume();
+    assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
+    assert.equal(h.logs().findLast((e) => e.cmd === 'automation').detail.phase,
+      reason === 'transport error' ? 'error' : 'deferred');
+    const recovered = h.github();
+    recovered.failView = false;
+    recovered.prs['7'].mergeable = 'MERGEABLE';
+    recovered.prs['7'].mergeStateStatus = 'CLEAN';
+    h.saveGithub(recovered);
+    h.ok(['wait', '--types', 'merged', '--timeout', '5', '--agent', 'orchestrator']);
+    assert.equal(h.readState('tasks.json').tasks[0].evidence.at(-1).type, 'merge');
+    assert.equal(h.github().prs['7'].state, 'MERGED');
+  });
+}
+
+test('startup confirms the accepted head after the executor dies between remote merge and receipt', (t) => {
+  const h = setup(t, { kind: 'docs' });
+  h.submit();
+  h.ok(['check', 'ci', 'T1', '--agent', 'orchestrator']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  const crash = h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator'],
+    { env: { AUTOMATION_CRASH_AFTER_MERGE: '1' } });
+  assert.notEqual(crash.code, 0);
+  assert.equal(h.github().prs['7'].state, 'MERGED');
+  assert.equal(h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'merge'), false);
+  assert.equal(h.logs().findLast((e) => e.cmd === 'automation').detail.phase, 'running');
+  h.ok(['wait', '--types', 'merged', '--timeout', '5', '--agent', 'orchestrator']);
+  const receipt = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.equal(receipt.type, 'merge');
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.sha, h.sha);
+  assert.equal(receipt.ref, h.sha);
+  assert.equal(h.github().calls.filter((a) => a[1] === 'merge').length, 1, 'confirmation does not repeat the remote merge');
+});
+
+test('a remotely merged different head produces failed merge evidence', (t) => {
+  const h = setup(t, { kind: 'docs' });
+  h.submit();
+  h.ok(['check', 'ci', 'T1', '--agent', 'orchestrator']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  const state = h.github();
+  state.prs['7'].state = 'MERGED';
+  state.prs['7'].headRefOid = 'f'.repeat(40);
+  h.saveGithub(state);
+  h.consume();
+  const receipt = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.equal(receipt.type, 'merge');
+  assert.equal(receipt.ok, false);
+  assert.equal(h.github().calls.filter((a) => a[1] === 'merge').length, 0);
+});
+
+function configureHarness(h) {
+  h.ok(['task', 'update', 'T1', '--tier', 'easy']);
+  for (const rung of ['easy', 'review']) h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
+    JSON.stringify([process.execPath, harness, BIN, 'auto']),
+    ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((f) => ['--clear', f])]);
+}
+
+test('a worker identity cannot authorize reactions by passing the orchestrator name', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.submit();
+  const result = h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator'],
+    { env: { TOWER_CRANE_AGENT: 'worker', TOWER_CRANE_TASK: 'T1' } });
+  assert.equal(result.code, 2);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
+});
+
+test('supervisor reactions pin unconfigured gates and bypass the real restrictive agent shims', async (t) => {
+  const h = setup(t);
+  fs.writeFileSync(path.join(h.repo, 'package.json'), JSON.stringify({ scripts: { test: 'node test/value.test.js' } }));
+  h.git(['add', 'package.json']);
+  h.git(['commit', '-qm', 'detectable test command']);
+  h.sha = h.git(['rev-parse', 'HEAD']);
+  const state = h.github();
+  state.prs['7'].headRefOid = h.sha;
+  h.saveGithub(state);
+  h.ok(['project', 'set', '--tests-cmd', 'null', '--clean-cmd', 'null']);
+  configureHarness(h);
+  h.env.AUTOMATION_POLICY_PROBE = path.join(h.base, 'policy-probe.jsonl');
+  h.ok(['spawn', '--task', 'T1', '--wait', '--agent', 'orchestrator']);
+  const deadline = Date.now() + 15000;
+  while (!h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'merge' && e.ok)) {
+    if (Date.now() > deadline) throw new Error(JSON.stringify(h.logs().slice(-10)));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const pins = h.logs().filter((e) => e.cmd === 'gates pin');
+  assert.deepEqual(pins.map((e) => e.detail.key), ['tests_cmd', 'clean_cmd']);
+  assert.ok(pins.every((e) => e.agent === 'orchestrator' && e.detail.authority === 'orchestrator'));
+  const probes = fs.readFileSync(h.env.AUTOMATION_POLICY_PROBE, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(probes.length, 2);
+  assert.ok(probes.every((p) => p.denials.every((d) => d.status === 126 && /not allowed/.test(d.stderr))), JSON.stringify(probes));
+  assert.ok(probes.every((p) => p.path.includes(path.join(h.state, 'homes'))));
+});
+
 test('a supervised worker submission runs gates and dispatches the offline reviewer after exit', async (t) => {
   const h = setup(t);
-  h.ok(['task', 'update', 'T1', '--tier', 'easy']);
-  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command',
-    JSON.stringify([process.execPath, harness, BIN, 'auto']),
-    ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((f) => ['--clear', f])]);
-  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--command',
-    JSON.stringify([process.execPath, harness, BIN, 'auto']),
-    ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((f) => ['--clear', f])]);
+  configureHarness(h);
   const hold = path.join(h.base, 'worker-hold');
   const spawned = h.runAsync(['spawn', '--task', 'T1', '--wait', '--agent', 'orchestrator'],
     { env: { AUTOMATION_WORKER_HOLD: hold } });
