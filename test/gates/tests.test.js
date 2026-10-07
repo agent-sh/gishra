@@ -50,7 +50,7 @@ function ctx(sha, { kind = 'code', args = {}, project = {} } = {}) {
     root,
     worktree: null,
     task: { id: 'T1', kind, sha, status: 'submitted' },
-    project: { repo: 'acme/app', base: 'main', ...project },
+    project: { repo: 'acme/app', base: 'main', gates: { tests_cmd: args.cmd ?? CMD }, ...project },
     args: { cmd: CMD, ...args },
     log() {},
   };

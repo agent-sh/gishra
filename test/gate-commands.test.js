@@ -1,0 +1,216 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { makeRepo, runPty, PTY_AVAILABLE } = require('./helpers');
+const { gateFixture } = require('./gate-helpers');
+const { shellQuote } = require('../lib/gates/common');
+
+function fixture(t) {
+  const h = makeRepo(t);
+  h.init();
+  const sha = gateFixture(h);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  return { h, sha };
+}
+
+function pin(h) {
+  h.ok(['project', 'set', '--tests-cmd', 'node test/value.test.js',
+    '--clean-cmd', h.env.TOWER_CRANE_CLEAN_CMD]);
+}
+
+const shown = (h, type) => h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === type);
+const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+
+test('unpinned agent commands cannot execute a shell payload', (t) => {
+  const { h } = fixture(t);
+  // Remove fixture configuration through the owner CLI.
+  if (h.readState('project.json').gates) h.ok(['project', 'set', '--tests-cmd', 'null', '--clean-cmd', 'null']);
+  const marker = path.join(h.base, 'executed');
+  const script = path.join(h.base, 'payload.js');
+  fs.writeFileSync(script, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed');\n`);
+  const cmd = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+  for (const type of ['tests', 'clean']) {
+    const r = h.run(['check', type, 'T1', '--cmd', cmd, '--agent', 'worker'],
+      { env: { TOWER_CRANE_CLEAN_CMD: cmd } });
+    assert.equal(r.code, 1, r.stderr + r.stdout);
+    assert.equal(fs.existsSync(marker), false, `${type} executed an unpinned command`);
+  }
+});
+
+test('only the explicit owner can set or clear gate commands at init and project set', (t) => {
+  for (const flag of ['--tests-cmd', '--clean-cmd', '--tests-proof-cmd']) {
+    const h = makeRepo(t);
+    const init = h.run(['init', '--name', 'demo', '--goal', 'work', flag, 'node check.js', '--agent', 'worker']);
+    assert.equal(init.code, 1, init.stderr);
+    assert.match(init.stderr, /only the owner/);
+    assert.equal(fs.existsSync(path.join(h.state, 'project.json')), false);
+    h.init([flag, flag === '--tests-proof-cmd' ? 'node {tests}' : 'node check.js']);
+    const before = h.readState('project.json');
+    for (const value of ['node other.js', 'null', before.gates[flag.slice(2).replaceAll('-', '_')]]) {
+      const r = h.run(['project', 'set', flag, value, '--agent', 'worker']);
+      assert.equal(r.code, 1, r.stderr);
+      assert.deepEqual(h.readState('project.json'), before);
+    }
+    for (const value of ['', '   ']) {
+      assert.equal(h.run(['project', 'set', flag, value]).code, 2);
+      assert.deepEqual(h.readState('project.json'), before);
+    }
+  }
+});
+
+test('gates use pinned commands and reject differing flags and cleanup environment before execution', (t) => {
+  const { h } = fixture(t);
+  pin(h);
+  for (const type of ['tests', 'clean']) {
+    const r = h.run(['check', type, 'T1', '--cmd', 'node -e "process.exit(0)"', '--agent', 'worker', '--json']);
+    assert.equal(r.code, 1, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout).commands, []);
+    assert.match(JSON.parse(r.stdout).summary, /pinned/);
+  }
+  const r = h.run(['check', 'clean', 'T1', '--json'],
+    { env: { TOWER_CRANE_CLEAN_CMD: 'node -e "process.exit(0)"' } });
+  assert.equal(r.code, 1, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout).commands, []);
+  for (const type of ['tests', 'clean']) {
+    const receipt = h.json(['check', type, 'T1', '--agent', 'worker'],
+      { env: { TOWER_CRANE_CLEAN_CMD: '' } });
+    assert.equal(receipt.ok, true);
+    assert.deepEqual(events(h).at(-1).detail.gate_policy, receipt.gate_policy);
+    assert.equal(shown(h, type).ok, true);
+  }
+});
+
+test('terminal owner fallback cannot pin gate commands', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const before = h.readState('project.json');
+  const env = { ...h.env };
+  delete env.TOWER_CRANE_AGENT;
+  const result = runPty(['project', 'set', '--tests-cmd', 'node check.js'], { cwd: h.repo, env });
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /only the owner with an explicit identity/);
+  assert.deepEqual(h.readState('project.json'), before);
+});
+
+for (const type of ['tests', 'clean']) {
+  test(`${type} command changes stale receipts at acceptance and merge until rerun`, (t) => {
+    const { h, sha } = fixture(t);
+    pin(h);
+    h.ok(['check', 'tests', 'T1']);
+    h.ok(['check', 'clean', 'T1']);
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+    const previous = h.readState('project.json').gates[`${type}_cmd`];
+    const changed = `${previous} `;
+    // A semantic change to the shell command, preserving fixture behavior.
+    h.ok(['project', 'set', `--${type}-cmd`, `${changed}--fixture`]);
+    if (type === 'clean') h.env.TOWER_CRANE_CLEAN_CMD = `${changed}--fixture`;
+    assert.equal(shown(h, type).ok, false);
+    const accept = h.run(['accept', 'T1']);
+    assert.equal(accept.code, 1);
+    assert.match(accept.stderr, /command.*(changed|matches)/);
+    h.ok(['check', type, 'T1']);
+    h.ok(['accept', 'T1']);
+    h.ok(['project', 'set', `--${type}-cmd`, previous]);
+    const merge = h.run(['merge', 'T1']);
+    assert.equal(merge.code, 1);
+    assert.match(merge.stderr, /its gates no longer pass.*command/);
+  });
+
+  test(`${type} legacy and mismatched command receipts cannot satisfy acceptance`, (t) => {
+    const { h } = fixture(t);
+    pin(h);
+    h.ok(['check', type, 'T1']);
+    const tasks = h.readState('tasks.json');
+    const audit = events(h);
+    const entry = tasks.tasks[0].evidence.at(-1);
+    const detail = audit.at(-1).detail;
+    delete entry.gate_policy;
+    delete detail.gate_policy;
+    h.writeState('tasks.json', tasks);
+    fs.writeFileSync(path.join(h.state, 'events.jsonl'), audit.map(JSON.stringify).join('\n') + '\n');
+    assert.equal(shown(h, type).ok, false);
+    h.ok(['check', type, 'T1']);
+    const fresh = h.readState('tasks.json');
+    const freshAudit = events(h);
+    const run = fresh.tasks[0].evidence.at(-1).commands.find((c) => c.command !== 'git');
+    const auditedRun = freshAudit.at(-1).detail.commands.find((c) => c.command !== 'git');
+    run.command = auditedRun.command = 'node -e "process.exit(0)"';
+    h.writeState('tasks.json', fresh);
+    fs.writeFileSync(path.join(h.state, 'events.jsonl'), freshAudit.map(JSON.stringify).join('\n') + '\n');
+    assert.equal(shown(h, type).ok, false, 'matching audit alone cannot substitute a different command');
+  });
+}
+
+test('expensive proof uses an owner-pinned template and rejects caller-selected payloads', (t) => {
+  const { h } = fixture(t);
+  pin(h);
+  h.ok(['project', 'set', '--tests-expensive', 'true', '--tests-proof-cmd', 'node {tests}']);
+  const bad = h.run(['check', 'tests', 'T1', '--proof-cmd', 'node -e "process.exit(0)" {tests}', '--json']);
+  assert.equal(bad.code, 1, bad.stderr);
+  assert.deepEqual(JSON.parse(bad.stdout).commands, []);
+  const pass = h.json(['check', 'tests', 'T1']);
+  assert.equal(pass.ok, true);
+  assert.equal(pass.gate_policy.tests_proof_cmd, 'node {tests}');
+  const tasks = h.readState('tasks.json');
+  const audit = events(h);
+  const entry = tasks.tasks[0].evidence.at(-1);
+  const detail = audit.at(-1).detail;
+  const proof = entry.commands.find((c) => c.command === 'node test/value.test.js' && c.status !== 0);
+  // The full suite receipt remains valid while the failing proof is substituted.
+  const index = entry.commands.indexOf(proof);
+  entry.commands[index].command = detail.commands[index].command = 'node -e "process.exit(1)"';
+  h.writeState('tasks.json', tasks);
+  fs.writeFileSync(path.join(h.state, 'events.jsonl'), audit.map(JSON.stringify).join('\n') + '\n');
+  assert.equal(shown(h, 'tests').ok, false);
+  h.ok(['check', 'tests', 'T1']);
+  h.ok(['project', 'set', '--tests-proof-cmd', 'node --trace-warnings {tests}']);
+  assert.equal(shown(h, 'tests').ok, false);
+});
+
+test('changing only an evidence policy cannot reuse an audited pass for the new pin', (t) => {
+  const { h } = fixture(t);
+  pin(h);
+  h.ok(['check', 'tests', 'T1']);
+  h.ok(['project', 'set', '--tests-cmd', 'node --trace-warnings test/value.test.js']);
+  const tasks = h.readState('tasks.json');
+  tasks.tasks[0].evidence.at(-1).gate_policy.tests_cmd = h.readState('project.json').gates.tests_cmd;
+  h.writeState('tasks.json', tasks);
+  assert.equal(shown(h, 'tests').ok, false);
+});
+
+test('a pin changed while a gate runs cannot relabel its old command receipt', async (t) => {
+  const { h } = fixture(t);
+  const ready = path.join(h.base, 'ready');
+  const release = path.join(h.base, 'release');
+  const script = path.join(h.base, 'wait.js');
+  fs.writeFileSync(script, `const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(ready)}, 'ready');
+const started = Date.now();
+const timer = setInterval(() => {
+  if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); }
+  else if (Date.now() - started > 10000) { process.exit(1); }
+}, 10);
+`);
+  const cmd = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const pending = h.runAsync(['check', 'tests', 'T1', '--json']);
+  t.after(() => { if (fs.existsSync(h.base)) fs.writeFileSync(release, 'release'); });
+  const deadline = Date.now() + 10000;
+  while (!fs.existsSync(ready)) {
+    assert.ok(Date.now() < deadline, 'gate did not start');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  h.ok(['project', 'set', '--tests-cmd', `${cmd} changed`]);
+  fs.writeFileSync(release, 'release');
+  const r = await pending;
+  assert.equal(r.code, 0, r.stderr);
+  const evidence = JSON.parse(r.stdout);
+  assert.equal(evidence.gate_policy.tests_cmd, cmd);
+  assert.deepEqual(events(h).at(-1).detail.gate_policy, evidence.gate_policy);
+  assert.equal(shown(h, 'tests').ok, false);
+});

@@ -132,6 +132,7 @@ test('accepted wakes after gates pass; a refused accept emits nothing', async (t
   const h = setup(t);
   h.sha = gateFixture(h);
   submit(h);
+  h.ok(['project', 'set', '--tests-cmd', 'null']);
   const result = await waiting(t, h, ['--types', 'accepted']);
   const count = log(h).length;
   assert.equal(h.run(['accept', 'T1']).code, 1);
