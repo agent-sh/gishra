@@ -59,6 +59,25 @@ The list settings also work with `init`. Omitted options leave their fields unch
 
 ## Run
 
+Dependent tasks can start while a single dependency chain is submitted or accepted but unmerged. `worktree` and `spawn` check the GitHub stacks endpoint, verify the dependency PR's current head and repository, fetch its branch, and create the upper branch at that head. The worker prompt names the dependency branch as the PR base. `ready` and `claim` allow submitted dependencies when they form one chain with a PR, branch and sha; dispatch still verifies availability. Independent dependency chains and forks wait for the ordinary accepted-dependency flow.
+
+The dispatch supervisor links submitted PRs with `gh stack link <lower-pr> <upper-pr>` in bottom-to-top order. Native dispatches use `stack link ID` after recording the PR with `submit`. Linking verifies every member's submitted head, PR base and same-repository origin. Auto-merge must be disabled. Workers retain their existing gh permissions; linking and synchronization run under the dispatcher's policy.
+
+| Command | Does |
+|---|---|
+| `stack link ID` | link a submitted task's dependency chain on GitHub, bottom to top |
+| `stack sync ID` | import remote tracking with `gh stack checkout <pr> --print-path`, then run `gh stack sync` from the task worktree, without prompts |
+| `stack unstack ID` | remove the GitHub stack and local tracking, confirm no member remains stacked, then use ordinary merges in dependency order |
+| `stack webhook FILE` | ingest a trusted `pull_request` webhook payload for this project's repository; `-` reads stdin. Record `pull_request.stack` or the payload's top-level `stack` without changing acceptance or merge evidence |
+
+`merge ID` uses `gh stack merge <pr> --yes --squash` for linked stacks. It verifies remote stack membership and refuses unknown lower PRs, checks every task below the target is accepted with passing gates, and re-reads every PR head immediately before the merge. Stack merge has no `--match-head-commit`; a push after the checks remains a race. Confirmation checks every merged PR against its accepted sha and records separate merge evidence for each task that actually landed. A queued stack gets no successful merge evidence until GitHub confirms it merged.
+
+After a lower merge, or when a later `worktree` or `spawn` observes main or a dependency moving, Tower Crane refreshes upper worktrees through `gh stack sync`. Every worktree in that stack must be idle and clean; otherwise refresh is deferred and an event names the blocker. Unknown remote PRs must be recorded before sync. Sync holds the state lock so new claimants cannot start while branches move. The allowed gh-stack extension owns its rebases and atomic lease-protected pushes under the dispatcher's policy. A conflict restores branches through gh-stack and sends the outstanding tasks to rework with the failure in their briefs. A changed branch also goes to rework and needs a new submission and gates; evidence for the old head remains historical.
+
+Stacks require the GitHub repository setting and the gh-stack extension (v0.2.0 or newer). An unavailable extension, a disabled stacks endpoint, or `gh stack` exit 9 falls back to ordinary dispatch for accepted dependencies. Submitted dependencies wait for acceptance when stacks are unavailable. If linking or merging becomes unavailable after dispatch, the branch is retained and the task is marked for ordinary merging: lower tasks must land before its PR can target main. A refused stack merge reports that fallback and the next merge uses the ordinary gate. Authentication and other unexpected failures are reported rather than treated as disabled stacks.
+
+Stacks support only PRs in the same repository, one chain per stack, squash merges and no auto-merge or admin bypass. A repository requiring `--admin` uses `stack unstack ID`, then `merge ID --admin` on the lower tasks first. Ordinary merges also accept `--method squash|merge|rebase` and retain `--match-head-commit`. `--admin` and other methods are refused for a linked stack. The webhook command consumes an already authenticated payload; it is not a public HTTP webhook receiver.
+
 | Command | Does |
 |---|---|
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason |
