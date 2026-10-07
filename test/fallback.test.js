@@ -104,6 +104,18 @@ test('Claude policy refusal starts a fresh Codex route', (t) => {
   assert.notEqual(h.attempts()[1].session, h.attempts()[0].session);
 });
 
+for (const [primaryHarness, reason, chain, routes] of [['claude', 'refusal', true, ['claude first 0', 'codex second 0', 'claude third 0']], ['agy', 'outage', false, ['agy first 0', 'agy first 1', 'agy first 2', 'codex second 0']]]) {
+  test(`every sandboxed route after a ${primaryHarness} primary changes the state through the spawn's broker`, (t) => {
+    const h = setup(t, { reason, primaryHarness, chain });
+    h.spawnEnv.TOWER_CRANE_TEST_FALLBACK_NOTE = '1';
+    assert.equal(h.spawn().code, 0);
+    const sandboxed = (text) => !text.startsWith('agy');
+    assert.deepEqual(h.attempts().map((a) => a.broker), routes.map(sandboxed), 'claude and codex routes get the broker; agy is not sandboxed');
+    const notes = events(h).filter((e) => e.cmd === 'task note').map((e) => [e.detail.text, e.agent, e.via ?? null]);
+    assert.deepEqual(notes, routes.map((text) => [text, 'worker-T1-1', sandboxed(text) ? 'broker' : null]));
+  });
+}
+
 for (const primaryHarness of ['agy', 'claude']) {
   test(`fresh ${primaryHarness} outage retries record each invocation without counting usage twice`, (t) => {
     const h = setup(t, { primaryHarness });
