@@ -70,6 +70,24 @@ test('the user file supplies the defaults a new project copies, and the project 
   assert.deepEqual([easy.model, easy.harness, easy.from], ['p/easy', 'opencode', 'user'], 'a rung the project leaves out comes from the user file');
 });
 
+test('research web MCP settings persist in user defaults and refuse other rungs or secret fields', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
+  h.ok(['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server)]);
+  h.ok(['ladder', 'save-user']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(h.userConfig, 'utf8')).ladder.research.web_mcp, server);
+  assert.deepEqual(require('../lib/ladder').resolve({}, h.env).ladder.research.own.web_mcp, server);
+  for (const args of [
+    ['easy', '--web-mcp', JSON.stringify(server)],
+    ['research', '--web-mcp', JSON.stringify({ ...server, env: { TOKEN: 'secret' } })],
+    ['research', '--mcp', '["other"]'],
+    ['research', '--harness', 'codex'],
+  ]) assert.notEqual(h.run(['ladder', 'set', ...args]).code, 0);
+  h.ok(['ladder', 'set', 'research', '--clear', 'web_mcp']);
+  assert.equal(h.json(['ladder', 'show']).ladder.research.web_mcp, undefined);
+});
+
 test('ladder save-user makes the project ladder the default for new projects', (t) => {
   const h = makeRepo(t);
   h.init();

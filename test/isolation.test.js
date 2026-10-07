@@ -146,6 +146,58 @@ const isolated = (h, rung, harness) => {
   h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
 
+test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
+  isolated(h, 'hard', 'claude');
+  spawn(h, u, 'hard');
+  const worker = u.report();
+  isolated(h, 'research', 'claude');
+  const dry = h.json(['spawn', '--role', 'research', '--task', 'T1', '--dry-run'], { env: u.env });
+  assert.match(dry.home.agent_file, /tower-crane-researcher\.md$/);
+  spawn(h, u, 'research');
+  const native = u.report();
+  assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebSearch'));
+  assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebFetch'));
+  assert.deepEqual(native.settings.sandbox.filesystem, worker.settings.sandbox.filesystem);
+  assert.deepEqual(native.settings.sandbox.network.allowedDomains, ['*']);
+  assert.ok(native.memory.join('\n').includes('Use the network'));
+  h.ok(['ladder', 'set', 'research', '--web-mcp', '{"name":"harness-web","command":"node","args":["/configured/server.mjs"]}']);
+  spawn(h, u, 'research');
+  const web = u.report();
+  assert.deepEqual(web.mcp, { 'harness-web': { command: 'node', args: ['/configured/server.mjs'] } });
+  assert.ok(web.args.includes('--strict-mcp-config'));
+  assert.ok(web.args.includes('--mcp-config'));
+  const allowed = web.args[web.args.indexOf('--allowedTools') + 1].split(',');
+  assert.ok(allowed.includes('mcp__harness-web__websearch'));
+  assert.ok(allowed.includes('mcp__harness-web__webfetch'));
+  assert.ok(!allowed.includes('mcp__harness-web'));
+  assert.deepEqual(web.settings.sandbox.filesystem, worker.settings.sandbox.filesystem);
+  noSecretsCopied(h);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[],"env":{"TOKEN":"secret"}}']).code, 2);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[]}', '--agent', 'worker-T1-1']).code, 1);
+});
+
+test('research Codex explicitly enables live search with worker file and git confinement', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
+  isolated(h, 'hard', 'codex');
+  spawn(h, u, 'hard');
+  const worker = u.report();
+  assert.ok(worker.args.includes('web_search="disabled"'));
+  isolated(h, 'research', 'codex');
+  spawn(h, u, 'research');
+  const researcher = u.report();
+  assert.ok(researcher.args.includes('web_search="live"'));
+  const workerFs = worker.config.permissions['tower-crane'].filesystem;
+  const researchFs = researcher.config.permissions['tower-crane'].filesystem;
+  delete workerFs[path.join(worker.home)];
+  delete researchFs[path.join(researcher.home)];
+  assert.deepEqual(researchFs, workerFs);
+  assert.deepEqual(researcher.rules, worker.rules);
+  noSecretsCopied(h);
+});
+
 test('a spawned claude agent loads none of the user memory, settings hooks, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   isolated(h, 'small', 'claude');
