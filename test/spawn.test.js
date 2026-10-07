@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { makeRepo, real, BIN, PTY_AVAILABLE } = require('./helpers');
 const A = require('../lib/agents');
 
@@ -67,7 +68,7 @@ test('spawn --dry-run builds each harness command', (t) => {
     '--strict-mcp-config', '--mcp-config', path.join(state, 'homes', 'small-T1-1', 'mcp.json'), '--disable-slash-commands',
   ];
   const codexOwn = () => [
-    '-c', 'default_permissions="tower-crane"', '-c', 'approval_policy="never"', '-c', 'web_search="disabled"',
+    '-c', 'default_permissions="tower-crane"', '-c', 'approval_policy="never"', '-c', 'bypass_hook_trust=true', '-c', 'web_search="disabled"',
     ...small.codexDisable.flatMap((f) => ['--disable', f]),
   ];
   const cases = [
@@ -79,8 +80,8 @@ test('spawn --dry-run builds each harness command', (t) => {
     [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', p]],
     [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro']],
     [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--output-format","json"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--output-format', 'json']],
-    [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5']],
-    [['--harness', 'pi', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--thinking', 'xhigh', '--no-session']],
+    [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--extension', path.join(s, 'homes', 'small-T1-1', 'hook.mjs')]],
+    [['--harness', 'pi', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--thinking', 'xhigh', '--extension', path.join(s, 'homes', 'small-T1-1', 'hook.mjs'), '--no-session']],
   ];
   const empty = path.join(h.base, 'no-plugin');
   fs.mkdirSync(empty);
@@ -100,12 +101,27 @@ test('spawn --dry-run builds each harness command', (t) => {
   const out = dry(h, 'small');
   assert.equal(out.agent, 'small-T1-1');
   assert.equal(out.rung, 'small');
-  assert.deepEqual(Object.keys(out.env).sort(), ['TOWER_CRANE_AGENT', 'TOWER_CRANE_STATE', 'TOWER_CRANE_TASK']);
+  for (const key of ['TOWER_CRANE_AGENT', 'TOWER_CRANE_STATE', 'TOWER_CRANE_TASK', 'TOWER_CRANE_HOOK']) assert.ok(out.env[key], key);
   assert.equal(out.env.TOWER_CRANE_AGENT, 'small-T1-1');
   assert.equal(out.env.TOWER_CRANE_TASK, 'T1');
   assert.equal(real(out.env.TOWER_CRANE_STATE), real(h.state));
   assert.equal(out.worktree_exists, false);
   assert.ok(!fs.existsSync(path.join(h.base, 'repo-worktrees')), 'a dry run creates nothing');
+});
+
+test('opencode inline config keeps caller fields and plugins when adding the home plugin', (t) => {
+  const h = setup(t);
+  setRung(h, 'small', ['--harness', 'opencode', '--model', 'anthropic/claude']);
+  const original = {
+    model: 'anthropic/claude',
+    theme: 'tower-crane-test',
+    agent: { build: { temperature: 0.2 } },
+    plugin: ['file:///existing/plugin.mjs'],
+  };
+  const out = dry(h, 'small', { OPENCODE_CONFIG_CONTENT: JSON.stringify(original) });
+  const config = JSON.parse(out.env.OPENCODE_CONFIG_CONTENT);
+  const generated = pathToFileURL(path.join(h.state, 'homes', out.agent, 'hook.mjs')).href;
+  assert.deepEqual(config, { ...original, plugin: [...original.plugin, generated] });
 });
 
 test('spawn embeds the role skill before the brief for claude, codex, opencode and agy', (t) => {
@@ -298,7 +314,7 @@ test('pi rungs load the tower-crane skill for workers and reviewers when it is i
   const env = { TOWER_CRANE_PLUGIN_ROOT: plugin };
   for (const rung of ['easy', 'medium', 'review', 'small']) setRung(h, rung, ['--model', 'm']);
   h.ok(['ladder', 'harness', 'pi']);
-  const at = (argv) => argv.slice(argv.indexOf('--skill'));
+  const at = (argv) => argv.slice(argv.indexOf('--skill'), argv.indexOf('--skill') + 2);
   const worker = dry(h, 'medium', env).argv;
   const reviewer = dry(h, 'review', env).argv;
   assert.deepEqual(at(worker), ['--skill', path.join(plugin, 'skills', 'tower-crane-work')]);
