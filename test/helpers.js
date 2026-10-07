@@ -30,7 +30,7 @@ function git(args, cwd, env) {
   return cp.execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
-// Reuse the clean Git repository so each fixture avoids init, add and commit processes.
+// Reuse a clean local Git seed so each fixture needs one setup process.
 let repoSeed;
 function getRepoSeed() {
   if (repoSeed) return repoSeed;
@@ -59,6 +59,36 @@ function getRepoSeed() {
   }
 }
 
+function removeCloneRemote(repo) {
+  const config = path.join(repo, '.git', 'config');
+  let skip = false;
+  const lines = fs.readFileSync(config, 'utf8').split(/\r?\n/).filter((line) => {
+    const header = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (header) skip = /^(remote|branch)\s+"[^"]+"$/i.test(header[1]);
+    return !skip;
+  });
+  fs.writeFileSync(config, `${lines.join('\n').trimEnd()}\n`);
+  const packedRefs = path.join(repo, '.git', 'packed-refs');
+  if (fs.existsSync(packedRefs)) {
+    let dropPeeled = false;
+    const refs = fs.readFileSync(packedRefs, 'utf8').split(/\r?\n/).filter((line) => {
+      if (line.startsWith('^')) {
+        const keep = !dropPeeled;
+        dropPeeled = false;
+        return keep;
+      }
+      const isRemote = /^[0-9a-f]{40,64}\s+refs\/remotes\//.test(line);
+      dropPeeled = isRemote;
+      return !isRemote;
+    });
+    fs.writeFileSync(packedRefs, `${refs.join('\n').trimEnd()}\n`);
+  }
+  fs.rmSync(path.join(repo, '.git', 'refs', 'remotes'), { recursive: true, force: true });
+  fs.rmSync(path.join(repo, '.git', 'logs', 'refs', 'remotes'), { recursive: true, force: true });
+  fs.rmSync(path.join(repo, '.git', 'FETCH_HEAD'), { force: true });
+  fs.mkdirSync(path.join(repo, '.git', 'refs', 'remotes', 'origin'), { recursive: true });
+}
+
 function makeRepo(t) {
   fs.mkdirSync(TMP_ROOT, { recursive: true });
   const seed = getRepoSeed();
@@ -67,10 +97,10 @@ function makeRepo(t) {
     path.join(base, 'gitconfig'),
     '[user]\n\tname = tower-crane test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n',
   );
+  const env = baseEnv(base);
   const repo = path.join(base, 'repo');
-  fs.mkdirSync(repo);
-  fs.cpSync(path.join(seed.repo, '.git'), path.join(repo, '.git'), { recursive: true });
-  fs.copyFileSync(path.join(seed.repo, 'README.md'), path.join(repo, 'README.md'));
+  git(['clone', '--local', '-q', seed.repo, repo], base, env);
+  removeCloneRemote(repo);
   return context(t, base);
 }
 

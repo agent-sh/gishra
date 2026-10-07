@@ -5,7 +5,7 @@ const os = require('node:os');
 
 const args = ['--test'];
 const concurrency = process.platform === 'win32'
-  ? 3
+  ? 6
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
 // Keep Windows file workers low enough to avoid process and disk contention.
 args.push(`--test-concurrency=${concurrency}`);
