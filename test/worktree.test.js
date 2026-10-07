@@ -394,3 +394,27 @@ test('a registration interrupted before HEAD exists is refused without deleting 
   assert.ok(fs.existsSync(path.join(admin, 'locked')));
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
 });
+
+test('cancelling a task removes its worktree; a dirty one stays and says why', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  for (const title of ['Clean', 'Dirty', 'Gone']) h.ok(['task', 'add', '--title', title, '--acceptance', 'not needed']);
+  const clean = h.json(['worktree', 'T1']);
+  const dirty = h.json(['worktree', 'T2']);
+  const gone = h.json(['worktree', 'T3']);
+  fs.writeFileSync(path.join(dirty.path, 'notes.txt'), 'unfinished\n');
+  fs.rmSync(gone.path, { recursive: true, force: true });
+
+  for (const id of ['T1', 'T2', 'T3']) h.ok(['task', 'update', id, '--status', 'cancelled']);
+
+  assert.ok(!fs.existsSync(clean.path), 'the clean worktree is removed');
+  assert.ok(fs.existsSync(dirty.path), 'the dirty worktree stays');
+  const registered = h.git(['worktree', 'list', '--porcelain']);
+  assert.ok(registered.includes(dirty.path), 'git still registers the dirty worktree');
+  assert.ok(!registered.includes(clean.path), 'git forgets the removed worktree');
+  assert.ok(!registered.includes(gone.path), 'prune clears the registration of a missing directory');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const kept = events.find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.task, 'T2');
+  assert.equal(kept.detail.reason, 'uncommitted changes');
+});

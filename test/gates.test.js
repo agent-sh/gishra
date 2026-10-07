@@ -596,3 +596,70 @@ test('merge checks the gates as they stand, not only the accepted status', (t) =
   assert.equal(merged.code, 0, merged.stderr);
   assert.ok(fs.existsSync(out), 'with the gates passing again, the merge gate runs');
 });
+
+function readEvents(h) {
+  return fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+}
+
+// An accepted task whose worktree the CLI made; merge is the only step left.
+function acceptedWithWorktree(h) {
+  const sha = gateFixture(h);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  const wt = h.json(['worktree', 'T1']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'w-1']);
+  for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
+  h.ok(['accept', 'T1']);
+  return wt;
+}
+
+test('merge removes the merged task worktree and records it', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const wt = acceptedWithWorktree(h);
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates, { recursive: true });
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+
+  const merged = cli.run(['merge', 'T1'], { GATE_OUT: path.join(h.base, 'gate.json'), GATE_OK: '1' });
+  assert.equal(merged.code, 0, merged.stderr);
+  assert.ok(!fs.existsSync(wt.path), 'the worktree directory is gone');
+  assert.ok(!h.git(['worktree', 'list', '--porcelain']).includes(wt.path), 'git no longer registers it');
+  const removed = readEvents(h).find((e) => e.cmd === 'worktree removed');
+  assert.equal(removed.task, 'T1');
+  assert.equal(removed.detail.removed, true);
+});
+
+test('merge keeps a worktree with uncommitted changes and says why', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const wt = acceptedWithWorktree(h);
+  fs.writeFileSync(path.join(wt.path, 'notes.txt'), 'unfinished\n');
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates, { recursive: true });
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+
+  const merged = cli.run(['merge', 'T1'], { GATE_OUT: path.join(h.base, 'gate.json'), GATE_OK: '1' });
+  assert.equal(merged.code, 0, merged.stderr);
+  assert.equal(fs.readFileSync(path.join(wt.path, 'notes.txt'), 'utf8'), 'unfinished\n');
+  assert.ok(h.git(['worktree', 'list', '--porcelain']).includes(wt.path), 'git still registers it');
+  const kept = readEvents(h).find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.task, 'T1');
+  assert.equal(kept.detail.reason, 'uncommitted changes');
+});
+
+test('merge keeps the worktree while merge.keep_branch is set', (t) => {
+  const h = makeRepo(t);
+  h.init(['--merge-keep-branch', 'true']);
+  const wt = acceptedWithWorktree(h);
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates, { recursive: true });
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+
+  const merged = cli.run(['merge', 'T1'], { GATE_OUT: path.join(h.base, 'gate.json'), GATE_OK: '1' });
+  assert.equal(merged.code, 0, merged.stderr);
+  assert.ok(fs.existsSync(wt.path), 'the worktree stays for its branch');
+  const kept = readEvents(h).find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.detail.reason, 'merge.keep_branch is set');
+});
