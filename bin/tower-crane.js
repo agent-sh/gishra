@@ -20,7 +20,7 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
-const { TowerCraneError, usage } = require('../lib/util');
+const { TowerCraneError, usage, refuse } = require('../lib/util');
 const S = require('../lib/state');
 const P = require('../lib/project');
 const T = require('../lib/tasks');
@@ -41,7 +41,7 @@ const SPAWN_SETTINGS = {
 
 const GLOBAL = {
   state: str('DIR', 'state directory (default: TOWER_CRANE_STATE, then .tower-crane/ in the main checkout)'),
-  agent: str('NAME', 'who is acting (default: TOWER_CRANE_AGENT; owner only on an interactive terminal outside a task)'),
+  agent: str('NAME', 'who is acting (default: TOWER_CRANE_AGENT; task processes cannot use owner; fallback needs an interactive terminal outside a task)'),
   json: bool('machine output on stdout'),
   help: bool('show help'),
 };
@@ -347,10 +347,14 @@ async function main(argv) {
       else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     }
     if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
+    const identity = agent.trim();
+    if (identity === 'owner' && process.env.TOWER_CRANE_TASK !== undefined) {
+      throw refuse('owner acts from an interactive terminal; task processes cannot use owner identity');
+    }
     const ctx = {
       cwd: process.cwd(),
       env: process.env,
-      agent: agent.trim(),
+      agent: identity,
       agentExplicit,
       json: !!globals.json,
       flags: own,
