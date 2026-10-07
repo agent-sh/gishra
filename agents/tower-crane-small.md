@@ -41,8 +41,7 @@ gitPush: none
 ghWrite: []
 worktree: read
 sandbox: true
-writeOutside:
-  - state
+writeOutside: []
 codexDisable:
   - memories
   - plugins

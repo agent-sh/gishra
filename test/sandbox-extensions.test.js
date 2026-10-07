@@ -318,7 +318,10 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
   fs.writeFileSync(path.join(rustup, 'toolchain'), 'toolchain');
   const file = path.join(h.base, 'private.env');
   fs.writeFileSync(file, `${SECRET_KEY}='${SECRET}'\n`, { mode: 0o600 });
-  const out = path.join(h.state, 'live-result.json');
+  // The state directory is read-only in the sandbox.
+  const results = path.join(h.base, 'results');
+  fs.mkdirSync(results);
+  const out = path.join(results, 'live-result.json');
   const script = path.join(h.base, 'cargo-probe.js');
   const privateTmp = path.join(h.base, 'agent-tmp');
   fs.mkdirSync(privateTmp, { mode: 0o700 });
@@ -363,7 +366,7 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
     '  });',
     '});', '',
   ].join('\n'));
-  h.ok(['project', 'set', '--sandbox', JSON.stringify({ write: [cargo] }), '--scope', '{"CPUQuota":"200%","MemoryMax":"8G"}',
+  h.ok(['project', 'set', '--sandbox', JSON.stringify({ write: [cargo, results] }), '--scope', '{"CPUQuota":"200%","MemoryMax":"8G"}',
     '--env', JSON.stringify({ CARGO_HOME: cargo, RUSTUP_HOME: rustup }), '--env_file', file]);
   h.ok(['ladder', 'set', 'medium', '--harness', 'codex', '--profile', process.env.TOWER_CRANE_LIVE_PROFILE || 'sol',
     '--clear', 'model', '--clear', 'effort', '--supervision', '{"retries":0}']);
