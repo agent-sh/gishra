@@ -70,7 +70,8 @@ ${waitForFinish ? `const timer = setInterval(() => {
   return h;
 }
 
-describe('supervision integration cases', { concurrency: windowsConcurrency }, () => {
+describe('supervision integration cases', () => {
+describe('independent retry cases', { concurrency: windowsConcurrency }, () => {
 for (const attempt of bedrockOutage.attempts) {
   for (const type of ['error', 'turn.failed']) {
     test(`recorded Bedrock attempt ${attempt.attempt} ${type} reruns with the session and claim kept`, (t) => {
@@ -197,6 +198,7 @@ test('repeated transient exits render the blocked phase before foreground spend'
   assert.equal(h.json(['task', 'show', 'T1']).claim, null);
   assert.equal(h.json(['task', 'show', 'T1']).status, 'todo');
 });
+});
 
 test('detached supervision renews a short lease during backoff and does not allow premature recovery', async (t) => {
   const h = setup(t, { config: { backoff_ms: 1400, max_backoff_ms: 1400 } });
@@ -221,6 +223,7 @@ test('detached supervision renews a short lease during backoff and does not allo
   assert.equal(log(h).filter((e) => e.cmd === 'claim').length, 1);
 });
 
+describe('independent running-work cases', { concurrency: windowsConcurrency }, () => {
 test('later spawns preserve retrying homes through backoff, retries and queued hook writes', async (t) => {
   const h = makeRepo(t);
   h.init();
@@ -276,6 +279,7 @@ if (task === 'T1' && retry === 0) {
   assert.equal(audit.findLast((e) => e.cmd === 'hook stop')?.detail.report, `last report from ${started.agent}`);
   assert.match(audit.find((e) => e.cmd === 'msg' && e.detail.to === 'orchestrator')?.detail.text || '', /without submit/);
 });
+});
 
 test('a running process keeps its lease without claimant writes', async (t) => {
   const h = setup(t, { failures: 0, hold: 1800 });
@@ -296,6 +300,7 @@ test('a running process keeps its lease without claimant writes', async (t) => {
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'worker did not finish');
 });
 
+describe('remaining supervision cases', { concurrency: windowsConcurrency }, () => {
 test('release during backoff fences the old supervisor from a replacement claim', async (t) => {
   const h = setup(t, { failures: 9, config: { backoff_ms: 1400, max_backoff_ms: 1400 } });
   const spawned = h.json(['spawn', '--task', 'T1']);
@@ -750,5 +755,6 @@ test('rework cannot resume a session while its transient rerun is still alive', 
   assert.equal(result.code, 1, result.stderr);
   assert.match(result.stderr, /previous worker.*still running/);
   await until(() => !detachedAlive({ pid: spawned.monitor_pid }), 'previous supervisor did not finish');
+});
 });
 });

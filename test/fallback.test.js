@@ -42,7 +42,8 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   return h;
 }
 
-describe('fallback integration cases', { concurrency: windowsConcurrency }, () => {
+describe('fallback integration cases', () => {
+describe('independent route cases', { concurrency: windowsConcurrency }, () => {
 for (const nextHarness of ['codex', 'claude']) {
   test(`outage exhausts same-route retries before a fresh ${nextHarness} fallback and records route spend`, async (t) => {
     const h = setup(t, { nextHarness });
@@ -163,6 +164,8 @@ for (const primaryHarness of ['agy', 'claude']) {
   });
 }
 
+});
+
 test('rework during a live fallback refuses a second worker until the previous attempt exits', async (t) => {
   const h = setup(t);
   const cursor = events(h).at(-1).id;
@@ -187,6 +190,7 @@ test('rework during a live fallback refuses a second worker until the previous a
   assert.equal(preview.resumed, false);
 });
 
+describe('remaining route cases', { concurrency: windowsConcurrency }, () => {
 test('Codex profile and provider arguments change without carrying the old session or route flags', (t) => {
   const h = setup(t);
   h.ok(['ladder', 'set', 'easy', '--profile', 'first', '--clear', 'model',
@@ -295,5 +299,6 @@ test('a detached switch wakes a live waiter, keeps its lease, and collects route
   assert.equal(task.run.phase, 'waiting');
   assert.deepEqual(task.spend.entries.map((e) => [e.model, e.tokens]), [['first', 39], ['second', 13]]);
   assert.equal(events(h).filter((e) => e.cmd === 'worker-exited').length, 1);
+});
 });
 });
