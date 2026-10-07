@@ -352,6 +352,24 @@ test('large review diffs use a context file and a short argv', (t) => {
   assert.ok(!fullPacket.includes('WORKER-HISTORY'));
 });
 
+test('the review packet flags changed files outside the paths the brief names', (t) => {
+  const h = setup(t);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Only `docs/` changes.\n\n## Reviewer\nREVIEWER-ONLY instruction\n' });
+  fs.mkdirSync(path.join(h.repo, 'docs'));
+  fs.writeFileSync(path.join(h.repo, 'docs', 'note.md'), 'note\n');
+  fs.writeFileSync(path.join(h.repo, 'stray.md'), 'stray\n');
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'docs and a stray file']);
+  h.sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+  h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha]);
+  commandReviewer(h, path.join(h.base, 'prompt.txt'));
+  h.json(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
+  const packet = fs.readFileSync(path.join(h.state, 'reviews', `T1-${h.sha}.md`), 'utf8');
+  assert.match(packet, /## Scope\n\nscope: \d+ changed files? outside the paths the brief and acceptance name \(docs\/\): [^\n]*stray\.md/);
+  assert.ok(!/\(docs\/\): [^\n]*docs\/note\.md/.test(packet), 'a named path is in scope');
+});
+
 test('review policy validates price and diff settings through the CLI', (t) => {
   const h = makeRepo(t);
   h.init();

@@ -1,5 +1,6 @@
 # Changelog
 
+- Spawned agents get the house rules and the real goal. Every spawn names the user's global rules and the repository's AGENTS.md and CLAUDE.md chain by path (imported into a claude agent's home, listed for codex and other harnesses to read), its prompt opens with the project goal and the task's target to restate, and a `startup` event records the rule files, goal and token cost. `submit` and the review packet flag changed files outside the paths the task names.
 - Dependent tasks can dispatch on submitted dependency heads, link GitHub PR stacks, merge accepted lower tasks atomically, and refresh worktrees through gh-stack. Trusted pull_request stack metadata appears in task show and the board.
 - Host Chrome tests retain their original launch environment and flags; private cache/config/temp directories and temp-backed shared memory apply only inside an agent sandbox.
 - Browser kits omit unavailable servers and unsupported harnesses with diagnostics in spawn output and events. Design tasks still dispatch without a kit; explicit browser needs refuse only when no primary or fallback route can attach a configured server.

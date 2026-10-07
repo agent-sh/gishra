@@ -290,11 +290,12 @@ test('the prompt is the role skill, brief, task, then how to use tower-crane', (
   assert.ok(p.endsWith('run tower-crane with --agent worker-T1-1 if TOWER_CRANE_AGENT is missing.'));
 });
 
-test('the prompt keeps the leading-dash guard when no skill is embedded', (t) => {
+test('without an embedded skill the goal leads the prompt, so a brief opening with a dash is never read as a flag', (t) => {
   const h = setup(t);
   setRung(h, 'small', ['--harness', 'opencode', '--model', 'a/b']);
   const prompt = dry(h, 'small').argv.find((arg) => arg.includes('## Task'));
-  assert.ok(prompt.startsWith('\n- start from the webhook handler'));
+  assert.ok(prompt.startsWith('## Goal\n\nProject goal: prove the engine\nTask target: T1, "Idempotency key on retries"'));
+  assert.ok(prompt.includes('\n\n- start from the webhook handler\n'));
 });
 
 test('a spawned reviewer that loses all TOWER_CRANE variables cannot record evidence as owner', (t) => {
@@ -412,7 +413,7 @@ test('spawn --wait runs the command rung in the task worktree with the tower-cra
   assert.notEqual(path.resolve(seen.brief), path.resolve(path.join(h.state, 'briefs', 'T1.md')));
   assert.equal(seen.briefText, '- start from the webhook handler\n');
   assert.ok(!fs.existsSync(seen.brief), 'the temporary brief copy is removed after exit');
-  assert.match(seen.prompt, /^P:\n- start from the webhook handler/);
+  assert.match(seen.prompt, /^P:## Goal\n[\s\S]*\n- start from the webhook handler/);
   assert.deepEqual([real(seen.env.s), seen.env.t, seen.env.a], [real(h.state), 'T1', 'worker-T1-1']);
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   const spawnEv = events.find((e) => e.cmd === 'spawn');
