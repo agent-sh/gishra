@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo } = require('./helpers');
+const { makeRepo, BIN } = require('./helpers');
 const stub = path.join(__dirname, 'fixtures', 'agy-stub.js');
 const noStub = process.platform === 'win32' && 'harness stub uses a shebang';
 
@@ -79,7 +79,9 @@ test('agy isolates planted user context and reports only house rules requested b
   assert.deepEqual(dry.home.mcp, []);
   assert.ok(dry.argv.includes('--agent'));
   assert.ok(dry.argv.includes('--sandbox'));
-  const spawned = h.json(['spawn', '--task', 'T1', '--wait'], { env });
+  const spawned = h.json(['spawn', '--task', 'T1', '--wait'], {
+    env: { ...env, STUB_RUN: JSON.stringify([[process.execPath, BIN, 'task', 'note', 'T1', 'agy broker probe']]) },
+  });
   const seen = report();
   assert.equal(seen.home, path.join(h.state, 'homes', spawned.agent, 'home'));
   assert.deepEqual(seen.memory, []);
@@ -93,8 +95,10 @@ test('agy isolates planted user context and reports only house rules requested b
   assert.ok(!fs.existsSync(path.join(seen.home, '.gemini', 'config', 'hooks.json')));
   assert.ok(!fs.existsSync(path.join(seen.home, '.gemini', 'antigravity-cli', 'plugins')));
   assert.ok(seen.skills.every(s => s.endsWith('tower-crane-work')));
-  const startup = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n')
-    .map(line => JSON.parse(line)).find(e => e.cmd === 'startup').detail;
+  assert.equal(seen.ran[0].code, 0, seen.ran[0].stderr);
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(events.some(e => e.cmd === 'task note' && e.agent === spawned.agent && e.via === 'broker'));
+  const startup = events.find(e => e.cmd === 'startup').detail;
   assert.equal(startup.instructions_file, seen.agentFile);
   const global = startup.rules.find(r => r.path === path.join(home, '.gemini', 'GEMINI.md'));
   assert.equal(global.loaded, 'read');
@@ -163,4 +167,19 @@ test('agy refuses workspace MCP and role overrides before starting the harness',
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /workspace agent.*overrides/);
   assert.ok(!fs.existsSync(out));
+});
+
+test('agy attaches the configured browser kit and reports missing servers from its own config', { skip: noStub }, t => {
+  const { h, env, report } = setup(t);
+  h.ok(['browser-kit', 'set', '--servers', '["approved"]'], { env });
+  h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
+  const dry = h.json(['spawn', '--task', 'T1', '--dry-run'], { env });
+  assert.deepEqual(dry.home.mcp, ['approved']);
+  assert.deepEqual(dry.browser_kit.attached, ['approved']);
+  h.json(['spawn', '--task', 'T1', '--wait'], { env });
+  assert.deepEqual(Object.keys(report().mcp), ['approved']);
+  h.ok(['browser-kit', 'set', '--servers', '["missing"]'], { env });
+  const refused = h.run(['spawn', '--task', 'T1', '--dry-run'], { env });
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /\.gemini[/\\]config[/\\]mcp_config\.json/);
 });
