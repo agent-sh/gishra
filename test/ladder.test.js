@@ -126,6 +126,7 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   fs.mkdirSync(empty);
   const spawn = (id, role) => h.json(['spawn', '--task', id, ...(role ? ['--role', role] : []), '--dry-run'], { env: { TOWER_CRANE_PLUGIN_ROOT: empty } });
   const flags = (argv) => argv.filter((a) => !a.includes('## Task'));
+  const piExtension = (agent) => ['--extension', path.join(h.state, 'homes', agent, 'hook.mjs')];
 
   h.ok(['ladder', 'harness', 'pi']);
   const show = h.json(['ladder', 'show']);
@@ -134,8 +135,9 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
 
   const easy = spawn('T1');
   assert.deepEqual([easy.rung, easy.agent], ['easy', 'worker-T1-1']);
-  assert.deepEqual(flags(easy.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-easy', '--thinking', 'medium']);
-  assert.deepEqual(flags(spawn('T2').argv), ['pi', '-p', '--mode', 'json', '--model', 'm-medium', '--thinking', 'high']);
+  assert.deepEqual(flags(easy.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-easy', '--thinking', 'medium', ...piExtension(easy.agent)]);
+  const medium = spawn('T2');
+  assert.deepEqual(flags(medium.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-medium', '--thinking', 'high', ...piExtension(medium.agent)]);
   const hard = spawn('T3');
   const research = spawn('T4');
   assert.deepEqual(flags(hard.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'high', '--output-format', 'json']);
@@ -144,7 +146,7 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   assert.equal(research.argv[research.argv.indexOf('--session-id') + 1], research.session_id);
   const review = spawn('T2', 'review');
   assert.deepEqual([review.rung, review.agent], ['review', 'reviewer-T2-1']);
-  assert.deepEqual(flags(review.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-review', '--thinking', 'high']);
+  assert.deepEqual(flags(review.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-review', '--thinking', 'high', ...piExtension(review.agent)]);
 
   h.ok(['ladder', 'harness', 'codex']);
   assert.deepEqual(flags(spawn('T1').argv).slice(0, 7), ['codex', 'exec', '--json', '-m', 'm-easy', '-c', 'model_reasoning_effort=medium']);
