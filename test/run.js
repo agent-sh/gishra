@@ -5,7 +5,7 @@ const os = require('node:os');
 
 const args = ['--test'];
 const concurrency = process.platform === 'win32'
-  ? 8
+  ? 3
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
 // Windows process-bound integration files benefit from a larger independent file pool.
 args.push(`--test-concurrency=${concurrency}`);
