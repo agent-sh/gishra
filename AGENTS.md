@@ -6,7 +6,7 @@ Tower Crane is a CLI and an agent plugin. The CLI (`bin/`, `lib/`) keeps a proje
 
 ## Rules
 
-- Node 20 or newer, no npm dependencies, CommonJS.
+- Node 24 or newer, no npm dependencies, CommonJS.
 - The CLI is the only writer of state. A feature that needs agents to change state adds a command, not an instruction to edit JSON.
 - Software before models: if a check can be code, it is code.
 - Tests are integration tests that run the real CLI on a temporary git repository; a feature or fix comes with one that fails without it. `npm test` runs them; set `TOWER_CRANE_TEST_TMP` to keep temp files off `/tmp`.
