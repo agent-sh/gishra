@@ -308,6 +308,75 @@ test('exhaustion with only unavailable personal fallbacks records a normal block
   assert.equal(events(h).filter((e) => e.cmd === 'spawn exit').length, 1);
 });
 
+for (const harness of ['claude', 'codex']) {
+  for (const config of ['default', 'override']) {
+    test(`a spawned ${harness} orchestrator dispatches with personal fallbacks from the ${config} user path`, (t) => {
+      const h = setup(t, { reason: 'refusal' });
+      const userHome = path.join(h.base, 'user-home');
+      fs.mkdirSync(userHome);
+      h.env.HOME = userHome;
+      h.env.USERPROFILE = userHome;
+      if (config === 'default') {
+        delete h.env.TOWER_CRANE_CONFIG;
+        h.userConfig = path.join(userHome, '.config', 'tower-crane', 'config.json');
+      } else {
+        h.env.TOWER_CRANE_CONFIG = path.relative(h.repo, h.userConfig);
+      }
+      setFallbacks(h, [{ harness: 'claude', model: 'second' }], 'hard');
+      h.ok(['ladder', 'set', 'orchestrator', '--harness', harness, '--model', 'orchestrator', '--clear', 'effort']);
+      h.ok(['ladder', 'set', 'hard', '--harness', 'codex', '--model', 'first', '--clear', 'effort',
+        '--supervision', JSON.stringify(supervision)]);
+      h.ok(['task', 'add', '--title', 'Nested worker', '--tier', 'hard', '--acceptance', 'uses personal fallback']);
+      h.ok(['brief', 'set', 'T2', '-'], { input: 'Dispatch with personal fallback routes.\n' });
+      const nested = path.join(h.base, 'nested.json');
+      const result = h.run(['spawn', '--task', 'T1', '--role', 'orchestrator', '--wait'], {
+        env: { ...h.spawnEnv, TOWER_CRANE_TEST_NESTED_DISPATCH: nested }, timeout: 25000,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      const seen = JSON.parse(fs.readFileSync(nested, 'utf8'));
+      assert.equal(seen.home, path.join(h.state, 'homes', 'orchestrator-T1-1', 'home'));
+      assert.equal(seen.config, h.userConfig);
+      assert.deepEqual(seen.ladder.ladder.hard.fallbacks, [{ harness: 'claude', model: 'second' }]);
+      assert.equal(seen.dispatch.code, 0);
+      assert.deepEqual(h.attempts().map((a) => a.model), ['first', 'second']);
+      assert.equal(events(h).find((e) => e.cmd === 'spawn fallback').task, 'T2');
+    });
+  }
+}
+
+test('command fallback executable placeholders are expanded before availability checks', (t) => {
+  const h = setup(t, { reason: 'refusal' });
+  const scripts = path.join(h.repo, 'scripts');
+  fs.mkdirSync(scripts);
+  fs.writeFileSync(path.join(scripts, process.platform === 'win32' ? 'fallback.exe' : 'fallback'), '', { mode: 0o755 });
+  h.git(['add', 'scripts']);
+  h.git(['commit', '-m', 'Add fallback executable']);
+  setFallbacks(h, [{ harness: 'command', command: ['{cwd}/scripts/fallback', 'second', '{prompt}'] }]);
+  assert.deepEqual(h.json(['ladder', 'show'], { env: h.spawnEnv }).problems, []);
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.attempts().map((a) => [a.harness, a.model]), [['codex', 'first'], ['command', 'second']]);
+  assert.match(h.attempts()[1].args[1], /Complete the original task brief/);
+  const switched = events(h).find((e) => e.cmd === 'spawn fallback');
+  assert.equal(switched.detail.harness, 'command');
+  assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
+});
+
+test('missing expanded command fallback executables are skipped during preparation', (t) => {
+  const h = setup(t, { reason: 'refusal' });
+  setFallbacks(h, [
+    { harness: 'command', command: ['{cwd}/scripts/missing', '{prompt}'] },
+    { harness: 'claude', model: 'second' },
+  ]);
+  assert.deepEqual(h.json(['ladder', 'show'], { env: h.spawnEnv }).problems, []);
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /could not start .*scripts[/\\]missing/);
+  assert.equal(result.stderr.includes('{cwd}'), false);
+  assert.deepEqual(h.attempts().map((a) => a.model), ['first', 'second']);
+  assert.equal(events(h).find((e) => e.cmd === 'spawn fallback').detail.route_index, 2);
+});
+
 test('a detached switch wakes a live waiter, keeps its lease, and collects route usage on exit', async (t) => {
   const h = setup(t);
   const cursor = events(h).at(-1).id;

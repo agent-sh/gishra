@@ -244,6 +244,8 @@ Both write under the lock, validate, log events (`ladder harness`, `ladder set` 
 
 ## Agents and worktrees
 
+`spawn` passes an absolute `TOWER_CRANE_CONFIG` path to every harness, preserving the original user file when an isolated orchestrator dispatches workers. Command fallback executables containing placeholders are checked after expansion during preparation; `ladder show` defers their executable lookup until task context is available.
+
 | Command | Does |
 |---|---|
 | `worktree ID [ID ...]` | create (or print) a git worktree and branch `tower-crane/<id>-<slug>` from the freshest base for each task, at `<repo-parent>/<repo>-worktrees/<id>-<slug>`; records the branch on the task. Once the task has a branch, its worktree is found by branch, so renaming the task does not move it |
