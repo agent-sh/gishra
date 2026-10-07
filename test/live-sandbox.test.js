@@ -11,7 +11,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
-const { makeRepo, BIN } = require('./helpers');
+const cp = require('node:child_process');
+const { makeRepo, BIN, ROOT } = require('./helpers');
 
 const uid = typeof process.getuid === 'function' ? process.getuid() : null;
 const runDir = uid === null ? null : `/run/user/${uid}`;
@@ -35,6 +36,26 @@ function agentLog(h) {
 }
 
 const node = JSON.stringify(process.execPath);
+
+// Every live agent runs in its test's own repository, so the checkout the
+// suite runs from gains no files (a sandboxed claude leaves empty mount
+// points for protected dotfiles in its working directory).
+function untracked() {
+  const r = cp.spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--ignored=no'], { cwd: ROOT, encoding: 'utf8' });
+  return r.status === 0 ? new Set(r.stdout.split('\n').filter((l) => l.startsWith('?? '))) : null;
+}
+
+if (process.env.TOWER_CRANE_LIVE_CLAUDE === '1' || process.env.TOWER_CRANE_LIVE_CODEX === '1') {
+  let before;
+  test.before(() => {
+    before = untracked();
+  });
+  test.after(() => {
+    const after = untracked();
+    if (!before || !after) return;
+    assert.deepEqual([...after].filter((l) => !before.has(l)), [], `the live agents wrote into ${ROOT}`);
+  });
+}
 
 test('a sandboxed claude command cannot connect to a unix socket in a denied directory', { skip, timeout: 300000 }, async (t) => {
   const h = makeRepo(t);
