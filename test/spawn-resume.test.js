@@ -327,7 +327,7 @@ process.kill = function(pid, signal) {
   assert.equal(next.agent, first.agent);
 });
 
-test('exit receipts require their matching attempt to prove an unverified process exited', (t) => {
+test('exit receipts without attempt match the latest spawn by task, agent and pid', (t) => {
   const { h } = setup(t);
   const first = h.json(['spawn', '--task', 'T1', '--wait']);
   const receipt = events(h).find((e) => e.cmd === 'spawn exit' && e.detail.pid === first.pid);
@@ -359,8 +359,7 @@ fs.readFileSync = function(file, ...args) {
     ['spend', 'T1', '--from-spawn', first.agent],
   ]) {
     const r = h.run(args, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } });
-    assert.equal(r.code, 1, r.stderr);
-    assert.match(r.stderr, /still running or its exit is unverified/);
+    assert.equal(r.code, 0, r.stderr);
   }
 });
 
@@ -413,20 +412,25 @@ fs.readFileSync = function(file, ...args) {
     return value.split('\\n').map((line) => {
       if (!line) return line;
       const event = JSON.parse(line);
-      if (event.cmd === 'spawn exit' && event.detail.pid === ${first.pid}) event.detail.pid = ${live.pid};
+      if (event.cmd === 'spawn exit' && event.detail.pid === ${first.pid}) {
+        event.detail.pid = ${live.pid};
+        if (process.env.OMIT_EXIT_ATTEMPT) delete event.detail.attempt;
+      }
       return JSON.stringify(event);
     }).join('\\n');
   }
   return value;
 };
 `);
-  for (const args of [
-    ['spend', 'T1', '--from-spawn', live.agent],
-    ['spawn', '--task', 'T1', '--dry-run'],
-  ]) {
-    const result = h.run(args, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } });
-    assert.equal(result.code, 1, result.stderr);
-    assert.match(result.stderr, /still running or its exit is unverified/);
+  for (const missing of ['', '1']) {
+    for (const args of [
+      ['spend', 'T1', '--from-spawn', live.agent],
+      ['spawn', '--task', 'T1', '--dry-run'],
+    ]) {
+      const result = h.run(args, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"`, OMIT_EXIT_ATTEMPT: missing } });
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, /still running or its exit is unverified/);
+    }
   }
 });
 

@@ -236,3 +236,47 @@ test('an expired pre-claim holds the only slot before supervision can renew', as
     fs.writeFileSync(path.join(h.base, 'T1.exit'), '');
   }
 });
+
+for (const cmd of ['spawn exit', 'worker-exited']) {
+  test(`${cmd} without attempt releases its matching spawn reservation`, async (t) => {
+    const h = setup(t, 1);
+    controlledHarness(h);
+    const spawned = h.json(['spawn', '--task', 'T1']);
+    await until(() => fs.existsSync(path.join(h.base, 'T1.started')), 'worker did not start');
+    const receipt = path.join(h.base, 'exit-receipt.json');
+    const hook = path.join(h.base, 'exit-receipt.js');
+    fs.writeFileSync(hook, `
+const fs = require('node:fs');
+const read = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  const value = read.call(this, file, ...args);
+  if (!String(file).endsWith('events.jsonl') || typeof value !== 'string') return value;
+  return value + JSON.stringify(JSON.parse(read.call(this, ${JSON.stringify(receipt)}, 'utf8'))) + '\\n';
+};
+`);
+    const detail = { agent: spawned.agent, pid: spawned.pid, code: 0 };
+    const runClaim = (task, changes) => {
+      fs.writeFileSync(receipt, JSON.stringify({ cmd, task, detail: { ...detail, ...changes }, at: new Date().toISOString() }));
+      return h.run(['claim', 'T2', '--agent', 'replacement'], {
+        env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` },
+      });
+    };
+    try {
+      for (const [task, changes] of [
+        ['T3', {}],
+        ['T1', { agent: 'another-agent' }],
+        ['T1', { pid: spawned.monitor_pid }],
+        ['T1', { attempt: spawned.attempt + 1 }],
+      ]) {
+        const r = runClaim(task, changes);
+        assert.equal(r.code, 1, r.stderr);
+        assert.match(r.stderr, /T1.*worker-T1-1.*reservation/);
+      }
+      const released = runClaim('T1', {});
+      assert.equal(released.code, 0, released.stderr);
+      assert.equal(h.readState('tasks.json').tasks[1].claim.agent, 'replacement');
+    } finally {
+      fs.writeFileSync(path.join(h.base, 'T1.exit'), '');
+    }
+  });
+}
