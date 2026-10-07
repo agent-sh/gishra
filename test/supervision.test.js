@@ -97,6 +97,20 @@ for (const record of [
   });
 }
 
+test('a recovered rate-limit reconnect does not retry a later permanent failure', (t) => {
+  const h = setup(t, { records: [
+    { type: 'error', message: 'Reconnecting... 1/5 (rate limit exceeded: The service is temporarily unavailable.)' },
+    { type: 'turn.failed', error: { message: 'invalid API key' } },
+  ] });
+  const result = h.spawn();
+  assert.equal(result.code, 1, result.stderr);
+  assert.equal(h.readAttempts().length, 1);
+  assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
+  const task = h.json(['task', 'show', 'T1']);
+  assert.equal(task.run.phase, 'blocked');
+  assert.equal(task.run.reason, 'exit 1');
+});
+
 test('default retry budget waits beyond the observed ten-minute outage and remains bounded', (t) => {
   const clock = path.join(__dirname, 'fixtures', 'supervision-backoff-clock.js').replace(/\\/g, '/');
   const h = setup(t, { failures: 5, env: { NODE_OPTIONS: `--require "${clock}"` } });
