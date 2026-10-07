@@ -174,6 +174,62 @@ test('detached supervision renews a short lease during backoff and does not allo
   assert.equal(log(h).filter((e) => e.cmd === 'claim').length, 1);
 });
 
+test('later spawns preserve retrying homes through backoff, retries and queued hook writes', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  for (const id of ['T1', 'T2', 'T3']) {
+    h.ok(['task', 'add', '--title', `Task ${id}`, '--tier', 'easy', '--acceptance', 'finish the supervised run']);
+    h.ok(['brief', 'set', id, '-'], { input: 'Finish the task.\n' });
+  }
+  const retryReady = path.join(h.base, 'retry-ready');
+  const script = `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+const cli = (args) => cp.execFileSync(process.execPath, [process.argv[1], ...args], { encoding: 'utf8' });
+const task = process.env.TOWER_CRANE_TASK;
+const agent = process.env.TOWER_CRANE_AGENT;
+const retry = Number(process.env.TOWER_CRANE_RETRY || 0);
+const delay = new Int32Array(new SharedArrayBuffer(4));
+const current = JSON.parse(cli(['task', 'show', task, '--json']));
+if (current.claim?.agent !== agent) cli(['claim', task, '--lease', '1']);
+if (task === 'T1' && retry === 0) {
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: 'first attempt' } }));
+  process.exitCode = 75;
+} else {
+  if (task === 'T1' && retry === 1) {
+    fs.writeFileSync(${JSON.stringify(retryReady)}, '');
+    while (!fs.existsSync(${JSON.stringify(`${retryReady}.go`)})) Atomics.wait(delay, 0, 0, 10);
+  }
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'last report from ' + agent } }));
+}
+`;
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN]),
+    '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 1, backoff_ms: 3500, max_backoff_ms: 3500 })]);
+
+  const started = h.json(['spawn', '--task', 'T1']);
+  const home = path.join(h.state, 'homes', started.agent);
+  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'first attempt did not enter backoff');
+
+  const duringBackoff = h.json(['spawn', '--task', 'T2', '--wait']);
+  assert.equal(duringBackoff.code, 0);
+  assert.ok(fs.existsSync(path.join(home, 'hook.json')), 'a later spawn keeps the home while the supervisor waits to retry');
+
+  await until(() => fs.existsSync(retryReady), 'retry attempt did not start');
+  assert.ok(log(h).some((e) => e.cmd === 'spawn retry' && e.task === 'T1'), 'retry event was recorded');
+  const duringRetry = h.json(['spawn', '--task', 'T3', '--wait']);
+  assert.equal(duringRetry.code, 0);
+  assert.ok(fs.existsSync(path.join(home, 'bin', 'git')), 'a later spawn keeps the home while the retry is running');
+
+  fs.writeFileSync(`${retryReady}.go`, '');
+  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'retry attempt did not finish');
+  await until(() => !detachedAlive({ pid: started.monitor_pid }), 'supervisor did not finish queued hook writes');
+  const audit = log(h).filter((e) => e.task === 'T1' && e.agent === started.agent);
+  assert.ok(audit.some((e) => e.cmd === 'hook progress'), 'tool activity reached state');
+  assert.equal(audit.findLast((e) => e.cmd === 'hook report')?.detail.report, `last report from ${started.agent}`);
+  assert.equal(audit.findLast((e) => e.cmd === 'hook stop')?.detail.report, `last report from ${started.agent}`);
+  assert.match(audit.find((e) => e.cmd === 'msg' && e.detail.to === 'orchestrator')?.detail.text || '', /without submit/);
+});
+
 test('a running process keeps its lease without claimant writes', async (t) => {
   const h = setup(t, { failures: 0, hold: 1800 });
   const clockFile = path.join(h.base, 'clock');

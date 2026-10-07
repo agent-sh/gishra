@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { makeRepo, real, BIN, PTY_AVAILABLE } = require('./helpers');
 const A = require('../lib/agents');
 
@@ -106,6 +107,21 @@ test('spawn --dry-run builds each harness command', (t) => {
   assert.equal(real(out.env.TOWER_CRANE_STATE), real(h.state));
   assert.equal(out.worktree_exists, false);
   assert.ok(!fs.existsSync(path.join(h.base, 'repo-worktrees')), 'a dry run creates nothing');
+});
+
+test('opencode inline config keeps caller fields and plugins when adding the home plugin', (t) => {
+  const h = setup(t);
+  setRung(h, 'small', ['--harness', 'opencode', '--model', 'anthropic/claude']);
+  const original = {
+    model: 'anthropic/claude',
+    theme: 'tower-crane-test',
+    agent: { build: { temperature: 0.2 } },
+    plugin: ['file:///existing/plugin.mjs'],
+  };
+  const out = dry(h, 'small', { OPENCODE_CONFIG_CONTENT: JSON.stringify(original) });
+  const config = JSON.parse(out.env.OPENCODE_CONFIG_CONTENT);
+  const generated = pathToFileURL(path.join(h.state, 'homes', out.agent, 'hook.mjs')).href;
+  assert.deepEqual(config, { ...original, plugin: [...original.plugin, generated] });
 });
 
 test('spawn embeds the role skill before the brief for claude, codex, opencode and agy', (t) => {
