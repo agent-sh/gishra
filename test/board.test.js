@@ -271,6 +271,67 @@ test('in a browser, a change elsewhere updates the board in place and waits whil
   });
 });
 
+test('live CLI writes keep Plan, its task sheet, scroll and the focused control on desktop and phone', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  populate(h);
+  for (let i = 0; i < 8; i++) h.ok(['task', 'add', '--title', `Plan task ${i}`, '--acceptance', 'verified']);
+  let dep = 'T2';
+  for (let i = 0; i < 4; i++) {
+    dep = h.ok(['task', 'add', '--title', `Layer ${i}`, '--acceptance', 'verified', '--dep', dep]).match(/T\d+/)[0];
+  }
+  await withServers(async (servers) => {
+    const url = await startServe(servers, h, 'viewer');
+    const b = await openBrowser(t);
+    const position = `({ main: [document.querySelector('main').scrollLeft, document.querySelector('main').scrollTop], page: [scrollX, scrollY], graph: [document.querySelector('.plan-wrap').scrollLeft, document.querySelector('.plan-wrap').scrollTop] })`;
+    for (const [width, height] of [[1280, 800], [390, 844]]) {
+      const link = JSON.stringify(width >= 720 ? '#plan .node[data-id="T1"]' : '#plan .layers [href="#T1"]');
+      await b.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await b.goto(`${url}#plan`);
+      await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+      await b.inPage(`(() => {
+        window.firstLoad = true;
+        document.querySelector(${link}).focus({ preventScroll: true });
+        document.querySelector('.plan-wrap').scrollLeft = 120;
+        document.querySelector('main').scrollTop = 180;
+        window.scrollTo(0, 180);
+      })()`);
+      const plan = await b.inPage(position);
+      assert.ok(plan.main[1] > 0 || plan.page[1] > 0, 'the view is scrolled');
+      if (width >= 720) assert.ok(plan.graph[0] > 0, 'the graph is scrolled horizontally');
+      const update = `place kept at ${width}`;
+      h.ok(['task', 'note', 'T1', update, '--agent', 'orchestrator']);
+      await b.until(`document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live state change');
+      assert.deepEqual(await b.inPage(`[location.hash, document.documentElement.dataset.view, getComputedStyle(document.querySelector('#plan')).display !== 'none', !!document.querySelector('.sheet.open'), window.firstLoad]`), ['#plan', 'plan', true, false, true]);
+      assert.deepEqual(await b.inPage(position), plan, `Plan keeps both scroll axes at ${width}`);
+      assert.equal(await b.inPage(`document.activeElement === document.querySelector(${link})`), true, 'the same Plan link keeps focus');
+
+      await b.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await b.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await b.until(`document.querySelector('#T1').classList.contains('open')`, 'the task sheet over Plan');
+      const background = await b.inPage(position);
+      const copy = await b.inPage(`(() => {
+        const button = document.querySelector('#T1 .sec:last-child [data-copy]');
+        button.focus({ preventScroll: true });
+        document.querySelector('#T1 .sbody').scrollTop = 160;
+        return button.getAttribute('data-copy');
+      })()`);
+      const sheetScroll = await b.inPage(`document.querySelector('#T1 .sbody').scrollTop`);
+      assert.ok(sheetScroll > 0, 'the task sheet is scrolled');
+      h.ok(['task', 'note', 'T1', `${update} with sheet`, '--agent', 'orchestrator']);
+      await b.until(`document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(`${update} with sheet`)})`, 'the task sheet update');
+      assert.deepEqual(await b.inPage(`[location.hash, document.documentElement.dataset.view, document.querySelector('.sheet.open').id, document.querySelector('main').inert, document.querySelector('.topbar').inert]`), ['#T1', 'plan', 'T1', true, true]);
+      assert.equal(await b.inPage(`document.activeElement.getAttribute('data-copy')`), copy, 'the same sheet button keeps focus');
+      assert.equal(await b.inPage(`document.querySelector('#T1 .sbody').scrollTop`), sheetScroll, 'the sheet keeps its scroll');
+      assert.deepEqual(await b.inPage(position), background, 'the background keeps its scroll');
+      await b.inPage(`document.querySelector('#T1 [data-close]').click()`);
+      await b.until(`!document.querySelector('.sheet.open')`, 'the sheet to close');
+      assert.deepEqual(await b.inPage(`[location.hash, document.documentElement.dataset.view, document.activeElement === document.querySelector(${link})]`), ['#plan', 'plan', true]);
+      assert.deepEqual(await b.inPage(position), background, 'closing the sheet returns to the same place in Plan');
+    }
+  });
+});
+
 test('a viewer cannot edit tiers or the ladder from a sheet, Settings or a forged POST', async (t) => {
   const h = makeRepo(t);
   h.init();
