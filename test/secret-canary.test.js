@@ -20,12 +20,16 @@ const HARNESS = path.join(__dirname, 'fixtures', 'canary-harness.js');
 const CREDENTIAL = { claude: 'ANTHROPIC_API_KEY', codex: 'OPENAI_API_KEY' };
 const sha = (v) => crypto.createHash('sha256').update(v).digest('hex');
 
-function setup(t, harness, mode) {
+// big: how many distinct 30,000-char values the rung env adds, each named
+// TC_BIG_<n>.
+function setup(t, harness, mode, { big = 0 } = {}) {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Canary', '--acceptance', 'no leaks']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'canary probe' });
   const c = canary.make(['rung', 'project', 'file', 'fallback', 'gh', 'credential', 'credentialFile']);
+  const bigVars = Object.fromEntries(Array.from({ length: big }, (_, i) => [`TC_BIG_${i}`, crypto.randomBytes(15000).toString('hex')]));
+  for (const [name, value] of Object.entries(bigVars)) c[name] = value;
   const home = path.join(h.base, 'user-home');
   const tmp = path.join(h.base, 'tmp');
   const bin = path.join(h.base, 'bin');
@@ -42,22 +46,29 @@ function setup(t, harness, mode) {
     '--env', JSON.stringify({ ROUTE: 'primary', TC_RUNG_SECRET: c.rung }),
     '--fallbacks', JSON.stringify([{ harness, ...route, env: { ROUTE: 'fallback', TC_FALLBACK_SECRET: c.fallback } }])]);
   h.ok(['project', 'set', '--env', JSON.stringify({ TC_PROJECT_SECRET: c.project }), '--env_file', '~/secrets.env']);
+  if (big) {
+    // Too long for ladder set's argv; the owner writes project.json instead.
+    const file = path.join(h.state, 'project.json');
+    const project = JSON.parse(fs.readFileSync(file, 'utf8'));
+    Object.assign(project.ladder.medium.env, bigVars);
+    fs.writeFileSync(file, JSON.stringify(project, null, 2) + '\n');
+  }
   const out = path.join(h.base, 'canary.jsonl');
+  const values = { TC_RUNG_SECRET: c.rung, TC_PROJECT_SECRET: c.project, TC_FILE_SECRET: c.file,
+    TC_FALLBACK_SECRET: c.fallback, GH_TOKEN: c.gh, [CREDENTIAL[harness]]: c.credential, ...bigVars };
   const env = {
     ...h.env, HOME: home, USERPROFILE: home, CODEX_HOME: '', CLAUDE_CONFIG_DIR: '',
     PATH: `${bin}${path.delimiter}${process.env.PATH}`, TMPDIR: tmp, TOWER_CRANE_TMP: tmp,
     GH_TOKEN: c.gh, [CREDENTIAL[harness]]: c.credential, CANARY_OUT: out, CANARY_MODE: mode,
-    CANARY_VARS: ['TC_RUNG_SECRET', 'TC_PROJECT_SECRET', 'TC_FILE_SECRET', 'TC_FALLBACK_SECRET', 'GH_TOKEN', CREDENTIAL[harness]].join(','),
+    CANARY_VARS: Object.keys(values).join(','),
   };
   delete env.XDG_CACHE_HOME;
   const spawn = (args) => h.run(['spawn', '--task', 'T1', ...args], { env, hooks: { HOOK_KEEP_SPAWN_DIRS: '1' } });
   // The configured sources: the ladder and project env live in project.json.
   const allow = [path.join(h.state, 'project.json'), ...sources];
   const reports = () => fs.readFileSync(out, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  const expected = (names) => Object.fromEntries(['TC_RUNG_SECRET', 'TC_PROJECT_SECRET', 'TC_FILE_SECRET', 'TC_FALLBACK_SECRET', 'GH_TOKEN', CREDENTIAL[harness]]
-    .map((n) => [n, names.includes(n) ? sha({ TC_RUNG_SECRET: c.rung, TC_PROJECT_SECRET: c.project, TC_FILE_SECRET: c.file,
-      TC_FALLBACK_SECRET: c.fallback, GH_TOKEN: c.gh, [CREDENTIAL[harness]]: c.credential }[n]) : null]));
-  const primary = expected(['TC_RUNG_SECRET', 'TC_PROJECT_SECRET', 'TC_FILE_SECRET', 'GH_TOKEN', CREDENTIAL[harness]]);
+  const expected = (names) => Object.fromEntries(Object.entries(values).map(([n, v]) => [n, names.includes(n) ? sha(v) : null]));
+  const primary = expected(['TC_RUNG_SECRET', 'TC_PROJECT_SECRET', 'TC_FILE_SECRET', 'GH_TOKEN', CREDENTIAL[harness], ...Object.keys(bigVars)]);
   const fallback = expected(['TC_FALLBACK_SECRET', 'TC_PROJECT_SECRET', 'TC_FILE_SECRET', 'GH_TOKEN', CREDENTIAL[harness]]);
   const noLeaks = (...outputs) => {
     const cache = path.join(home, '.cache', 'tower-crane');
@@ -67,7 +78,7 @@ function setup(t, harness, mode) {
       ...outputs.flatMap((o, i) => canary.scanText(o, c, `spawn output ${i}`)),
     ], `files or output after a ${harness} ${mode} run`);
   };
-  return { h, c, out, spawn, reports, primary, fallback, noLeaks };
+  return { h, c, home, out, spawn, reports, primary, fallback, noLeaks };
 }
 
 for (const harness of ['claude', 'codex']) {
@@ -103,9 +114,7 @@ for (const harness of ['claude', 'codex']) {
     const r = s.spawn(['--json']);
     assert.equal(r.code, 0, r.stderr);
     assert.deepEqual(Object.keys(JSON.parse(r.stdout).route.env), ['ROUTE', 'TC_RUNG_SECRET']);
-    const deadline = Date.now() + 20000;
-    while (!fs.existsSync(`${s.out}.ready`) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.ok(fs.existsSync(`${s.out}.ready`), 'the agent started');
+    assert.ok(await canary.waitFor(`${s.out}.ready`), 'the agent started');
     canary.assertNoHits(canary.scanText(canary.processListing(), s.c, 'the process listing'), 'a process listing');
     const started = fs.readFileSync(path.join(s.h.state, 'events.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l)).findLast((e) => e.cmd === 'spawn').detail;
@@ -118,6 +127,26 @@ for (const harness of ['claude', 'codex']) {
     s.noLeaks(r.stdout, r.stderr);
   });
 }
+
+// The rung env appears in several job fields; sent once per field, one
+// 30,000-char value overran Linux's 128 KiB cap on an environment entry.
+test('a 30,000-char rung env value reaches the agent once and leaks nowhere', { skip: NO_STUBS }, (t) => {
+  const s = setup(t, 'codex', 'ok', { big: 1 });
+  const r = s.spawn(['--wait']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(s.reports(), [{ harness: 'codex', route: 'primary', hashes: s.primary, listed: [] }]);
+  s.noLeaks(r.stdout, r.stderr);
+});
+
+test('env values too large for one environment entry reach the supervisor in a file it deletes on read', { skip: NO_STUBS }, (t) => {
+  const s = setup(t, 'codex', 'ok', { big: 5 });
+  const r = s.spawn(['--wait']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(s.reports(), [{ harness: 'codex', route: 'primary', hashes: s.primary, listed: [] }]);
+  const cache = path.join(s.home, '.cache', 'tower-crane');
+  assert.deepEqual(fs.readdirSync(cache).flatMap((d) => fs.readdirSync(path.join(cache, d))).filter((f) => f === 'secrets.json'), []);
+  s.noLeaks(r.stdout, r.stderr);
+});
 
 // Runs the real claude or codex CLI, so it costs a model call and needs a
 // logged-in harness: set TOWER_CRANE_LIVE_CLAUDE=1 or TOWER_CRANE_LIVE_CODEX=1
@@ -153,8 +182,8 @@ for (const harness of ['claude', 'codex']) {
     const held = h.run(['spawn', '--task', 'T1', '--role', 'research'], { env: { ...h.env, TMPDIR: tmp, CANARY_OUT: out, CANARY_MODE: 'hold',
       CANARY_VARS: 'TC_HOLDER_SECRET,TC_PROJECT_SECRET,TC_FILE_SECRET' } });
     assert.equal(held.code, 0, held.stderr);
-    const deadline = Date.now() + 20000;
-    while (!fs.existsSync(`${out}.ready`) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    const holderPid = Number(await canary.waitFor(`${out}.ready`));
+    assert.ok(holderPid, 'the holder started');
     const holderSpawn = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
       .findLast((e) => e.cmd === 'spawn' && e.task === 'T1').detail;
     const monitor = { pid: holderSpawn.monitor_pid, startTicks: holderSpawn.monitor_start_ticks };
@@ -171,7 +200,7 @@ for (const harness of ['claude', 'codex']) {
       "'use strict';",
       'const fs = require("node:fs"), cp = require("node:child_process");',
       'const out = {};',
-      `for (const pid of ${JSON.stringify([Number(fs.readFileSync(`${out}.ready`, 'utf8')), monitor.pid])}) {`,
+      `for (const pid of ${JSON.stringify([holderPid, monitor.pid])}) {`,
       '  for (const f of ["environ", "cmdline"]) {',
       '    try { out[`${pid}/${f}`] = fs.readFileSync(`/proc/${pid}/${f}`, "latin1"); } catch (e) { out[`${pid}/${f}`] = `ERR ${e.code}`; }',
       '  }',

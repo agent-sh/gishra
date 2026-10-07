@@ -20,33 +20,38 @@ function hitsIn(buffer, canaries) {
 }
 
 // Walks without following links: a home links to the user's credential
-// files, which are scanned where they live, as configured sources.
+// files, which are scanned where they live, as configured sources. Each file
+// is opened once, without following a link, and read through that handle.
+const NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
+const GONE = ['ENOENT', 'EACCES', 'EPERM', 'ELOOP'];
+
 function scanTree(roots, canaries, allow = []) {
   const allowed = new Set(allow.map((f) => path.resolve(f)));
   const hits = [];
-  const visit = (file) => {
-    let stat;
-    try { stat = fs.lstatSync(file); } catch (e) {
-      if (e.code === 'ENOENT') return;
+  const read = (file) => {
+    if (allowed.has(path.resolve(file))) return;
+    let fd;
+    try { fd = fs.openSync(file, fs.constants.O_RDONLY | NOFOLLOW); } catch (e) {
+      if (GONE.includes(e.code)) return;
       throw e;
     }
-    if (stat.isSymbolicLink()) return;
-    if (stat.isDirectory()) {
-      let names;
-      try { names = fs.readdirSync(file); } catch (e) {
-        if (['ENOENT', 'EACCES', 'EPERM'].includes(e.code)) return;
-        throw e;
-      }
-      for (const name of names) visit(path.join(file, name));
-      return;
-    }
-    if (!stat.isFile() || allowed.has(path.resolve(file))) return;
-    let data;
-    try { data = fs.readFileSync(file); } catch (e) {
-      if (['ENOENT', 'EACCES', 'EPERM'].includes(e.code)) return;
+    try {
+      if (!fs.fstatSync(fd).isFile()) return;
+      for (const label of hitsIn(fs.readFileSync(fd), canaries)) hits.push({ where: file, label });
+    } finally { fs.closeSync(fd); }
+  };
+  const visit = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) {
+      if (e.code === 'ENOTDIR') return read(dir);
+      if (GONE.includes(e.code)) return;
       throw e;
     }
-    for (const label of hitsIn(data, canaries)) hits.push({ where: file, label });
+    for (const entry of entries) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(file);
+      else if (entry.isFile()) read(file);
+    }
   };
   for (const root of [].concat(roots)) visit(root);
   return hits;
@@ -75,8 +80,20 @@ function processListing() {
   return parts.join('\n');
 }
 
+// The file's text once it exists, or null after ms; read, not checked first.
+async function waitFor(file, ms = 20000) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    try { return fs.readFileSync(file, 'utf8'); } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 function assertNoHits(hits, what) {
   assert.deepEqual(hits.map((h) => `${h.label} in ${h.where}`), [], `secret canaries leaked into ${what}`);
 }
 
-module.exports = { make, scanTree, scanText, processListing, assertNoHits };
+module.exports = { make, scanTree, scanText, processListing, waitFor, assertNoHits };
