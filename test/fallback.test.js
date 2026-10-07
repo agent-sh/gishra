@@ -25,10 +25,10 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
   for (const harness of ['codex', 'claude', 'agy']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-  const routes = [{ harness: nextHarness, model: 'second', env: { ROUTE_ENV: 'fallback' } }];
+  const routes = [{ harness: nextHarness, model: 'second', env: { ROUTE_ENV: 'fallback', NODE_TEST_CONTEXT: 'child-v8' } }];
   if (chain) routes.push({ harness: 'claude', model: 'third' });
   h.ok(['ladder', 'set', 'easy', '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
-    '--env', '{"ROUTE_ENV":"primary"}', '--supervision', JSON.stringify(supervision), '--fallbacks', JSON.stringify(routes)]);
+    '--env', '{"ROUTE_ENV":"primary","NODE_TEST_WORKER_ID":"outer-worker"}', '--supervision', JSON.stringify(supervision), '--fallbacks', JSON.stringify(routes)]);
   h.file = path.join(h.base, 'attempts.json');
   h.spawnEnv = {
     PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
@@ -62,6 +62,7 @@ for (const nextHarness of ['codex', 'claude']) {
     assert.notEqual(attempts[3].session, attempts[2].session);
     assert.ok(attempts[3].args.some((a) => a.includes('Complete the original task brief.')));
     assert.deepEqual(attempts.map((a) => a.env), ['primary', 'primary', 'primary', 'fallback']);
+    assert.ok(attempts.every((a) => a.node_test.length === 0), 'initial, retry and fallback environments exclude Node test runner context');
     for (const attempt of attempts) assert.deepEqual(attempt.claim, attempts[0].claim);
     const switches = events(h).filter((e) => e.cmd === 'spawn fallback');
     assert.equal(switches.length, 1);
@@ -83,6 +84,24 @@ for (const nextHarness of ['codex', 'claude']) {
     assert.equal(preview.resumed, false, 'the original route must not resume a fallback session');
   });
 }
+
+test('a browser-capable route can fall back to an unsupported harness without blocking dispatch', (t) => {
+  const h = setup(t, { primaryHarness: 'claude', nextHarness: 'agy' });
+  h.ok(['task', 'update', 'T1', '--kind', 'design', '--needs', '["browser"]']);
+  const home = path.join(h.base, 'browser-user');
+  const claude = path.join(home, '.claude');
+  fs.mkdirSync(claude, { recursive: true });
+  fs.writeFileSync(path.join(claude, 'mcp.json'), JSON.stringify({ mcpServers: { playwright: { command: 'browser-server' } } }));
+  Object.assign(h.spawnEnv, { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claude, CODEX_HOME: path.join(home, '.codex') });
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.attempts().map((a) => a.harness), ['claude', 'claude', 'claude', 'agy']);
+  assert.match(result.stderr, /browser kit.*agy.*without it/);
+  const fallback = events(h).find((e) => e.cmd === 'spawn fallback');
+  assert.deepEqual(fallback.detail.browser_kit.attached, []);
+  assert.deepEqual(fallback.detail.browser_kit.omitted, ['playwright']);
+  assert.match(fallback.detail.browser_kit.warning, /agy.*without it/);
+});
 
 test('policy refusal on a successful exit advances the ordered routes without outage retries', (t) => {
   const h = setup(t, { reason: 'refusal', chain: true });
