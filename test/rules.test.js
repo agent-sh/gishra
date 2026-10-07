@@ -126,6 +126,19 @@ test('a command harness keeps its own HOME rules and is told to read the reposit
   assert.ok(prompt.includes('"the agent knows the goal"'), 'the acceptance travels with the brief');
 });
 
+test('a command adapter that reads only {brief} gets the goal, the house rules and the acceptance in the brief file', (t) => {
+  const { h, env } = setup(t);
+  const out = path.join(h.base, 'brief-seen.txt');
+  const script = 'require("node:fs").copyFileSync(process.argv[1], process.argv[2])';
+  h.ok(['ladder', 'set', 'small', '--harness', 'command', '--clear', 'profile', '--clear', 'effort', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, '{brief}', out])]);
+  const r = h.run(['spawn', '--role', 'small', '--task', 'T1', '--wait'], { env });
+  assert.equal(r.code, 0, r.stderr);
+  const text = fs.readFileSync(out, 'utf8');
+  assert.match(text, /^## Goal\n[\s\S]*Project goal: prove the engine[\s\S]*## House rules[\s\S]*\nprobe\n[\s\S]*## Task/);
+  assert.ok(text.includes(`- ${path.join(h.base, 'AGENTS.md')} (project, read it)`), 'the rules chain travels by path');
+  assert.ok(text.includes('"the agent knows the goal"'), 'the acceptance travels with the brief');
+});
+
 // The fixture brief names a directory and a file; the diff touches those, a test, the
 // changelog and two files the task never named.
 function scoped(t, brief) {
