@@ -22,10 +22,12 @@ async function until(fn, message) {
   }
 }
 
-function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false } = {}) {
+function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false,
+  rung = 'easy', webMcp, fallbackWebMcp } = {}) {
   const h = makeRepo(t);
   h.init();
-  h.ok(['task', 'add', '--title', 'Fallback routes', '--tier', 'easy', '--acceptance', 'fresh fallback session']);
+  h.ok(['task', 'add', '--title', 'Fallback routes', '--tier', rung,
+    '--kind', rung === 'research' ? 'research' : 'code', '--acceptance', 'fresh fallback session']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Complete the original task brief.\n' });
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
@@ -33,10 +35,12 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   // one, as on a CI runner; that must happen outside the state lock.
   for (const harness of ['codex', 'claude', 'agy', 'gh']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
   const routes = [{ harness: nextHarness, model: 'second', env: { ROUTE_ENV: 'fallback', NODE_TEST_CONTEXT: 'child-v8' } }];
+  if (fallbackWebMcp) routes[0].web_mcp = fallbackWebMcp;
   if (chain) routes.push({ harness: 'claude', model: 'third' });
-  h.ok(['ladder', 'set', 'easy', '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
-    '--env', '{"ROUTE_ENV":"primary","NODE_TEST_WORKER_ID":"outer-worker"}', '--supervision', JSON.stringify(supervision)]);
-  setFallbacks(h, routes);
+  h.ok(['ladder', 'set', rung, '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
+    '--env', '{"ROUTE_ENV":"primary","NODE_TEST_WORKER_ID":"outer-worker"}', '--supervision', JSON.stringify(supervision),
+    ...(webMcp ? ['--web-mcp', JSON.stringify(webMcp)] : [])]);
+  setFallbacks(h, routes, rung);
   h.file = path.join(h.base, 'attempts.json');
   h.spawnEnv = {
     PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), GH_TOKEN: '', GITHUB_TOKEN: '',
@@ -47,6 +51,37 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   h.spawn = () => h.run(['spawn', '--task', 'T1', '--wait'], { env: h.spawnEnv, timeout: 20000 });
   h.attempts = () => JSON.parse(fs.readFileSync(h.file, 'utf8'));
   return h;
+}
+
+for (const explicit of [false, true]) {
+  test(`research Claude fallback ${explicit ? 'sets' : 'inherits'} web MCP tools and worker confinement on Bedrock`, async (t) => {
+    const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
+    const override = { name: 'backup-web', command: 'node', args: ['/web/backup.mjs'] };
+    const h = setup(t, { rung: 'research', primaryHarness: 'claude', nextHarness: 'claude',
+      reason: 'refusal', webMcp: server, ...(explicit ? { fallbackWebMcp: override } : {}) });
+    const cache = path.join(h.base, 'cache');
+    fs.mkdirSync(cache);
+    h.spawnEnv.XDG_CACHE_HOME = cache;
+    h.spawnEnv.LOCALAPPDATA = cache;
+    h.spawnEnv.CLAUDE_CODE_USE_BEDROCK = '1';
+    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.spawnEnv });
+    const result = await h.runAsync(['wait', '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '20']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).detail.agent, spawned.agent);
+    const [primary, fallback] = h.attempts();
+    assert.equal(fallback.model, 'second');
+    const web = explicit ? override : server;
+    assert.deepEqual(fallback.mcp, { [web.name]: { command: web.command, args: web.args } });
+    const tools = fallback.args[fallback.args.indexOf('--allowedTools') + 1].split(',');
+    assert.ok(tools.includes(`mcp__${web.name}__websearch`));
+    assert.ok(tools.includes(`mcp__${web.name}__webfetch`));
+    assert.ok(!tools.includes('WebSearch') && !tools.includes('WebFetch'));
+    assert.ok(fallback.args.includes('--strict-mcp-config'));
+    assert.deepEqual(fallback.sandbox, primary.sandbox);
+    assert.deepEqual(fallback.policy, primary.policy);
+    assert.equal(fallback.policy.gitPush, 'branch');
+    assert.deepEqual(fallback.sandbox.network.allowedDomains, ['*']);
+  });
 }
 
 for (const nextHarness of ['codex', 'claude']) {
