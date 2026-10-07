@@ -50,6 +50,13 @@ test('the broker names the agent and state before the agent\'s own "--"', () => 
   assert.equal(named.flags.agent, 'worker-T1-1');
 });
 
+test('the broker rejects an identity that differs from its spawn', () => {
+  const job = { state: '/s', task: 'T1', agent: 'worker-T1-1', role: 'worker' };
+  for (const agent of ['owner', 'worker-T2-1']) {
+    assert.throws(() => B.authorize(job, ['task', 'note', 'T1', 'text', '--agent', agent]), new RegExp(`cannot act as ${agent}`));
+  }
+});
+
 test('closing the broker stops the commands it is running and what they started', async (t) => {
   const { base, state, job } = scratch(t);
   const pids = path.join(base, 'pids.json');

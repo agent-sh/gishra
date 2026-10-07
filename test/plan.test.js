@@ -64,14 +64,18 @@ test('plan import resolves local names in order and is all or nothing', (t) => {
   fs.writeFileSync(plan, JSON.stringify([
     { id: 'schema', title: 'Schema', acceptance: 'table exists', size: 'S' },
     { id: 'api', title: 'API', acceptance: ['endpoint works'], depends_on: ['schema', 'T1'] },
-    { title: 'Docs', acceptance: ['readme'], kind: 'docs', depends_on: ['api'], needs_owner: 'approve wording' },
+    { title: 'Docs', acceptance: ['readme'], kind: 'docs', depends_on: ['api'], needs_owner: '  approve wording  ' },
+    { id: 'blank', title: 'Blank owner request', acceptance: 'scheduled', needs_owner: ' \t ' },
   ]));
   const out = h.json(['plan', 'import', plan]);
-  assert.deepEqual(out.added.map((a) => [a.id, a.local]), [['T2', 'schema'], ['T3', 'api'], ['T4', null]]);
+  assert.deepEqual(out.added.map((a) => [a.id, a.local]), [['T2', 'schema'], ['T3', 'api'], ['T4', null], ['T5', 'blank']]);
   const tasks = h.readState('tasks.json').tasks;
   assert.deepEqual(tasks[2].depends_on, ['T2', 'T1']);
   assert.deepEqual(tasks[3].depends_on, ['T3']);
   assert.equal(tasks[3].needs_owner, 'approve wording');
+  h.ok(['task', 'update', 'T4', '--needs-owner', ' approve wording ', '--agent', 'reviewer']);
+  assert.equal(h.readState('tasks.json').tasks[3].needs_owner, 'approve wording');
+  assert.equal(tasks[4].needs_owner, null);
   assert.equal(tasks[1].size, 'S');
 
   const before = fs.readFileSync(path.join(h.state, 'tasks.json'), 'utf8');
