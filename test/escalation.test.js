@@ -34,11 +34,20 @@ fs.writeFileSync(process.argv[2], JSON.stringify(attempts));
 console.log(JSON.stringify({ type: 'thread.started', thread_id: '${rung}-thread' }));
 console.log(JSON.stringify({ type: 'result', modelUsage: { luna: {} },
   usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 20 } }));
+${index === 0 && trigger === 'cleanup' ? `
+cp.spawn(process.execPath, ['-e', \`
+const fs = require('node:fs');
+process.on('SIGTERM', () => fs.writeFileSync(process.argv[1] + '.term', 'stopping'));
+fs.writeFileSync(process.argv[1] + '.ready', String(process.pid));
+setInterval(() => {}, 1000);
+\`, process.argv[2]], { stdio: 'ignore' });
+` : ''}
 ${index === 0 && ['stall', 'hold'].includes(trigger) ? 'setInterval(() => {}, 1000);'
     : index === 0 && trigger === 'outage' ? "console.error('HTTP 503 service unavailable'); process.exit(1);"
       : index === 0 && trigger === 'refusal' ? "console.log(JSON.stringify({ type: 'refusal' })); process.exit(1);"
         : trigger === 'top' || index === 0 && ['exit', 'preclaim'].includes(trigger) ? 'process.exit(0);'
       : `cli(['submit', 'T1', '--sha', '${h.git(['rev-parse', 'HEAD'])}']);`}
+${index === 0 && trigger === 'cleanup' ? "setInterval(() => { if (fs.existsSync(process.argv[2] + '.exit')) process.exit(0); }, 25);" : ''}
 `;
     h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
       JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{session}']),
@@ -146,6 +155,68 @@ test('wait recovers a verified worker exit after its supervisor is lost', {
   await until(() => h.json(['task', 'show', 'T1']).status === 'submitted');
   assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
 });
+
+test('a failed review waits for the monitor to finish cleaning submitted worker descendants', {
+  skip: process.platform !== 'linux' && 'Linux process group cleanup',
+}, async (t) => {
+  const h = setup(t, 'cleanup');
+  h.ok(['spawn', '--task', 'T1']);
+  await until(() => fs.existsSync(h.attempts + '.ready') && h.json(['task', 'show', 'T1']).status === 'submitted');
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
+    '--agent', 'reviewer', '--summary', 'wrong result']);
+  fs.writeFileSync(h.attempts + '.exit', '');
+  await until(() => fs.existsSync(h.attempts + '.term'));
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn exit').length, 0);
+  h.ok(['recover', 'T1', '--agent', 'orchestrator']);
+  assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy', 'the parent exit cannot release a live process group');
+  await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
+  const log = events(h);
+  assert.ok(log.findIndex((e) => e.cmd === 'spawn exit' && e.detail.agent === 'worker-T1-1')
+    < log.findIndex((e) => e.cmd === 'escalate'));
+});
+
+test('a later eligible passing review supersedes a failure before worker exit', async (t) => {
+  const h = setup(t, 'hold');
+  h.ok(['ladder', 'set', 'easy', '--supervision', '{"stall_ms":60000}']);
+  const spawn = h.json(['spawn', '--task', 'T1']);
+  await until(() => h.readAttempts().length === 1);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', spawn.agent]);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer', '--summary', 'first verdict']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer', '--summary', 'corrected verdict']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', sha, '--agent', spawn.agent]);
+  process.kill(spawn.pid, 'SIGKILL');
+  await until(() => events(h).some((e) => e.cmd === 'spend' && e.detail.source === `spawn:${spawn.agent}`));
+  assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy');
+  assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 0);
+});
+
+for (const prior of ['spent', 'lock-timeout']) {
+  test(`wait retries an unhandled exit after its notification was recorded (${prior})`, {
+    skip: process.platform !== 'linux' && 'independent POSIX worker and monitor termination',
+  }, async (t) => {
+    const h = setup(t, 'hold');
+    h.ok(['ladder', 'set', 'easy', '--supervision', '{"stall_ms":60000}']);
+    const spawn = h.json(['spawn', '--task', 'T1']);
+    await until(() => h.readAttempts().length === 1);
+    process.kill(spawn.monitor_pid, 'SIGKILL');
+    process.kill(spawn.pid, 'SIGKILL');
+    const opts = {};
+    if (prior === 'spent') {
+      await until(() => h.run(['spend', 'T1', '--from-spawn', spawn.agent]).code === 0);
+      assert.equal(events(h).filter((e) => e.cmd === 'worker-exited').length, 1);
+    } else {
+      const hook = path.join(__dirname, 'fixtures', 'escalation-lock-timeout.js').replace(/\\/g, '/');
+      opts.env = { NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_RECOVERY_LOCK: path.join(h.base, 'lock-timeout') };
+    }
+    const result = h.run(['wait', '--types', 'submitted', '--task', 'T1', '--agent', 'orchestrator', '--timeout', '5'], opts);
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    if (prior === 'lock-timeout') assert.ok(fs.existsSync(opts.env.TOWER_CRANE_TEST_RECOVERY_LOCK));
+    assert.equal(events(h).filter((e) => e.cmd === 'worker-exited').length, 1);
+    assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
+  });
+}
 
 test('a sandboxed reviewer waits for a hidden live worker to exit before climbing', async (t) => {
   const h = setup(t, 'hold');
