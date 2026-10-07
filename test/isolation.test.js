@@ -219,15 +219,19 @@ test('research Codex explicitly enables live search with worker file and git con
   noSecretsCopied(h);
 });
 
-test('a spawned claude agent loads none of the user memory, settings hooks, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
+test('a spawned claude agent imports the user\'s global rules by path, loads none of the user settings hooks, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   isolated(h, 'small', 'claude');
   const dry = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
   assert.ok(!JSON.stringify(dry).includes(SECRET), 'no credential in the command or its env');
   const started = spawn(h, u, 'small');
   const seen = u.report();
-  assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'user memory stays out');
-  assert.match(seen.memory.join('\n'), /^# tower-crane-small/m, 'the role instructions load instead');
+  assert.match(seen.memory.join('\n'), /^# tower-crane-small/m, 'the role instructions load');
+  const home = path.join(h.state, 'homes', started.agent);
+  const instructions = fs.readFileSync(path.join(home, 'CLAUDE.md'), 'utf8');
+  assert.ok(instructions.split('\n').includes(`@${path.join(u.home, '.claude', 'CLAUDE.md')}`), 'the user\'s global rules are imported by path');
+  assert.ok(!instructions.includes('PLANTED-MEMORY'), 'their text is not copied');
+  assert.ok(seen.memory.join('\n').includes('PLANTED-MEMORY'), 'claude loads the user\'s global rules through the import');
   assert.deepEqual(Object.keys(seen.settings.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
   assert.ok(!JSON.stringify(seen.hooks).includes('planted'), 'no user, project or local hooks');
   assert.deepEqual(seen.mcp, {}, 'no MCP server');
@@ -237,7 +241,6 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   // The helper is named, not copied, and still yields the user's credential.
   const helper = cp.execSync(seen.settings.apiKeyHelper, { encoding: 'utf8', env: u.env }).trim();
   assert.equal(helper, `${SECRET}-HELPER`);
-  const home = path.join(h.state, 'homes', started.agent);
   assert.ok(fs.lstatSync(path.join(home, '.credentials.json')).isSymbolicLink(), 'credentials are linked');
   assert.equal(fs.statSync(home).mode & 0o777, 0o700, 'the home is private');
   assert.equal(fs.statSync(path.join(home, 'settings.json')).mode & 0o777, 0o600);
@@ -261,14 +264,15 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   noSecretsCopied(h);
 });
 
-test('a spawned codex agent loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
+test('a spawned codex agent is pointed at the user\'s global rules, loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   isolated(h, 'small', 'codex');
   const dry = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
   assert.ok(!JSON.stringify(dry).includes(SECRET), 'no credential in the command or its env');
   const started = spawn(h, u, 'small');
   const seen = u.report();
-  assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'user instructions, instruction files and memories stay out');
+  assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'user instruction files and memories stay out of its home');
+  assert.ok(seen.prompt.includes(`- ${path.join(u.home, '.codex', 'AGENTS.md')} (global, read it)`), 'the prompt names the user\'s global rules for the agent to read');
   assert.match(seen.memory.join('\n'), /^# tower-crane-small/m);
   assert.deepEqual(seen.mcp, {}, 'no MCP server');
   assert.ok(!seen.rules.join('\n').includes('planted-rule'), 'no approved-command rules');
@@ -308,7 +312,7 @@ test('every spawn gets a fresh home, and an exited agent\'s home is removed', { 
     const second = spawn(h, u, 'small').agent;
     assert.notEqual(second, first);
     const seen = u.report();
-    assert.ok(!seen.memory.join('\n').includes('PLANTED'), `${harness}: nothing carries over`);
+    assert.ok(!seen.memory.join('\n').includes('PLANTED-BY-AGENT'), `${harness}: nothing carries over`);
     assert.ok(!seen.rules.join('\n').includes('planted-by-agent'), `${harness}: no rules carry over`);
     assert.ok(!fs.existsSync(old), `${harness}: the exited agent's home is gone`);
   }

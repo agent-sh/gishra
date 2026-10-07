@@ -18,7 +18,8 @@ Arguments: `$ARGUMENTS`. Use `TOWER_CRANE_TASK` and `TOWER_CRANE_AGENT` when set
    - claims in the PR body, docs, comments and changelog are true of the code (current models most often leave stale or overstated text, not broken syntax);
    - copies and contracts the change touched elsewhere still agree (docs, configs, other callers, other locales);
    - edge cases, error paths that fail silently, wrong conditions, races, and security boundaries the change crosses;
-   - anything added that nothing uses, and anything the standards rule out.
+   - anything added that nothing uses, and anything the standards rule out;
+   - files the packet's `## Scope` lists outside the paths the task names: each needs a reason in the task, or it is a finding.
 4. Post one review on the PR as a comment, first line `Review (Tower Crane, clean context)`, findings as `file:line - what is wrong - why it matters`, most severe first, and plainly whether anything blocks. On a repository the project does not own, do not post; put the review in the evidence summary only.
 5. Record it: `tower-crane evidence <id> --agent <name> --type review --ok|--fail --sha <sha> --summary "<blocking count and the top finding>"`, adding `--ref <comment URL>` when posted. `--ok` only when nothing blocks.
 
