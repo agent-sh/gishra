@@ -114,7 +114,7 @@ test('local CI runs argv on the merged tree and records audited evidence without
   h.ok(['accept', 'T1']);
 });
 
-test('local CI receipt for another submitted head cannot satisfy acceptance', (t) => {
+test('accept reruns local CI when the submitted head has no receipt', (t) => {
   const h = fixture(t);
   h.ok(['check', 'ci', 'T1']);
   h.git(['switch', '-q', 'local-change']);
@@ -122,10 +122,11 @@ test('local CI receipt for another submitted head cannot satisfy acceptance', (t
   const next = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', next]);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', next, '--agent', 'reviewer']);
-  assert.equal(h.run(['accept', 'T1']).code, 1);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'ci').ok, false);
-  h.ok(['check', 'ci', 'T1']);
   h.ok(['accept', 'T1']);
+  const evidence = h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'ci');
+  assert.equal(evidence.length, 2);
+  assert.equal(evidence.at(-1).receipt.head_sha, next);
 });
 
 test('local CI receipt for an older merged tree cannot satisfy acceptance or merge', (t) => {

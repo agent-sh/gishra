@@ -27,6 +27,15 @@ function setRung(h, rung, flags) {
 
 const commandRung = (h, rung, argv) => setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(argv)]);
 
+function reviewable(h) {
+  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+  for (const name of ['easy', 'medium', 'hard', 'research']) {
+    h.ok(['ladder', 'set', name, '--model', 'builder', '--clear', 'profile']);
+  }
+  h.ok(['claim', 'T1', '--agent', 'builder']);
+  h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder']);
+}
+
 test('worktree creates the task branch from base and is idempotent', (t) => {
   const h = setup(t);
   const first = h.json(['worktree', 'T1']);
@@ -124,6 +133,7 @@ fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Objec
 process.exit(r.status === null ? 1 : r.status);
 `;
   commandRung(h, 'review', [process.execPath, '-e', script, BIN, out]);
+  reviewable(h);
   const r = h.run(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
   assert.equal(r.code, 2, r.stderr);
   const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
@@ -156,6 +166,7 @@ fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Objec
 process.exit(r.code === null ? 99 : r.code);
 `;
   commandRung(h, 'review', [process.execPath, '-e', script, require.resolve('./helpers'), out]);
+  reviewable(h);
   const r = h.run(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
   assert.equal(r.code, 1, r.stderr);
   const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
@@ -260,6 +271,7 @@ test('spawn in the background detaches, logs output and numbers agents', async (
   assert.equal(h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run']).agent, 'small-T1-2');
 
   commandRung(h, 'review', ['tower-crane-no-such-program']);
+  reviewable(h);
   const missing = h.run(['spawn', '--role', 'review', '--task', 'T1']);
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /could not start tower-crane-no-such-program/);

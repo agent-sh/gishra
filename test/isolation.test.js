@@ -112,6 +112,14 @@ function noSecretsCopied(h) {
 }
 
 function spawn(h, u, role, env = {}) {
+  if (role === 'review' && h.readState('tasks.json').tasks[0].status !== 'submitted') {
+    h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+    for (const name of ['easy', 'medium', 'hard', 'research']) {
+      h.ok(['ladder', 'set', name, '--model', 'builder', '--clear', 'profile']);
+    }
+    h.ok(['claim', 'T1', '--agent', 'builder']);
+    h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder']);
+  }
   const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { env: { ...u.env, ...env } });
   assert.equal(r.code, 0, r.stderr);
   return JSON.parse(r.stdout);
@@ -307,8 +315,12 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
   const realState = path.join(h.base, 'real-state');
   fs.renameSync(h.state, realState);
   fs.symlinkSync(realState, h.state);
+  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+  for (const name of ['easy', 'medium', 'hard', 'research']) {
+    h.ok(['ladder', 'set', name, '--model', 'builder', '--clear', 'profile']);
+  }
   h.ok(['claim', 'T1', '--agent', 'worker-T1-1']);
-  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'worker-T1-1']);
+  h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'worker-T1-1']);
   const fixture = path.join(h.base, 'fixture');
   const run = [
     ['gh', 'pr', 'comment', '1', '--body', 'Review (tower-crane, clean context)'],

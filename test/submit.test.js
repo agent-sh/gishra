@@ -114,6 +114,9 @@ test('resubmission belongs to the current submitter and stops after acceptance o
 test('review evidence must pin the reviewed sha when a worker resubmits during review', (t) => {
   const h = makeRepo(t);
   h.init();
+  for (const tier of ['easy', 'medium', 'hard', 'research']) h.ok(['ladder', 'set', tier, '--model', 'builder', '--clear', 'profile']);
+  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
+    '--command', '["tower-crane-no-such-reviewer"]']);
   h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   const reviewedSha = h.git(['rev-parse', 'HEAD']);
