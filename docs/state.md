@@ -221,6 +221,8 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
       "kind": "code",
       "acceptance": ["a retried webhook with the same key is processed once", "test proves it"],
       "depends_on": [],
+      "locks": [],
+      "environment": null,
       "needs_owner": null,
       "size": "M",
       "tier": "medium",
@@ -244,6 +246,8 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 - `size`: `S` (under an hour), `M` (a few hours), `L` (a day). Anything larger is split; `validate` reports it.
 - `tier`: `easy`, `medium`, `hard` or `research`, the ladder rung that does the task. When `task add` or `plan import` gives none: `research` for kind `research`, else `easy` for `S`, `medium` for `M`, `hard` for `L`. It changes only through `--tier`; a later size or kind change does not move it. A task file without `tier` gets it the same way when it loads.
 - `needs_owner`: null, or the reason the owner has to act (a credential, a purchase, a product call). Such a task is never ready on its own; the owner clears it with `tower-crane owner-done`. Clearing or replacing an existing reason with `task update --needs-owner` also needs explicit owner identity. Any agent may set a reason when none exists, or keep the same reason.
+- `locks`: an array of unique non-empty resource names, such as `["lab/rdma", "gpu/0"]`; defaults to `[]` when absent. `task add --lock NAME` and `task update --lock NAME` accept repeated names, trim and deduplicate them; update replaces the list, and `--lock ''` clears it. `plan import` accepts the array too. Names are case-sensitive and independent of the environment label. Lock changes are refused under the state lock while the task holds a live lease or worker dispatch reservation; keeping the same set is allowed.
+- `environment`: null or a non-empty informational label, such as `"lab"`; defaults to null when absent. Set with `--environment LABEL` on task add/update or the plan field. `--environment ''` clears it. It does not set process environment variables, select a harness or acquire a resource lock.
 - `status`: `todo`, `in_progress`, `submitted`, `accepted`, `rework`, `cancelled`. `ready` and `blocked` are computed, never stored.
 - `claim`: `{ "agent": "w-3", "since": "...", "until": "...", "from": "todo" }` while in progress; `from` is the status before the claim (`todo` or `rework`), which `release` restores. Repeating `claim` as the live holder extends `until` without changing `since` or `from`. An expired lease frees the task: it counts as `from` again and another agent may claim it. Until someone does, the original claimant can still submit it, or renew it while the workers limit has room: an expired lease no longer counts toward `limits.workers`, so renewing it takes a slot like a new claim.
 - `submitted_by`: the agent that submitted the current `sha`. Submission clears `claim`; while the task is `submitted`, only this agent can replace the submitted head.
@@ -256,6 +260,8 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 - `notes`: `{ "at", "agent", "text" }` entries. The orchestrator folds what matters into the brief. A note starting with `split:` on an `L` task records why it stays whole.
 
 The CLI never writes a dependency on a task that does not exist, a dependency cycle, or a task without acceptance. `validate` still checks files edited by hand.
+
+Resource lock holders are derived from the same pure event-log, lease and clock view as worker slot holders. A task holds all its locks while its lease is live or its unclaimed worker dispatch reservation holds a slot. Claim, worker spawn and expired-lease renewal refuse conflicting locks under the state lock, naming the resource, task and agent holding it; the same task and agent can consume their own reservation. `ready`, blocked views and task descriptions include conflicts with other tasks. Submission, release and lease expiry free leased locks. Unclaimed reservations free their locks on the matching exit, inactive monitor record or reservation horizon, and retain them through supervised retry and fallback backoff. No process probe can free a lock for one observer alone. Reviewer and other non-worker dispatches acquire no resource locks. Lock and environment changes do not bump the task revision.
 
 Software evidence also has `source` (`check tests`, `check clean`, `check ci` or `merge`) and `commands`, an array of `{ "command", "args", "cwd", "status", "signal" }` receipts. `command` is the executable name or shell command line, `args` holds its arguments, `cwd` is its working directory, and `status` and `signal` report how it ended (null when unavailable). All commands the gate ran are recorded, including failed commands and GitHub queries. A gate refused before running a process records an empty array; an ok entry needs at least one command to count. In tests mode `none`, the receipt is the Git command resolving the submitted sha; it does not claim that a suite ran. Tests evidence and event detail also carry `tests_mode`, the mode resolved from the project and task kind when checking started, or null for invalid policy. Gate evidence and its event carry the same receipts and revision.
 
