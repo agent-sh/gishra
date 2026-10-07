@@ -56,7 +56,7 @@ function report(items, extra = {}) {
 }
 
 function ctx() {
-  return { root, worktree: null, task: { id: 'T2', kind: 'code', sha, status: 'submitted' }, project: { repo: 'acme/app', base: 'main' }, args: {}, log() {} };
+  return { root, worktree: null, task: { id: 'T2', kind: 'code', sha, status: 'submitted' }, project: { repo: 'acme/app', base: 'main', gates: { clean_cmd: fakeCmd } }, args: {}, log() {} };
 }
 
 function called() {
@@ -120,42 +120,14 @@ test('a scan with checks that did not run: not ok, naming them', async () => {
   assertCleanedUp();
 });
 
-test('no cleanup tool installed: not ok', async () => {
-  process.env.PATH = path.join(tmp, 'empty-bin');
-  process.env.HOME = path.join(tmp, 'empty-home');
-  const r = await gate.run(ctx());
-  assert.equal(r.ok, false);
-  assert.match(r.summary, /cleanup tool not installed/);
-});
-
-test('deslop on PATH is used when TOWER_CRANE_CLEAN_CMD is unset, and TOWER_CRANE_CLEAN_CMD wins over it', { skip: process.platform === 'win32' }, async () => {
-  const bin = path.join(tmp, 'bin');
-  fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'deslop'), `#!/bin/sh\nFAKE_CLEAN_VIA=path exec ${fakeCmd} "$@"\n`, { mode: 0o755 });
-  process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
-  report([]);
-  const r = await gate.run(ctx());
-  assert.equal(r.ok, true, r.summary);
-  assert.equal(called().via, 'path');
+test('an installed cleanup tool is not inferred when the owner has not pinned it', async () => {
   process.env.TOWER_CRANE_CLEAN_CMD = fakeCmd;
-  assert.equal((await gate.run(ctx())).ok, true);
-  assert.equal(called().via, 'env');
-  assertCleanedUp();
-});
-
-test('the deslop plugin script under ~/.agentsys is the last resort', async (t) => {
-  const home = path.join(tmp, 'home');
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  if (gate.findTool()) return t.skip('deslop is on PATH on this machine');
-  const script = path.join(home, '.agentsys', 'plugins', 'deslop', 'scripts', 'detect.js');
-  fs.mkdirSync(path.dirname(script), { recursive: true });
-  fs.copyFileSync(fake, script);
-  report([item('high', 'secret', 'lib/a.js', 1, 'looks like a committed token')]);
-  const r = await gate.run(ctx());
+  const context = ctx();
+  delete context.project.gates;
+  const r = await gate.run(context);
   assert.equal(r.ok, false);
-  assert.match(r.summary, /lib\/a\.js:1 looks like a committed token/);
-  assert.equal(called().head, sha);
+  assert.match(r.summary, /pinned/);
+  assert.equal(fs.existsSync(logFile), false);
 });
 
 test('a tool that fails or prints no JSON: not ok', async () => {
