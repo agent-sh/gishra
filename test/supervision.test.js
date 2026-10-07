@@ -11,6 +11,9 @@ const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
+  file, text: fs.readFileSync(path.join(h.state, file), 'utf8'),
+}));
 
 async function until(fn, message) {
   const deadline = Date.now() + 12000;
@@ -142,6 +145,9 @@ test('repeated transient exits exhaust bounded retries with exponential backoff 
   const task = h.json(['task', 'show', 'T1']);
   assert.equal(task.run.phase, 'blocked');
   assert.match(task.run.reason, /after 2 retries/);
+  for (const { file, text } of sketches(h)) {
+    assert.match(text, /blocked: transient exit after 2 retries/, `${file} shows the blocked phase`);
+  }
   assert.equal(task.claim.agent, 'worker-T1-1');
   assert.equal(task.status, 'in_progress');
   assert.match(h.ok(['status']), /blocked: transient exit after 2 retries/);
@@ -161,7 +167,8 @@ test('detached supervision renews a short lease during backoff and does not allo
     env: { NODE_OPTIONS: `--require "${HOOKS.replace(/\\/g, '/')}"`, HOOK_CLOCK_FILE: clockFile },
   });
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'retry was not recorded');
-  await until(() => /retrying 1/.test(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8')), 'saved board did not render the retry phase');
+  await until(() => sketches(h).every(({ text }) => /retrying 1/.test(text)), 'saved sketches did not render the retry phase');
+  for (const { file, text } of sketches(h)) assert.match(text, /retrying 1/, `${file} shows the retry phase`);
   fs.writeFileSync(clockFile, String(now + 40000));
   await until(() => log(h).some((e) => e.cmd === 'renew'), 'supervisor did not renew the short lease');
   const task = h.json(['task', 'show', 'T1']);
@@ -292,12 +299,16 @@ test('progress paths and CPU detect a stalled process without dropping its live 
   const spawned = h.json(['spawn', '--task', 'T1']);
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'blocked', 'idle process did not stall');
   assert.match(h.ok(['task', 'show', 'T1']), /blocked: no progress paths or CPU activity/);
-  assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /blocked: no progress paths or CPU activity/);
+  for (const { file, text } of sketches(h)) {
+    assert.match(text, /blocked: no progress paths or CPU activity/, `${file} shows the stalled phase`);
+  }
   fs.writeFileSync(path.join(spawned.cwd, 'progress.txt'), 'progress\n');
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'running', 'path progress did not clear stall');
-  await until(() => !fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').includes('blocked: no progress paths or CPU activity'),
-    'saved board did not clear stall');
-  assert.doesNotMatch(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /blocked: no progress paths or CPU activity/);
+  await until(() => sketches(h).every(({ text }) => !text.includes('blocked: no progress paths or CPU activity')),
+    'saved sketches did not clear stall');
+  for (const { file, text } of sketches(h)) {
+    assert.doesNotMatch(text, /blocked: no progress paths or CPU activity/, `${file} clears the stalled phase`);
+  }
   assert.equal(h.json(['task', 'show', 'T1']).claim.agent, spawned.agent);
   assert.deepEqual(h.json(['status']).exited_claims, []);
   await until(() => !detachedAlive({ pid: spawned.monitor_pid }), 'supervisor did not finish');
@@ -600,15 +611,104 @@ test('foreground output is durable while the dispatch CLI is blocked rendering',
   assert.equal(h.readAttempts().length, 2);
 });
 
-test('job transport preserves briefs that fit a harness argument', (t) => {
-  const h = setup(t, { failures: 0 });
-  const rung = h.json(['ladder', 'show']).ladder.easy;
-  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([...rung.command, '{prompt}'])]);
-  const size = process.platform === 'win32' ? 14 * 1024 : 50 * 1024;
+test('foreground exit waits until paused stdout has been captured in the log', async (t) => {
+  const h = setup(t);
+  const exitFile = path.join(h.base, 'foreground-exited');
+  const readyFile = path.join(h.base, 'foreground-paused');
+  const continueFile = path.join(h.base, 'continue-foreground');
+  const resumeFile = path.join(h.base, 'resume-foreground');
+  const captureFile = path.join(h.base, 'foreground-captured');
+  const hook = path.join(__dirname, 'fixtures', 'supervision-followups.js').replace(/\\/g, '/');
+  const script = `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1', '--lease', '1']);
+const ready = process.env.TOWER_CRANE_TEST_CAPTURE_READY;
+const deadline = Date.now() + 10000;
+while (!fs.existsSync(ready)) {
+  if (Date.now() >= deadline) process.exit(92);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+fs.writeSync(1, JSON.stringify({ type: 'capture-marker', value: 'final foreground output' }) + '\\n');
+process.exit(1);
+`;
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN])]);
+  const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: {
+      NODE_OPTIONS: `--require "${hook}"`,
+      TOWER_CRANE_TEST_CAPTURE_EXIT: exitFile,
+      TOWER_CRANE_TEST_CAPTURE_READY: readyFile,
+      TOWER_CRANE_TEST_CAPTURE_CONTINUE: continueFile,
+      TOWER_CRANE_TEST_CAPTURE_RESUME: resumeFile,
+      TOWER_CRANE_TEST_CAPTURE_CAPTURED: captureFile,
+    },
+  });
+  let result;
+  try {
+    await until(() => fs.existsSync(readyFile), 'supervisor did not pause the foreground stream');
+    const ready = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
+    assert.equal(ready.flowing, false);
+    await until(() => fs.existsSync(exitFile), 'foreground harness did not exit while stdout was paused');
+    const stream = JSON.parse(fs.readFileSync(exitFile, 'utf8'));
+    assert.equal(stream.flowing, false, 'the capture stream stayed paused');
+    assert.ok(stream.buffered > 0, 'uncaptured bytes remain buffered at process exit');
+    const spawnEvent = log(h).find((e) => e.cmd === 'spawn');
+    assert.doesNotMatch(fs.readFileSync(spawnEvent.detail.log, 'utf8'), /final foreground output/,
+      'the final output has not reached the log when the child exit is observed');
+    assert.equal(log(h).some((e) => e.cmd === 'spawn exit'), false);
+    fs.writeFileSync(continueFile, 'continue');
+  } finally {
+    fs.writeFileSync(continueFile, 'continue');
+    fs.writeFileSync(resumeFile, 'resume');
+    result = await completed;
+  }
+  assert.equal(result.code, 1, result.stderr);
+  const events = log(h);
+  const spawned = events.find((e) => e.cmd === 'spawn').detail;
+  const exited = events.find((e) => e.cmd === 'spawn exit');
+  const captured = JSON.parse(fs.readFileSync(captureFile, 'utf8'));
+  assert.ok(exited);
+  assert.ok(captured.at >= JSON.parse(fs.readFileSync(exitFile, 'utf8')).at);
+  assert.ok(Date.parse(exited.at) >= captured.at, 'exit classification follows the final log write');
+  assert.match(fs.readFileSync(spawned.log, 'utf8'), /final foreground output/);
+});
+
+test('a 45 KiB brief launches through the monitor job file, not monitor argv', (t) => {
+  const size = 45 * 1024;
+  const h = setup(t);
+  const monitorArgvFile = path.join(h.base, 'monitor-argv.json');
+  const workerResult = path.join(h.base, 'brief-result.json');
+  const hook = path.join(__dirname, 'fixtures', 'supervision-followups.js').replace(/\\/g, '/');
+  const script = `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1', '--lease', '1']);
+const text = fs.readFileSync(process.argv[3], 'utf8');
+fs.writeFileSync(process.argv[2], JSON.stringify({
+  bytes: Buffer.byteLength(text),
+  containsBrief: text.includes('x'.repeat(${size})),
+}));
+`;
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([
+    process.execPath, '-e', script, BIN, workerResult, '{brief}',
+  ])]);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'x'.repeat(size) });
-  const result = h.spawn();
+  const result = h.run(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: {
+      NODE_OPTIONS: `--require "${hook}"`,
+      TOWER_CRANE_TEST_MONITOR_ARGV: monitorArgvFile,
+    },
+  });
   assert.equal(result.code, 0, result.stderr);
-  assert.equal(h.readAttempts().length, 1);
+  const readBrief = JSON.parse(fs.readFileSync(workerResult, 'utf8'));
+  assert.ok(readBrief.bytes >= size);
+  assert.equal(readBrief.containsBrief, true);
+  const captured = JSON.parse(fs.readFileSync(monitorArgvFile, 'utf8'));
+  const monitorIndex = captured.args.findIndex((arg) => path.basename(arg) === 'spawn-monitor.js');
+  assert.notEqual(monitorIndex, -1, 'the captured command launches the monitor');
+  assert.equal(captured.args.length - monitorIndex, 2, 'the monitor gets only one argument after its script');
+  assert.equal(path.basename(captured.args[monitorIndex + 1]), 'job.json');
+  assert.ok(!captured.args.some((arg) => arg.includes('x'.repeat(1024))), 'the prompt is not in monitor argv');
   assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
 });
 
