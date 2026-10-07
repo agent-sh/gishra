@@ -1,5 +1,6 @@
 # Changelog
 
+- Gate checks report missing test or cleanup command pins before comparing caller overrides. Failed test checks print and record failing test names with a bounded output tail, and status reports when required gate commands are unpinned.
 - The state lock checks a holder's pid only inside the holder's own pid namespace. A sandboxed command in a namespace of its own looked gone to writers outside it, so they broke its live lock and one write overwrote the other: a `task add` vanished from tasks.json while its event stayed in the log, and the next add reused its id. New task ids also continue past the highest id in `events.jsonl`, and `validate` reports tasks, notes and `next` that drifted from the log. State readers read the log before tasks.json, so a commit during `validate` is not reported as drift.
 - Dependent tasks can dispatch on submitted dependency heads, link GitHub PR stacks, merge accepted lower tasks atomically, and refresh worktrees through gh-stack. Trusted pull_request stack metadata appears in task show and the board.
 - Host Chrome tests retain their original launch environment and flags; private cache/config/temp directories and temp-backed shared memory apply only inside an agent sandbox.

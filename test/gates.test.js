@@ -349,6 +349,44 @@ test('run-only still fails when the suite fails at the submitted head', (t) => {
   assert.deepEqual(fs.readdirSync(h.env.TOWER_CRANE_TMP), []);
 });
 
+test('failed tests evidence records TAP and spec names with a bounded output tail', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {
+    'test/failure.test.js': `const test = require('node:test');
+const assert = require('node:assert/strict');
+test('named regression failure', () => {
+  console.log('${'x'.repeat(12000)} tail marker');
+  assert.equal('actual', 'expected');
+});
+`,
+  } });
+  submitTestsFixture(h, sha);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+
+  for (const reporter of ['tap', 'spec']) {
+    const cmd = `${shellQuote(process.execPath)} --test --test-reporter=${reporter} test/failure.test.js`;
+    h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+    const result = h.run(['check', 'tests', 'T1', '--agent', 'checker']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+
+    const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+    assert.equal(evidence.ok, false);
+    assert.ok(evidence.test_failure.names.some((name) => name.includes('named regression failure')));
+    assert.ok(evidence.test_failure.output_tail.includes('tail marker'));
+    assert.equal(evidence.test_failure.output_tail.length, 8192);
+    assert.match(evidence.summary, /Failing tests:/);
+    assert.match(evidence.summary, /Output tail \(last 40 lines, max 8192 characters\):/);
+    assert.match(result.stdout, /named regression failure/);
+    assert.match(result.stdout, /tail marker/);
+
+    const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8')
+      .trim().split('\n').map(JSON.parse);
+    assert.deepEqual(events.at(-1).detail.test_failure, evidence.test_failure);
+  }
+});
+
 test('none mode for docs and ops needs no command but still verifies the submitted sha', (t) => {
   const h = makeRepo(t);
   const sha = manifestTask(h, { submitted: {} });
