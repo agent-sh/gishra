@@ -32,6 +32,8 @@ if (args[0] === 'pr' && args[1] === 'merge') {
   const pr = args[2];
   console.log(JSON.stringify({
     headRefOid: process.env.FIXTURE_SHA,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
     headRefName: process.env['FIXTURE_PR_HEAD_' + pr] || process.env.FIXTURE_PR_HEAD || 'fixture-change',
     state: process.env['FIXTURE_PR_STATE_' + pr] || process.env.FIXTURE_PR_STATE || (fs.existsSync(merged) ? 'MERGED' : 'OPEN'),
     mergeCommit: {oid: process.env.FIXTURE_SHA},

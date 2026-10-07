@@ -112,6 +112,10 @@ function before(name, args) {
   const target = args[0];
   // HOOK_JITTER_MS=MS: a random pause of up to MS before each call on the state.
   if (env.HOOK_JITTER_MS && (inState(target) || inState(args[1]))) sleep(Math.floor(Math.random() * Number(env.HOOK_JITTER_MS)));
+  // State commits precede board replacement; expose that interval to readers.
+  if (env.HOOK_RENDER_DELAY_MS && name === 'renameSync' && args[1] === path.join(STATE, 'sketch.html')) {
+    sleep(Number(env.HOOK_RENDER_DELAY_MS));
+  }
   // HOOK_DIE_ON=FILE: killed when it reads FILE, which a write does while it holds the lock.
   if (env.HOOK_DIE_ON && name === 'readFileSync' && inState(target) && path.basename(target) === env.HOOK_DIE_ON) {
     process.kill(process.pid, 'SIGKILL');
@@ -127,14 +131,23 @@ function before(name, args) {
   }
 }
 
-function after(name, args) {
+let pendingLockRead;
+function after(name, args, rawArgs = args) {
   const target = args[0];
   if (env.HOOK_STOP_RENDER && name === 'renameSync' && args[1] === path.join(STATE, 'sketch.md')
     && path.basename(process.argv[1]) === 'tower-crane.js' && process.argv.includes('spawn') && first('render')) stop(env.HOOK_STOP_RENDER);
   // HOOK_PAUSE_ON=FILE: stop at HOOK_PAUSED after the first read of FILE.
   if (env.HOOK_PAUSE_ON && name === 'readFileSync' && inState(target) && path.basename(target) === env.HOOK_PAUSE_ON && first('pause')) stop(env.HOOK_PAUSED);
-  // HOOK_STOP_LOCK_READ=SIGNAL: stop after first reading who holds the lock.
-  if (env.HOOK_STOP_LOCK_READ && name === 'readFileSync' && inLock(target) && first('lock-read')) stop(env.HOOK_STOP_LOCK_READ);
+  // Windows keeps an unlinked marker pending deletion until its reader closes
+  // it. Pause with the snapshot, without keeping the lock directory open.
+  if (env.HOOK_STOP_LOCK_READ && name === 'readFileSync' && inLock(target) && first('lock-read')) {
+    if (typeof rawArgs[0] === 'number') pendingLockRead = rawArgs[0];
+    else stop(env.HOOK_STOP_LOCK_READ);
+  }
+  if (name === 'closeSync' && rawArgs[0] === pendingLockRead) {
+    pendingLockRead = undefined;
+    stop(env.HOOK_STOP_LOCK_READ);
+  }
   // HOOK_STOP_LOCK_CHANGE=SIGNAL: stop after the first attempt to remove or
   // move what is at or inside the lock, whether or not it worked.
   if (env.HOOK_STOP_LOCK_CHANGE && CHANGES.includes(name) && inLock(target) && first('lock-change')) stop(env.HOOK_STOP_LOCK_CHANGE);
@@ -153,12 +166,12 @@ if (STATE) {
         out = orig.apply(this, args);
       } catch (e) {
         if (lockArg !== undefined && path.resolve(String(args[lockArg])) === LOCK && BUSY.includes(e.code)) barrier();
-        after(name, observed);
+        after(name, observed, args);
         throw e;
       }
       if (name === 'openSync') descriptors.set(out, args[0]);
       if (name === 'closeSync') descriptors.delete(args[0]);
-      after(name, observed);
+      after(name, observed, args);
       return out;
     };
   }
