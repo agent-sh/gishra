@@ -365,6 +365,41 @@ test('spawn --wait runs the command rung in the task worktree with the tower-cra
   assert.equal(events.find((e) => e.cmd === 'spawn exit').detail.code, 7);
 });
 
+test('spawn removes outer Node test runner variables so an agent can run its own test suite', (t) => {
+  const h = setup(t);
+  const out = path.join(h.base, 'nested-run.json');
+  const marker = path.join(h.base, 'nested-test-ran');
+  const file = path.join(h.repo, 'nested.test.js');
+  fs.writeFileSync(file, `
+const test = require('node:test');
+test('the agent runs a real nested test', () => {
+  require('node:assert/strict').equal(process.env.NESTED_KEEP, 'kept');
+  require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');
+});
+`);
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'nested runner fixture']);
+  const script = `
+const cp = require('node:child_process');
+const result = cp.spawnSync(process.execPath, ['--test', '--test-reporter=tap', ${JSON.stringify(file)}], { encoding: 'utf8', timeout: 10000 });
+require('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({
+  runnerEnv: Object.keys(process.env).filter((key) => /^NODE_TEST_/i.test(key)),
+  code: result.status, stdout: result.stdout, stderr: result.stderr,
+}));
+`;
+  commandRung(h, 'medium', [process.execPath, '-e', script]);
+  h.ok(['project', 'set', '--env', '{"NODE_TEST_CONTEXT":"child-v8","NESTED_KEEP":"kept"}']);
+  h.ok(['spawn', '--task', 'T1', '--wait'], {
+    env: { NODE_TEST_WORKER_ID: 'outer-worker', NODE_TEST_REPORTER: 'outer-reporter', NODE_TEST_FUTURE: 'outer-value' },
+  });
+  const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.deepEqual(seen.runnerEnv, []);
+  assert.equal(seen.code, 0, seen.stderr);
+  assert.equal(seen.stderr, '');
+  assert.match(seen.stdout, /# pass 1\b/);
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'ran');
+});
+
 test('command brief placeholders point to role-filtered temporary copies', async (t) => {
   const h = setup(t);
   h.ok(['brief', 'set', 'T1', '-'], {

@@ -39,14 +39,18 @@ const result = cp.spawnSync(process.execPath, [
   '--test-name-pattern=^shared restoration reveals nested disclosures',
   path.join(__dirname, 'test', 'board.test.js'),
 ], { encoding: 'utf8', timeout: 120000 });
-fs.writeFileSync(path.join(__dirname, 'browser-probe.json'), JSON.stringify({
+const receipt = {
   code: result.status, stdout: result.stdout, stderr: result.stderr, error: result.error?.message,
-}));
+};
+fs.writeFileSync(path.join(__dirname, 'browser-probe.json'), JSON.stringify(receipt));
 process.stdout.write(result.stdout || '');
 process.stderr.write(result.stderr || '');
-assert.equal(result.status, 0, result.error?.message);
-assert.match(result.stdout, /# pass 1\\b/);
-assert.match(result.stdout, /# fail 0\\b/);
+const diagnostic = JSON.stringify(receipt);
+assert.equal(receipt.error, undefined, 'board browser test could not run: ' + diagnostic);
+assert.equal(receipt.code, 0, 'board browser test failed: ' + diagnostic);
+assert.equal(receipt.stderr, '', 'board browser test emitted stderr: ' + diagnostic);
+assert.match(receipt.stdout || '', /# pass 1\\b/, 'board browser test ran no passing test: ' + diagnostic);
+assert.match(receipt.stdout || '', /# fail 0\\b/, 'board browser test did not report success: ' + diagnostic);
 `);
     h.git(['add', '.']);
     h.git(['commit', '-qm', 'board browser probe']);
@@ -85,9 +89,18 @@ assert.match(result.stdout, /# fail 0\\b/);
       const output = path.join(wt, 'browser-probe.json');
       assert.ok(fs.existsSync(output), `the worker must run the command\n${result.stdout}\n${result.stderr}`);
       const seen = JSON.parse(fs.readFileSync(output, 'utf8'));
-      assert.equal(seen.code, 0, `${seen.error || ''}\n${seen.stdout}\n${seen.stderr}`);
-      assert.match(seen.stdout, /# pass 1\b/);
-      assert.match(seen.stdout, /# fail 0\b/);
+      const diagnostic = JSON.stringify(seen);
+      assert.equal(seen.error, undefined, `board browser test could not run: ${diagnostic}`);
+      assert.equal(seen.code, 0, `board browser test failed: ${diagnostic}`);
+      assert.equal(seen.stderr, '', `board browser test emitted stderr: ${diagnostic}`);
+      assert.match(seen.stdout || '', /# pass 1\b/, `board browser test ran no passing test: ${diagnostic}`);
+      assert.match(seen.stdout || '', /# fail 0\b/, `board browser test did not report success: ${diagnostic}`);
+    } catch (error) {
+      const logs = path.join(h.state, 'logs');
+      const tail = fs.existsSync(logs) ? fs.readdirSync(logs).filter((name) => name.endsWith('.log')).map((name) =>
+        `${name}:\n${fs.readFileSync(path.join(logs, name), 'utf8').slice(-16384)}`).join('\n') : '';
+      t.diagnostic(`Agent log tails:\n${tail || '(no agent log)'}`);
+      throw error;
     } finally {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
