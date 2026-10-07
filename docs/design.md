@@ -208,13 +208,13 @@ The board is one row of columns, in the order of the questions:
 - 720 to 1100: two columns, Needs you and Working now on the left, Up next on the right.
 - Under 720 (a 390 px phone): one column in priority order; the view switcher scrolls horizontally.
 
-Columns scroll on their own at widths of at least 1100 px and heights of at least 700 px. Each column stretches to its bounded grid track, so later owner decisions and work cards remain reachable. A live update keeps the scroll position of the column itself as well as each task sheet. On short or narrow screens the page scrolls. Text never runs wider than about 75 characters: card text is capped and long evidence wraps.
+Columns scroll on their own at widths of at least 1100 px and heights of at least 700 px. Each column stretches to its bounded grid track, so later owner decisions and work cards remain reachable. Column headings stick to the top while their queues scroll, with the paper background keeping the text clear. A live update keeps the scroll position of the column itself as well as each task sheet. On short or narrow screens the page scrolls. Text never runs wider than about 75 characters: card text is capped and long evidence wraps.
 
 On phones, each gate uses a two-line row: name and state stay whole on the first line; the reason wraps below them. Evidence prose may wrap anywhere, but gate names and states never break into fragments.
 
 The task sheet is a modal surface when scripts run. Its background is inert, Tab stays inside, Escape closes it, and closing restores the invoking link. Switching to a dependency stays in the sheet. Live replacement reapplies modal state and restores focus within the sheet; if the invoking card was replaced, closing finds its link in the original item and column, including when several decisions link to the same task. Plain fragment links keep the snapshot's records reachable without scripts.
 
-Budget plates use the same attention count as the Needs you heading, Board navigation, title and tab icon. A token or time budget at 90% contributes one item each. Working now takes messages only from the current claimant since that claim began; submitted cards use the submitter's context. Planning notes, owner comments and reviewer messages remain in the task conversation.
+Budget plates use the same attention count as the Needs you heading, Board navigation, title and tab icon. A token or time budget at 90% contributes one item each. One Budget group heading labels the plates; each plate names its measure and percentage. Agent time under ten hours includes minutes, so 95% of one hour reads as 57 min used of 1 h. Working now takes messages only from the current claimant since that claim began; submitted cards use the submitter's context. Planning notes, owner comments and reviewer messages remain in the task conversation.
 
 ### Components
 
