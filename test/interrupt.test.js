@@ -55,14 +55,15 @@ test('interrupt stops supervision, preserves dirty work and resumes the original
   const h = setup(t);
   const first = h.json(['spawn', '--task', 'T1']);
   await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not record its session');
-  const claim = h.json(['task', 'show', 'T1']).claim;
+  const before = h.json(['task', 'show', 'T1']);
+  const claim = before.claim;
   h.ok(['claim', 'T1', '--agent', first.agent]);
   h.ok(['task', 'note', 'T1', 'keep the current approach']);
   const stopped = h.json(['interrupt', 'T1', '--agent', 'orchestrator']);
   assert.equal(stopped.status, 'todo');
   assert.equal(stopped.claim, null);
   assert.equal(stopped.revision, 1);
-  assert.equal(stopped.branch, h.json(['task', 'show', 'T1']).branch);
+  assert.equal(stopped.branch, before.branch);
   await until(() => !detachedAlive({ pid: first.monitor_pid }), 'supervisor did not stop');
   assert.equal(detachedAlive({ pid: first.pid }), false);
   assert.equal(fs.readFileSync(path.join(first.cwd, 'README.md'), 'utf8'), '# unfinished tracked work\n');
