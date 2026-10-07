@@ -178,8 +178,8 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   assert.deepEqual([box.enabled, box.failIfUnavailable, box.allowUnsandboxedCommands, box.network.allowAllUnixSockets], [true, true, false, true]);
   assert.deepEqual(box.filesystem.allowWrite, []);
   assert.deepEqual(box.filesystem.denyWrite, [h.state, wt], 'the state is read-only');
-  assert.ok(box.filesystem.denyRead.includes(path.join(h.state, 'homes')), 'no agent reads another agent\'s home');
-  assert.deepEqual(box.filesystem.allowRead, [home], 'but it reads its own');
+  assert.ok(box.filesystem.denyRead.includes(path.join(h.state, 'brokers')), 'no agent reads another agent\'s broker token');
+  assert.deepEqual(box.filesystem.allowRead, [path.join(h.state, 'brokers', started.agent)], 'but it reads its own');
   for (const p of ['/var/run/docker.sock', '/run/docker.sock', path.join(u.home, '.ssh'), path.join(u.home, '.aws')]) assert.ok(box.filesystem.denyRead.includes(p), p);
   assert.match(fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8'), /^\.claude\/\.cc-writes\/$/m, 'the sandbox marker is never committed');
   assert.equal(fs.readFileSync(path.join(h.state, 'homes', '.gitignore'), 'utf8'), '*\n');
@@ -251,9 +251,21 @@ test('a codex agent writes only where its agent file says; a worker writes its g
     assert.deepEqual(rules[':workspace_roots'], { '.': worktree }, rung);
     assert.equal(rules[':root'], 'read', rung);
     assert.equal(rules[h.state], 'read', `${rung}: the state is read-only; the broker writes it`);
-    assert.equal(rules[path.join(h.state, 'homes')], 'none', `${rung}: no agent reads another agent's home`);
-    assert.equal(rules[home], 'read', `${rung}: its own home is readable`);
+    assert.equal(rules[path.join(h.state, 'brokers')], 'none', `${rung}: no agent reads another agent's broker token`);
+    assert.equal(rules[path.join(h.state, 'brokers', path.basename(home))], 'write', `${rung}: its own broker directory is visible`);
     assert.equal(rules[path.join(home, 'home')], 'write', `${rung}: its HOME is writable`);
+    // Codex mounts every readable path, then hides each 'none' directory,
+    // then mounts the writable paths: a path under a hidden directory is
+    // visible only if a writable rule names it or a directory between.
+    const visible = (p) => {
+      const named = Object.keys(rules).filter((k) => !k.startsWith(':') && (p === k || p.startsWith(k + path.sep)));
+      const hidden = named.filter((k) => rules[k] === 'none');
+      return hidden.every((d) => named.some((k) => rules[k] === 'write' && k.startsWith(d + path.sep)));
+    };
+    for (const p of [path.join(home, 'bin', 'git'), path.join(home, 'home'), path.join(h.state, 'brokers', path.basename(home), 'broker.json')]) {
+      assert.ok(visible(p), `${rung}: the agent's commands see ${p}`);
+    }
+    assert.ok(!visible(path.join(h.state, 'brokers', 'worker-T9-1', 'broker.json')), `${rung}: another agent's token is hidden`);
     assert.equal(config.permissions['tower-crane'].network.enabled, true);
   }
   for (const [rung, writes] of [['hard', true], ['small', false]]) {
@@ -429,7 +441,7 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     if (harness === 'codex') assert.deepEqual([address.socket, address.host, Number.isInteger(address.port) && address.port > 0], [undefined, '127.0.0.1', true]);
     else assert.deepEqual([typeof address.socket, address.host], ['string', undefined]);
     assert.ok(fs.existsSync(path.join(fixture, 'project.json')), `${harness}: the fixture got its own state`);
-    assert.ok(!fs.existsSync(path.join(h.state, 'homes', agent, 'broker.json')), `${harness}: the broker closes with its agent`);
+    assert.ok(!fs.existsSync(path.join(h.state, 'brokers', agent)), `${harness}: the broker closes with its agent`);
     fs.rmSync(fixture, { recursive: true, force: true });
   }
   isolated(h, 'hard', 'claude');
