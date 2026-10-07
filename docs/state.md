@@ -255,6 +255,8 @@ The CLI refuses manual software verdicts, and software receipts require matching
 
 `project.research` is optional and accepts only `min_sources`, a positive integer; it defaults to 10. The explicit owner sets it with `project set --research-min-sources N` (also accepted by `init`). Changing the minimum invalidates sources evidence recorded under a different minimum.
 
+Tasks on the `research` tier require sources evidence. Kind `research` selects this tier by default. Changing only the kind preserves the existing tier and its role; an ordinary worker does not gain a sources requirement or web permissions from a kind label change. Code tasks on the research tier require sources in addition to their code gates.
+
 A research deliverable is committed at `research/<task id>.json`:
 
 ```json
@@ -264,7 +266,9 @@ A research deliverable is committed at `research/<task id>.json`:
 }
 ```
 
-The example shows one citation; the default requires at least ten. Every source has a unique non-blank id and an HTTP(S) URL without credentials. Every claim has non-blank `claim`, `quote` and `source` strings; the source names an entry, and every source must be cited. Multiple claims may cite one source. `check sources ID` reads this file through Git at the submitted sha, fetches each page at check time, and finds every quote in its page text. It normalizes Unicode and whitespace, strips HTML markup, comments, script/style/template content, and decodes common and numeric HTML entities. It accepts HTML and plain text; PDF, JavaScript-rendered, authenticated and other non-text pages need a publicly fetchable text alternative. Quote matching proves presence; independent review checks source credibility and whether each quote supports its claim, including uncited factual claims elsewhere in the deliverable.
+The example shows one citation; the default requires at least ten. Every source has a unique non-blank id and an HTTP(S) URL without credentials. Every claim has non-blank `claim`, `quote` and `source` strings; the source names an entry, and every source must be cited. Multiple claims may cite one source. `check sources ID` reads this file through Git at the submitted sha, fetches each page at check time, and finds every quote in its page text. It normalizes Unicode and whitespace, removes inline tags without adding spaces, separates block boundaries, strips comments and script/style/template content, and decodes common and numeric HTML entities. Punctuation adjacent to inline markup stays adjacent. It accepts HTML and plain text; PDF, JavaScript-rendered, authenticated and other non-text pages need a publicly fetchable text alternative. Quote matching proves presence; independent review checks source credibility and whether each quote supports its claim, including uncited factual claims elsewhere in the deliverable.
+
+Before each connection, the gate resolves the hostname and refuses any non-public IPv4 or IPv6 answer, including loopback, private, link-local, mapped and special-use addresses. It pins the validated address for the socket while retaining the hostname for HTTP Host, TLS SNI and certificate validation. Redirects are followed manually, with the same URL and DNS checks at every hop, up to five redirects. DNS resolution and all redirect hops share the page timeout. The CLI has no setting that permits private addresses; local tests inject a resolver and transport into the gate context.
 
 The gate rejects duplicate URLs (fragments do not distinguish pages), duplicate final redirect URLs, identical normalized page content, dead links, missing quotes and uncited sources. Each fetch is limited to ten seconds and 5 MiB; the gate has a two minute deadline to bound stalled responses. Sources evidence carries a `receipt` with `min_sources`, `deliverable` and the fetched `sources`: id, requested and final URL, HTTP status, text SHA-256, fetch timestamp and cited claims. The audit event carries the same receipt; it also records the Git commands resolving and reading the submitted commit. The reviewer context includes this receipt and the instruction to map each claim to its source. A new check always fetches again; acceptance reuses evidence at the same sha, revision and minimum.
 
@@ -289,7 +293,7 @@ Any agent recovers a verified exited task with `release ID --reason R`. The dete
 `tower-crane accept` refuses unless the task's current revision has, at the submitted `sha`:
 
 - `code` tasks: `tests` ok, `clean` ok, and `review` ok from an agent other than the one that submitted
-- `research` tasks: `sources` ok and `review` ok from another agent
+- any task on the `research` tier: `sources` ok as well as its kind gates
 - other kinds: `review` ok from another agent
 - any task with a PR, whatever its kind: `ci` ok as well
 
@@ -297,7 +301,7 @@ Tests modes change how `check tests` produces evidence, not which gates acceptan
 
 Successful tests evidence counts only when its audited `tests_mode` matches the mode currently resolved for the project and task kind. A mode change, a missing mode on older evidence or a malformed current policy needs a new tests check. The audit event must contain the same mode as the evidence; changing the mode in tasks.json alone cannot retarget evidence. Owner waivers still apply. Task views, board gate pips and evidence ledger (including accepted tasks), acceptance and merge use this same rule.
 
-Before acceptance, `accept ID --cmd "<scoped tests>"` runs unattempted software gates in order: tests and clean for code, sources for research, then CI for every task with a PR. Pass `--cmd` when tests are missing in prove or run-only mode; without it the missing tests gate blocks. None mode records its audited tests result without a command. Expensive prove also accepts `--proof-cmd` with the `{tests}` placeholder. Eligible successful receipts are reused. Failed, stale local-CI or unaudited attempted receipts require an explicit `check` rerun. Results are recorded even if a later gate refuses acceptance. A head, revision or status change during a gate refuses the attempt. Review dispatch is guarded again under the state lock.
+Before acceptance, `accept ID --cmd "<scoped tests>"` runs unattempted software gates in order: tests and clean for code, sources for the research tier, then CI for every task with a PR. Pass `--cmd` when tests are missing in prove or run-only mode; without it the missing tests gate blocks. None mode records its audited tests result without a command. Expensive prove also accepts `--proof-cmd` with the `{tests}` placeholder. Eligible successful receipts are reused. Failed, stale local-CI or unaudited attempted receipts require an explicit `check` rerun. Results are recorded even if a later gate refuses acceptance. A head, revision or status change during a gate refuses the attempt. Review dispatch is guarded again under the state lock.
 
 When software gates pass and no review has been attempted at the current head and revision, `accept` dispatches a reviewer and exits 0 with `review_pending: true` and its agent name in JSON; the task stays submitted. A repeated accept reuses a live review dispatch. Call accept again after review evidence arrives. Failed reviews require rework or an explicit stronger review dispatch. `spawn --role review` also refuses until all software gates pass; `--dry-run` checks them for a submitted task. For an unsubmitted task a dry run previews the fallback command only, and cannot dispatch a review.
 
