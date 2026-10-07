@@ -217,6 +217,7 @@ test('spawn gives workers shared brief text and reviewers only their review sect
 
 test('the prompt is the role skill, brief, task, then how to use tower-crane', (t) => {
   const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--lock', 'lab/rdma', '--environment', 'lab']);
   setRung(h, 'medium', ['--harness', 'opencode', '--model', 'a/b']);
   const p = dry(h).argv.find((a) => a.includes('## Task'));
   assert.ok(p.startsWith('## Role instructions: tower-crane-work'));
@@ -226,7 +227,7 @@ test('the prompt is the role skill, brief, task, then how to use tower-crane', (
   const iUse = p.indexOf('Use the tower-crane CLI for every state change');
   assert.ok(iSkill < iBrief && iBrief < iTask && iTask < iUse, 'role skill, brief, task JSON, instruction in order');
   const json = JSON.parse(p.slice(p.indexOf('```json\n') + 8, p.indexOf('\n```', p.indexOf('```json'))));
-  assert.deepEqual(json, { id: 'T1', title: 'Idempotency key on retries', acceptance: ['processed once', 'test proves it'], kind: 'code' });
+  assert.deepEqual(json, { id: 'T1', title: 'Idempotency key on retries', acceptance: ['processed once', 'test proves it'], kind: 'code', locks: ['lab/rdma'], environment: 'lab' });
   assert.match(p, /TOWER_CRANE_STATE, TOWER_CRANE_TASK and TOWER_CRANE_AGENT are set/);
   assert.ok(p.includes('you are not the owner; never pass --agent owner'));
   assert.ok(p.endsWith('run tower-crane with --agent worker-T1-1 if TOWER_CRANE_AGENT is missing.'));
