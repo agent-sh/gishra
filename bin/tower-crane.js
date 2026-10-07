@@ -1,6 +1,25 @@
 #!/usr/bin/env node
 'use strict';
 
+const OUTPUT_PIPE_CLOSED = 'tower-crane:output-pipe-closed';
+let outputPipeClosed = false;
+
+for (const stream of [process.stdout, process.stderr]) {
+  let broken = false;
+  stream.on('error', (error) => {
+    if (error.code === 'EPIPE') {
+      broken = true;
+      stream.destroy();
+      if (!outputPipeClosed) {
+        outputPipeClosed = true;
+        process.emit(OUTPUT_PIPE_CLOSED);
+      }
+      return;
+    }
+    if (!broken) throw error;
+  });
+}
+
 const { TowerCraneError, usage } = require('../lib/util');
 const S = require('../lib/state');
 const P = require('../lib/project');
@@ -33,7 +52,7 @@ const SETTINGS = {
   goal: str('G', 'one-line goal'),
   repo: str('O/R', 'GitHub repository (default: from the origin remote)'),
   base: str('B', 'base branch for task branches (default: the current branch)'),
-  workers: int('N', 'worker slots held by live leases or unclaimed spawns (default 6)'),
+  workers: int('N', 'tasks in progress at once, counting live leases (default 6)'),
   'lease-minutes': int('MIN', 'default claim lease (default 60)'),
   'budget-hours': num('H', 'hours budget'),
   'budget-tokens': int('N', 'token budget'),
@@ -70,6 +89,7 @@ const RUNG_FLAGS = {
   args: str('JSON', 'extra arguments appended to the harness command, as a JSON array'),
   command: str('JSON', 'for the command harness: argv array; {task} {brief} {prompt} {cwd} are substituted'),
   supervision: str('JSON', 'retry, backoff, stall and progress path settings as a JSON object'),
+  fallbacks: str('JSON', 'owner only: ordered fallback route objects for provider outages and harness refusals'),
   tools: str('JSON', 'claude or codex: tools the agent file denies that this rung opts back in to (claude tool names, codex features), as a JSON array'),
   mcp: str('JSON', 'claude or codex: MCP servers from your harness config this rung opts in to, by name, as a JSON array'),
   clear: many('FIELD', 'remove a field from the rung (a cleared harness follows the default)'),
@@ -83,7 +103,7 @@ const COMMANDS = [
   { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
   { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', run: P.projectShow },
   { section: 'Plan', name: 'ladder show', summary: 'print each rung as it resolves, and where it comes from (project, user file or built-in)', run: P.ladderShow },
-  { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
+  { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--fallbacks JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
   { section: 'Plan', name: 'ladder harness', pos: ['HARNESS'], usage: 'HARNESS', summary: 'set the default harness every rung without its own runs on', run: P.ladderHarness },
   { section: 'Plan', name: 'ladder save-user', summary: "write this project's ladder to the user file, the default for new projects", run: P.ladderSaveUser },
   { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--tier T] [--dep ID] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
@@ -373,9 +393,23 @@ async function main(argv) {
   }
 }
 
+// A queued no-op write completes after prior bytes, so natural exit waits for healthy output.
+function flushStream(stream) {
+  if (stream.destroyed) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      stream.removeListener('close', done);
+      resolve();
+    };
+    stream.once('close', done);
+    stream.write('', done);
+  });
+}
+
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
+    return Promise.all([flushStream(process.stdout), flushStream(process.stderr)]);
   });
 }
 

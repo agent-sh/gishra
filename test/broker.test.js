@@ -146,3 +146,60 @@ test('a worker cannot have the broker run its tests, its cleanup or git', () => 
   }
   for (const role of Object.keys(B.ROLES)) for (const cmd of B.ROLES[role]) assert.ok(!/^(check|worktree|merge|spawn)\b/.test(cmd), `${role}: ${cmd}`);
 });
+
+test('a broker for claude and codex routes listens on both, and an agent that cannot use the socket uses TCP', { skip: process.platform === 'win32' && 'Windows uses a named pipe for both' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'routes', '--acceptance', 'noted']);
+  const job = { state: h.state, task: 'T1', agent: 'worker-T1-1', role: 'worker', harness: 'claude', broker_harnesses: ['claude', 'codex'], cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T1-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const address = JSON.parse(fs.readFileSync(job.broker, 'utf8'));
+  assert.deepEqual([typeof address.socket, address.host, Number.isInteger(address.port)], ['string', '127.0.0.1', true]);
+  // As in codex's sandbox, where connecting to the socket fails.
+  fs.writeFileSync(job.broker, JSON.stringify({ ...address, socket: path.join(h.base, 'refused.sock') }));
+  const r = await B.forward(job.broker, ['task', 'note', 'T1', 'over tcp'], h.state);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].notes.map((n) => n.text), ['over tcp']);
+});
+
+test('a brokered resubmit asks gh about its PR by name, with no repository for git', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'pr', '--acceptance', 'checked']);
+  h.ok(['claim', 'T1', '--agent', 'worker-T1-1']);
+  h.ok(['submit', 'T1', '--agent', 'worker-T1-1', '--sha', 'abcdef1', '--branch', 'change', '--pr', '7']);
+  const log = path.join(h.base, 'gh.log');
+  const preload = path.join(h.base, 'gh.js');
+  fs.writeFileSync(preload, `
+const cp = require('node:child_process');
+const original = cp.spawnSync;
+cp.spawnSync = function (command, args, opts) {
+  if (command !== 'gh' || process.env.TOWER_CRANE_VIA !== 'broker') return original.call(this, command, args, opts);
+  require('node:fs').appendFileSync(process.env.BROKER_GH_LOG, JSON.stringify({ args, cwd: opts.cwd, git_dir: opts.env.GIT_DIR || null }) + '\\n');
+  return { status: 0, stdout: JSON.stringify({ state: 'OPEN', headRefName: 'change' }), stderr: '' };
+};
+`);
+  const saved = { NODE_OPTIONS: process.env.NODE_OPTIONS, BROKER_GH_LOG: process.env.BROKER_GH_LOG };
+  process.env.NODE_OPTIONS = `--require ${JSON.stringify(preload)}`;
+  process.env.BROKER_GH_LOG = log;
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  });
+  const job = { state: h.state, task: 'T1', agent: 'worker-T1-1', role: 'worker', cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T1-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const refused = await B.forward(job.broker, ['submit', 'T1', '--sha', 'abcdef2', '--pr', '7'], h.state);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /needs the project's repo/);
+  assert.ok(!fs.existsSync(log), 'gh did not run without a repository name');
+  h.ok(['project', 'set', '--repo', 'acme/demo', '--agent', 'owner']);
+  const r = await B.forward(job.broker, ['submit', 'T1', '--sha', 'abcdef2', '--pr', '7'], h.state);
+  assert.equal(r.code, 0, r.stderr);
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args.slice(0, 5), ['pr', 'view', '7', '-R', 'acme/demo']);
+  assert.equal(calls[0].cwd, h.state);
+  assert.ok(calls[0].git_dir && !fs.existsSync(calls[0].git_dir), 'git finds no repository');
+  assert.equal(h.readState('tasks.json').tasks[0].sha, 'abcdef2');
+});
