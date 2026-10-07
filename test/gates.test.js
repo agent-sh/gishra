@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const { makeRepo, ROOT, real } = require('./helpers');
-const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { gateFixture, gateEvidence, changeKind } = require('./gate-helpers');
 const { shellQuote } = require('../lib/gates/common');
 
 // Gate internals live in lib/gates/ and ship separately, so these tests run a
@@ -355,7 +355,7 @@ test('none mode for docs and ops needs no command but still verifies the submitt
   submitTestsFixture(h, sha);
   h.ok(['project', 'set', '--tests-by-kind', '{"docs":"none","ops":"none"}']);
   for (const kind of ['docs', 'ops']) {
-    h.ok(['task', 'update', 'T1', '--kind', kind]);
+    changeKind(h, kind);
     const evidence = h.json(['check', 'tests', 'T1']);
     assert.match(evidence.summary, new RegExp(`mode none.*tests.by_kind.${kind}`));
     assert.equal(evidence.commands.some((c) => c.command !== 'git'), false);

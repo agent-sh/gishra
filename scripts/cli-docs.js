@@ -21,8 +21,10 @@ function generate(root = ROOT) {
   if (new Set(names).size !== names.length || names.join('\n') !== [...names].sort().join('\n')) {
     throw new Error('COMMANDS must be sorted by name with no duplicates');
   }
-  if (COMMANDS.some((c) => !TABLES.includes(c.section) || !c.summary || /[\r\n]/.test(c.summary + (c.usage || '')))) {
-    throw new Error('every command needs a known section and a single-line usage and summary');
+  if (COMMANDS.some((c) => !TABLES.includes(c.section) || !c.summary
+    || (c.description !== undefined && (typeof c.description !== 'string' || !c.description.trim()))
+    || /[\r\n]/.test(c.summary + (c.usage || '') + (c.description || '')))) {
+    throw new Error('every command needs a known section and single-line usage, summary and description');
   }
   const docPath = path.join(root, 'docs', 'cli.md');
   const original = readText(docPath);
@@ -38,7 +40,7 @@ function generate(root = ROOT) {
     if (to < from) throw new Error(`invalid ${section} command block`);
     const commands = COMMANDS.filter((c) => section === 'Stack' ? c.name.startsWith('stack ')
       : c.section === section && !c.name.startsWith('stack '));
-    const rows = commands.map((c) => `| \`${escapeTableCell(c.name + (c.usage ? ` ${c.usage}` : ''))}\` | ${escapeTableCell(c.summary)} |`);
+    const rows = commands.map((c) => `| \`${escapeTableCell(c.name + (c.usage ? ` ${c.usage}` : ''))}\` | ${escapeTableCell(c.description || c.summary)} |`);
     generated = generated.slice(0, from) + '\n| Command | Does |\n|---|---|\n' + rows.join('\n') + '\n' + generated.slice(to);
   }
   return { docPath, original, generated };

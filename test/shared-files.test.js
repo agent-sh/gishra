@@ -41,7 +41,7 @@ test('generated command rows match real CLI help, preserve details and reject dr
     assert.equal(help.status, 0, help.stderr);
     const usage = command.name + (command.usage ? ` ${command.usage}` : '');
     assert.ok(help.stdout.startsWith(`usage: tower-crane ${usage}\n`));
-    assert.ok(docs.includes(`| \`${escapeTableCell(usage)}\` | ${escapeTableCell(command.summary)} |`));
+    assert.ok(docs.includes(`| \`${escapeTableCell(usage)}\` | ${escapeTableCell(command.description || command.summary)} |`));
   }
   f.write('docs/cli.md', docs.replace('| append a note |', '| stale summary |'));
   const drift = f.check();
@@ -58,12 +58,33 @@ test('generated command rows match real CLI help, preserve details and reject dr
   assert.ok(f.read('docs/cli.md').includes('| append a task note |'));
   const prose = (text) => text.replace(/<!-- commands:[^\n]+:start -->[\s\S]*?<!-- commands:[^\n]+:end -->/g, '');
   assert.equal(prose(f.read('docs/cli.md')), prose(docs), 'all contract descriptions and authority rules survive regeneration');
-  assert.ok(f.read('docs/cli.md').includes('`init`: create the state directory and `project.json` with the default harness and ladder'), 'contract prose is preserved');
+  assert.ok(f.read('docs/cli.md').includes('create the state directory and `project.json` with the default harness and ladder'), 'long descriptions are preserved in generated rows');
 
   for (const file of ['bin/tower-crane.js', 'docs/cli.md', 'changelog.d/T999.md']) {
     f.write(file, f.read(file).replace(/\r?\n/g, '\r\n'));
   }
   assert.equal(f.check().status, 0, 'Windows line endings do not cause drift');
+});
+
+test('long command descriptions are generated from metadata while CLI help keeps the summary', (t) => {
+  const f = fixture(t);
+  const description = 'append a note with the supplied identity';
+  f.write('bin/tower-crane.js', f.read('bin/tower-crane.js').replace("summary: 'append a note',", `summary: 'append a note', description: ${JSON.stringify(description)},`));
+  const stale = f.check();
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /command rows drifted/);
+  assert.equal(f.script('cli-docs.js').status, 0);
+  assert.ok(f.read('docs/cli.md').includes(`| ${description} |`));
+  const bin = path.join(f.h.repo, 'bin', 'tower-crane.js');
+  const help = cp.spawnSync(process.execPath, [bin, 'task', 'note', '--help'],
+    { cwd: f.h.repo, env: f.h.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /\nappend a note\n/);
+  assert.ok(!help.stdout.includes(description));
+  f.write('bin/tower-crane.js', f.read('bin/tower-crane.js').replace(JSON.stringify(description), JSON.stringify(description + ' and text')));
+  assert.equal(f.script('cli-docs.js', ['--check']).status, 1, 'a description change makes docs stale');
+  assert.equal(f.script('cli-docs.js').status, 0);
+  assert.ok(f.read('docs/cli.md').includes(`| ${description} and text |`));
 });
 
 test('the shared file check enforces sorted single-line command entries with space between them', (t) => {

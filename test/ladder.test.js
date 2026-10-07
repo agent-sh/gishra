@@ -154,6 +154,25 @@ test('ladder save-user makes the project ladder the default for new projects', (
   assert.equal(fs.readFileSync(h.userConfig, 'utf8'), saved1);
 });
 
+test('ladder save-user writes only what the project defines and keeps the rest of the user file', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  writeUser(h, { browser_kit: ['playwright'], note: 'kept', ladder: { medium: { fallbacks: [{ harness: 'claude', model: 'fable', effort: 'high' }] } } });
+  const p = h.readState('project.json');
+  delete p.harness;
+  delete p.ladder.easy;
+  h.writeState('project.json', p);
+  h.ok(['ladder', 'save-user']);
+  const saved = JSON.parse(fs.readFileSync(h.userConfig, 'utf8'));
+  // Neither the default harness nor easy is in the project, so the user file gets neither: the built-in applies to them.
+  assert.equal(saved.harness, undefined);
+  assert.equal(saved.ladder.easy, undefined);
+  assert.deepEqual(saved.ladder.hard, BUILTIN.hard);
+  assert.deepEqual(saved.ladder.medium, { ...BUILTIN.medium, fallbacks: [{ harness: 'claude', model: 'fable', effort: 'high' }] });
+  assert.equal(saved.note, 'kept');
+  assert.deepEqual(saved.browser_kit, ['playwright']);
+});
+
 test('personal hard fallbacks overlay project rungs and stay out of project writes', (t) => {
   const h = makeRepo(t);
   h.init();
