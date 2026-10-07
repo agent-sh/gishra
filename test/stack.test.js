@@ -313,12 +313,13 @@ test('admin merge requires unstacking, then lower tasks land before upper PRs ta
   upper(f);
   f.accept('T1');
   f.accept('T2');
-  assert.match(f.h.run(['merge', 'T2', '--admin']).stdout, /cannot use --admin/);
+  f.h.ok(['project', 'set', '--merge-admin', 'true']);
+  assert.match(f.h.run(['merge', 'T2']).stdout, /cannot use --admin/);
   assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
   f.h.ok(['stack', 'unstack', 'T2']);
-  assert.match(f.h.run(['merge', 'T2', '--admin']).stdout, /waits for every lower task/);
-  f.h.ok(['merge', 'T1', '--admin']);
-  f.h.ok(['merge', 'T2', '--admin']);
+  assert.match(f.h.run(['merge', 'T2']).stdout, /waits for every lower task/);
+  f.h.ok(['merge', 'T1']);
+  f.h.ok(['merge', 'T2']);
   const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
   assert.deepEqual(merges.map((c) => c.args.slice(0, 3)), [['pr', 'merge', '11'], ['pr', 'merge', '12']]);
   assert.ok(merges.every((c) => c.args.includes('--admin') && c.args.includes('--match-head-commit')));
@@ -406,8 +407,10 @@ test('relinking after capability recovery restores the stack gate and refuses ad
   f.write((d) => { d.unavailable = false; });
   f.h.ok(['stack', 'link', 'T2']);
   assert.equal(f.h.json(['task', 'show', 'T2']).stack_disabled, undefined);
-  assert.match(f.h.run(['merge', 'T2', '--admin']).stdout, /cannot use --admin/);
+  f.h.ok(['project', 'set', '--merge-admin', 'true']);
+  assert.match(f.h.run(['merge', 'T2']).stdout, /cannot use --admin/);
   assert.equal(f.read().calls.some((c) => c.args[0] === 'pr' && c.args[1] === 'merge'), false);
+  f.h.ok(['project', 'set', '--merge-admin', 'false']);
   f.h.ok(['merge', 'T2']);
 });
 
