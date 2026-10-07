@@ -11,7 +11,7 @@ const A = require('../lib/agents');
 const STUB = path.join(__dirname, 'fixtures', 'opencode-stub.js');
 const NO_STUBS = process.platform === 'win32' && 'harness stub is a shebang script';
 
-function setup(t, rung = 'medium') {
+function setup(t, rung = 'medium', inheritedPathName = null) {
   const h = makeRepo(t);
   const home = path.join(h.base, 'user');
   const put = (file, text) => {
@@ -49,18 +49,39 @@ function setup(t, rung = 'medium') {
   put(path.join(bin, 'opencode'), `#!${process.execPath}\nrequire(${JSON.stringify(STUB)});\n`);
   fs.chmodSync(path.join(bin, 'opencode'), 0o755);
   const out = path.join(h.base, 'stub.json');
+  if (inheritedPathName) {
+    const key = Object.keys(h.env).find((name) => name.toUpperCase() === 'PATH');
+    if (key && key !== inheritedPathName) {
+      h.env[inheritedPathName] = h.env[key];
+      delete h.env[key];
+    }
+  }
+  const pathKey = Object.keys(h.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
   const env = { ...h.env, HOME: home, USERPROFILE: home, OPENCODE_TEST_HOME: home,
     XDG_CONFIG_HOME: path.join(home, '.config'), XDG_DATA_HOME: path.join(home, '.local', 'share'),
     XDG_STATE_HOME: path.join(home, '.local', 'state'), XDG_CACHE_HOME: path.join(home, '.cache'),
     OPENCODE_CONFIG: path.join(global, 'opencode.json'), OPENCODE_CONFIG_DIR: global,
     OPENCODE_CONFIG_CONTENT: JSON.stringify(userConfig), OPENCODE_PERMISSION: '{"*":"allow"}',
-    PATH: `${bin}${path.delimiter}${h.env.PATH}`, STUB_OUT: out, GH_TOKEN: 'fixture-gh',
+    [pathKey]: `${bin}${path.delimiter}${h.env[pathKey] || ''}`, STUB_OUT: out, GH_TOKEN: 'fixture-gh',
   };
   return { h, home, env, out, rung, global, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
 }
 
 const dry = (f) => f.h.json(['spawn', '--task', 'T1', '--role', f.rung, '--dry-run'], { env: f.env });
 const spawn = (f, env = {}) => f.h.ok(['spawn', '--task', 'T1', '--role', f.rung, '--wait'], { env: { ...f.env, ...env } });
+
+test('opencode dry-run preserves Git lookup with an inherited mixed-case Path', (t) => {
+  const f = setup(t, 'small', 'Path');
+  // Node on Windows sorts environment keys and passes only the first
+  // case-insensitive PATH entry. Reproduce that selection on POSIX too.
+  const keys = Object.keys(f.env).filter((key) => key.toUpperCase() === 'PATH').sort();
+  const env = { ...f.env };
+  for (const key of keys) delete env[key];
+  env.PATH = f.env[keys[0]];
+  const preview = f.h.json(['spawn', '--task', 'T1', '--role', 'small', '--dry-run'], { env });
+  assert.equal(preview.startup.target.id, 'T1');
+  assert.ok(preview.argv.includes('gishra-small'));
+});
 
 test('opencode isolates config, memory, skills, MCP, approved rules and credentials; measures startup', { skip: NO_STUBS }, (t) => {
   const f = setup(t);
