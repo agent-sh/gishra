@@ -67,11 +67,25 @@ function makeRepo(t) {
     path.join(base, 'gitconfig'),
     '[user]\n\tname = tower-crane test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n',
   );
-  const env = baseEnv(base);
   const repo = path.join(base, 'repo');
   fs.mkdirSync(repo);
   fs.cpSync(path.join(seed.repo, '.git'), path.join(repo, '.git'), { recursive: true });
   fs.copyFileSync(path.join(seed.repo, 'README.md'), path.join(repo, 'README.md'));
+  return context(t, base);
+}
+
+// A test context over a copy of another context's directory, for files that
+// build one fixture and give each test its own copy instead of rebuilding it.
+// Git and state paths still name the source; the caller repairs them.
+function copyRepo(t, source) {
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-')));
+  fs.cpSync(source, base, { recursive: true });
+  return context(t, base);
+}
+
+function context(t, base) {
+  const env = baseEnv(base);
+  const repo = path.join(base, 'repo');
   const ctx = {
     base,
     repo,
@@ -188,4 +202,4 @@ async function stopDetached(children) {
   }
 }
 
-module.exports = { makeRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
+module.exports = { makeRepo, copyRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
