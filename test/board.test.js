@@ -64,8 +64,8 @@ test('the snapshot names no network resource and carries no token or owner forms
   const page = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
   // Allowed: the SVG namespace inside the data: icon, which is a name, not a
   // request, and evidence links, which open only when clicked.
-  assert.match(page, /<a href="https:\/\/example\.com\/acme\/demo\/pull\/1#review" rel="noreferrer noopener" target="_blank">/);
-  const rest = page.replace(/xmlns%3D%22http%3A%2F%2Fwww\.w3\.org%2F2000%2Fsvg%22/g, '').replace(/<a href="https:\/\/[^"]*" rel="noreferrer noopener" target="_blank">/g, '<a>');
+  assert.match(page, /<a href="https:\/\/example\.com\/acme\/demo\/pull\/1#review" rel="noreferrer noopener" target="_blank"(?: data-preserve="[0-9a-f]{64}")?>/);
+  const rest = page.replace(/xmlns%3D%22http%3A%2F%2Fwww\.w3\.org%2F2000%2Fsvg%22/g, '').replace(/<a href="https:\/\/[^"]*" rel="noreferrer noopener" target="_blank"(?: data-preserve="[0-9a-f]{64}")?>/g, '<a>');
   assert.doesNotMatch(rest, /\b(?:https?|wss?|ftp):/i, 'no absolute URLs');
   assert.doesNotMatch(rest, /\bsrc=|@import|<link(?![^>]*rel="icon" href="data:)/i, 'no external scripts, styles or images');
   assert.doesNotMatch(rest, /url\((?!#)/i, 'no CSS resources');
@@ -367,6 +367,96 @@ test('live CLI writes keep Settings and Spend focus and table scroll at 390px', 
       });
     });
   }
+});
+
+test('every view keeps disclosures, event identity, focus and scroll through live CLI updates', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  populate(h);
+  for (let i = 6; i <= 24; i++) h.ok(['task', 'add', '--title', `Task ${i}`, '--acceptance', 'verified']);
+  for (let i = 1; i <= 24; i++) h.ok(['spend', `T${i}`, '--tokens', String((25 - i) * 100), '--rung', 'easy']);
+  await withServers(async (servers) => {
+    const owner = await startServe(servers, h);
+    const viewer = await startServe(servers, h, 'viewer');
+    const b = await openBrowser(t);
+    for (const width of [1280, 390]) {
+      await b.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: false });
+      for (const view of ['board', 'plan', 'history', 'spend', 'sheet', 'settings', 'settings-viewer']) {
+        await t.test(`${view} at ${width}px`, async () => {
+          await b.goto('about:blank');
+          const settings = view.startsWith('settings');
+          const eventView = view === 'board' || view === 'history';
+          const seed = `original event for ${view} at ${width}`;
+          h.ok(['task', 'note', 'T1', seed]);
+          const url = view === 'settings-viewer' ? `${viewer}settings` : settings ? `${owner}settings` : `${owner}#${view === 'sheet' ? 'T5' : view}`;
+          await b.goto(url);
+          await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+          if (!settings) await b.until(`document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(seed)})`, 'the initial note');
+          const scope = settings ? 'main.settings' : view === 'sheet' ? '#T5' : `#${view}`;
+          const spendTask = width === 1280 ? 'T24' : 'T23';
+          const focus = view === 'board' ? '.col-since .ev a[href="#T1"]'
+            : view === 'history' ? '#history .ev a[href="#T1"]'
+            : view === 'plan' ? width === 1280 ? '#plan .node[data-id="T1"]' : '#plan .layers a[href="#T1"]'
+            : view === 'spend' ? `#spend details a[href="#${spendTask}"]`
+            : view === 'sheet' ? '#T5 .ledger details > summary'
+            : view === 'settings' ? 'tr[data-rung="easy"] input[name="model"]'
+            : '.views a[data-view="settings"]';
+          const selector = JSON.stringify(focus);
+          await b.inPage(`(() => {
+            window.firstLoad = true;
+            const scope = document.querySelector(${JSON.stringify(scope)});
+            [...scope.querySelectorAll('details')].forEach((el, i) => { el.open = i % 2 === 0; });
+            if (${JSON.stringify(view)} === 'sheet') scope.querySelector('.ledger details').open = false;
+            if (${JSON.stringify(view)} === 'spend') scope.querySelector('details').open = true;
+            document.querySelector(${selector}).focus({ preventScroll: true });
+            [scope, ...scope.querySelectorAll('*'), document.querySelector('.views'), document.querySelector('main')].forEach((el) => {
+              if (/auto|scroll/.test(getComputedStyle(el).overflow)) { el.scrollLeft = 70; el.scrollTop = 90; }
+            });
+            window.scrollTo(0, 120);
+          })()`);
+          const snapshot = `(() => {
+            const scope = document.querySelector(${JSON.stringify(scope)});
+            return {
+              disclosures: [...scope.querySelectorAll('details')].map((el) => [el.querySelector('summary').textContent, el.open]),
+              scroll: [scope, ...scope.querySelectorAll('*'), document.querySelector('.views'), document.querySelector('main')].filter((el) => /auto|scroll/.test(getComputedStyle(el).overflow)).map((el) => [el.scrollLeft, el.scrollTop]),
+              page: [scrollX, scrollY]
+            };
+          })()`;
+          const before = await b.inPage(snapshot);
+          const event = eventView ? await b.inPage(`document.activeElement.closest('.ev').querySelector('.txt').textContent`) : null;
+          const update = `update for ${view} at ${width}`;
+          h.ok(['task', 'note', 'T1', update]);
+          await b.until(settings ? `window.firstLoad !== true && document.readyState === 'complete' && document.querySelector('.conn').dataset.conn === 'live'` : `document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live update');
+          assert.equal(await b.inPage('location.href'), url, 'the route stays');
+          if (eventView) {
+            assert.equal(await b.inPage(`document.activeElement.closest('.ev')?.querySelector('.txt').textContent`), event, 'focus remains in the original event row');
+          } else {
+            assert.equal(await b.inPage(`document.activeElement === document.querySelector(${selector})`), true, 'the exact control keeps focus');
+          }
+          assert.deepEqual(await b.inPage(snapshot), before, 'open and closed disclosures and every scroll offset stay');
+          assert.deepEqual(await b.inPage(`(() => {
+            const scope = document.querySelector(${JSON.stringify(scope)});
+            const elements = [scope, ...scope.querySelectorAll('*'), document.querySelector('.views'), document.querySelector('main')];
+            const restored = [...new Set(elements)].filter((el) => el.matches('a, button, input, textarea, select, summary, details, [tabindex]') || /auto|scroll/.test(getComputedStyle(el).overflow));
+            const keys = restored.map((el) => el.dataset.preserve);
+            return [keys.every(Boolean), new Set(keys).size === keys.length];
+          })()`), [true, true], 'every restored control, disclosure and scroll container has a unique server identity');
+          if (view === 'spend') {
+            h.ok(['spend', spendTask, '--tokens', '10000', '--rung', 'easy']);
+            await b.until(`document.querySelector('#spend a[href="#${spendTask}"]') && !document.querySelector('#spend details a[href="#${spendTask}"]')`, 'the focused task to move out of the disclosure');
+            assert.deepEqual(await b.inPage(`[document.activeElement.getAttribute('href'), document.querySelector('#spend details').open]`), [`#${spendTask}`, true], 'the same task action keeps focus after its row changes rank');
+          }
+          if (view === 'board') {
+            const task = width === 1280 ? 'T6' : 'T7';
+            await b.inPage(`document.querySelector('.col-next a[href="#${task}"]').focus({ preventScroll: true })`);
+            h.ok(['claim', task, '--agent', `moving-${width}`]);
+            await b.until(`document.querySelector('.col-work .card[data-key="${task}"]')`, 'the task to move to Working now');
+            assert.equal(await b.inPage(`document.activeElement === document.querySelector('.col-work a[href="#${task}"]')`), true, 'the same task action keeps focus after moving between columns');
+          }
+        });
+      }
+    }
+  });
 });
 
 test('live updates match task sheet buttons by form and fall back when the focused action is removed', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
