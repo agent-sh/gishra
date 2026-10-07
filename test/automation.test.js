@@ -435,6 +435,12 @@ function queueFixture(t) {
   fs.writeFileSync(suite, `const fs = require('node:fs'), path = require('node:path');
 const gh = JSON.parse(fs.readFileSync(${JSON.stringify(h.env.AUTOMATION_GITHUB)}, 'utf8'));
 fs.appendFileSync(${JSON.stringify(h.suiteLog)}, JSON.stringify({ pr7: gh.prs['7'].state }) + '\\n');
+// One run moves main while it runs, as another merge landing would.
+if (fs.existsSync(${JSON.stringify(path.join(h.base, 'move-main-once'))})) {
+  fs.rmSync(${JSON.stringify(path.join(h.base, 'move-main-once'))});
+  const git = (a) => require('node:child_process').execFileSync('git', ['-C', ${JSON.stringify(h.repo)}, ...a], { encoding: 'utf8' }).trim();
+  git(['update-ref', 'refs/heads/main', git(['commit-tree', 'main^{tree}', '-p', 'main', '-m', 'lands during the check'])]);
+}
 for (const f of fs.readdirSync('test')) if (f.endsWith('.test.js')) require(path.resolve('test', f));
 `);
   h.ok(['project', 'set', '--tests-cmd', `${shellQuote(process.execPath)} ${shellQuote(suite)}`]);
@@ -516,6 +522,9 @@ test('two queued PRs run exactly one full suite each at their turn and none befo
   assert.equal(h.suites().length, suites, 'nothing runs while the head of the line waits');
   assert.equal(headChecks(h).length, 0);
   assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false, 'the second PR does not jump the line');
+  const stopped = h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+  assert.equal(stopped.detail.blocked.task, 'T1');
+  assert.match(stopped.detail.blocked.reason, /mergeability of PR #7 is UNKNOWN/);
 
   const ready = h.github();
   ready.prs['7'].mergeable = 'MERGEABLE';
@@ -527,4 +536,17 @@ test('two queued PRs run exactly one full suite each at their turn and none befo
     'T1 runs its suite before merging; T2 runs its suite only after T1 merged');
   assert.deepEqual(headChecks(h).map((e) => [e.task, e.detail.ok]), [['T1', true], ['T2', true]]);
   assert.equal(headChecks(h)[1].detail.base_sha, h.sha, 'T2 is checked against main after T1 landed');
+});
+
+test('a base that moves during the head check gets a new check before the merge', (t) => {
+  const h = queueFixture(t);
+  h.moveMain();
+  fs.writeFileSync(path.join(h.base, 'move-main-once'), '');
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  const checks = headChecks(h);
+  assert.equal(checks.length, 2, 'the check against the old base does not authorize the merge');
+  assert.notEqual(checks[0].detail.base_sha, checks[1].detail.base_sha);
+  assert.equal(checks[1].detail.base_sha, h.git(['rev-parse', 'main']));
+  assert.equal(h.github().prs['7'].state, 'MERGED');
 });

@@ -76,3 +76,7 @@ merge in acceptance order. Only the head of the line runs the full suite,
 once, on its merge with the current base, and only when its head does not
 already contain that base. A conflicting head goes to rework with its files.
 The rest of the line waits without running anything.
+A stack is one entry ordered by its lowest task, and its check runs on the
+whole chain merged with current main. The executor fetches main again after
+the check; only the seconds between that fetch and the merge call remain
+unguarded.
