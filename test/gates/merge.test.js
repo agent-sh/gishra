@@ -25,8 +25,8 @@ function github({ state = 'OPEN', head = SHA, merge = 'ok' } = {}) {
   return gh;
 }
 
-function ctx(gh, { task = {}, args = {} } = {}) {
-  return { root: '/repo', worktree: null, task: { id: 'T4', title: 'Change', acceptance: ['works'], kind: 'code', sha: SHA, pr: 42, status: 'accepted', ...task }, project: { repo: REPO, base: 'main' }, args, exec: gh.exec, log() {} };
+function ctx(gh, { task = {}, args = {}, project = {} } = {}) {
+  return { root: '/repo', worktree: null, task: { id: 'T4', title: 'Change', acceptance: ['works'], kind: 'code', sha: SHA, pr: 42, status: 'accepted', ...task }, project: { repo: REPO, base: 'main', ...project }, args, exec: gh.exec, log() {} };
 }
 
 test('a task that is not accepted is never merged', async () => {
@@ -57,14 +57,25 @@ test('merge ok: squash, delete the branch, match the head, confirm MERGED', asyn
   assert.match(r.summary, /merged PR #42 into main in acme\/app \(squash\)/);
 });
 
-test('--method and --admin reach gh', async () => {
+test('--method and project admin policy reach gh', async () => {
   const gh = github();
-  const r = await gate.run(ctx(gh, { args: { method: 'rebase', admin: true } }));
+  const r = await gate.run(ctx(gh, { args: { method: 'rebase' }, project: { merge: { admin: true } } }));
   assert.equal(r.ok, true, r.summary);
   assert.deepEqual(gh.merges(), [['gh', 'pr', 'merge', '42', '-R', REPO, '--rebase', '--delete-branch', '--match-head-commit', SHA, '--admin']]);
   const bad = await gate.run(ctx(github(), { args: { method: 'octopus' } }));
   assert.equal(bad.ok, false);
   assert.match(bad.summary, /--method must be squash, merge or rebase/);
+});
+
+test('one-off args cannot enable admin when project policy is unset or false', async () => {
+  for (const project of [{}, { merge: { admin: false } }]) {
+    const gh = github();
+    const r = await gate.run(ctx(gh, { args: { admin: true }, project }));
+    assert.equal(r.ok, true, r.summary);
+    assert.equal(gh.merges().length, 1);
+    assert.ok(!gh.merges()[0].includes('--admin'));
+    assert.ok(gh.merges()[0].includes('--match-head-commit'));
+  }
 });
 
 test('a refused merge: not ok with gh\'s message, tried once', async () => {

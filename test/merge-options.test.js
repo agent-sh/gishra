@@ -46,16 +46,39 @@ test('merge defaults commit text from the task and preserves explicit multiline 
   assert.equal(defaults[defaults.indexOf('--subject') + 1], 'Keep task worktrees');
   assert.equal(defaults[defaults.indexOf('--body') + 1], 'Preserve the branch\nPin the accepted head');
   const body = 'First paragraph.\n\nLiteral `code` and $(text).';
-  const explicit = merge(['--subject', 'Custom squash subject', '--body', body, '--admin']);
+  const explicit = merge(['--subject', 'Custom squash subject', '--body', body]);
   assert.equal(explicit[explicit.indexOf('--subject') + 1], 'Custom squash subject');
   assert.equal(explicit[explicit.indexOf('--body') + 1], body);
-  assert.ok(explicit.includes('--admin'));
+  assert.ok(!explicit.includes('--admin'));
   const empty = merge(['--body', '']);
   assert.equal(empty[empty.indexOf('--body') + 1], '');
   const rebase = merge(['--method', 'rebase']);
   assert.ok(rebase.includes('--rebase'));
   assert.ok(!rebase.includes('--subject'));
   assert.ok(!rebase.includes('--body'));
+});
+
+test('agents cannot request admin merging outside owner-set project policy', (t) => {
+  const { h, merge } = acceptedTask(t);
+  for (const policy of [undefined, 'false', 'null']) {
+    if (policy !== undefined) h.ok(['project', 'set', '--merge-admin', policy]);
+    assert.ok(!merge().includes('--admin'));
+    fs.rmSync(h.env.FIXTURE_GH_LOG, { force: true });
+    const snapshot = () => ['tasks.json', 'events.jsonl'].map((file) => fs.readFileSync(path.join(h.state, file), 'utf8'));
+    const before = snapshot();
+    for (const agent of ['w-1', 'orchestrator']) {
+      const refused = h.run(['merge', 'T1', '--admin', '--agent', agent]);
+      assert.equal(refused.code, 2, refused.stderr);
+      assert.match(refused.stderr, /unknown option --admin for merge/);
+      assert.ok(!fs.existsSync(h.env.FIXTURE_GH_LOG), 'no GitHub command ran');
+      assert.deepEqual(snapshot(), before, 'refusal records no merge evidence');
+      const denied = h.run(['project', 'set', '--merge-admin', 'true', '--agent', agent]);
+      assert.equal(denied.code, 1, denied.stderr);
+      assert.match(denied.stderr, /only the owner/);
+      assert.deepEqual(snapshot(), before, 'refusal writes no events');
+    }
+  }
+  assert.doesNotMatch(h.ok(['merge', '--help']), /--admin\b/);
 });
 
 test('invalid merge text or methods refuse before calling GitHub', (t) => {
