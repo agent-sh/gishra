@@ -112,6 +112,10 @@ function before(name, args) {
   const target = args[0];
   // HOOK_JITTER_MS=MS: a random pause of up to MS before each call on the state.
   if (env.HOOK_JITTER_MS && (inState(target) || inState(args[1]))) sleep(Math.floor(Math.random() * Number(env.HOOK_JITTER_MS)));
+  // State commits precede board replacement; expose that interval to readers.
+  if (env.HOOK_RENDER_DELAY_MS && name === 'renameSync' && args[1] === path.join(STATE, 'sketch.html')) {
+    sleep(Number(env.HOOK_RENDER_DELAY_MS));
+  }
   // HOOK_DIE_ON=FILE: killed when it reads FILE, which a write does while it holds the lock.
   if (env.HOOK_DIE_ON && name === 'readFileSync' && inState(target) && path.basename(target) === env.HOOK_DIE_ON) {
     process.kill(process.pid, 'SIGKILL');
