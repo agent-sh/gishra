@@ -26,7 +26,7 @@ function github({ state = 'OPEN', head = SHA, merge = 'ok' } = {}) {
 }
 
 function ctx(gh, { task = {}, args = {} } = {}) {
-  return { root: '/repo', worktree: null, task: { id: 'T4', kind: 'code', sha: SHA, pr: 42, status: 'accepted', ...task }, project: { repo: REPO, base: 'main' }, args, exec: gh.exec, log() {} };
+  return { root: '/repo', worktree: null, task: { id: 'T4', title: 'Change', acceptance: ['works'], kind: 'code', sha: SHA, pr: 42, status: 'accepted', ...task }, project: { repo: REPO, base: 'main' }, args, exec: gh.exec, log() {} };
 }
 
 test('a task that is not accepted is never merged', async () => {
@@ -53,7 +53,7 @@ test('merge ok: squash, delete the branch, match the head, confirm MERGED', asyn
   assert.equal(r.ok, true, r.summary);
   assert.equal(r.ref, MERGED);
   assert.equal(r.sha, SHA);
-  assert.deepEqual(gh.merges(), [['gh', 'pr', 'merge', '42', '-R', REPO, '--squash', '--delete-branch', '--match-head-commit', SHA]]);
+  assert.deepEqual(gh.merges(), [['gh', 'pr', 'merge', '42', '-R', REPO, '--squash', '--delete-branch', '--match-head-commit', SHA, '--subject', 'Change', '--body', 'works']]);
   assert.match(r.summary, /merged PR #42 into main in acme\/app \(squash\)/);
 });
 
