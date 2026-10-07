@@ -13,6 +13,8 @@ Tower Crane is a CLI and an agent plugin. The CLI (`bin/`, `lib/`) keeps a proje
 - Changes reach `main` through a PR with a clean-context review comment and green CI.
 - No em dashes or assistant phrasing in code, comments, docs or commit messages. Comments say why, never record review history.
 - `docs/state.md` and `docs/cli.md` are the contract. Change them in the same PR as the behavior.
+- Add `changelog.d/<task-or-pr>.md` for each change; leave `CHANGELOG.md` and existing fragments unchanged. Releases assemble the changelog with `node scripts/changelog.js`.
+- Keep `COMMANDS` sorted by name, one entry per line with a blank line between entries. Generate `docs/cli.md` command rows with `npm run docs:generate`; CI checks them with `npm run check:shared`.
 
 ## Layout
 

@@ -15,7 +15,7 @@ Arguments: `$ARGUMENTS`. Use `TOWER_CRANE_TASK` and `TOWER_CRANE_AGENT` when set
 3. Build the smallest change that meets every acceptance item. Follow the repository's `AGENTS.md` and the standards the brief names.
    Report progress through `tower-crane task note` or `tower-crane msg --to orchestrator --task <id> "<update>"`. Renew your lease with `tower-crane renew <id>` when the work needs longer.
 4. For code changes, add or change a test that fails without the change and passes with it; run the tests touched. For other work, verify the acceptance as the brief specifies.
-5. Before submitting, run the configured cleanup tool if enabled and fix what it confirms; update docs, examples and changelog entries your change made untrue.
+5. Before submitting, run the configured cleanup tool if enabled and fix what it confirms; update docs and examples your change made untrue. In Tower Crane, add `changelog.d/<task-or-pr>.md` with Markdown bullets; leave `CHANGELOG.md` and existing fragments unchanged. Command usage and summaries belong in the sorted, single-line `COMMANDS` entries in `bin/tower-crane.js`; run `npm run docs:generate` after changing them and keep contract details outside the generated blocks in `docs/cli.md`. Run `npm run check:shared -- --base origin/BASE` after fetching the configured base.
 6. Before publishing, use the `base` shown by `tower-crane project show` in step 1, or the `base` under `stack` in `tower-crane task show` when the task is stacked. Replace `BASE` in these commands with that literal branch name:
 
    ```sh

@@ -1,5 +1,7 @@
 # CLI
 
+Command tables are generated from `COMMANDS` in `bin/tower-crane.js` with `npm run docs:generate`. CI rejects drift; keep contract details outside the generated blocks.
+
 `tower-crane <command> [args]`. Every command accepts `--state DIR`, `--agent NAME`, `--json` (machine output on stdout: the task, decision, project or list the command touched) and `--help`. Exit status: 0 done, 1 refused (with the reason on stderr), 2 usage error or wait timeout, 3 lock not acquired within 10 s. `validate` and a failing gate print their report on stdout and exit 1; `spawn --wait` exits with the agent's code. `wait` always prints one compact JSON line, including with `--json`. If a reader closes stdout or stderr, the CLI treats the resulting `EPIPE` as a quiet close, finishes the command and any state write, lets the other output stream drain, then exits with that command's status.
 
 Agent identity comes from `--agent NAME`, then `TOWER_CRANE_AGENT`. With neither, `owner` is used only when stdin and stdout are both TTYs and `TOWER_CRANE_TASK` is unset. Otherwise the command exits 2 with `no agent: pass --agent NAME or set TOWER_CRANE_AGENT` and writes nothing. An empty or whitespace-only identity exits 2 with the same message. Help needs no agent.
@@ -14,24 +16,58 @@ Writes take the lock, re-read the files, validate, write atomically and append t
 
 ## Plan
 
+<!-- commands:Plan:start -->
 | Command | Does |
 |---|---|
-| `init --name N --goal G [--repo O/R] [--base B] [settings]` | create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid |
-| `project set [--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-cmd CMD] [--clean-cmd CMD] [--tests-proof-cmd CMD] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON]` | change settings, limits and budget |
-| `project show` | print settings, including `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd`, `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch` and `merge.admin`, and the resolved ladder |
-| `ladder show` | print each rung as it resolves: harness (and whether it is the default), model, profile, provider, effort, args, and where the primary comes from (project, user file or built-in); print personal fallbacks and their user-file source (`fallbacks_from: "user"` under `--json`); also the default harness, its source, the user file path, and every rung or fallback that cannot run (`problems` under `--json`); unavailable fallbacks are marked skipped |
-| `ladder set RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--tools JSON] [--mcp JSON] [--clear FIELD]...` | change the named primary fields of one rung and keep the rest; personal fallbacks belong only in the user file, and `--fallbacks` and `--clear fallbacks` are refused. `--tools` and `--mcp` (claude and codex only) opt the rung back in to tools and MCP servers its agent file leaves out. Changing a rung's harness (or the default harness), `--args`, `--command`, `--tools` or `--mcp` needs the explicit owner identity; `--args` on a claude or codex rung may hold only a short list of safe flags; `--clear` removes a field (a cleared harness follows the default). A rung the project left out starts from the primary it fell back to. Refused if it leaves a primary unable to run that could run before (state.md lists the checks); rungs already broken do not block it |
-| `ladder harness H` | set the default harness; every rung without its own moves to it. Owner only when a rung changes harness. Refused, naming the rungs, if one of them cannot run there (a codex profile on pi, a missing model) |
-| `ladder save-user` | write the project's primary ladder and default harness to the user file (`TOWER_CRANE_CONFIG`, else `~/.config/tower-crane/config.json`), preserving personal fallbacks and other keys. Refused while a primary rung cannot run. A user file that is not valid JSON or has the wrong shape refuses every command that has to resolve the ladder, including `ladder`, `spawn` and `init`, even when the project supplies every rung; the error names the file to fix or remove |
-| `browser-kit show` | show the user's browser kit MCP server list, default `["playwright"]`, and its config file |
-| `browser-kit set --servers JSON` | explicit owner only: save the kit server list in the user file (`TOWER_CRANE_CONFIG`, else the original user's `~/.config/tower-crane/config.json`). Names are deduplicated; `[]` disables automatic server attachment. Other user settings are preserved |
-| `task add --title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]` | add a task; prints its id. A `needs_owner` reason is trimmed; a blank value stores null. `T` is `easy`, `medium`, `hard` or `research`; without it the tier comes from kind and size (state.md). `--needs '["browser"]'` declares browser capability. Refused for an unknown dependency or capability. Repeat `--lock` for exclusive resources |
-| `task update ID [--title] [--acceptance (replaces)] [--dep (replaces)] [--lock NAME]... [--environment LABEL] [--size] [--kind] [--needs JSON] [--tier] [--needs-owner] [--ci-local JSON] [--status cancelled]` | change a task; acceptance, dependency or capability changes bump `revision`. `--needs '[]'` clears capabilities, `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. `--lock` replaces all resource locks; `--lock ''` clears them. Lock changes require no live lease or dispatch reservation. `--environment ''` clears the label. Clearing or replacing an existing owner ask requires explicit owner identity; any agent may set a new ask or keep the same reason. `--ci-local` sets or clears an owner-only local CI override. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies, capabilities, kind and local CI override change only after `rework` |
+| `brief get ID [--role worker\|reviewer]` | print the full or role-filtered task brief |
+| `brief set ID (--file F \| -)` | write the task's brief; warn when reviewer text has no worker section |
+| `browser-kit set --servers JSON` | owner only: save the browser kit server list in the user configuration |
+| `browser-kit show` | show the user browser kit MCP server list (default playwright) |
+| `init --name N --goal G [--repo O/R] [--base B] [settings]` | create the state directory and project.json with the default ladder |
+| `ladder harness HARNESS` | set the default harness every rung without its own runs on |
+| `ladder save-user` | write this project's ladder to the user file, the default for new projects |
+| `ladder set RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...` | change fields of one rung: orchestrator, easy, medium, hard, research, review or small |
+| `ladder show` | print each rung as it resolves, and where it comes from (project, user file or built-in) |
+| `plan import FILE` | add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin) |
+| `project set [--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-cmd CMD] [--clean-cmd CMD] [--tests-proof-cmd CMD] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]` | change project settings, limits and budget |
+| `project show` | print project settings and the ladder |
+| `task add --title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]` | add a task; prints its id |
+| `task list [--status S]` | list tasks (S: a status, ready or blocked) |
 | `task note ID TEXT` | append a note |
-| `task show ID`, `task list [--status S]` | read; `S` is a status, `ready` or `blocked` |
-| `plan import FILE` | add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `needs`, `size`, `tier`, `depends_on`, `needs_owner`, `locks`, `environment`; `needs_owner` is trimmed and blank values store null. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file |
-| `brief set ID (--file F \| -)`, `brief get ID [--role worker|reviewer]` | write or read the task's brief; `brief get` filters for the caller's worker or reviewer role, and `brief set` warns about a reviewer section without a worker section |
-| `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It reconciles tasks.json with `events.jsonl` and reports drift: tasks or task notes the log records that tasks.json lacks, and a `next` the log has already used. It also reports every ladder rung that cannot run, and warns per open task when no reviewer rung can run |
+| `task show ID` | show one task with its gates, evidence and notes |
+| `task update ID [--title T] [--acceptance A]... [--dep ID]... [--lock NAME]... [--environment LABEL] [--size S] [--kind K] [--needs JSON] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--status cancelled]` | change a task; acceptance, dependency or capability changes bump its revision (--dep '' clears dependencies); an accepted task's material settings wait for rework |
+| `validate` | report plan and ladder errors (exit 1 if any); warn when an open task has no runnable reviewer |
+<!-- commands:Plan:end -->
+
+`init`: create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid
+
+`project set`: change settings, limits and budget
+
+`project show`: print settings, including `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd`, `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch` and `merge.admin`, and the resolved ladder
+
+`ladder show`: print each rung as it resolves: harness (and whether it is the default), model, profile, provider, effort, args, and where the primary comes from (project, user file or built-in); print personal fallbacks and their user-file source (`fallbacks_from: "user"` under `--json`); also the default harness, its source, the user file path, and every rung or fallback that cannot run (`problems` under `--json`); unavailable fallbacks are marked skipped
+
+`ladder set`: change the named primary fields of one rung and keep the rest; personal fallbacks belong only in the user file, and `--fallbacks` and `--clear fallbacks` are refused. `--tools` and `--mcp` (claude and codex only) opt the rung back in to tools and MCP servers its agent file leaves out. Changing a rung's harness (or the default harness), `--args`, `--command`, `--tools` or `--mcp` needs the explicit owner identity; `--args` on a claude or codex rung may hold only a short list of safe flags; `--clear` removes a field (a cleared harness follows the default). A rung the project left out starts from the primary it fell back to. Refused if it leaves a primary unable to run that could run before (state.md lists the checks); rungs already broken do not block it
+
+`ladder harness`: set the default harness; every rung without its own moves to it. Owner only when a rung changes harness. Refused, naming the rungs, if one of them cannot run there (a codex profile on pi, a missing model)
+
+`ladder save-user`: write the project's primary ladder and default harness to the user file (`TOWER_CRANE_CONFIG`, else `~/.config/tower-crane/config.json`), preserving personal fallbacks and other keys. Refused while a primary rung cannot run. A user file that is not valid JSON or has the wrong shape refuses every command that has to resolve the ladder, including `ladder`, `spawn` and `init`, even when the project supplies every rung; the error names the file to fix or remove
+
+`browser-kit show`: show the user's browser kit MCP server list, default `["playwright"]`, and its config file
+
+`browser-kit set`: explicit owner only: save the kit server list in the user file (`TOWER_CRANE_CONFIG`, else the original user's `~/.config/tower-crane/config.json`). Names are deduplicated; `[]` disables automatic server attachment. Other user settings are preserved
+
+`task add`: add a task; prints its id. A `needs_owner` reason is trimmed; a blank value stores null. `T` is `easy`, `medium`, `hard` or `research`; without it the tier comes from kind and size (state.md). `--needs '["browser"]'` declares browser capability. Refused for an unknown dependency or capability. Repeat `--lock` for exclusive resources
+
+`task update`: change a task; acceptance, dependency or capability changes bump `revision`. `--needs '[]'` clears capabilities, `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. `--lock` replaces all resource locks; `--lock ''` clears them. Lock changes require no live lease or dispatch reservation. `--environment ''` clears the label. Clearing or replacing an existing owner ask requires explicit owner identity; any agent may set a new ask or keep the same reason. `--ci-local` sets or clears an owner-only local CI override. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies, capabilities, kind and local CI override change only after `rework`
+
+`task show`, `task list`: read; `S` is a status, `ready` or `blocked`
+
+`plan import`: add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `needs`, `size`, `tier`, `depends_on`, `needs_owner`, `locks`, `environment`; `needs_owner` is trimmed and blank values store null. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file
+
+`brief set`, `brief get`: write or read the task's brief; `brief get` filters for the caller's worker or reviewer role, and `brief set` warns about a reviewer section without a worker section
+
+`validate`: report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It reconciles tasks.json with `events.jsonl` and reports drift: tasks or task notes the log records that tasks.json lacks, and a `next` the log has already used. It also reports every ladder rung that cannot run, and warns per open task when no reviewer rung can run
 
 `project set --tests-paths '["src/test/**","**/*Test.java"]'` replaces `tests.paths` with a non-empty JSON array of non-blank strings. `--tests-paths null` removes the field and restores the default test layouts; `[]` is invalid.
 
@@ -97,12 +133,22 @@ When stacks become available again, a successful `stack link ID` clears ordinary
 
 If every lower task merges before an unlinked dependent submits its PR, `stack link` retargets that PR to the project base and clears its local stack. The submitted head is preserved and the ordinary merge gate applies. Supervisors perform the same transition when observing a submission.
 
+<!-- commands:Stack:start -->
 | Command | Does |
 |---|---|
-| `stack link ID` | link a submitted task's dependency chain on GitHub, bottom to top |
-| `stack sync ID` | import remote tracking with `gh stack checkout <pr> --print-path`, then run `gh stack sync` from the task worktree, without prompts |
-| `stack unstack ID` | remove the GitHub stack and local tracking, confirm no member remains stacked, then use ordinary merges in dependency order |
-| `stack webhook FILE` | ingest a trusted `pull_request` webhook payload for this project's repository; `-` reads stdin. Record `pull_request.stack` or the payload's top-level `stack` without changing acceptance or merge evidence |
+| `stack link ID` | link submitted dependency PRs bottom to top (automatic after spawned submissions) |
+| `stack sync ID` | refresh an idle stack with gh stack sync; changed heads or conflicts require rework |
+| `stack unstack ID` | disable a stack for ordinary merges; lower tasks must land first |
+| `stack webhook FILE` | record a pull_request webhook stack object; - reads stdin |
+<!-- commands:Stack:end -->
+
+`stack link`: link a submitted task's dependency chain on GitHub, bottom to top
+
+`stack sync`: import remote tracking with `gh stack checkout <pr> --print-path`, then run `gh stack sync` from the task worktree, without prompts
+
+`stack unstack`: remove the GitHub stack and local tracking, confirm no member remains stacked, then use ordinary merges in dependency order
+
+`stack webhook`: ingest a trusted `pull_request` webhook payload for this project's repository; `-` reads stdin. Record `pull_request.stack` or the payload's top-level `stack` without changing acceptance or merge evidence
 
 `merge ID` uses `gh stack merge <pr> --yes --squash` for linked stacks. It verifies remote stack membership and refuses unknown lower PRs, checks every task below the target is accepted with passing gates, and re-reads every PR head immediately before the merge, then refuses if the project settings, stack members or their events changed since the merge started. Merge evidence for PRs that landed is always recorded; fallback markers and retargeted bases apply only when that stack state is unchanged. Stack merge has no `--match-head-commit`; a push after the checks remains a race. Confirmation checks every merged PR against its accepted sha and records separate merge evidence for each task that actually landed. A queued stack gets no successful merge evidence until GitHub confirms it merged.
 
@@ -128,19 +174,45 @@ tower-crane ladder set review --sandbox '{"write":[]}' --scope '{}' --agent owne
 
 `kind: "design"` and `needs: ["browser"]` attach the user browser kit on every Claude/Codex rung, including review and small. The kit follows the current user setting at each dispatch and merges with explicit rung MCP opt-ins. Missing named servers or unsupported harnesses omit the automatic kit and continue. Only explicit `needs: ["browser"]` refuses dispatch when no primary or fallback route has a configured kit server on Claude/Codex. Spawn output and `spawn`/`spawn fallback` events report `browser_kit: { requested, attached, omitted, warning }`; warnings explain why a route runs without the kit. Plain tasks receive no automatic kit. Configure servers in Claude's `mcp.json` under `CLAUDE_CONFIG_DIR` (with `~/.claude.json` as fallback) or Codex's `[mcp_servers.NAME]`. Server env and headers are not copied. Claude pre-approves `mcp__NAME`; Codex sets `default_tools_approval_mode = "approve"` and overrides named tool approval modes in the generated config and profiles. See [ladder.md](ladder.md#agent-files-and-homes) for Chrome confinement and the screenshot probe.
 
+<!-- commands:Run:start -->
 | Command | Does |
 |---|---|
-| `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment` |
-| `claim ID [--lease MIN]` | take a ready task for `--agent`; repeating it as the live claimant renews the lease. Refused if another agent holds it, the task is not ready, a resource lock is held, or the workers limit is reached (live leases and unclaimed worker spawns); consumes that agent's reservation for this task |
-| `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes its resource locks and worker slot again, so its renewal is refused when a lock is held or the workers limit is reached |
-| `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner; any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event |
-| `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters. For a task with a recorded PR, an open PR blocks changing its PR number or head branch. After it is closed or merged, a new PR supplies its head branch unless `--branch` is given and matches it |
-| `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `ci` and `merge` for every agent and either verdict; use the gate commands |
-| `accept ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]` | run unattempted software gates first; tests and clean use pinned project commands. Optional `--cmd` and `--proof-cmd` must match their pins; none mode needs no test command. When they pass and review is missing, dispatch it and return `review_pending: true` while keeping the task submitted. Call again after review evidence arrives to accept. Existing successful receipts are reused; attempted failures or invalid receipts require an explicit gate rerun |
-| `rework ID --reason R` | send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note |
-| `spend ID [--minutes N] [--tokens N] [--input N] [--cached N] [--output N] [--rung R] [--harness H] [--model M]` | add spend, with optional native-agent usage breakdown and metadata; rung defaults the harness, model and profile from the current ladder |
-| `spend ID --from-spawn AGENT` | collect an exited spawn's captured usage once per route and fresh retry invocation; resumed retries share their session's cumulative usage. Retry a failed monitor or enrich an unknown/partial entry when telemetry arrives. Refuses a live process or an unknown spawn; cannot be mixed with manual spend |
-| `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Requires explicit `--agent owner` or `TOWER_CRANE_AGENT=owner` |
+| `accept ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]` | run missing software gates, dispatch review when green, accept when all gates pass |
+| `claim ID [--lease MIN]` | take a ready task for --agent |
+| `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record review or note evidence; review needs --sha, note defaults to the submitted sha |
+| `hook ACTION --binding FILE [--payload JSON\|-]` | deliver harness messages and record activity under the home identity |
+| `msg --to NAME [--task ID] TEXT` | send a worker message through the event log |
+| `owner-done ID [--note T]` | the owner did what needs_owner asked; clears it |
+| `ready [--all]` | ready tasks, those that unblock the most first; --all adds blocked ones with the reason |
+| `release ID --reason R` | give a claimed task back; it returns to todo or rework |
+| `renew ID [--lease MIN]` | extend your lease; an expired one only while the workers limit has room |
+| `rework ID --reason R` | send back; the reason goes into the brief's rework notes |
+| `spend ID [--minutes N] [--tokens N] [--input N] [--cached N] [--cache-write N] [--output N] [--rung R] [--harness H] [--model M] [--from-spawn AGENT]` | record usage or collect an exited spawn once |
+| `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter |
+| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` | block until one matching event; print one JSON line (timeout exits 2) |
+<!-- commands:Run:end -->
+
+`ready`: ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment`
+
+`claim`: take a ready task for `--agent`; repeating it as the live claimant renews the lease. Refused if another agent holds it, the task is not ready, a resource lock is held, or the workers limit is reached (live leases and unclaimed worker spawns); consumes that agent's reservation for this task
+
+`renew`: extend the lease from now; only the claimant. An expired lease takes its resource locks and worker slot again, so its renewal is refused when a lock is held or the workers limit is reached
+
+`release`: give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner; any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event
+
+`submit`: mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters. For a task with a recorded PR, an open PR blocks changing its PR number or head branch. After it is closed or merged, a new PR supplies its head branch unless `--branch` is given and matches it
+
+`evidence`: record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `ci` and `merge` for every agent and either verdict; use the gate commands
+
+`accept`: run unattempted software gates first; tests and clean use pinned project commands. Optional `--cmd` and `--proof-cmd` must match their pins; none mode needs no test command. When they pass and review is missing, dispatch it and return `review_pending: true` while keeping the task submitted. Call again after review evidence arrives to accept. Existing successful receipts are reused; attempted failures or invalid receipts require an explicit gate rerun
+
+`rework`: send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note
+
+`spend`: add spend, with optional native-agent usage breakdown and metadata; rung defaults the harness, model and profile from the current ladder
+
+`spend`: collect an exited spawn's captured usage once per route and fresh retry invocation; resumed retries share their session's cumulative usage. Retry a failed monitor or enrich an unknown/partial entry when telemetry arrives. Refuses a live process or an unknown spawn; cannot be mixed with manual spend
+
+`owner-done`: the owner did what `needs_owner` asked; clears it. Requires explicit `--agent owner` or `TOWER_CRANE_AGENT=owner`
 
 `task add --lock lab/rdma --lock gpu/0 --environment lab` stores exclusive resource names and an informational environment label. Names are case-sensitive, trimmed and deduplicated. Tasks with any shared lock cannot hold worker leases or dispatch reservations at the same time, regardless of `limits.workers` or environment labels. Claim, worker spawn and expired renewal check under the state lock and name the holding task and agent on refusal. An unclaimed spawn reserves its locks with its worker slot, including retry backoff; its generated agent consumes that reservation on claim. Reviewer and other non-worker dispatches do not acquire resource locks. Environment labels do not select a harness or change its environment variables.
 
@@ -154,12 +226,20 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 ## Decisions
 
+<!-- commands:Decisions:start -->
 | Command | Does |
 |---|---|
+| `answer DID --choice C [--note T]` | record the owner's answer |
 | `ask --question Q --option A --option B [--recommend A] [--why W] [--blocks ID]...` | open a decision; prints its id |
-| `answer DID --choice C [--note T]` | answer it (any agent may record the owner's answer; the event names who). `C` must be one of the options when there are any; an answered decision stays answered |
-| `decisions [--open]` | list |
-| `decision note DID TEXT` | append a comment; an explicit owner comment wakes the orchestrator and tasks blocked by the decision |
+| `decision note DID TEXT` | append a comment on a decision |
+| `decisions [--open]` | list decisions |
+<!-- commands:Decisions:end -->
+
+`answer`: answer it (any agent may record the owner's answer; the event names who). `C` must be one of the options when there are any; an answered decision stays answered
+
+`decisions`: list
+
+`decision note`: append a comment; an explicit owner comment wakes the orchestrator and tasks blocked by the decision
 
 ## Event wakeups
 
@@ -223,11 +303,19 @@ The token protects against foreign web origins. Local processes can read it from
 
 `task show ID` marks software evidence that lacks matching gate proof or belongs to an older sha as `(does not count)`. Each successful tests or clean entry also checks its recorded command policy against the current pins; tests entries check the current mode too. Evidence from an older revision is marked `(revision N, does not count)`. Its text output prints every recorded command with arguments, working directory, exit status and signal when present. JSON output keeps the evidence and command receipts as stored, plus the gate report.
 
+<!-- commands:Views:start -->
 | Command | Does |
 |---|---|
-| `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
-| `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock |
-| `serve [--port P]` | serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use |
+| `render` | write sketch.md and sketch.html (self-contained, no network) |
+| `serve [--port P]` | serve the sketch and a Settings view for the ladder and task tiers on 127.0.0.1; pages reload when the state changes |
+| `status` | one screen: counts, ready tasks, open decisions, owner tasks, spend, expired leases, exited spawned claims |
+<!-- commands:Views:end -->
+
+`status`: one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails
+
+`render`: write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock
+
+`serve`: serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use
 
 The board is one HTML document with four views (Board, Plan, History, Spend) and a sheet per task, linked as `#board`, `#plan`, `#history`, `#spend` and `#T7`; docs/design.md is its design. `sketch.html` loads nothing from the network: no fonts, scripts, styles or images outside the file, and its inline script makes no request. Every view and task sheet opens by its link with scripts disabled. Links in evidence (`--ref`) open only when clicked. The snapshot has no token and no forms; where serve would offer a write, it shows the CLI command. The script adds local times, keyboard keys (`b`, `p`, `h`, `s`, Escape), copy buttons and a digest of what changed since the browser last showed the board, kept in the browser's local storage and never in the state directory. The snapshot embeds the newest 400 events for History.
 
@@ -281,10 +369,16 @@ Both write under the lock, validate, log events (`ladder harness`, `ladder set` 
 
 `spawn` passes an absolute `TOWER_CRANE_CONFIG` path to every harness, preserving the original user file when an isolated orchestrator dispatches workers. Command fallback executables containing placeholders are checked after expansion during preparation; `ladder show` defers their executable lookup until task context is available.
 
+<!-- commands:Agents and worktrees:start -->
 | Command | Does |
 |---|---|
-| `worktree ID [ID ...]` | create (or print) a git worktree and branch `tower-crane/<id>-<slug>` from the freshest base for each task, at `<repo-parent>/<repo>-worktrees/<id>-<slug>`; records the branch on the task. Once the task has a branch, its worktree is found by branch, so renaming the task does not move it |
-| `spawn --task ID [--role RUNG] [--dry-run] [--wait]` | start a rung's harness in the task's worktree with the brief and task as the prompt: the rung of the task's tier, or the rung `--role` names (`--role review` for a review); sets `TOWER_CRANE_STATE`, `TOWER_CRANE_TASK`, `TOWER_CRANE_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command. A claude or codex rung runs under its role's agent file in a config home of its own (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`); `--dry-run` prints a `#` line naming the agent file, the home, the MCP servers and the opted-in tools, and `--json` adds them as `home`. The rung is resolved again from the state read under the lock, so a tier or ladder change made while spawn created the worktree is the one that runs |
+| `spawn --task ID [--role RUNG] [--dry-run] [--wait]` | start a rung's harness in the task's worktree (the task's tier unless --role names a rung); prints the pid, or the command with --dry-run |
+| `worktree ID [ID ...]` | prepare task worktrees serially from one fetched base before dispatch |
+<!-- commands:Agents and worktrees:end -->
+
+`worktree`: create (or print) a git worktree and branch `tower-crane/<id>-<slug>` from the freshest base for each task, at `<repo-parent>/<repo>-worktrees/<id>-<slug>`; records the branch on the task. Once the task has a branch, its worktree is found by branch, so renaming the task does not move it
+
+`spawn`: start a rung's harness in the task's worktree with the brief and task as the prompt: the rung of the task's tier, or the rung `--role` names (`--role review` for a review); sets `TOWER_CRANE_STATE`, `TOWER_CRANE_TASK`, `TOWER_CRANE_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command. A claude or codex rung runs under its role's agent file in a config home of its own (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`); `--dry-run` prints a `#` line naming the agent file, the home, the MCP servers and the opted-in tools, and `--json` adds them as `home`. The rung is resolved again from the state read under the lock, so a tier or ladder change made while spawn created the worktree is the one that runs
 
 Before creating a new task branch, `worktree` fetches `base` from `origin` into `origin/<base>`, even when the remote's fetch configuration excludes that branch. It starts from the fetched commit when the local base is missing or is an ancestor of it. A local base that is ahead of or diverges from origin remains the starting point, with both commit SHAs reported on stderr; the local base branch is never moved. Task branches start from the selected commit SHA with no upstream branch. If origin has no such branch, it uses the local base and reports that fallback on stderr, or refuses if the local base is missing too. Without an origin remote, it uses the available local base or `origin/<base>`.
 
@@ -396,12 +490,22 @@ Tests and clean evidence and their audit events carry `gate_policy`: `{tests_cmd
 
 The CLI refuses manual software verdicts, and software receipts require matching records in tasks.json and events.jsonl. Plain files cannot stop a writer running as the same user from forging those records or an owner waiver. The owner pins test and cleanup commands; acceptance compares their recorded policy and command receipts with the pins. Reviewers check that the configured runners verify the change.
 
+<!-- commands:Gates:start -->
 | Command | Does |
 |---|---|
-| `check tests ID [--cmd CMD] [--proof-cmd CMD]` | use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs CMD once and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests` and resolved `tests_mode` |
-| `check clean ID [--cmd CMD]` | run pinned `gates.clean_cmd` on the task branch against `base`; records `clean`, ok when every check ran and none reported a HIGH finding |
-| `check ci ID` | with `ci.local`, resolve task override, kind mapping or default, run its argv against the merged base and submitted head and record a local receipt; otherwise verify the PR head and mergeability, require `ci.required` runs to be present and successful on the submitted sha, require at least one run outside `ci.ignore_apps` and `ci.capped_review` exceptions and all remaining checks green; records `ci` |
-| `merge ID [--subject S] [--body B] [--method M]` | merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise); records `merge` |
+| `check ci ID` | configured local CI on the merged tree, or GitHub checks on the submitted sha; records ci |
+| `check clean ID [--cmd CMD]` | cleanup tool on the task branch against base reports no HIGH finding; records clean |
+| `check tests ID [--cmd CMD] [--proof-cmd CMD]` | check tests under the project and task kind mode; records tests |
+| `merge ID [--subject S] [--body B] [--method M]` | merge accepted PRs with passing gates; stacks recheck all lower heads and merge atomically |
+<!-- commands:Gates:end -->
+
+`check tests`: use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs CMD once and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests` and resolved `tests_mode`
+
+`check clean`: run pinned `gates.clean_cmd` on the task branch against `base`; records `clean`, ok when every check ran and none reported a HIGH finding
+
+`check ci`: with `ci.local`, resolve task override, kind mapping or default, run its argv against the merged base and submitted head and record a local receipt; otherwise verify the PR head and mergeability, require `ci.required` runs to be present and successful on the submitted sha, require at least one run outside `ci.ignore_apps` and `ci.capped_review` exceptions and all remaining checks green; records `ci`
+
+`merge`: merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise); records `merge`
 
 Ordinary `merge` defaults to `--method squash`, with the task title as the commit subject and its acceptance lines joined by newlines as the body. `--subject` and `--body` override these independently, preserving multiline text and an explicitly empty body. A subject must be non-blank. `--method merge` uses the same commit text options; `--method rebase` omits them and refuses explicit subject or body overrides. Every ordinary merge invocation uses GitHub's full head SHA with `--match-head-commit` after verifying it matches the accepted SHA. Branch deletion is requested unless `merge.keep_branch` is true. Only owner-set `merge.admin: true` adds GitHub's admin option for solely owned repositories. There is no one-off `merge --admin` flag; acceptance, review, CI and head checks still apply. Stacks use the guarded atomic merge described under Run.
 
