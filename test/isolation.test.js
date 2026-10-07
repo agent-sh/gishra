@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, ROOT } = require('./helpers');
+const { makeRepo, ROOT, BIN } = require('./helpers');
 const A = require('../lib/agents');
 const TOML = require('../lib/toml');
 
@@ -62,10 +62,21 @@ function plant(h) {
   }
   // gh is not on every CI runner; this one stands in for the real program
   // the agent's gh shim hands allowed calls to.
-  fs.writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\necho fake gh\n', { mode: 0o755 });
+  // Like a gh whose login is in the system keyring: `auth token` answers
+  // outside a sandbox, and a write without GH_TOKEN gets the 401 a sandboxed
+  // agent got when the keyring was out of its reach.
+  fs.writeFileSync(path.join(bin, 'gh'), [
+    '#!/bin/sh',
+    'if [ "$1" = auth ] && [ "$2" = token ]; then echo stub-gh-token; exit 0; fi',
+    'if [ "$1" = pr ] && [ "$2" = comment ] && [ "$GH_TOKEN" != stub-gh-token ]; then echo "HTTP 401: Requires authentication" >&2; exit 1; fi',
+    'echo fake gh', '',
+  ].join('\n'), { mode: 0o755 });
   const out = path.join(h.base, 'stub.json');
   const runEnv = { ...h.env, HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_OUT: out };
-  // The developer's own harness homes must not leak in.
+  // The developer's own harness homes and gh tokens must not leak in: the
+  // fixture's gh login lives in its stub keyring. The tokens are emptied, not
+  // deleted, since the caller's own env would fill a missing key back in.
+  for (const k of ['GH_TOKEN', 'GITHUB_TOKEN']) runEnv[k] = '';
   delete runEnv.CLAUDE_CONFIG_DIR;
   delete runEnv.CODEX_HOME;
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
@@ -198,32 +209,65 @@ test('every spawn gets a fresh home, and an exited agent\'s home is removed', { 
   }
 });
 
-test('a codex agent writes only where its agent file says; reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
-  const { h, u } = setup(t);
+test('a codex agent writes only where its agent file says; a worker writes its git metadata, reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  // A worker fetches, adds, commits and pushes: it writes the repository's
+  // git directory and its worktree's admin directory inside it.
+  const common = fs.realpathSync(h.git(['rev-parse', '--path-format=absolute', '--git-common-dir'], wt));
+  const own = fs.realpathSync(h.git(['rev-parse', '--path-format=absolute', '--git-dir'], wt));
   for (const [rung, worktree] of [['hard', 'write'], ['review', 'read'], ['small', 'read']]) {
     isolated(h, rung, 'codex');
     spawn(h, u, rung);
     const { config } = u.report();
     const rules = config.permissions['tower-crane'].filesystem;
+    for (const d of [common, own]) assert.equal(rules[d], worktree === 'write' ? 'write' : undefined, `${rung}: ${d}`);
     assert.deepEqual(rules[':workspace_roots'], { '.': worktree }, rung);
     assert.equal(rules[':root'], 'read', rung);
     assert.equal(rules[h.state], 'write', `${rung}: state through the CLI`);
     assert.equal(rules[path.join(h.state, 'homes')], 'read', `${rung}: agent homes are not writable`);
     assert.equal(config.permissions['tower-crane'].network.enabled, true);
   }
+  for (const [rung, writes] of [['hard', true], ['small', false]]) {
+    isolated(h, rung, 'claude');
+    spawn(h, u, rung);
+    const allow = u.report().settings.sandbox.filesystem.allowWrite;
+    for (const d of [common, own]) assert.equal(allow.includes(d), writes, `claude ${rung}: ${d}`);
+  }
 });
 
-test('git and gh allow reads and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
+test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
-  const remote = path.join(h.base, 'remote.git');
-  h.git(['init', '-q', '--bare', remote]);
-  h.git(['remote', 'add', 'origin', remote]);
-  h.git(['push', '-q', 'origin', 'main']);
+  const local = path.join(h.base, 'local.git');
+  h.git(['init', '-q', '--bare', local]);
+  // A remote on another machine; nothing listens there, so a push the shim
+  // lets through fails in git itself, not with the shim's 126.
+  h.git(['remote', 'add', 'origin', 'https://127.0.0.1:9/r.git']);
+  const NET = 'net';
   const cases = [
     [['git', 'status'], 0, 0],
     [['git', '-C', wt, 'log', '-1'], 0, 0],
-    [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 126],
-    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 0, 126],
+    [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 0],
+    [['git', 'push', local, '+HEAD:refs/heads/fixture'], 0, 0],
+    [['git', 'push', '--force', local, 'HEAD:refs/heads/fixture'], 126, 126],
+    [['git', 'push', local, ':refs/heads/fixture'], 0, 0],
+    [['git', 'push', 'origin', ':refs/heads/gone'], 126, 126],
+    [['git', 'push', 'origin', '--delete', 'gone'], 126, 126],
+    [['git', 'push', '-d', 'origin', 'gone'], 126, 126],
+    [['git', 'push', '--prune', 'origin', 'refs/heads/*:refs/heads/*'], 126, 126],
+    // git takes abbreviated options; a push to another machine may use only
+    // exact, harmless ones.
+    ...['--del', '--pru', '--forc', '--mir', '--all', '--tags', '--no-verify'].map((o) => [['git', 'push', o, 'origin', 'HEAD:refs/heads/x'], 126, 126]),
+    [['git', 'push', '-o', 'x', 'origin', 'HEAD:refs/heads/x'], 126, 126],
+    [['git', 'push', 'origin', '--del', 'x'], 126, 126],
+    [['git', 'push', '-u', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
+    [['git', 'push', '--set-upstream', '-q', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
+    // Configuration that turns a plain push into a mirror.
+    ...['true', 'yes', 'on', '1'].flatMap((v) => [
+      [['git', 'config', 'remote.origin.mirror', v], 0, 0],
+      [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 126, 126],
+      [['git', 'config', '--unset', 'remote.origin.mirror'], 0, 0],
+    ]),
+    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], NET, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
     [['git', 'push', 'origin', '+HEAD:refs/heads/forced'], 126, 126],
@@ -243,10 +287,111 @@ test('git and gh allow reads and the role\'s own writes, and refuse everything e
       isolated(h, rung, harness);
       spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
       const ran = u.report().ran;
-      assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+      const codes = ran.map((r, i) => (cases[i][column] === NET && r.code !== 126 && r.code !== 0 ? NET : r.code));
+      assert.deepEqual(codes, cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
     }
   }
-  for (const b of ['forced', 'alias']) assert.equal(h.git(['--git-dir', remote, 'branch', '--list', b]), '', `no ${b} push landed`);
+  // A mirror key with no value, which git reads as true.
+  const config = path.join(h.repo, '.git', 'config');
+  const before = fs.readFileSync(config, 'utf8');
+  fs.appendFileSync(config, '[remote "origin"]\n\tmirror\n');
+  isolated(h, 'hard', 'codex');
+  spawn(h, u, 'hard', { STUB_RUN: JSON.stringify([['git', 'push', 'origin', 'HEAD:refs/heads/ok']]) });
+  assert.deepEqual(u.report().ran.map((r) => r.code), [126], 'a valueless mirror key');
+  fs.writeFileSync(config, before);
+});
+
+test('an isolated reviewer posts through gh, records evidence in a symlinked state dir and runs a git fixture', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  // The state directory reached through a symlink, as .tower-crane -> .gishra was.
+  const realState = path.join(h.base, 'real-state');
+  fs.renameSync(h.state, realState);
+  fs.symlinkSync(realState, h.state);
+  h.ok(['claim', 'T1', '--agent', 'worker-T1-1']);
+  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'worker-T1-1']);
+  const fixture = path.join(h.base, 'fixture');
+  const run = [
+    ['gh', 'pr', 'comment', '1', '--body', 'Review (tower-crane, clean context)'],
+    [process.execPath, BIN, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1', '--summary', 'nothing blocks'],
+    ['git', 'init', '-q', fixture],
+    ['git', '-C', fixture, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'fixture'],
+    ['git', 'init', '-q', '--bare', `${fixture}.git`],
+    ['git', '-C', fixture, 'push', `${fixture}.git`, 'HEAD:refs/heads/main'],
+  ];
+  const real = fs.realpathSync(realState);
+  for (const harness of ['claude', 'codex']) {
+    fs.rmSync(fixture, { recursive: true, force: true });
+    fs.rmSync(`${fixture}.git`, { recursive: true, force: true });
+    isolated(h, 'review', harness);
+    const dry = h.json(['spawn', '--role', 'review', '--task', 'T1', '--dry-run'], { env: u.env });
+    assert.ok(!JSON.stringify(dry).includes('stub-gh-token'), 'the token is not in the command or its shown env');
+    spawn(h, u, 'review', { STUB_RUN: JSON.stringify(run) });
+    const seen = u.report();
+    assert.deepEqual(seen.ran.map((r) => r.code), run.map(() => 0), `${harness}: ${JSON.stringify(seen.ran.map((r) => r.stderr))}`);
+    if (harness === 'claude') assert.ok(seen.settings.sandbox.filesystem.allowWrite.includes(real), 'claude may write the real state dir');
+    else assert.equal(seen.config.permissions['tower-crane'].filesystem[real], 'write', 'codex may write the real state dir');
+  }
+  assert.equal(h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'review').length, 2);
+  for (const f of walk(realState)) assert.ok(!fs.readFileSync(f, 'utf8').includes('stub-gh-token'), `${f} holds the gh token`);
+});
+
+test('a gh token in the spawning environment passes through, and the keyring is asked only without one', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'review', harness);
+    spawn(h, u, 'review');
+    assert.equal(u.report().ghToken, 'stub-gh-token', `${harness}: the keyring's token`);
+    spawn(h, u, 'review', { GH_TOKEN: 'spawner-token' });
+    assert.equal(u.report().ghToken, 'spawner-token', `${harness}: the spawner's own token`);
+    spawn(h, u, 'review', { GITHUB_TOKEN: 'spawner-github-token' });
+    assert.equal(u.report().ghToken, null, `${harness}: GITHUB_TOKEN is left for gh to read`);
+  }
+});
+
+test('a push counts as local only when every URL git would use is local, so rewriting cannot reach another machine', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const local = path.join(h.base, 'local.git');
+  h.git(['init', '-q', '--bare', local]);
+  const away = 'https://127.0.0.1:9/away.git';
+  // A fixture repo the agent may write, with a rewrite rule and a remote
+  // whose second push URL is on another machine.
+  const fx = path.join(h.base, 'fx');
+  h.git(['init', '-q', fx]);
+  h.git(['-C', fx, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x']);
+  h.git(['-C', fx, 'remote', 'add', 'two', local]);
+  h.git(['-C', fx, 'remote', 'set-url', '--add', '--push', 'two', local]);
+  h.git(['-C', fx, 'remote', 'set-url', '--add', '--push', 'two', away]);
+  h.git(['-C', fx, 'remote', 'add', 'loc', local]);
+  h.git(['-C', fx, 'remote', 'add', 'up', away]);
+  const rewritten = path.join(h.base, 'rewritten.git');
+  const cases = [
+    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/plain'], 0, 0],
+    [['git', '-C', fx, 'push', 'loc', 'HEAD:refs/heads/named'], 0, 0],
+    // An abbreviated option takes the next argument as its value; any option
+    // voids the local exception, so `loc` cannot vouch for `up`.
+    [['git', '-C', fx, 'push', '--push-opt', 'loc', 'up', 'HEAD:refs/heads/x', '--force'], 126, 126],
+    [['git', '-C', fx, '-c', `url.${away}.insteadOf=${rewritten}`, 'push', rewritten, 'HEAD:refs/heads/x'], 126, 126],
+    [['git', '-C', fx, '-c', 'remote.two.pushurl=' + away, 'push', 'two', 'HEAD'], 126, 126],
+    [['git', '-C', fx, 'config', `url.${away}.insteadOf`, rewritten], 0, 0],
+    [['git', '-C', fx, 'push', rewritten, '+HEAD:refs/heads/x'], 126, 126],
+    [['git', '-C', fx, 'push', 'two', '+HEAD:refs/heads/x'], 126, 126],
+    [['git', '-C', fx, 'config', '--unset', `url.${away}.insteadOf`], 0, 0],
+    [['git', '-C', fx, 'config', `url.${away}.pushInsteadOf`, local], 0, 0],
+    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/x'], 126, 126],
+  ];
+  for (const harness of ['claude', 'codex']) {
+    for (const rung of ['hard', 'small']) {
+      try {
+        h.git(['-C', fx, 'config', '--unset-all', `url.${away}.pushInsteadOf`]);
+      } catch {
+        // Not set yet.
+      }
+      isolated(h, rung, harness);
+      spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
+      const ran = u.report().ran;
+      assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[rung === 'hard' ? 1 : 2]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+    }
+  }
 });
 
 test('a codex rework resumes in a fresh isolated home and finds its first session', { skip: NO_STUBS }, (t) => {

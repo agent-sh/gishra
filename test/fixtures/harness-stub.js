@@ -34,7 +34,7 @@ const hookCommands = (settings) => Object.values(settings.hooks || {}).flat().fl
 module.exports = function stub(harness) {
   const args = process.argv.slice(2);
   const after = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : null);
-  const report = { harness, args, home: os.homedir(), memory: [], skills: [], hooks: [], mcp: {}, rules: [], auth: null, env: null, ran: [] };
+  const report = { harness, args, ghToken: process.env.GH_TOKEN || null, home: os.homedir(), memory: [], skills: [], hooks: [], mcp: {}, rules: [], auth: null, env: null, ran: [] };
   const skillsIn = (dir) => {
     try {
       return fs.readdirSync(dir).filter((d) => fs.existsSync(path.join(dir, d, 'SKILL.md')));

@@ -80,7 +80,7 @@ function originFixture(h) {
   h.origin = path.join(h.base, 'origin.git');
   h.git(['init', '--bare', '-q', h.origin]);
   h.git(['remote', 'add', 'origin', h.origin]);
-  h.git(['push', '-q', 'origin', 'main']);
+  h.git(['push', 'origin', 'main']);
   h.upstream = path.join(h.base, 'upstream');
   h.git(['clone', '-q', h.origin, h.upstream]);
 }
@@ -159,7 +159,7 @@ for (const changedTree of [true, false]) {
     h.git(['add', '.'], h.upstream);
     h.git(['commit', '--allow-empty', '-qm', 'remote advances'], h.upstream);
     const remote = h.git(['rev-parse', 'HEAD'], h.upstream);
-    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    h.git(['push', 'origin', 'main'], h.upstream);
     h.git(['config', 'remote.origin.fetch', '+refs/heads/other:refs/remotes/origin/other']);
     assert.equal(h.git(['rev-parse', 'origin/main']), h.baseSha);
     assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
@@ -209,7 +209,7 @@ test('a divergent local base cannot hide a remote advance from merge', (t) => {
   fs.writeFileSync(path.join(h.upstream, 'remote.txt'), 'remote\n');
   h.git(['add', '.'], h.upstream);
   h.git(['commit', '-qm', 'remote diverges'], h.upstream);
-  h.git(['push', '-q', 'origin', 'main'], h.upstream);
+  h.git(['push', 'origin', 'main'], h.upstream);
   const refused = h.run(['merge', 'T1']);
   assert.equal(refused.code, 1);
   assert.match(refused.stderr, /local CI receipt.*base.*moved/);
