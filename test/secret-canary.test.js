@@ -38,13 +38,17 @@ function setup(t, harness, mode, { big = 0 } = {}) {
   fs.writeFileSync(sources[0], JSON.stringify({ OPENAI_API_KEY: c.credentialFile }));
   fs.writeFileSync(sources[1], JSON.stringify({ claudeAiOauth: { accessToken: c.credentialFile } }));
   fs.writeFileSync(sources[2], `TC_FILE_SECRET=${c.file}\n`);
+  // A codex fallback route needs its profile configured.
+  fs.writeFileSync(path.join(home, '.codex', 'config.toml'), '[profiles.sol]\nmodel = "stub"\n');
   fs.writeFileSync(path.join(bin, harness), `#!${process.execPath}\nrequire(${JSON.stringify(HARNESS)})(${JSON.stringify(harness)});\n`, { mode: 0o755 });
   const route = harness === 'codex' ? { profile: 'sol' } : { model: 'opus' };
   h.ok(['ladder', 'set', 'medium', '--harness', harness,
     ...(harness === 'codex' ? ['--profile', 'sol', '--clear', 'model'] : ['--model', 'opus', '--clear', 'profile']),
     '--clear', 'effort', '--clear', 'args', '--supervision', '{"retries":0,"backoff_ms":1}',
-    '--env', JSON.stringify({ ROUTE: 'primary', TC_RUNG_SECRET: c.rung }),
-    '--fallbacks', JSON.stringify([{ harness, ...route, env: { ROUTE: 'fallback', TC_FALLBACK_SECRET: c.fallback } }])]);
+    '--env', JSON.stringify({ ROUTE: 'primary', TC_RUNG_SECRET: c.rung })]);
+  // Fallbacks are personal: the user file holds them, and their env.
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { medium: { fallbacks: [{ harness, ...route, env: { ROUTE: 'fallback', TC_FALLBACK_SECRET: c.fallback } }] } } }));
   h.ok(['project', 'set', '--env', JSON.stringify({ TC_PROJECT_SECRET: c.project }), '--env_file', '~/secrets.env']);
   if (big) {
     // Too long for ladder set's argv; the owner writes project.json instead.
@@ -64,8 +68,9 @@ function setup(t, harness, mode, { big = 0 } = {}) {
   };
   delete env.XDG_CACHE_HOME;
   const spawn = (args) => h.run(['spawn', '--task', 'T1', ...args], { env, hooks: { HOOK_KEEP_SPAWN_DIRS: '1' } });
-  // The configured sources: the ladder and project env live in project.json.
-  const allow = [path.join(h.state, 'project.json'), ...sources];
+  // The configured sources: the ladder and project env live in project.json,
+  // the fallback env in the user file.
+  const allow = [path.join(h.state, 'project.json'), h.userConfig, ...sources];
   const reports = () => fs.readFileSync(out, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   const expected = (names) => Object.fromEntries(Object.entries(values).map(([n, v]) => [n, names.includes(n) ? sha(v) : null]));
   const primary = expected(['TC_RUNG_SECRET', 'TC_PROJECT_SECRET', 'TC_FILE_SECRET', 'GH_TOKEN', CREDENTIAL[harness], ...Object.keys(bigVars)]);
