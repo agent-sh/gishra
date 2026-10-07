@@ -852,7 +852,7 @@ test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-r
   assert.match(r.stderr, /opts in MCP server missing, but .*config\.toml defines no \[mcp_servers\.missing\]/);
   const pi = h.run(['ladder', 'set', 'small', '--harness', 'pi', '--model', 'x', '--clear', 'profile']);
   assert.equal(pi.code, 1);
-  assert.match(pi.stderr, /tools applies only to claude and codex, mcp applies only to claude and codex/);
+  assert.match(pi.stderr, /tools applies only to claude and codex and agy, mcp applies only to claude and codex and agy/);
 });
 
 test('only the orchestrator or the owner widens a rung, a command needs the owner, and args hold only allowlisted flags', (t) => {
@@ -893,11 +893,11 @@ test('TOML tables have no prototype, so __proto__ and inherited names are plain 
   assert.equal(doc.a.__proto__.polluted, true);
 });
 
-test('claude and codex rungs dispatch through spawn, never as native subagents', () => {
+test('claude, codex and agy rungs dispatch through spawn, never as native subagents', () => {
   const skill = fs.readFileSync(path.join(ROOT, 'skills', 'tower-crane', 'SKILL.md'), 'utf8');
   const ladder = fs.readFileSync(path.join(ROOT, 'docs', 'ladder.md'), 'utf8');
   for (const text of [skill, ladder]) {
-    assert.match(text, /A rung on claude or codex always runs through `tower-crane spawn`/);
+    assert.match(text, /A rung on claude, codex or agy always runs through `tower-crane spawn`/);
     assert.doesNotMatch(text, /dispatch natively with (that|the) rung's model/);
   }
 });
