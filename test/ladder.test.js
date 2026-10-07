@@ -88,28 +88,26 @@ test('research web MCP settings persist in user defaults and refuse other rungs 
   assert.equal(h.json(['ladder', 'show']).ladder.research.web_mcp, undefined);
 });
 
-test('research web MCP and provider fallbacks coexist and require owner identity for either change', (t) => {
+test('research web MCP stays owner guarded alongside personal provider fallbacks', (t) => {
   const h = makeRepo(t);
   h.init();
   const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
   const fallbacks = [{ harness: 'codex', model: 'second' }];
-  h.ok(['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server), '--fallbacks', JSON.stringify(fallbacks)]);
+  writeUser(h, { ladder: { research: { fallbacks } } });
+  h.ok(['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server)]);
   h.ok(['ladder', 'save-user']);
   const saved = JSON.parse(fs.readFileSync(h.userConfig, 'utf8')).ladder.research;
   assert.deepEqual(saved.web_mcp, server);
   assert.deepEqual(saved.fallbacks, fallbacks);
-  for (const [flag, value] of [
-    ['--web-mcp', { ...server, name: 'replacement' }],
-    ['--fallbacks', [{ harness: 'claude', model: 'third' }]],
-  ]) {
-    assert.equal(h.run(['ladder', 'set', 'research', flag, JSON.stringify(value), '--agent', 'worker']).code, 1);
-    const rung = h.json(['ladder', 'show']).ladder.research;
-    assert.deepEqual(rung.web_mcp, server);
-    assert.deepEqual(rung.fallbacks, fallbacks);
-  }
-  h.ok(['ladder', 'set', 'research', '--clear', 'fallbacks']);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp',
+    JSON.stringify({ ...server, name: 'replacement' }), '--agent', 'worker']).code, 1);
+  const rung = h.json(['ladder', 'show']).ladder.research;
+  assert.deepEqual(rung.web_mcp, server);
+  assert.deepEqual(rung.fallbacks, fallbacks);
+  writeUser(h, { ladder: { research: { fallbacks: [] } } });
   assert.deepEqual(h.json(['ladder', 'show']).ladder.research.web_mcp, server);
-  h.ok(['ladder', 'set', 'research', '--fallbacks', JSON.stringify(fallbacks), '--clear', 'web_mcp']);
+  writeUser(h, { ladder: { research: { fallbacks } } });
+  h.ok(['ladder', 'set', 'research', '--clear', 'web_mcp']);
   assert.deepEqual(h.json(['ladder', 'show']).ladder.research.fallbacks, fallbacks);
 });
 
@@ -118,19 +116,17 @@ test('research web MCP inheritance remains Claude-only and refuses additional MC
   h.init();
   const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
   const fallbacks = [{ harness: 'claude', model: 'backup' }, { harness: 'codex', model: 'second' }];
-  h.ok(['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server), '--fallbacks', JSON.stringify(fallbacks)]);
+  writeUser(h, { ladder: { research: { fallbacks } } });
+  h.ok(['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server)]);
   const routes = require('../lib/ladder').routes(h.json(['ladder', 'show']).ladder.research);
   assert.deepEqual(routes[1].web_mcp, server);
   assert.equal(routes[2].web_mcp, undefined);
-  const extra = h.run(['ladder', 'set', 'research', '--fallbacks',
-    JSON.stringify([{ harness: 'claude', model: 'backup', mcp: ['other'] }])]);
-  assert.equal(extra.code, 1, extra.stderr);
-  assert.match(extra.stderr, /web_mcp cannot be combined with mcp/);
-  assert.deepEqual(h.json(['ladder', 'show']).ladder.research.fallbacks, fallbacks);
-  const nonClaude = h.run(['ladder', 'set', 'research', '--fallbacks',
-    JSON.stringify([{ harness: 'codex', model: 'second', web_mcp: server }])]);
-  assert.equal(nonClaude.code, 1, nonClaude.stderr);
-  assert.match(nonClaude.stderr, /web_mcp applies only to claude/);
+  writeUser(h, { ladder: { research: { fallbacks: [{ harness: 'claude', model: 'backup', mcp: ['other'] }] } } });
+  const extra = h.json(['ladder', 'show']);
+  assert.ok(extra.problems.some(p => /web_mcp cannot be combined with mcp.*skipped/.test(p)));
+  assert.deepEqual(extra.ladder.research.web_mcp, server);
+  writeUser(h, { ladder: { research: { fallbacks: [{ harness: 'codex', model: 'second', web_mcp: server }] } } });
+  assert.ok(h.json(['ladder', 'show']).problems.some(p => /web_mcp applies only to claude.*skipped/.test(p)));
 });
 
 test('ladder save-user makes the project ladder the default for new projects', (t) => {
@@ -156,6 +152,48 @@ test('ladder save-user makes the project ladder the default for new projects', (
   assert.equal(refused.code, 1);
   assert.match(refused.stderr, /ladder easy \(pi, the default harness\): profile applies only to codex, needs a model;.*before saving it as the default/);
   assert.equal(fs.readFileSync(h.userConfig, 'utf8'), saved1);
+});
+
+test('personal hard fallbacks overlay project rungs and stay out of project writes', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const fallbacks = [{ harness: 'codex', profile: 'astra', effort: 'high' }, { harness: 'claude', model: 'fable', effort: 'high' }];
+  writeUser(h, { ladder: { hard: { fallbacks } } });
+  const hard = h.json(['ladder', 'show']).ladder.hard;
+  assert.equal(hard.model, 'opus');
+  assert.equal(hard.from, 'project');
+  assert.deepEqual(hard.fallbacks, fallbacks);
+  assert.equal(hard.fallbacks_from, 'user');
+  assert.match(h.ok(['ladder', 'show']), /hard fallback 1.*from user file/);
+  h.ok(['ladder', 'set', 'hard', '--effort', 'medium']);
+  assert.equal(h.readState('project.json').ladder.hard.fallbacks, undefined);
+  h.ok(['ladder', 'save-user']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(h.userConfig, 'utf8')).ladder.hard.fallbacks, fallbacks);
+  const other = path.join(h.base, 'second-state');
+  h.ok(['init', '--name', 'second', '--goal', 'g', '--state', other]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(other, 'project.json'), 'utf8')).ladder.hard.fallbacks, undefined);
+  assert.deepEqual(h.json(['ladder', 'show', '--state', other]).ladder.hard.fallbacks, fallbacks);
+  writeUser(h, { ladder: { hard: { fallbacks: [] } } });
+  assert.deepEqual(h.json(['ladder', 'show']).ladder.hard.fallbacks, []);
+  assert.equal(h.readState('project.json').ladder.hard.fallbacks, undefined);
+});
+
+test('projects reject fallback configuration through flags and state', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  assert.equal(h.run(['ladder', 'set', 'hard', '--fallbacks', '[]']).code, 2);
+  assert.equal(h.run(['ladder', 'set', 'hard', '--clear', 'fallbacks']).code, 2);
+  const project = h.readState('project.json');
+  project.ladder.hard.fallbacks = [];
+  h.writeState('project.json', project);
+  assert.match(h.run(['status']).stderr, /fallbacks.*user file/);
+});
+
+test('fallback-only user rungs keep the built-in primary when projects omit them', (t) => {
+  const h = makeRepo(t);
+  writeUser(h, { ladder: { hard: { fallbacks: [{ harness: 'claude', model: 'fable' }] } } });
+  h.init();
+  assert.deepEqual(h.readState('project.json').ladder.hard, BUILTIN.hard);
 });
 
 test('ladder harness moves every rung without its own harness, and spawn runs each tier there', (t) => {

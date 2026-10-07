@@ -7,8 +7,9 @@ const path = require('node:path');
 if (path.resolve(process.argv[1] || '') !== __filename) {
   const spawn = cp.spawn;
   cp.spawn = function offlineHarness(file, args, options) {
-    if (['codex', 'claude', 'agy'].includes(file) && process.env.TOWER_CRANE_TEST_FALLBACK_FILE) {
-      return spawn.call(this, process.execPath, [__filename, file, ...args], options);
+    const harness = /[\\/]scripts[\\/]fallback(?:\.exe)?$/.test(file) ? 'command' : file;
+    if (['codex', 'claude', 'agy', 'command'].includes(harness) && process.env.TOWER_CRANE_TEST_FALLBACK_FILE) {
+      return spawn.call(this, process.execPath, [__filename, harness, ...args], options);
     }
     return spawn.call(this, file, args, options);
   };
@@ -16,6 +17,17 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   const harness = process.argv[2];
   const args = process.argv.slice(3);
   const file = process.env.TOWER_CRANE_TEST_FALLBACK_FILE;
+  const cli = (argv) => cp.execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'bin', 'tower-crane.js'), ...argv], {
+    encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  if (process.env.TOWER_CRANE_TEST_NESTED_DISPATCH && process.env.TOWER_CRANE_AGENT.startsWith('orchestrator-')) {
+    const ladder = JSON.parse(cli(['ladder', 'show', '--json']));
+    const dispatch = JSON.parse(cli(['spawn', '--task', 'T2', '--wait', '--json']));
+    fs.writeFileSync(process.env.TOWER_CRANE_TEST_NESTED_DISPATCH, JSON.stringify({
+      config: process.env.TOWER_CRANE_CONFIG, home: process.env.HOME, ladder, dispatch,
+    }));
+    process.exit(0);
+  }
   let attempts;
   try {
     attempts = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -25,7 +37,6 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   }
   const modelFlag = args.includes('-m') ? '-m' : harness === 'codex' ? '-p' : '--model';
   const model = args[args.indexOf(modelFlag) + 1];
-  const cli = (argv) => cp.execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'bin', 'tower-crane.js'), ...argv], { encoding: 'utf8' });
   if (!attempts.length) cli(['claim', process.env.TOWER_CRANE_TASK]);
   const claudeHome = process.env.CLAUDE_CONFIG_DIR;
   const claude = harness === 'claude' ? {
