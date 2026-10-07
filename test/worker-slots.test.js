@@ -192,3 +192,47 @@ test('an unclaimed retry holds its slot through backoff and expired-lease renewa
   h.ok(['renew', 'T3', '--agent', 'expired']);
   fs.writeFileSync(path.join(h.base, 'T1.exit'), '');
 });
+
+test('an expired pre-claim holds the only slot before supervision can renew', async (t) => {
+  const h = setup(t, 1);
+  controlledHarness(h);
+  h.ok(['worktree', 'T1', 'T3']);
+  h.ok(['claim', 'T1', '--agent', 'worker-T1-1']);
+  const doc = h.readState('tasks.json');
+  doc.tasks[0].claim.until = new Date(Date.now() - 1000).toISOString();
+  h.writeState('tasks.json', doc);
+  const original = h.readState('tasks.json').tasks[0].claim;
+  const audit = events(h);
+  const failed = h.run(['spawn', '--task', 'T1'], { hooks: { HOOK_SPAWN_FAIL: '1' } });
+  assert.equal(failed.code, 1, failed.stderr);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].claim, original, 'failed launch does not renew');
+  assert.deepEqual(events(h), audit);
+  const paused = path.join(h.base, 'supervisor-paused');
+  try {
+    const spawned = h.json(['spawn', '--task', 'T1'], {
+      hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSE_PROCESS: 'spawn-monitor.js', HOOK_PAUSED: paused },
+    });
+    await until(() => fs.existsSync(paused), 'supervisor did not pause before renewal');
+    const rivals = await Promise.all([
+      h.runAsync(['claim', 'T2', '--agent', 'rival']),
+      h.runAsync(['spawn', '--task', 'T3']),
+    ]);
+    for (const r of rivals) {
+      assert.equal(r.code, 1, JSON.stringify(rivals));
+      assert.match(r.stderr, /T1.*worker-T1-1/);
+    }
+    const restored = h.readState('tasks.json').tasks[0].claim;
+    assert.ok(Date.parse(restored.until) > Date.now(), 'dispatch restores the lease under the lock');
+    assert.equal(restored.since, original.since);
+    assert.equal(restored.from, original.from);
+    assert.equal(restored.agent, spawned.agent);
+    h.ok(['renew', 'T1', '--agent', spawned.agent]);
+    h.ok(['project', 'set', '--workers', '2']);
+    h.ok(['claim', 'T2', '--agent', 'rival']);
+    h.ok(['release', 'T1', '--agent', spawned.agent, '--reason', 'slot returned']);
+    h.ok(['claim', 'T3', '--agent', 'replacement']);
+  } finally {
+    fs.writeFileSync(`${paused}.go`, '');
+    fs.writeFileSync(path.join(h.base, 'T1.exit'), '');
+  }
+});

@@ -232,6 +232,8 @@ A `cannot lock ref` or `incorrect old value` fetch failure waits 100 ms and retr
 
 Worker spawns check `limits.workers` under the state lock using the same count as `claim` and expired-lease `renew`: live leases plus unclaimed worker spawn reservations. A full limit exits non-zero naming the task and agent holding each slot, before launching a process, writing a home or recording spend. A successful dispatch holds a reservation until the generated worker claims that task or its supervised attempt exits, including retry backoff. Claim consumes that worker's reservation without counting it twice. Launch failure holds no reservation. `--role review` and other non-worker rungs are unaffected; `--dry-run` only previews the command and reserves nothing.
 
+An expired pre-claim held by the generated worker is renewed to the default lease duration under the spawn lock, preserving its agent, `since` and `from`. This lease holds the slot before the supervisor can renew it. A failed launch leaves the pre-claim and receipts unchanged.
+
 Worker dispatch and role-filtered `brief get` use the shared text of briefs without role headings. For role-specific text, use level-two headings `## Shared`, `## Worker` and `## Reviewer`. Matching is case-insensitive, and headings inside fenced code blocks are ordinary text. Text before the first role heading is shared, and each section ends at the next role heading. `## Rework notes` starts a shared section. The worker prompt includes shared text and the `Worker` section; the reviewer packet includes only the `Reviewer` section alongside the diff, acceptance and gate results.
 
 ```md
