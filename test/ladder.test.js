@@ -146,18 +146,21 @@ test('ladder save-user makes the project ladder the default for new projects', (
 test('ladder save-user writes only what the project defines and keeps the rest of the user file', (t) => {
   const h = makeRepo(t);
   h.init();
-  writeUser(h, { browser_kit: ['playwright'], note: 'kept', ladder: { medium: { fallbacks: [{ harness: 'claude', model: 'fable', effort: 'high' }] } } });
+  writeUser(h, { browser_kit: ['playwright'], note: 'kept', ladder: { medium: { fallbacks: [{ harness: 'claude', model: 'fixture-secondary', effort: 'high' }] } } });
   const p = h.readState('project.json');
+  // Remaining rungs need their own harness when the project omits its default.
+  for (const rung of Object.values(p.ladder)) rung.harness ||= p.harness;
   delete p.harness;
   delete p.ladder.easy;
   h.writeState('project.json', p);
   h.ok(['ladder', 'save-user']);
   const saved = JSON.parse(fs.readFileSync(h.userConfig, 'utf8'));
-  // Neither the default harness nor easy is in the project, so the user file gets neither: the built-in applies to them.
+  // Saving omits inherited fields and preserves unrelated personal settings.
   assert.equal(saved.harness, undefined);
   assert.equal(saved.ladder.easy, undefined);
-  assert.deepEqual(saved.ladder.hard, BUILTIN.hard);
-  assert.deepEqual(saved.ladder.medium, { ...BUILTIN.medium, fallbacks: [{ harness: 'claude', model: 'fable', effort: 'high' }] });
+  assert.deepEqual(saved.ladder.hard, PINNED.hard);
+  assert.deepEqual(saved.ladder.medium, { ...PINNED.medium, harness: fixtureLadder().harness,
+    fallbacks: [{ harness: 'claude', model: 'fixture-secondary', effort: 'high' }] });
   assert.equal(saved.note, 'kept');
   assert.deepEqual(saved.browser_kit, ['playwright']);
 });
