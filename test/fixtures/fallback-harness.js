@@ -36,9 +36,10 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   attempts.push({
     harness, model, args, session: process.env.TOWER_CRANE_SESSION, retry: process.env.TOWER_CRANE_RETRY,
     agent: process.env.TOWER_CRANE_AGENT, claim: JSON.parse(cli(['task', 'show', process.env.TOWER_CRANE_TASK, '--json'])).claim,
-    env: process.env.ROUTE_ENV || null,
+    env: process.env.ROUTE_ENV || null, broker: Boolean(process.env.TOWER_CRANE_BROKER),
     ...claude,
   });
+  if (process.env.TOWER_CRANE_TEST_FALLBACK_NOTE) cli(['task', 'note', process.env.TOWER_CRANE_TASK, `${harness} ${model} ${process.env.TOWER_CRANE_RETRY}`]);
   fs.writeFileSync(file, JSON.stringify(attempts));
   if (harness === 'codex') {
     if (model !== 'first' || process.env.TOWER_CRANE_TEST_FALLBACK_REASON !== 'no-session') {
