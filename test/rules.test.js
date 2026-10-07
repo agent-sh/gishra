@@ -270,6 +270,30 @@ test('the scope gate flags submitted changes outside the paths the brief and acc
   assert.ok(task.notes.some((n) => n.text.startsWith('scope: 2 changed files outside')), 'the orchestrator sees it in the task notes');
 });
 
+test('quoted commands scope the paths inside them', (t) => {
+  const { h, sha, wt } = scoped(t, 'Fix `node lib/a.js`.\n');
+  for (const brief of ['Fix `node lib/a.js`.\n', 'Fix "node lib/a.js".\n', "Fix 'node lib/a.js'.\n", 'Fix `lib/a.js --flag`.\n']) {
+    h.ok(['brief', 'set', 'T1', '-'], { input: brief });
+    const r = h.json(['submit', 'T1', '--sha', sha, '--agent', 'builder'], { cwd: wt });
+    assert.deepEqual(r.scope, { basis: 'named', named: ['lib/a.js'], outside: ['README.md', 'docs/guide.md', 'other/b.js'] }, brief);
+  }
+  fs.writeFileSync(path.join(wt, 'lib', 'file with spaces.js'), 'space path\n');
+  h.git(['add', '.'], wt);
+  h.git(['commit', '-q', '-m', 'space path'], wt);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Fix "lib/file with spaces.js".\n' });
+  const r = h.json(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD'], wt), '--agent', 'builder'], { cwd: wt });
+  assert.deepEqual(r.scope, { basis: 'named', named: ['lib/file with spaces.js'], outside: ['README.md', 'docs/guide.md', 'lib/a.js', 'other/b.js'] });
+});
+
+test('a brief naming a checkout or registered worktree root scopes the whole repository', (t) => {
+  const { h, sha, wt } = scoped(t, 'probe\n');
+  for (const root of [h.repo, wt]) {
+    h.ok(['brief', 'set', 'T1', '-'], { input: `Change "${root}".\n` });
+    const r = h.json(['submit', 'T1', '--sha', sha, '--agent', 'builder'], { cwd: wt });
+    assert.deepEqual(r.scope, { basis: 'named', named: ['./'], outside: [] }, root);
+  }
+});
+
 test('a task that names no repository path is scoped to the whole repository', (t) => {
   const { h, sha, wt } = scoped(t, 'Make it better.\n');
   const out = h.ok(['submit', 'T1', '--sha', sha, '--agent', 'builder'], { cwd: wt });
