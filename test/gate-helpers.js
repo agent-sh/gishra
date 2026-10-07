@@ -3,19 +3,73 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { shellQuote } = require('../lib/gates/common');
+const { TMP_ROOT } = require('./helpers');
+
+let gateRepoSeed;
+
+function gitBaseline(h) {
+  if (h.git(['status', '--porcelain', '--untracked-files=all'])) return null;
+  const gitDir = path.join(h.repo, '.git');
+  const headPath = path.join(gitDir, 'HEAD');
+  const mainPath = path.join(gitDir, 'refs', 'heads', 'main');
+  const configPath = path.join(gitDir, 'config');
+  const excludePath = path.join(gitDir, 'info', 'exclude');
+  if (![headPath, mainPath, configPath, excludePath].every((file) => fs.existsSync(file))) return null;
+  const heads = fs.readdirSync(path.join(gitDir, 'refs', 'heads')).sort();
+  const head = fs.readFileSync(headPath, 'utf8');
+  if (head !== 'ref: refs/heads/main\n' || heads.length !== 1 || heads[0] !== 'main'
+    || fs.existsSync(path.join(gitDir, 'packed-refs'))) return null;
+  return {
+    config: fs.readFileSync(configPath, 'utf8'),
+    exclude: fs.readFileSync(excludePath, 'utf8'),
+    main: fs.readFileSync(mainPath, 'utf8'),
+  };
+}
+
+function saveGateRepoSeed(h, sha, baseline) {
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-gate-seed-')));
+  try {
+    fs.cpSync(path.join(h.repo, '.git'), path.join(base, '.git'), { recursive: true });
+    fs.copyFileSync(path.join(h.repo, 'value.js'), path.join(base, 'value.js'));
+    fs.cpSync(path.join(h.repo, 'test'), path.join(base, 'test'), { recursive: true });
+    gateRepoSeed = { base, sha, baseline };
+    process.once('exit', () => {
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    });
+  } catch (error) {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    throw error;
+  }
+}
+
+function restoreGateRepo(h) {
+  fs.rmSync(path.join(h.repo, '.git'), { recursive: true, force: true });
+  fs.cpSync(path.join(gateRepoSeed.base, '.git'), path.join(h.repo, '.git'), { recursive: true });
+  fs.copyFileSync(path.join(gateRepoSeed.base, 'value.js'), path.join(h.repo, 'value.js'));
+  fs.cpSync(path.join(gateRepoSeed.base, 'test'), path.join(h.repo, 'test'), { recursive: true });
+  fs.mkdirSync(path.join(h.repo, '.git', 'refs', 'remotes', 'origin'), { recursive: true });
+  return gateRepoSeed.sha;
+}
 
 // Run the real gates against a small change so acceptance tests need no network or installed scanner.
 function gateFixture(h) {
-  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 0;\n');
-  h.git(['add', '.']);
-  h.git(['commit', '-qm', 'base value']);
-  h.git(['switch', '-qc', 'fixture-change']);
-  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 1;\n');
-  fs.mkdirSync(path.join(h.repo, 'test'));
-  fs.writeFileSync(path.join(h.repo, 'test', 'value.test.js'), "require('node:assert/strict').equal(require('../value'), 1);\n");
-  h.git(['add', '.']);
-  h.git(['commit', '-qm', 'change with regression']);
-  const sha = h.git(['rev-parse', 'HEAD']);
+  const baseline = gitBaseline(h);
+  let sha;
+  if (gateRepoSeed && baseline && JSON.stringify(baseline) === JSON.stringify(gateRepoSeed.baseline)) {
+    sha = restoreGateRepo(h);
+  } else {
+    fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 0;\n');
+    h.git(['add', '.']);
+    h.git(['commit', '-qm', 'base value']);
+    h.git(['switch', '-qc', 'fixture-change']);
+    fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 1;\n');
+    fs.mkdirSync(path.join(h.repo, 'test'));
+    fs.writeFileSync(path.join(h.repo, 'test', 'value.test.js'), "require('node:assert/strict').equal(require('../value'), 1);\n");
+    h.git(['add', '.']);
+    h.git(['commit', '-qm', 'change with regression']);
+    sha = h.git(['rev-parse', 'HEAD']);
+    if (!gateRepoSeed && baseline) saveGateRepoSeed(h, sha, baseline);
+  }
   const tools = path.join(h.base, 'tools');
   fs.mkdirSync(tools);
   const scanner = path.join(tools, 'scanner.js');
