@@ -57,6 +57,16 @@ if (env.HOOK_KEEP_SPAWN_DIRS) {
   };
 }
 
+// HOOK_PIDNS=ID: this process reports ID as its pid namespace, as a command
+// in a sandbox of its own does.
+if (env.HOOK_PIDNS) {
+  const readlink = fs.readlinkSync;
+  fs.readlinkSync = function sandboxPidNamespace(file, ...args) {
+    if (file === '/proc/self/ns/pid') return env.HOOK_PIDNS;
+    return readlink.call(this, file, ...args);
+  };
+}
+
 if (env.HOOK_CLOCK_FILE) {
   const DateClass = Date;
   const clock = () => Number(fs.readFileSync(env.HOOK_CLOCK_FILE, 'utf8'));
