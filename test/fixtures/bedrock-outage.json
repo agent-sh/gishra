@@ -1,0 +1,79 @@
+{
+  "source": {
+    "agent": "worker-T8-1",
+    "harness": "codex",
+    "provider": "Bedrock",
+    "profile": "luna",
+    "incident_date": "2026-10-07"
+  },
+  "attempts": [
+    {
+      "attempt": 2,
+      "log": "T8-worker-T8-1-attempt-2.log",
+      "records": [
+        {
+          "type": "error",
+          "message": "Reconnecting... 2/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "Reconnecting... 3/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "Reconnecting... 4/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "Reconnecting... 5/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "rate limit exceeded: The service is temporarily unavailable."
+        },
+        {
+          "type": "turn.failed",
+          "error": {
+            "message": "rate limit exceeded: The service is temporarily unavailable."
+          }
+        }
+      ]
+    },
+    {
+      "attempt": 3,
+      "log": "T8-worker-T8-1-attempt-3.log",
+      "records": [
+        {
+          "type": "error",
+          "message": "Reconnecting... 1/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "Reconnecting... 2/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "Reconnecting... 3/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "Reconnecting... 4/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "Reconnecting... 5/5 (rate limit exceeded: The service is temporarily unavailable.)"
+        },
+        {
+          "type": "error",
+          "message": "rate limit exceeded: The service is temporarily unavailable."
+        },
+        {
+          "type": "turn.failed",
+          "error": {
+            "message": "rate limit exceeded: The service is temporarily unavailable."
+          }
+        }
+      ]
+    }
+  ]
+}

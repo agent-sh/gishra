@@ -7,6 +7,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const http = require('node:http');
 const { makeRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
+const bedrockOutage = require('./fixtures/bedrock-outage.json');
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 
@@ -18,7 +19,7 @@ async function until(fn, message) {
   }
 }
 
-function setup(t, { failures = 1, error = '75', hold = 0, config = {}, env = {}, busy = false, claimDelay = 0, claim = true, sessionReceipt = false } = {}) {
+function setup(t, { failures = 1, error = '75', records = null, hold = 0, config = {}, env = {}, busy = false, claimDelay = 0, claim = true, sessionReceipt = false } = {}) {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Supervise an outage', '--tier', 'easy', '--acceptance', 'same session reruns']);
@@ -42,7 +43,8 @@ ${sessionReceipt ? "console.log(JSON.stringify({ type: 'thread.started', thread_
 ${busy ? "cp.spawn(process.execPath, ['-e', 'const end = Date.now() + 2200; while (Date.now() < end) {}'], { stdio: 'ignore' });" : ''}
 setTimeout(() => {
   if (attempts.length <= ${failures}) {
-    ${['signal', 'interrupt'].includes(error) ? `process.kill(process.pid, '${error === 'signal' ? 'SIGTERM' : 'SIGINT'}');`
+    ${records ? `for (const record of ${JSON.stringify(records)}) console.log(JSON.stringify(record)); process.exit(1);`
+      : ['signal', 'interrupt'].includes(error) ? `process.kill(process.pid, '${error === 'signal' ? 'SIGTERM' : 'SIGINT'}');`
       : ['claude-error', 'codex-error', 'codex-failed'].includes(error)
         ? `console.log(${JSON.stringify(JSON.stringify(error === 'claude-error' ? { type: 'result', is_error: true, api_error_status: 503 }
           : error === 'codex-error' ? { type: 'error', message: 'HTTP 502 bad gateway' }
@@ -59,6 +61,53 @@ setTimeout(() => {
   h.readAttempts = () => fs.existsSync(h.attempts) ? JSON.parse(fs.readFileSync(h.attempts, 'utf8')) : [];
   return h;
 }
+
+for (const attempt of bedrockOutage.attempts) {
+  for (const type of ['error', 'turn.failed']) {
+    test(`recorded Bedrock attempt ${attempt.attempt} ${type} reruns with the session and claim kept`, (t) => {
+      const h = setup(t, { records: attempt.records.filter((record) => record.type === type) });
+      const result = h.spawn();
+      assert.equal(result.code, 0, result.stderr);
+      const attempts = h.readAttempts();
+      assert.equal(attempts.length, 2);
+      for (const key of ['agent', 'session', 'cwd', 'claim']) assert.deepEqual(attempts[1][key], attempts[0][key]);
+      assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 1);
+      assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
+    });
+  }
+}
+
+for (const record of [
+  { type: 'error', message: 'rate limit exceeded' },
+  { type: 'turn.failed', error: { message: 'The service is temporarily unavailable.' } },
+  { type: 'error', message: 'HTTP 429 Too Many Requests' },
+  { type: 'turn.failed', error: { message: 'overloaded' } },
+  { type: 'result', is_error: true, api_error_status: 429 },
+]) {
+  test(`capacity error envelope ${JSON.stringify(record)} reruns`, (t) => {
+    const h = setup(t, { records: [record] });
+    const result = h.spawn();
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(h.readAttempts().length, 2);
+    assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
+  });
+}
+
+test('default retry budget waits beyond the observed ten-minute outage and remains bounded', (t) => {
+  const clock = path.join(__dirname, 'fixtures', 'supervision-backoff-clock.js').replace(/\\/g, '/');
+  const h = setup(t, { failures: 5, env: { NODE_OPTIONS: `--require "${clock}"` } });
+  h.ok(['ladder', 'set', 'easy', '--clear', 'supervision']);
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  const attempts = h.readAttempts();
+  assert.equal(attempts.length, 6);
+  for (const attempt of attempts) assert.deepEqual(attempt.claim, attempts[0].claim);
+  const delays = log(h).filter((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying').map((e) => e.detail.backoff_ms);
+  assert.deepEqual(delays, [30000, 60000, 120000, 240000, 480000]);
+  assert.equal(delays.reduce((sum, delay) => sum + delay, 0), 930000);
+  assert.ok(delays.every((delay) => delay <= 600000));
+  assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
+});
 
 for (const error of ['75', 'outage', 'server', 'status-json', 'claude-error', 'codex-error', 'codex-failed', 'signal', 'interrupt']) {
   test(`transient ${error} reruns the same session, preserving the claim until success`, {
@@ -306,6 +355,10 @@ for (const harness of ['claude', 'codex']) {
     const [first, second] = JSON.parse(fs.readFileSync(attemptsFile, 'utf8'));
     assert.equal(first.agent, second.agent);
     if (harness === 'claude') {
+      for (const flag of ['--permission-mode', '--tools', '--allowedTools', '--mcp-config']) {
+        assert.ok(first.args.includes(flag));
+        assert.equal(second.args[second.args.indexOf(flag) + 1], first.args[first.args.indexOf(flag) + 1], flag);
+      }
       const id = first.args[first.args.indexOf('--session-id') + 1];
       assert.match(id, /^[a-f0-9-]{36}$/);
       assert.equal(second.args.includes('--resume'), false);
@@ -318,6 +371,10 @@ for (const harness of ['claude', 'codex']) {
       assert.equal(second.args[second.args.indexOf('--model') + 1], 'chosen-model');
       assert.equal(second.args.includes('--fork-session'), false);
     } else {
+      for (const setting of ['default_permissions="tower-crane"', 'approval_policy="never"', 'web_search="disabled"']) {
+        assert.ok(first.args.includes(setting));
+        assert.ok(second.args.includes(setting), setting);
+      }
       assert.ok(second.args.includes('resume'));
       assert.ok(second.args.includes('01a11297-1067-7831-a3bc-2c04eac9aaef'));
       assert.equal(second.args[second.args.indexOf('-p') + 1], 'chosen-profile');
@@ -335,7 +392,7 @@ for (const stream of ['stdout', 'stderr']) {
     const script = `
 const cp = require('node:child_process');
 cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']);
-const text = 'API Error: 503 service unavailable; provider outage';
+const text = 'API Error: 503 service unavailable; provider outage; rate limit exceeded: The service is temporarily unavailable.; HTTP 429 Too Many Requests; overloaded';
 console.${stream === 'stdout' ? 'log' : 'error'}(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', aggregated_output: text } }));
 console.${stream === 'stdout' ? 'log' : 'error'}(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }));
 console.${stream === 'stdout' ? 'log' : 'error'}(JSON.stringify({ type: 'result', is_error: false, result: text }));
@@ -346,6 +403,22 @@ process.exit(1);
     assert.equal(result.code, 1, result.stderr);
     assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
     assert.equal(h.json(['task', 'show', 'T1']).run.reason, 'exit 1');
+  });
+}
+
+for (const stream of ['stdout', 'stderr']) {
+  test(`plain capacity text on ${stream} cannot substitute for a harness error envelope`, (t) => {
+    const h = setup(t, { failures: 0 });
+    const script = `
+const cp = require('node:child_process');
+cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']);
+console.${stream === 'stdout' ? 'log' : 'error'}('rate limit exceeded: The service is temporarily unavailable.; HTTP 429 Too Many Requests; overloaded');
+process.exit(1);
+`;
+    h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN])]);
+    const result = h.spawn();
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
   });
 }
 
