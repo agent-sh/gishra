@@ -143,6 +143,7 @@ const COMMANDS = [
     'cache-write': int('N', 'cache write input tokens, included in --input and separate from --cached'),
     'from-spawn': str('AGENT', 'collect an exited spawn from its captured log and session, once'),
   }, run: T.spend },
+  { section: 'Run', name: 'owner-key', summary: 'owner only: create the owner key that stands in for a terminal; prints its path, never the key', run: run('../lib/authority', 'ownerKey') },
   { section: 'Run', name: 'owner-done', pos: ['ID'], usage: 'ID [--note T]', summary: 'the owner did what needs_owner asked; clears it', flags: { note: str('T', 'what was done') }, run: T.ownerDone },
   { section: 'Run', name: 'wait', usage: '[--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]', summary: 'block until one matching event; print one JSON line (timeout exits 2)', flags: { after: str('CURSOR', 'event id or byte offset (default now)'), for: str('NAME', 'recipient (default orchestrator)'), task: str('ID', 'only this task or decisions blocking it'), types: str('TYPES', 'comma-separated event types'), timeout: num('SEC', 'maximum wait in seconds') }, run: run('../lib/events', 'wait') },
   { section: 'Run', name: 'msg', pos: ['TEXT...'], usage: '--to NAME [--task ID] TEXT', summary: 'send a worker message through the event log', flags: { to: str('NAME', 'recipient, usually orchestrator'), task: str('ID', 'task (default TOWER_CRANE_TASK)') }, required: ['to'], run: run('../lib/events', 'message') },
@@ -373,9 +374,9 @@ async function main(argv) {
     }
     if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     const identity = agent.trim();
-    if (identity === 'owner' && process.env.TOWER_CRANE_TASK !== undefined) {
-      throw refuse('owner acts from an interactive terminal; task processes cannot use owner identity');
-    }
+    if (identity === 'owner') require('../lib/authority').checkOwner(process.env, !!(process.stdin.isTTY && process.stdout.isTTY));
+    // The key proves this process only; nothing it starts inherits it.
+    delete process.env.TOWER_CRANE_OWNER_KEY;
     const locate = () => S.locateStateDir(globals.state, process.env, process.cwd());
     // Check the resolved identity before forwarding; the broker separately
     // verifies requests against the identity it spawned.

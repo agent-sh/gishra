@@ -220,7 +220,7 @@ test('--agent owner is refused when TOWER_CRANE_TASK is set', (t) => {
     env: { TOWER_CRANE_AGENT: 'reviewer', TOWER_CRANE_TASK: 'T1' },
   });
   assert.equal(r.code, 1, r.stderr);
-  assert.match(r.stderr, /owner acts from an interactive terminal/);
+  assert.match(r.stderr, /a task process never acts as owner/);
   assert.equal(events(h), before);
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
 });
@@ -232,9 +232,80 @@ test('TOWER_CRANE_AGENT=owner is refused when TOWER_CRANE_TASK is set', (t) => {
     env: { TOWER_CRANE_AGENT: 'owner', TOWER_CRANE_TASK: 'T1' },
   });
   assert.equal(r.code, 1, r.stderr);
-  assert.match(r.stderr, /owner acts from an interactive terminal/);
+  assert.match(r.stderr, /a task process never acts as owner/);
   assert.equal(events(h), before);
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
+});
+
+test('--agent owner is refused when TOWER_CRANE_AGENT names another identity (I1, I3)', (t) => {
+  const h = setup(t);
+  const before = events(h);
+  const project = h.readState('project.json');
+  // I1: the orchestrator, no terminal, no task variable, the owner key in reach.
+  const i1 = h.run(['project', 'set', '--merge-admin', 'true', '--agent', 'owner'], { env: { TOWER_CRANE_AGENT: 'orchestrator' } });
+  assert.equal(i1.code, 1, i1.stderr);
+  assert.match(i1.stderr, /owner identity needs a process the owner runs \(docs\/state\.md#agent-identity\): TOWER_CRANE_AGENT names orchestrator/);
+  // I3: an unsandboxed worker that lost TOWER_CRANE_TASK.
+  const i3 = h.run(['project', 'set', '--workers', '4', '--agent', 'owner'], { env: { TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_TASK: undefined } });
+  assert.equal(i3.code, 1, i3.stderr);
+  assert.match(i3.stderr, /TOWER_CRANE_AGENT names worker-T1-1, and a process started as another identity never acts as owner/);
+  assert.deepEqual(h.readState('project.json'), project);
+  assert.equal(events(h), before);
+  h.ok(['project', 'set', '--workers', '4', '--agent', 'owner']);
+  assert.equal(h.readState('project.json').limits.workers, 4);
+});
+
+test('owner without a terminal needs the owner key', (t) => {
+  const h = setup(t);
+  const before = events(h);
+  const cases = [
+    [{ TOWER_CRANE_OWNER_KEY: undefined }, /stdin and stdout are not a terminal and TOWER_CRANE_OWNER_KEY is unset/],
+    [{ TOWER_CRANE_OWNER_KEY: 'guessed' }, /TOWER_CRANE_OWNER_KEY does not match the key in /],
+    [{ TOWER_CRANE_CONFIG: path.join(h.base, 'elsewhere', 'config.json') }, /TOWER_CRANE_OWNER_KEY is set but .* does not exist; create it with tower-crane owner-key/],
+  ];
+  for (const [env, refusal] of cases) {
+    for (const agent of [['--agent', 'owner'], []]) {
+      const r = h.run(['owner-done', 'T1', ...agent], { env });
+      assert.equal(r.code, 1, r.stderr);
+      assert.match(r.stderr, /owner identity needs a process the owner runs \(docs\/state\.md#agent-identity\)/);
+      assert.match(r.stderr, refusal);
+    }
+  }
+  assert.equal(events(h), before);
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
+  h.ok(['owner-done', 'T1']);
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
+});
+
+test('a terminal is refused owner when TOWER_CRANE_AGENT names another identity', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = setup(t);
+  const before = events(h);
+  const r = terminal(h, ['owner-done', 'T1', '--agent', 'owner'], { TOWER_CRANE_AGENT: 'orchestrator' });
+  assert.equal(r.code, 1, r.stdout + r.stderr);
+  assert.match(r.stdout, /TOWER_CRANE_AGENT names orchestrator/);
+  assert.equal(events(h), before);
+});
+
+test('owner-key at a terminal creates the key that later stands in for one', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = setup(t);
+  const file = path.join(path.dirname(h.userConfig), 'owner', 'key');
+  fs.rmSync(file);
+  const config = { TOWER_CRANE_CONFIG: h.userConfig };
+  assert.equal(terminal(h, ['owner-key'], config).code, 1);
+  assert.equal(fs.existsSync(file), false);
+  const made = terminal(h, ['owner-key', '--agent', 'owner'], config);
+  assert.equal(made.code, 0, made.stdout);
+  const key = fs.readFileSync(file, 'utf8').trim();
+  assert.match(key, /^[0-9a-f]{64}$/);
+  assert.ok(made.stdout.includes(`created ${file}`));
+  assert.ok(!made.stdout.includes(key));
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const again = terminal(h, ['owner-key', '--agent', 'owner'], config);
+  assert.ok(again.stdout.includes(`exists ${file}`));
+  assert.equal(fs.readFileSync(file, 'utf8').trim(), key);
+  assert.equal(h.run(['owner-done', 'T1']).code, 1);
+  h.ok(['owner-done', 'T1'], { env: { TOWER_CRANE_OWNER_KEY: key } });
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
 });
 
 test('TOWER_CRANE_AGENT supplies the recorded identity when --agent is absent', (t) => {

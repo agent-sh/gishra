@@ -427,6 +427,17 @@ test('spawn --wait runs the command rung in the task worktree with the tower-cra
   assert.equal(events.find((e) => e.cmd === 'spawn exit').detail.code, 7);
 });
 
+test('a spawned agent never inherits the owner key that admitted its spawn', (t) => {
+  const h = setup(t);
+  const out = path.join(h.base, 'agent-env.json');
+  commandRung(h, 'medium', [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify(Object.keys(process.env)))`]);
+  assert.ok(h.env.TOWER_CRANE_OWNER_KEY);
+  h.ok(['spawn', '--task', 'T1', '--wait']);
+  const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.ok(seen.includes('TOWER_CRANE_AGENT'));
+  assert.ok(!seen.includes('TOWER_CRANE_OWNER_KEY'));
+});
+
 test('spawn removes outer Node test runner variables so an agent can run its own test suite', (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'nested-run.json');

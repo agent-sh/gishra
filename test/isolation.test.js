@@ -209,6 +209,7 @@ test('research Codex explicitly enables live search with worker file and git con
     assert.equal(rules[h.state], 'read');
     assert.equal(rules[path.join(h.state, 'brokers')], 'none');
     assert.equal(rules[broker], 'write');
+    assert.equal(rules[path.join(path.dirname(h.userConfig), 'owner')], 'none', 'no agent reads the owner key');
     delete rules[ownHome];
     delete rules[sessions];
     delete rules[report.home];
@@ -257,6 +258,7 @@ test('a spawned claude agent imports the user\'s global rules by path, loads non
   assert.deepEqual(box.filesystem.denyWrite, [h.state, wt], 'the state is read-only');
   assert.ok(box.filesystem.denyRead.includes(path.join(h.state, 'homes')), 'other agent homes are hidden, including future spawns');
   assert.ok(box.filesystem.denyRead.includes(path.join(h.state, 'brokers')), 'no agent reads another agent\'s broker token');
+  assert.ok(box.filesystem.denyRead.includes(path.join(path.dirname(h.userConfig), 'owner')), 'no agent reads the owner key');
   assert.deepEqual(box.filesystem.allowRead, [home, path.join(h.state, 'brokers', started.agent)], 'only this dispatch home and its own broker directory are readable');
   for (const p of ['/var/run/docker.sock', '/run/docker.sock', path.join(u.home, '.ssh'), path.join(u.home, '.aws')]) assert.ok(box.filesystem.denyRead.includes(p), p);
   assert.match(fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8'), /^\.claude\/\.cc-writes\/$/m, 'the sandbox marker is never committed');
@@ -389,24 +391,26 @@ test('browser tasks attach the user kit on every rung with approved tools and no
 
 test('browser spawns use the original user kit through a nested isolated home and refuse missing servers', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
+  // The owner key sits beside the user file this test moves; spawning needs no owner.
+  const orchestrator = { TOWER_CRANE_AGENT: 'orchestrator' };
   const userFile = path.join(u.home, '.config', 'tower-crane', 'config.json');
   fs.mkdirSync(path.dirname(userFile), { recursive: true });
   fs.writeFileSync(userFile, JSON.stringify({ browser_kit: ['planted'] }));
   h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
   isolated(h, 'hard', 'codex');
-  const parent = spawn(h, u, 'hard', { TOWER_CRANE_CONFIG: '' });
+  const parent = spawn(h, u, 'hard', { TOWER_CRANE_CONFIG: '', ...orchestrator });
   const generated = path.join(h.state, 'homes', parent.agent);
-  const nestedEnv = { ...u.env, HOME: path.join(generated, 'home'), CODEX_HOME: generated, TOWER_CRANE_CONFIG: '' };
+  const nestedEnv = { ...u.env, HOME: path.join(generated, 'home'), CODEX_HOME: generated, TOWER_CRANE_CONFIG: '', ...orchestrator };
   assert.deepEqual(h.json(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: nestedEnv }).home.mcp, ['planted']);
   fs.writeFileSync(userFile, JSON.stringify({ browser_kit: ['missing-browser'] }));
   for (const harness of ['claude', 'codex']) {
     isolated(h, 'small', harness);
-    const result = h.run(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '' } });
+    const result = h.run(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '', ...orchestrator } });
     assert.notEqual(result.code, 0);
     assert.match(result.stderr, /missing-browser.*(?:mcp\.json|config\.toml)/);
   }
   h.ok(['task', 'update', 'T1', '--needs', '[]']);
-  assert.deepEqual(h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '' } }).home.mcp, []);
+  assert.deepEqual(h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '', ...orchestrator } }).home.mcp, []);
 });
 
 test('a codex agent writes only where its agent file says; a worker writes its git metadata, reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
@@ -645,12 +649,12 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     noted.push(agent);
     const ran = u.report().ran;
     assert.deepEqual(ran.map((r) => r.code), [...cases, named].map((c) => c[1]), `${harness}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
-    assert.match(ran[1].stderr, /owner acts from an interactive terminal/);
+    assert.match(ran[1].stderr, /a task process never acts as owner/);
     assert.match(ran[2].stderr, /works on T1 only, not T2/);
     assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, hook, not task add/);
     assert.match(ran[11].stderr, /uses its own hook binding only/);
     assert.match(ran[7].stderr, /without its token/);
-    assert.match(ran[12].stderr, /owner acts from an interactive terminal/);
+    assert.match(ran[12].stderr, /a task process never acts as owner/);
     // Codex's sandbox refuses connecting to a Unix socket; claude's has no
     // host loopback.
     const address = JSON.parse(ran[9].stderr);
