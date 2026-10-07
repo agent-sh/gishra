@@ -43,6 +43,13 @@ function history(h) {
   ev('T2', 'submit', { sha: C });
   gate('T2', 'clean', C, true);
   gate('T2', 'ci', C, false, `CI not green at ${C.slice(0, 10)} in o/r:\nfailing: test (windows-latest, node 24, shard 1/2) (failure), lint (failure)\ncheck suites not green: github-actions (failure, 2 runs)`);
+  // T3: a pending CI run the task moved past says nothing about A; a failed
+  // check run the task moved past is a true positive.
+  ev('T3', 'submit', { sha: A });
+  gate('T3', 'ci', A, false, `CI not green at ${A.slice(0, 10)} in o/r:\nnot completed: test (ubuntu-latest, node 24) (in_progress)`);
+  ev('T3', 'submit', { sha: B });
+  gate('T3', 'ci', B, false, `CI not green at ${B.slice(0, 10)} in o/r:\nfailing: lint (failure)`);
+  ev('T3', 'submit', { sha: C });
   fs.appendFileSync(path.join(h.state, 'events.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
   const doc = h.readState('tasks.json');
   for (const task of doc.tasks) task.evidence = evidence[task.id];
@@ -63,8 +70,11 @@ test('bench gates labels gate fails overturned at the same sha and passes later 
   const clean = r.gates.find((g) => g.gate === 'clean');
   assert.deepEqual([clean.fn, clean.fn_by.ci], [1, 1], 'a failed check run contradicts the clean pass');
   const ci = r.gates.find((g) => g.gate === 'ci');
-  assert.deepEqual([ci.fp, ci.tn, ci.open], [1, 1, 1], 'the mergeability failure is overturned, not a code fault');
-  assert.deepEqual(r.ci_fail_reasons, { mergeability: 1, checks: 1 });
+  assert.deepEqual([ci.tp, ci.fp, ci.tn, ci.open, ci.noncode], [1, 0, 1, 1, 2], 'mergeability and pending fails are neither true nor false');
+  assert.equal(ci.precision, 1);
+  assert.equal(ci.recall_ci, null, 'the ci gate is not scored against itself');
+  assert.equal(tests.recall_ci, 1);
+  assert.deepEqual(r.ci_fail_reasons, { mergeability: 1, checks: 2, pending: 1 });
   assert.deepEqual(r.ci_checks.map((c) => c.check).sort(), ['lint', 'test (windows-latest, node 24)']);
   assert.equal(r.labels.filter((l) => l.task === 'T1' && l.gate === 'tests').length, 3, 'manual tests evidence is not labeled');
 });
@@ -111,6 +121,7 @@ test('bench tokens reports accepted-task tokens and cost by rung and escalation 
   spend('T1', 'medium', 'openai.gpt-6.1-sol', 3000010, 2000000);
   spend('T1', 'review', 'openai.gpt-6.1-sol', 500010, 0);
   spend('T2', 'medium', 'openai.gpt-6.1-sol', 2000010, 0);
+  spend('T2', 'review', 'global.anthropic.claude-opus-5-5[1m]', 100010, 0);
   spend('T3', 'easy', 'openai.gpt-6-luna', 7000010, 0);
   // Minute-only manual records are not missing telemetry.
   h.ok(['spend', 'T2', '--minutes', '5']);
@@ -124,8 +135,10 @@ test('bench tokens reports accepted-task tokens and cost by rung and escalation 
   fs.writeFileSync(prices, JSON.stringify({ luna: { input: 0.1, cache_write: 0.1, cache_read: 0.01, output: 0.5 }, sol: { input: 2, cache_write: 2, cache_read: 0.1, output: 10 } }));
   const r = h.json(['bench', 'tokens', '--prices', prices]);
   assert.deepEqual([r.accepted, r.complete], [2, 2]);
-  assert.equal(r.all_tasks_tokens, 13500050, 'spend on unaccepted tasks counts toward the cost of accepted ones');
-  assert.equal(r.tokens_per_accepted, 6750025);
+  assert.equal(r.all_tasks_tokens, 13600060, 'spend on unaccepted tasks counts toward the cost of accepted ones');
+  assert.equal(r.tokens_per_accepted, 6800030);
+  assert.deepEqual(r.unpriced_models, { 'global.anthropic.claude-opus-5-5[1m]': 1 }, 'the 1M-context id needs its own price row');
+  assert.equal(r.by_path.medium.priced_tasks, 0);
   assert.deepEqual(Object.keys(r.by_path), ['easy>medium', 'medium']);
   assert.equal(r.by_path['easy>medium'].median_tokens, 4500030);
   assert.equal(r.by_rung.medium.median_tokens, 2500010);
@@ -138,4 +151,5 @@ test('bench tokens reports accepted-task tokens and cost by rung and escalation 
   const text = h.ok(['bench', 'tokens']);
   assert.match(text, /accepted tasks: 2, with complete token records: 2/);
   assert.match(text, /easy>medium\s+1\s+4\.50M/);
+  assert.match(text, /unpriced entries by model: global\.anthropic\.claude-opus-5-5\[1m\] 1/);
 });
