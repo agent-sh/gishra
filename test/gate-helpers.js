@@ -29,7 +29,7 @@ const merged = process.env.FIXTURE_MERGED;
 if (args[0] === 'pr' && args[1] === 'merge') {
   fs.writeFileSync(merged, 'merged');
 } else if (args[0] === 'pr') {
-  console.log(JSON.stringify({headRefOid: process.env.FIXTURE_SHA, state: fs.existsSync(merged) ? 'MERGED' : 'OPEN', mergeCommit: {oid: process.env.FIXTURE_SHA}}));
+  console.log(JSON.stringify({headRefOid: process.env.FIXTURE_SHA, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', state: fs.existsSync(merged) ? 'MERGED' : 'OPEN', mergeCommit: {oid: process.env.FIXTURE_SHA}}));
 } else {
   const ok = process.env.FIXTURE_GATE_OK !== '0';
   console.log(JSON.stringify({name: 'fixture', app: 'fixture', status: 'completed', conclusion: ok ? 'success' : 'failure', runs: 1}));
