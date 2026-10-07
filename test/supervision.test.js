@@ -11,6 +11,9 @@ const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
+  file, text: fs.readFileSync(path.join(h.state, file), 'utf8'),
+}));
 
 async function until(fn, message) {
   const deadline = Date.now() + 12000;
@@ -149,9 +152,33 @@ for (const error of ['75', 'outage', 'server', 'status-json', 'claude-error', 'c
   });
 }
 
-test('repeated transient exits exhaust bounded retries with exponential backoff and a blocked phase', (t) => {
+test('repeated transient exits render the blocked phase before foreground spend', async (t) => {
   const h = setup(t, { failures: 9 });
-  const result = h.spawn();
+  const paused = path.join(h.base, 'spawn-spend-paused');
+  const release = path.join(h.base, 'spawn-spend-release');
+  const hook = path.join(__dirname, 'fixtures', 'supervision-followups.js').replace(/\\/g, '/');
+  const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: {
+      NODE_OPTIONS: `--require "${hook}"`,
+      TOWER_CRANE_TEST_HOLD_SPAWN_SPEND: paused,
+      TOWER_CRANE_TEST_RELEASE_SPAWN_SPEND: release,
+    },
+  });
+  let result;
+  try {
+    await until(() => fs.existsSync(paused), 'foreground spend did not pause after the monitor exit');
+    const events = log(h);
+    assert.ok(events.some((e) => e.cmd === 'spawn exit'), 'the monitor recorded its exit before spend paused');
+    const task = h.json(['task', 'show', 'T1']);
+    assert.equal(task.run.phase, 'blocked');
+    assert.match(task.run.reason, /after 2 retries/);
+    for (const { file, text } of sketches(h)) {
+      assert.match(text, /blocked: transient exit after 2 retries/, `${file} shows the final blocked phase before spend`);
+    }
+  } finally {
+    fs.writeFileSync(release, 'release');
+    result = await completed;
+  }
   assert.equal(result.code, 75, result.stderr);
   assert.equal(h.readAttempts().length, 3);
   const retries = log(h).filter((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying');
@@ -178,7 +205,8 @@ test('detached supervision renews a short lease during backoff and does not allo
     env: { NODE_OPTIONS: `--require "${HOOKS.replace(/\\/g, '/')}"`, HOOK_CLOCK_FILE: clockFile },
   });
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'retry was not recorded');
-  await until(() => /retrying 1/.test(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8')), 'saved board did not render the retry phase');
+  await until(() => sketches(h).every(({ text }) => /retrying 1/.test(text)), 'saved sketches did not render the retry phase');
+  for (const { file, text } of sketches(h)) assert.match(text, /retrying 1/, `${file} shows the retry phase`);
   fs.writeFileSync(clockFile, String(now + 40000));
   await until(() => log(h).some((e) => e.cmd === 'renew'), 'supervisor did not renew the short lease');
   const task = h.json(['task', 'show', 'T1']);
@@ -307,16 +335,21 @@ test('a permanent exit is blocked without retrying and submit clears its phase',
 test('progress paths and CPU detect a stalled process without dropping its live claim', { skip: process.platform !== 'linux' }, async (t) => {
   const h = setup(t, { failures: 0, waitForFinish: true, config: { stall_ms: 250, progress_paths: ['progress.txt'] } });
   const spawned = h.json(['spawn', '--task', 'T1'], { hooks: { HOOK_RENDER_DELAY_MS: '500' } });
-  const board = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
   try {
     await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'blocked', 'idle process did not stall');
     assert.match(h.ok(['task', 'show', 'T1']), /blocked: no progress paths or CPU activity/);
-    await until(() => board().includes('blocked: no progress paths or CPU activity'), 'saved board did not show stall');
-    assert.match(board(), /blocked: no progress paths or CPU activity/);
+    await until(() => sketches(h).every(({ text }) => text.includes('blocked: no progress paths or CPU activity')),
+      'saved sketches did not show stall');
+    for (const { file, text } of sketches(h)) {
+      assert.match(text, /blocked: no progress paths or CPU activity/, `${file} shows the stalled phase`);
+    }
     fs.writeFileSync(path.join(spawned.cwd, 'progress.txt'), 'progress\n');
     await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'running', 'path progress did not clear stall');
-    await until(() => !board().includes('blocked: no progress paths or CPU activity'), 'saved board did not clear stall');
-    assert.doesNotMatch(board(), /blocked: no progress paths or CPU activity/);
+    await until(() => sketches(h).every(({ text }) => !text.includes('blocked: no progress paths or CPU activity')),
+      'saved sketches did not clear stall');
+    for (const { file, text } of sketches(h)) {
+      assert.doesNotMatch(text, /blocked: no progress paths or CPU activity/, `${file} clears the stalled phase`);
+    }
     assert.equal(h.json(['task', 'show', 'T1']).claim.agent, spawned.agent);
     assert.deepEqual(h.json(['status']).exited_claims, []);
   } finally {
@@ -623,15 +656,85 @@ test('foreground output is durable while the dispatch CLI is blocked rendering',
   assert.equal(h.readAttempts().length, 2);
 });
 
-test('job transport preserves briefs that fit a harness argument', (t) => {
+test('foreground exit waits until the retained stdout pipe has been captured', async (t) => {
   const h = setup(t, { failures: 0 });
-  const rung = h.json(['ladder', 'show']).ladder.easy;
-  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([...rung.command, '{prompt}'])]);
-  const size = process.platform === 'win32' ? 14 * 1024 : 50 * 1024;
+  const writerReady = path.join(h.base, 'foreground-writer-ready');
+  const writerRelease = path.join(h.base, 'foreground-writer-release');
+  const writerPidFile = path.join(h.base, 'foreground-writer-pid');
+  const hook = path.join(__dirname, 'fixtures', 'supervision-followups.js').replace(/\\/g, '/');
+  const fixture = path.join(__dirname, 'fixtures', 'foreground-held-output.js');
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([
+    process.execPath, fixture, BIN, writerReady, writerRelease, writerPidFile,
+  ])]);
+  const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: {
+      NODE_OPTIONS: `--require "${hook}"`,
+    },
+  });
+  let result;
+  let writerPid;
+  let spawned;
+  try {
+    await until(() => log(h).some((e) => e.cmd === 'spawn'), 'spawn was not recorded');
+    spawned = log(h).find((e) => e.cmd === 'spawn').detail;
+    await until(() => fs.existsSync(writerPidFile) && fs.existsSync(writerReady),
+      'detached writer did not open the foreground stdout pipe');
+    writerPid = Number(fs.readFileSync(writerPidFile, 'utf8'));
+    assert.ok(Number.isInteger(writerPid));
+    await until(() => !detachedAlive({ pid: spawned.pid }), 'foreground harness did not exit');
+    await until(() => detachedAlive({ pid: writerPid }), 'detached writer did not keep the stdout pipe open');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(log(h).some((e) => e.cmd === 'spawn exit'), false);
+    assert.doesNotMatch(fs.readFileSync(spawned.log, 'utf8'), /final foreground output/,
+      'the retained pipe has not delivered its final output');
+  } finally {
+    fs.writeFileSync(writerRelease, 'release');
+    result = await completed;
+  }
+  assert.equal(result.code, 2, result.stderr);
+  const events = log(h);
+  const exited = events.find((e) => e.cmd === 'spawn exit');
+  const logText = fs.readFileSync(spawned.log, 'utf8');
+  assert.match(logText, /final foreground output/);
+  assert.ok(exited);
+});
+
+test('a 45 KiB brief launches through the monitor job file, not monitor argv', (t) => {
+  const size = 45 * 1024;
+  const h = setup(t);
+  const monitorArgvFile = path.join(h.base, 'monitor-argv.json');
+  const workerResult = path.join(h.base, 'brief-result.json');
+  const hook = path.join(__dirname, 'fixtures', 'supervision-followups.js').replace(/\\/g, '/');
+  const script = `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1', '--lease', '1']);
+const text = fs.readFileSync(process.argv[3], 'utf8');
+fs.writeFileSync(process.argv[2], JSON.stringify({
+  bytes: Buffer.byteLength(text),
+  containsBrief: text.includes('x'.repeat(${size})),
+}));
+`;
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([
+    process.execPath, '-e', script, BIN, workerResult, '{brief}',
+  ])]);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'x'.repeat(size) });
-  const result = h.spawn();
+  const result = h.run(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: {
+      NODE_OPTIONS: `--require "${hook}"`,
+      TOWER_CRANE_TEST_MONITOR_ARGV: monitorArgvFile,
+    },
+  });
   assert.equal(result.code, 0, result.stderr);
-  assert.equal(h.readAttempts().length, 1);
+  const readBrief = JSON.parse(fs.readFileSync(workerResult, 'utf8'));
+  assert.ok(readBrief.bytes >= size);
+  assert.equal(readBrief.containsBrief, true);
+  const captured = JSON.parse(fs.readFileSync(monitorArgvFile, 'utf8'));
+  const monitorIndex = captured.args.findIndex((arg) => path.basename(arg) === 'spawn-monitor.js');
+  assert.notEqual(monitorIndex, -1, 'the captured command launches the monitor');
+  assert.equal(captured.args.length - monitorIndex, 2, 'the monitor gets only one argument after its script');
+  assert.equal(path.basename(captured.args[monitorIndex + 1]), 'job.json');
+  assert.ok(!captured.args.some((arg) => arg.includes('x'.repeat(1024))), 'the prompt is not in monitor argv');
   assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
 });
 
