@@ -251,3 +251,14 @@ test('a malformed tests.paths: not ok, naming the field', async () => {
     assert.match(r.summary, /--tests-paths null/);
   }
 });
+
+test('a malformed tests.keep fails before the command runs', async () => {
+  const sha = task({ 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST });
+  for (const keep of ['Makefile', [null], [''], ['   ']]) {
+    const r = await gate.run(ctx(sha, { project: { tests: { keep } } }));
+    assert.equal(r.ok, false, JSON.stringify(keep));
+    assert.match(r.summary, /tests\.keep must be an array of globs/);
+    assert.match(r.summary, /--tests-keep/);
+  }
+  assertCleanedUp();
+});

@@ -58,20 +58,22 @@ const BUILD_MANIFEST_FIXTURES = [
       'package-lock.json': '{"name":"fixture-task-head","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fixture-task-head","version":"1.0.0"}}}\n',
     },
   }],
-  ['Rust', { submitted: {
+  ['cargo', { submitted: {
     'Cargo.toml': '[package]\nname = "fixture-task-head"\nversion = "0.1.0"\nedition = "2021"\n',
     'Cargo.lock': 'version = 3\n\n[[package]]\nname = "fixture-task-head"\nversion = "0.1.0"\n',
   } }],
-  ['Go', { submitted: {
+  ['go', { submitted: {
     'go.mod': 'module example.com/fixture-task-head\n\ngo 1.20\n',
     'go.sum': 'example.com/fixture-task-head v0.1.0/go.mod h1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=\n',
   } }],
-  ['Python', { submitted: {
+  ['python', { submitted: {
     'pyproject.toml': '[project]\nname = "fixture-task-head"\nversion = "0.1.0"\n',
     'requirements-dev.txt': '# fixture-task-head requirements\n',
+    'uv.lock': '# fixture-task-head\nversion = 1\n',
   } }],
-  ['Make', { submitted: {
+  ['Make with tests.keep', { keep: ['Makefile', 'tools/**/*.gradle'], submitted: {
     Makefile: '# fixture-task-head\n.PHONY: test\ntest:\n\t@true\n',
+    'tools/build.gradle': '// fixture-task-head\n',
   } }],
 ];
 
@@ -104,19 +106,19 @@ function writeFiles(root, files) {
   }
 }
 
-function manifestTask(h, { base = {}, submitted }) {
+function manifestTask(h, { base = {}, submitted, codeChange = true }) {
   writeFiles(h.repo, {
     'value.js': 'module.exports = 0;\n',
     'verify-build.js': VERIFY_BUILD,
     'test/value.test.js': "require('node:assert/strict').equal(require('../value'), 0);\n",
     ...base,
   });
-  h.git(['add', 'value.js', 'verify-build.js', 'test/value.test.js']);
+  h.git(['add', '-A']);
   h.git(['commit', '-qm', 'fixture base']);
   h.git(['switch', '-qc', 'fixture-change']);
   writeFiles(h.repo, {
-    'value.js': 'module.exports = 1;\n',
-    'test/value.test.js': "require('node:assert/strict').equal(require('../value'), 1);\n",
+    ...(codeChange ? { 'value.js': 'module.exports = 1;\n' } : {}),
+    'test/value.test.js': `require('node:assert/strict').equal(require('../value'), ${codeChange ? 1 : 0}, 'fixture regression');\n`,
     ...submitted,
   });
   h.git(['add', '-A']);
@@ -133,16 +135,20 @@ function installTestsGate(cli) {
   }
 }
 
+function submitTestsFixture(h, sha, keep) {
+  h.init(['--repo', 'acme/demo', '--base', 'main']);
+  if (keep) h.ok(['project', 'set', '--tests-keep', JSON.stringify(keep)]);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'test the behavior']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  h.ok(['submit', 'T1', '--sha', sha, '--branch', 'fixture-change', '--agent', 'w-1']);
+  h.env.TOWER_CRANE_TMP = path.join(h.base, 'gate-tmp');
+}
+
 for (const [ecosystem, manifests] of BUILD_MANIFEST_FIXTURES) {
   test(`check tests keeps ${ecosystem} build files and fails on the reverted code`, (t) => {
     const h = makeRepo(t);
     const sha = manifestTask(h, manifests);
-    h.init(['--repo', 'acme/demo', '--base', 'main']);
-    h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'test the behavior']);
-    h.ok(['claim', 'T1', '--agent', 'w-1']);
-    h.ok(['submit', 'T1', '--sha', sha, '--branch', 'fixture-change', '--agent', 'w-1']);
-
-    h.env.TOWER_CRANE_TMP = path.join(h.base, 'gate-tmp');
+    submitTestsFixture(h, sha, manifests.keep);
     const cli = cliCopy(h);
     installTestsGate(cli);
     const required = Object.keys(manifests.submitted).map(shellQuote).join(' ');
@@ -158,6 +164,88 @@ for (const [ecosystem, manifests] of BUILD_MANIFEST_FIXTURES) {
     for (const file of Object.keys(manifests.submitted)) assert.ok(output.includes(file), `summary omitted kept build file ${file}`);
   });
 }
+
+for (const [ecosystem, manifests] of BUILD_MANIFEST_FIXTURES) {
+  test(`check tests accepts only tests and ${ecosystem} build files without a revert run`, (t) => {
+    const h = makeRepo(t);
+    const sha = manifestTask(h, { ...manifests, codeChange: false });
+    submitTestsFixture(h, sha, manifests.keep);
+    const required = Object.keys(manifests.submitted).map(shellQuote).join(' ');
+    const cmd = `${shellQuote(process.execPath)} verify-build.js ${required}`;
+    const output = h.ok(['check', 'tests', 'T1', '--cmd', cmd, '--agent', 'checker']);
+    assert.match(output, /Tests: test\/value\.test\.js/);
+    assert.match(output, /only tests and kept build files/);
+    assert.match(output, /no non-test files to revert/);
+    assert.doesNotMatch(output, /2\. .*: exit/);
+    for (const file of Object.keys(manifests.submitted)) {
+      assert.ok(output.includes(file), `summary omitted kept build file ${file}`);
+    }
+    assert.deepEqual(fs.readdirSync(h.env.TOWER_CRANE_TMP), []);
+    assert.equal(h.git(['worktree', 'list', '--porcelain']).split('\n').filter((l) => l.startsWith('worktree ')).length, 1);
+  });
+}
+
+for (const file of ['Makefile', 'setup.py', 'build.bzl', 'build.gradle', 'vite.config.js', 'flake.nix', 'app.csproj', 'value.lock']) {
+  test(`check tests reverts code-like file ${file} by default`, (t) => {
+    const h = makeRepo(t);
+    const sha = manifestTask(h, {
+      base: { [file]: 'base build code\n' },
+      submitted: {
+        [file]: 'fixture-task-head build code\n',
+        'test/value.test.js': `require('node:assert/strict').match(require('node:fs').readFileSync(${JSON.stringify(file)}, 'utf8'), /fixture-task-head/);\n`,
+      },
+      codeChange: false,
+    });
+    submitTestsFixture(h, sha);
+    const cmd = `${shellQuote(process.execPath)} verify-build.js`;
+    const output = h.ok(['check', 'tests', 'T1', '--cmd', cmd, '--agent', 'checker']);
+    assert.match(output, /1 non-test file reverted .*: exit 1/);
+    assert.ok(output.includes(file), output);
+    assert.doesNotMatch(output, /Build files kept/);
+  });
+}
+
+test('check tests keeps manifest-like test paths as tests, not build files', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {
+    'package.json': '{"name":"fixture-task-head","private":true}\n',
+    'test/package.json': '{"name":"fixture-task-head","private":true}\n',
+  } });
+  submitTestsFixture(h, sha, ['test/**']);
+  const cmd = `${shellQuote(process.execPath)} verify-build.js package.json test/package.json`;
+  const output = h.ok(['check', 'tests', 'T1', '--cmd', cmd, '--agent', 'checker']);
+  assert.match(output, /Tests: test\/package\.json, test\/value\.test\.js/);
+  assert.match(output, /Build files kept at submitted sha [a-f0-9]+: package\.json/);
+  const kept = [...output.matchAll(/Build files kept at submitted sha [a-f0-9]+: ([^\n]+)/g)];
+  assert.ok(kept.length, output);
+  for (const [, files] of kept) assert.ok(!files.includes('test/package.json'), files);
+});
+
+test('check tests accepts a Cargo.lock bump and tests without reverting', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, {
+    base: { 'Cargo.lock': '# old dependencies\nversion = 3\n' },
+    submitted: { 'Cargo.lock': '# fixture-task-head dependencies\nversion = 3\n' },
+    codeChange: false,
+  });
+  submitTestsFixture(h, sha);
+  const output = h.ok(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js Cargo.lock`, '--agent', 'checker']);
+  assert.match(output, /Build files kept at submitted sha [a-f0-9]+: Cargo\.lock/);
+  assert.match(output, /only tests and kept build files/);
+  assert.doesNotMatch(output, /2\. .*: exit/);
+});
+
+test('check tests still rejects a failing head when only tests and build files changed', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { codeChange: false, submitted: {
+    'Cargo.lock': '# fixture-task-head\n',
+    'test/value.test.js': "require('node:assert/strict').equal(require('../value'), 1);\n",
+  } });
+  submitTestsFixture(h, sha);
+  const r = h.run(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js Cargo.lock`, '--agent', 'checker']);
+  assert.equal(r.code, 1, r.stdout + r.stderr);
+  assert.match(r.stdout + r.stderr, /at [a-f0-9]+: exit 1/);
+});
 
 test('gate commands exit 1 when the gate module is not installed', (t) => {
   const h = makeRepo(t);
