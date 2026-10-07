@@ -328,7 +328,7 @@ Run on every scenario state, size and theme, from the page's computed styles and
 
 ### 6.6 Output
 
-The bench writes `docs/human-bench.md` with the method, a before and after table per scenario and check, and a screenshot matrix (scenario by size by theme) under `docs/human-bench/`. Screenshots are WebP to keep the repository small. The pass bars that are deterministic (interaction counts, visibility, contrast, targets, keyboard paths, readability) also become assertions in `test/board.test.js` so a later change cannot silently regress them; timings stay in the bench report.
+Phase 2 adds the bench report as a new page next to this one (planned name: human bench), with the method, a before and after table per scenario and check, and a screenshot matrix (scenario by size by theme) in a directory beside it. Screenshots are WebP to keep the repository small. The pass bars that are deterministic (interaction counts, visibility, contrast, targets, keyboard paths, readability) also become assertions in `test/board.test.js` so a later change cannot silently regress them; timings stay in the bench report.
 
 ### 6.7 Clean-context design review
 
