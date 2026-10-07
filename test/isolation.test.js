@@ -112,6 +112,11 @@ function noSecretsCopied(h) {
 }
 
 function spawn(h, u, role, env = {}) {
+  if (role === 'review' && h.readState('tasks.json').tasks[0].status !== 'submitted') {
+    h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+    h.ok(['claim', 'T1', '--agent', 'builder']);
+    h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder']);
+  }
   const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { env: { ...u.env, ...env } });
   assert.equal(r.code, 0, r.stderr);
   return JSON.parse(r.stdout);
@@ -307,8 +312,12 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
   const realState = path.join(h.base, 'real-state');
   fs.renameSync(h.state, realState);
   fs.symlinkSync(realState, h.state);
+  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+  for (const name of ['easy', 'medium', 'hard', 'research']) {
+    h.ok(['ladder', 'set', name, '--model', 'builder', '--clear', 'profile']);
+  }
   h.ok(['claim', 'T1', '--agent', 'worker-T1-1']);
-  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'worker-T1-1']);
+  h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'worker-T1-1']);
   const fixture = path.join(h.base, 'fixture');
   const run = [
     ['gh', 'pr', 'comment', '1', '--body', 'Review (tower-crane, clean context)'],
@@ -322,7 +331,7 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
   for (const harness of ['claude', 'codex']) {
     fs.rmSync(fixture, { recursive: true, force: true });
     fs.rmSync(`${fixture}.git`, { recursive: true, force: true });
-    isolated(h, 'review', harness);
+    isolated(h, 'medium', harness);
     const dry = h.json(['spawn', '--role', 'review', '--task', 'T1', '--dry-run'], { env: u.env });
     assert.ok(!JSON.stringify(dry).includes('stub-gh-token'), 'the token is not in the command or its shown env');
     spawn(h, u, 'review', { STUB_RUN: JSON.stringify(run) });
@@ -338,7 +347,7 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
 test('a gh token in the spawning environment passes through, and the keyring is asked only without one', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   for (const harness of ['claude', 'codex']) {
-    isolated(h, 'review', harness);
+    isolated(h, 'medium', harness);
     spawn(h, u, 'review');
     assert.equal(u.report().ghToken, 'stub-gh-token', `${harness}: the keyring's token`);
     spawn(h, u, 'review', { GH_TOKEN: 'spawner-token' });

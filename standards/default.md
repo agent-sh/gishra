@@ -19,7 +19,7 @@ The way Tower Crane works unless the project names its own profile in `project.j
 
 ## Review
 
-- Nobody reviews their own work. Review comes from an agent with a clean context that did not write the change, ideally on a different model.
+- Nobody reviews their own work. Review comes from an agent with a clean context that did not write the change. Its model follows the task tier, diff risk and measured review cost, and may match the builder's model.
 - The review is posted where the repository keeps reviews (a PR comment by default) and recorded as evidence.
 - An external review bot, when the repository has one, is addressed like any reviewer. When it is capped or down, the clean-context review is enough; say so in the PR body.
 

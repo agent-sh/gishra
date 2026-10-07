@@ -107,7 +107,7 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   const empty = path.join(h.base, 'no-plugin');
   fs.mkdirSync(empty);
   const spawn = (id, role) => h.json(['spawn', '--task', id, ...(role ? ['--role', role] : []), '--dry-run'], { env: { TOWER_CRANE_PLUGIN_ROOT: empty } });
-  const flags = (argv) => argv.filter((a) => !a.includes('brief T'));
+  const flags = (argv) => argv.filter((a) => !a.includes('## Task'));
 
   h.ok(['ladder', 'harness', 'pi']);
   const show = h.json(['ladder', 'show']);
@@ -254,7 +254,7 @@ test('tasks take a tier from kind and size unless one is given', (t) => {
   assert.deepEqual([old.tier, old.role], ['hard', undefined]);
 });
 
-test('validate warns when the review rung runs the same model as a tier in use, and still passes', (t) => {
+test('validate does not warn when review uses the task tier model', (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'x', '--acceptance', 'a', '--size', 'S']);
@@ -262,26 +262,28 @@ test('validate warns when the review rung runs the same model as a tier in use, 
   h.ok(['task', 'add', '--title', 'y', '--acceptance', 'a']);
   const r = h.run(['validate']);
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /^plan ok: 2 tasks\nwarning: the review rung runs the same harness and model as the medium tier/);
+  assert.match(r.stdout, /^plan ok: 2 tasks/);
   const data = h.json(['validate']);
-  assert.deepEqual([data.ok, data.warnings.map((w) => w.kind)], [true, ['review-same-model']]);
+  assert.deepEqual([data.ok, data.warnings], [true, []]);
   h.ok(['ladder', 'set', 'review', '--harness', 'claude', '--model', 'opus', '--clear', 'profile']);
   assert.deepEqual(h.json(['validate']).warnings, []);
   h.ok(['task', 'update', 'T1', '--tier', 'hard']);
-  assert.match(h.ok(['validate']), /warning: the review rung runs the same harness and model as the hard tier/, 'an effort difference does not make it another model');
+  assert.deepEqual(h.json(['validate']).warnings, [], 'a clean-context reviewer may use the builder model');
 });
 
-test('on codex an explicit model, not the profile, decides whether review shares a tier model', (t) => {
+test('validate allows identical Codex profile and explicit model identities', (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'x', '--acceptance', 'a', '--size', 'S']);
   // codex -m overrides the profile's model, so these two run the same model.
   h.ok(['ladder', 'set', 'easy', '--model', 'same-model', '--profile', 'author-profile']);
   h.ok(['ladder', 'set', 'review', '--model', 'same-model', '--profile', 'review-profile']);
-  assert.deepEqual(h.json(['validate']).warnings.map((w) => w.kind), ['review-same-model']);
+  for (const tier of ['medium', 'hard', 'research']) h.ok(['ladder', 'set', tier, '--model', 'same-model', '--clear', 'profile']);
+  assert.deepEqual(h.json(['validate']).warnings, []);
   h.ok(['ladder', 'set', 'review', '--model', 'other-model']);
   assert.deepEqual(h.json(['validate']).warnings, [], 'different explicit models differ whatever the profiles');
   h.ok(['ladder', 'set', 'easy', '--clear', 'model']);
   h.ok(['ladder', 'set', 'review', '--clear', 'model', '--profile', 'author-profile']);
-  assert.deepEqual(h.json(['validate']).warnings.map((w) => w.kind), ['review-same-model'], 'without a model the profile names it');
+  for (const tier of ['medium', 'hard', 'research']) h.ok(['ladder', 'set', tier, '--harness', 'codex', '--profile', 'author-profile', '--clear', 'model']);
+  assert.deepEqual(h.json(['validate']).warnings, [], 'shared profiles are allowed');
 });
