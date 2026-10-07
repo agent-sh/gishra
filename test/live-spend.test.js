@@ -105,13 +105,11 @@ for (const [harness, scope] of [['claude', 'project'], ['codex', 'task']]) {
   });
 }
 
+// The test context's cleanup stops the detached agents these tests leave running.
 test('live usage shows its freshness: live, stale when no reading arrives, unavailable without harness data', async (t) => {
   const h = setup(t, 'claude');
-  h.stops = [];
-  t.after(() => { for (const stop of h.stops) stop(); });
   // Two readings, then a long hold: the supervisor keeps the reading fresh.
   const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '2', LIVE_STEP_TOKENS: '700', LIVE_HOLD: '60000' }) });
-  h.stops.push(() => { try { process.kill(spawned.pid, 'SIGKILL'); } catch {} });
   await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1400), 'live usage was not shown');
   const status = h.json(['status']);
   assert.equal(status.spend.tokens, 1400, 'live usage is in the totals');
@@ -136,7 +134,6 @@ test('a harness without live usage is shown unavailable, never as zero', async (
   const script = "require('node:child_process').execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']); setTimeout(() => {}, 60000);";
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, require('./helpers').BIN])]);
   const spawned = h.json(['spawn', '--task', 'T1']);
-  t.after(() => { try { process.kill(spawned.pid, 'SIGKILL'); } catch {} });
   await until(() => h.json(['status']).spend.live.length === 1, 'no live state was recorded');
   const [live] = h.json(['status']).spend.live;
   assert.equal(live.state, 'unavailable');
