@@ -34,6 +34,11 @@ async function main() {
     } } } });
     await plugin['chat.message']({ sessionID: 'parent' }, { parts: [] });
   }
+  if (harness === 'codex') {
+    const sessions = path.join(process.env.CODEX_HOME, 'sessions');
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, 'rollout-message-session.jsonl'), '{}\n');
+  }
   event({ type: 'thread.started', thread_id: 'message-session' });
   if (process.env.MESSAGE_RESUME === '1' || process.env.MESSAGE_RETRY === '1' && Number(process.env.TOWER_CRANE_RETRY) > 0) {
     fs.writeFileSync(process.env.MESSAGE_OUT, JSON.stringify(out));
