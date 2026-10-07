@@ -52,21 +52,14 @@ function child(t, h, args, hooks = {}) {
   return c;
 }
 
-function created(file) {
-  return new Promise((resolve, reject) => {
-    const watcher = fs.watch(path.dirname(file), check);
-    const timer = setTimeout(() => {
-      watcher.close();
-      reject(new Error(`file not created: ${file}`));
-    }, 5000);
-    function check() {
-      if (!fs.existsSync(file)) return;
-      clearTimeout(timer);
-      watcher.close();
-      resolve();
-    }
-    check();
-  });
+async function created(file) {
+  const deadline = Date.now() + 5000;
+  // Notifications can be queued behind synchronous CLI setup on Windows.
+  // Readiness is the file itself, including when the event arrives late.
+  while (!fs.existsSync(file)) {
+    if (Date.now() >= deadline) throw new Error(`file not created: ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 async function waiting(t, h, args = [], hooks = {}) {
@@ -108,6 +101,22 @@ function commandWorker(h, argv) {
   h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify(argv),
     ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
 }
+
+test('readiness observes a CLI marker without directory watch notifications', async (t) => {
+  const h = setup(t);
+  const signal = path.join(h.base, 'paused');
+  t.mock.method(fs, 'watch', () => ({ close() {} }));
+  const ready = created(signal);
+  const writer = h.runAsync(['task', 'note', 'T1', 'ready'], {
+    hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: signal },
+  });
+  try {
+    await ready;
+  } finally {
+    fs.writeFileSync(`${signal}.go`, '');
+    assert.equal((await writer).code, 0);
+  }
+});
 
 test('submitted wakes a live waiter with one event JSON line, even with --json', async (t) => {
   const h = setup(t);
@@ -264,10 +273,9 @@ console.log('worker alive'); fs.writeFileSync(${JSON.stringify(claimed)}, '');
 setInterval(() => {}, 1000);\n`);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
   commandWorker(h, [process.execPath, script]);
-  const ready = created(claimed);
   const spawned = h.json(['spawn', '--task', 'T1']);
   h.workerPids.push(spawned.pid);
-  await ready;
+  await created(claimed);
   assert.equal(h.run(['release', 'T1', '--reason', 'recover', '--agent', 'orchestrator']).code, 1, 'another agent cannot release a live worker');
   const [a, b] = await Promise.all([waiting(t, h, ['--types', 'worker-exited']), waiting(t, h, ['--types', 'worker-exited'])]);
   process.kill(spawned.pid, 'SIGKILL');
@@ -316,10 +324,9 @@ fs.writeFileSync(${JSON.stringify(claimed)}, '');
 setInterval(() => {}, 1000);\n`);
     h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
     commandWorker(h, [process.execPath, script]);
-    const ready = created(claimed);
     const live = h.json(['spawn', '--task', 'T1']);
     h.workerPids.push(live.pid);
-    await ready;
+    await created(claimed);
     h.ok(['task', 'add', '--title', 'Sandboxed worker', '--acceptance', 'works']);
     h.ok(['brief', 'set', 'T2', '-'], { input: 'stand-in\n' });
     commandWorker(h, [process.execPath, '-e', 'process.exit(0)']);

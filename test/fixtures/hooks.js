@@ -127,7 +127,8 @@ function before(name, args) {
   }
 }
 
-function after(name, args) {
+let pendingLockRead;
+function after(name, args, rawArgs = args) {
   const target = args[0];
   if (env.HOOK_STOP_RENDER && name === 'renameSync' && args[1] === path.join(STATE, 'sketch.md')
     && path.basename(process.argv[1]) === 'tower-crane.js' && process.argv.includes('spawn') && first('render')) stop(env.HOOK_STOP_RENDER);
@@ -135,8 +136,16 @@ function after(name, args) {
   // optionally limits the pause to one executable's basename.
   if (env.HOOK_PAUSE_ON && name === 'readFileSync' && inState(target) && path.basename(target) === env.HOOK_PAUSE_ON
     && (!env.HOOK_PAUSE_PROCESS || path.basename(process.argv[1]) === env.HOOK_PAUSE_PROCESS) && first('pause')) stop(env.HOOK_PAUSED);
-  // HOOK_STOP_LOCK_READ=SIGNAL: stop after first reading who holds the lock.
-  if (env.HOOK_STOP_LOCK_READ && name === 'readFileSync' && inLock(target) && first('lock-read')) stop(env.HOOK_STOP_LOCK_READ);
+  // Windows keeps an unlinked marker pending deletion until its reader closes
+  // it. Pause with the snapshot, without keeping the lock directory open.
+  if (env.HOOK_STOP_LOCK_READ && name === 'readFileSync' && inLock(target) && first('lock-read')) {
+    if (typeof rawArgs[0] === 'number') pendingLockRead = rawArgs[0];
+    else stop(env.HOOK_STOP_LOCK_READ);
+  }
+  if (name === 'closeSync' && rawArgs[0] === pendingLockRead) {
+    pendingLockRead = undefined;
+    stop(env.HOOK_STOP_LOCK_READ);
+  }
   // HOOK_STOP_LOCK_CHANGE=SIGNAL: stop after the first attempt to remove or
   // move what is at or inside the lock, whether or not it worked.
   if (env.HOOK_STOP_LOCK_CHANGE && CHANGES.includes(name) && inLock(target) && first('lock-change')) stop(env.HOOK_STOP_LOCK_CHANGE);
@@ -155,12 +164,12 @@ if (STATE) {
         out = orig.apply(this, args);
       } catch (e) {
         if (lockArg !== undefined && path.resolve(String(args[lockArg])) === LOCK && BUSY.includes(e.code)) barrier();
-        after(name, observed);
+        after(name, observed, args);
         throw e;
       }
       if (name === 'openSync') descriptors.set(out, args[0]);
       if (name === 'closeSync') descriptors.delete(args[0]);
-      after(name, observed);
+      after(name, observed, args);
       return out;
     };
   }
