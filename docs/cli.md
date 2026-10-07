@@ -234,6 +234,8 @@ Worker spawns check `limits.workers` under the state lock using the same count a
 
 `spawn exit` and `worker-exited` receipts release the matching unclaimed reservation. New receipts include `attempt`. Receipts without it match the latest preceding spawn or retry by task, agent and pid; the same match proves exit for resume, usage collection and recovery.
 
+Worker contexts keep reservations when peers are hidden from their pid view. Only an exit receipt or a trusted observer that verifies process exit can free one; unknown process observations keep it held. Slot counting shares the exit observer's context check.
+
 An expired pre-claim held by the generated worker is renewed to the default lease duration under the spawn lock, preserving its agent, `since` and `from`. This lease holds the slot before the supervisor can renew it. A failed launch leaves the pre-claim and receipts unchanged.
 
 Worker dispatch and role-filtered `brief get` use the shared text of briefs without role headings. For role-specific text, use level-two headings `## Shared`, `## Worker` and `## Reviewer`. Matching is case-insensitive, and headings inside fenced code blocks are ordinary text. Text before the first role heading is shared, and each section ends at the next role heading. `## Rework notes` starts a shared section. The worker prompt includes shared text and the `Worker` section; the reviewer packet includes only the `Reviewer` section alongside the diff, acceptance and gate results.

@@ -280,3 +280,62 @@ fs.readFileSync = function(file, ...args) {
     }
   });
 }
+
+test('sandboxed claims and expired renewals cannot discard hidden live reservations', async (t) => {
+  const h = setup(t, 1);
+  controlledHarness(h);
+  h.ok(['claim', 'T3', '--agent', 'expired-worker']);
+  const doc = h.readState('tasks.json');
+  doc.tasks[2].claim.until = new Date(Date.now() - 1000).toISOString();
+  h.writeState('tasks.json', doc);
+  const spawned = h.json(['spawn', '--task', 'T1']);
+  await until(() => fs.existsSync(path.join(h.base, 'T1.started')), 'worker did not start');
+  const hidden = { hooks: { HOOK_HIDDEN_PIDS: JSON.stringify([spawned.pid, spawned.monitor_pid]) } };
+  try {
+    for (const args of [
+      ['claim', 'T2', '--agent', 'worker-T2-1'],
+      ['renew', 'T3', '--agent', 'expired-worker'],
+    ]) {
+      const r = h.run(args, hidden);
+      assert.equal(r.code, 1, r.stderr);
+      assert.match(r.stderr, /T1.*worker-T1-1.*reservation/);
+    }
+    assert.doesNotThrow(() => process.kill(spawned.pid, 0), 'the hidden worker is still alive');
+    h.ok(['claim', 'T1', '--agent', spawned.agent], hidden);
+    assert.equal(h.readState('tasks.json').tasks[0].claim.agent, spawned.agent);
+    assert.equal(events(h).filter((e) => e.cmd === 'spawn').length, 1);
+  } finally {
+    fs.writeFileSync(path.join(h.base, 'T1.exit'), '');
+  }
+});
+
+test('only a trusted observer can free a reservation by verified process exit', (t) => {
+  const h = setup(t, 1);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command',
+    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)']), '--clear', 'profile', '--clear', 'effort']);
+  h.json(['spawn', '--task', 'T1', '--wait']);
+  const hook = path.join(h.base, 'missing-exit-receipts.js');
+  fs.writeFileSync(hook, `
+const fs = require('node:fs');
+const read = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  const value = read.call(this, file, ...args);
+  if (!String(file).endsWith('events.jsonl') || typeof value !== 'string') return value;
+  return value.split('\\n').flatMap((line) => {
+    if (!line) return [line];
+    const e = JSON.parse(line);
+    if (['spawn exit', 'worker-exited'].includes(e.cmd)) return [];
+    if (process.env.UNKNOWN_SLOT && ['spawn', 'spawn phase'].includes(e.cmd)) e.detail.host = 'unobservable-host';
+    return [JSON.stringify(e)];
+  }).join('\\n');
+};
+`);
+  const opts = { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } };
+  const worker = h.run(['claim', 'T2', '--agent', 'worker-T2-1'], opts);
+  assert.equal(worker.code, 1, worker.stderr);
+  assert.match(worker.stderr, /T1.*worker-T1-1.*reservation/);
+  const unknown = h.run(['claim', 'T2', '--agent', 'orchestrator'], { env: { ...opts.env, UNKNOWN_SLOT: '1' } });
+  assert.equal(unknown.code, 1, unknown.stderr);
+  assert.match(unknown.stderr, /T1.*worker-T1-1.*reservation/);
+  h.ok(['claim', 'T2', '--agent', 'orchestrator'], opts);
+});
