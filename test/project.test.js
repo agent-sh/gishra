@@ -195,6 +195,7 @@ test('test modes, kind overrides and expensive suites can be set, replaced and c
 for (const [flag, value] of [
   ['--tests-mode', 'none'], ['--tests-by-kind', '{"code":"run-only"}'],
   ['--tests-expensive', 'true'], ['--tests-paths', '["src/**"]'], ['--tests-keep', '["lib/**"]'],
+  ['--ci-local', JSON.stringify({ command: [process.execPath, '-e', ''], timeout: 5 })],
 ]) {
   test(`${flag} requires explicit owner on init and project set without writing state`, (t) => {
     const h = makeRepo(t);
