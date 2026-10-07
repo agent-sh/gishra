@@ -163,6 +163,79 @@ const isolated = (h, rung, harness) => {
   h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
 
+test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
+  isolated(h, 'hard', 'claude');
+  spawn(h, u, 'hard');
+  const worker = u.report();
+  const filesystem = report => {
+    const { allowRead, ...shared } = report.settings.sandbox.filesystem;
+    const ownHome = path.dirname(report.home);
+    assert.deepEqual(allowRead, [ownHome, path.join(h.state, 'brokers', path.basename(ownHome))]);
+    assert.ok(shared.denyWrite.includes(h.state));
+    return shared;
+  };
+  isolated(h, 'research', 'claude');
+  const dry = h.json(['spawn', '--role', 'research', '--task', 'T1', '--dry-run'], { env: u.env });
+  assert.match(dry.home.agent_file, /tower-crane-researcher\.md$/);
+  spawn(h, u, 'research');
+  const native = u.report();
+  assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebSearch'));
+  assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebFetch'));
+  assert.deepEqual(filesystem(native), filesystem(worker));
+  assert.deepEqual(native.settings.sandbox.network.allowedDomains, ['*']);
+  assert.ok(native.memory.join('\n').includes('Use the network'));
+  h.ok(['ladder', 'set', 'research', '--web-mcp', '{"name":"harness-web","command":"node","args":["/configured/server.mjs"]}']);
+  spawn(h, u, 'research');
+  const web = u.report();
+  assert.deepEqual(web.mcp, { 'harness-web': { command: 'node', args: ['/configured/server.mjs'] } });
+  assert.ok(web.args.includes('--strict-mcp-config'));
+  assert.ok(web.args.includes('--mcp-config'));
+  const allowed = web.args[web.args.indexOf('--allowedTools') + 1].split(',');
+  assert.ok(allowed.includes('mcp__harness-web__websearch'));
+  assert.ok(allowed.includes('mcp__harness-web__webfetch'));
+  assert.ok(!allowed.includes('mcp__harness-web'));
+  assert.deepEqual(filesystem(web), filesystem(worker));
+  noSecretsCopied(h);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[],"env":{"TOKEN":"secret"}}']).code, 2);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[]}', '--agent', 'worker-T1-1']).code, 1);
+});
+
+test('research Codex explicitly enables live search with worker file and git confinement', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
+  isolated(h, 'hard', 'codex');
+  spawn(h, u, 'hard');
+  const worker = u.report();
+  assert.ok(worker.args.includes('web_search="disabled"'));
+  isolated(h, 'research', 'codex');
+  spawn(h, u, 'research');
+  const researcher = u.report();
+  assert.ok(researcher.args.includes('web_search="live"'));
+  const workerFs = worker.config.permissions['tower-crane'].filesystem;
+  const researchFs = researcher.config.permissions['tower-crane'].filesystem;
+  for (const [report, rules] of [[worker, workerFs], [researcher, researchFs]]) {
+    const ownHome = path.dirname(report.home);
+    const sessions = path.join(h.state, 'homes', '.codex', path.basename(ownHome));
+    assert.equal(rules[path.join(h.state, 'homes')], 'none');
+    assert.equal(rules[ownHome], 'read');
+    assert.equal(rules[sessions], 'write');
+    assert.equal(rules[report.home], 'write');
+    const broker = path.join(h.state, 'brokers', path.basename(ownHome));
+    assert.equal(rules[h.state], 'read');
+    assert.equal(rules[path.join(h.state, 'brokers')], 'none');
+    assert.equal(rules[broker], 'write');
+    delete rules[ownHome];
+    delete rules[sessions];
+    delete rules[report.home];
+    delete rules[broker];
+  }
+  assert.deepEqual(researchFs, workerFs);
+  assert.deepEqual(researcher.rules, worker.rules);
+  noSecretsCopied(h);
+});
+
 test('a spawned claude agent imports the user\'s global rules by path, loads none of the user settings hooks, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   isolated(h, 'small', 'claude');
@@ -774,7 +847,7 @@ test('a sandboxed role cannot write the state directory itself', () => {
   const text = fs.readFileSync(A.file('worker'), 'utf8').replace(/^writeOutside:(\r?\n)/m, 'writeOutside:$1  - state$1');
   assert.match(text, /- state/);
   assert.throws(() => A.parse(text, 'worker.md'), /state needs sandbox: false/);
-  for (const job of ['worker', 'reviewer', 'small']) assert.ok(!A.load(job).writeOutside.includes('state'), job);
+  for (const job of ['worker', 'researcher', 'reviewer', 'small']) assert.ok(!A.load(job).writeOutside.includes('state'), job);
 });
 
 test('a gh token in the spawning environment passes through, and the keyring is asked only without one', { skip: NO_STUBS }, (t) => {
