@@ -98,6 +98,7 @@ async function openBrowser(t) {
     // cannot hold focus, so nothing lands there.
     type: (text) => send('Input.insertText', { text }),
     until: (expression, what, ms) => until(() => inPage(expression).catch(() => false), what, ms),
+    restored: (expression, what, ms) => until(() => inPage(`document.documentElement.hasAttribute('data-position-restored') && (${expression})`).catch(() => false), what, ms),
     goto: async (url) => {
       await send('Page.navigate', { url });
       await until(() => inPage(`location.href === ${JSON.stringify(url)} && document.readyState === 'complete'`).catch(() => false), `${url} to load`);
