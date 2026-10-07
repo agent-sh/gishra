@@ -43,7 +43,6 @@ ghWrite:
 worktree: read
 sandbox: true
 writeOutside:
-  - state
   - cache
 codexDisable:
   - memories
