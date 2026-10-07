@@ -63,6 +63,7 @@ const SETTINGS = {
   'tests-by-kind': str('JSON', 'owner only: task kind to tests mode overrides; null clears overrides'),
   'tests-expensive': str('JSON', 'owner only: true runs the full suite once with scoped proof; false or null restores normal proof'),
   'ci-ignore-apps': str('JSON', 'array of GitHub app slugs to skip; [] or null clears the list'),
+  'ci-required': str('JSON', 'array of required check-run names or prefixes; [] or null clears the list'),
   'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds, by_kind?: overrides}; null restores hosted CI'),
   'merge-keep-branch': str('JSON', 'true keeps merged task branches for retained worktrees; false or null restores deletion'),
   'merge-admin': str('JSON', 'owner only: true uses gh --admin for solely owned repos; false or null disables it'),
@@ -89,6 +90,7 @@ const RUNG_FLAGS = {
   args: str('JSON', 'extra arguments appended to the harness command, as a JSON array'),
   command: str('JSON', 'for the command harness: argv array; {task} {brief} {prompt} {cwd} are substituted'),
   supervision: str('JSON', 'retry, backoff, stall and progress path settings as a JSON object'),
+  fallbacks: str('JSON', 'owner only: ordered fallback route objects for provider outages and harness refusals'),
   tools: str('JSON', 'claude or codex: tools the agent file denies that this rung opts back in to (claude tool names, codex features), as a JSON array'),
   mcp: str('JSON', 'claude or codex: MCP servers from your harness config this rung opts in to, by name, as a JSON array'),
   clear: many('FIELD', 'remove a field from the rung (a cleared harness follows the default)'),
@@ -99,10 +101,10 @@ const gate = (name) => (ctx) => require('../lib/check').runGate(ctx, name);
 
 const COMMANDS = [
   { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], run: P.init },
-  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
+  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
   { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', run: P.projectShow },
   { section: 'Plan', name: 'ladder show', summary: 'print each rung as it resolves, and where it comes from (project, user file or built-in)', run: P.ladderShow },
-  { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
+  { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--fallbacks JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
   { section: 'Plan', name: 'ladder harness', pos: ['HARNESS'], usage: 'HARNESS', summary: 'set the default harness every rung without its own runs on', run: P.ladderHarness },
   { section: 'Plan', name: 'ladder save-user', summary: "write this project's ladder to the user file, the default for new projects", run: P.ladderSaveUser },
   { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--tier T] [--dep ID] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },

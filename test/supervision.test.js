@@ -20,7 +20,7 @@ async function until(fn, message) {
   }
 }
 
-function setup(t, { failures = 1, error = '75', records = null, hold = 0, config = {}, env = {}, busy = false, claimDelay = 0, claim = true, sessionReceipt = false } = {}) {
+function setup(t, { failures = 1, error = '75', records = null, hold = 0, waitForFinish = false, config = {}, env = {}, busy = false, claimDelay = 0, claim = true, sessionReceipt = false } = {}) {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Supervise an outage', '--tier', 'easy', '--acceptance', 'same session reruns']);
@@ -42,7 +42,7 @@ attempts.push({ agent: process.env.TOWER_CRANE_AGENT, session: process.env.TOWER
 fs.writeFileSync(file, JSON.stringify(attempts));
 ${sessionReceipt ? "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'supervised-session' }));" : ''}
 ${busy ? "cp.spawn(process.execPath, ['-e', 'const end = Date.now() + 2200; while (Date.now() < end) {}'], { stdio: 'ignore' });" : ''}
-setTimeout(() => {
+const finish = () => {
   if (attempts.length <= ${failures}) {
     ${records ? `for (const record of ${JSON.stringify(records)}) console.log(JSON.stringify(record)); process.exit(1);`
       : ['signal', 'interrupt'].includes(error) ? `process.kill(process.pid, '${error === 'signal' ? 'SIGTERM' : 'SIGINT'}');`
@@ -53,7 +53,10 @@ setTimeout(() => {
         : ['outage', 'server', 'status-json'].includes(error) ? `console.error(${JSON.stringify(error === 'server' ? '500 Internal Server Error'
           : error === 'status-json' ? '{"status_code":502}' : 'API Error: 503 service unavailable')}); process.exit(1);` : `process.exit(${error});`}
   } else process.exit(0);
-}, ${hold});
+};
+${waitForFinish ? `const timer = setInterval(() => {
+  if (fs.existsSync(file + '.finish')) { clearInterval(timer); finish(); }
+}, 25);` : `setTimeout(finish, ${hold});`}
 `;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, h.attempts]),
     '--clear', 'profile', '--clear', 'effort', '--supervision',
@@ -288,18 +291,24 @@ test('a permanent exit is blocked without retrying and submit clears its phase',
 });
 
 test('progress paths and CPU detect a stalled process without dropping its live claim', { skip: process.platform !== 'linux' }, async (t) => {
-  const h = setup(t, { failures: 0, hold: 5000, config: { stall_ms: 250, progress_paths: ['progress.txt'] } });
-  const spawned = h.json(['spawn', '--task', 'T1']);
-  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'blocked', 'idle process did not stall');
-  assert.match(h.ok(['task', 'show', 'T1']), /blocked: no progress paths or CPU activity/);
-  assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /blocked: no progress paths or CPU activity/);
-  fs.writeFileSync(path.join(spawned.cwd, 'progress.txt'), 'progress\n');
-  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'running', 'path progress did not clear stall');
-  await until(() => !fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').includes('blocked: no progress paths or CPU activity'),
-    'saved board did not clear stall');
-  assert.doesNotMatch(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /blocked: no progress paths or CPU activity/);
-  assert.equal(h.json(['task', 'show', 'T1']).claim.agent, spawned.agent);
-  assert.deepEqual(h.json(['status']).exited_claims, []);
+  const h = setup(t, { failures: 0, waitForFinish: true, config: { stall_ms: 250, progress_paths: ['progress.txt'] } });
+  const spawned = h.json(['spawn', '--task', 'T1'], { hooks: { HOOK_RENDER_DELAY_MS: '500' } });
+  const board = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
+  try {
+    await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'blocked', 'idle process did not stall');
+    assert.match(h.ok(['task', 'show', 'T1']), /blocked: no progress paths or CPU activity/);
+    await until(() => board().includes('blocked: no progress paths or CPU activity'), 'saved board did not show stall');
+    assert.match(board(), /blocked: no progress paths or CPU activity/);
+    fs.writeFileSync(path.join(spawned.cwd, 'progress.txt'), 'progress\n');
+    await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'running', 'path progress did not clear stall');
+    await until(() => !board().includes('blocked: no progress paths or CPU activity'), 'saved board did not clear stall');
+    assert.doesNotMatch(board(), /blocked: no progress paths or CPU activity/);
+    assert.equal(h.json(['task', 'show', 'T1']).claim.agent, spawned.agent);
+    assert.deepEqual(h.json(['status']).exited_claims, []);
+  } finally {
+    // Keep the worker alive until both board transitions have been observed.
+    fs.writeFileSync(`${h.attempts}.finish`, '');
+  }
   await until(() => !detachedAlive({ pid: spawned.monitor_pid }), 'supervisor did not finish');
   assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
 });

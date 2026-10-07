@@ -79,6 +79,11 @@ test('a writer that saw a dead lock before another broke it cannot share the loc
   const h = makeRepo(t);
   h.init();
   killHolder(h);
+  const lock = path.join(h.state, 'lock');
+  // Windows can reuse the dead holder's PID while X waits with its snapshot.
+  // Age only the original marker, so a live replacement with that PID is safe.
+  const old = new Date(Date.now() - 120000);
+  fs.utimesSync(path.join(lock, fs.readdirSync(lock)[0]), old, old);
   const signal = (name) => path.join(h.base, name);
   const go = (name) => fs.writeFileSync(`${signal(name)}.go`, '');
   // X reads who holds the dead lock, and stops before acting on it.
@@ -88,21 +93,28 @@ test('a writer that saw a dead lock before another broke it cannot share the loc
   await waitForFile(signal('x-read'));
   // Y breaks the dead lock, takes it, and stops inside its write after reading tasks.json.
   const y = h.runAsync(['task', 'add', '--title', 'Y', '--acceptance', 'a'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: signal('y-holds') } });
-  await waitForFile(signal('y-holds'));
-  // X acts on the dead holder it saw, and stops again right after.
-  go('x-read');
-  await waitForFile(signal('x-change'));
-  // Z arrives while X is in the middle of breaking; Y still holds the lock.
-  const z = h.runAsync(['task', 'add', '--title', 'Z', '--acceptance', 'a']);
-  const zWhileYHeld = await Promise.race([z, new Promise((r) => setTimeout(() => r(null), 1500))]);
-  go('x-change');
-  go('y-holds');
-  const results = await Promise.all([x, y, z]);
+  let z;
+  try {
+    await waitForFile(signal('y-holds'));
+    // X acts on the dead holder it saw, and stops again right after.
+    go('x-read');
+    await waitForFile(signal('x-change'));
+    // Z must observe Y's lock before either paused writer is released.
+    z = h.runAsync(['task', 'add', '--title', 'Z', '--acceptance', 'a'], {
+      hooks: { HOOK_STOP_LOCK_READ: signal('z-read') },
+    });
+    await waitForFile(signal('z-read'));
+    const holder = JSON.parse(fs.readFileSync(path.join(lock, fs.readdirSync(lock)[0]), 'utf8'));
+    assert.equal(holder.pid, Number(fs.readFileSync(signal('y-holds'), 'utf8')), 'Y still holds the lock Z observed');
+    assert.equal(h.readState('tasks.json').tasks.length, 0, 'Z cannot write while Y holds the lock');
+  } finally {
+    for (const name of ['x-read', 'x-change', 'y-holds', 'z-read']) go(name);
+  }
+  const results = await Promise.all([x, y, ...(z ? [z] : [])]);
   for (const r of results) assert.equal(r.code, 0, r.stderr);
   const ids = results.map((r) => r.stdout.trim());
   assert.equal(new Set(ids).size, 3, `X, Y and Z each got their own id: ${ids.join(' ')}`);
   assert.deepEqual(h.readState('tasks.json').tasks.map((task) => task.title).sort(), ['X', 'Y', 'Z'], 'no write was lost');
-  assert.equal(zWhileYHeld, null, `Z wrote ${zWhileYHeld && zWhileYHeld.stdout.trim()} while Y held the lock`);
   assert.ok(!fs.existsSync(path.join(h.state, 'lock')), 'the lock is released');
 });
 
