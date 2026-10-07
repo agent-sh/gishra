@@ -14,7 +14,8 @@ function setup(t, base = 'main') {
   const origin = path.join(h.base, 'origin.git');
   h.git(['init', '--bare', '-q', origin]);
   h.git(['remote', 'add', 'origin', origin]);
-  h.git(['push', '-qu', 'origin', base]);
+  h.git(['push', 'origin', base]);
+  h.git(['branch', `--set-upstream-to=origin/${base}`, base]);
   const upstream = path.join(h.base, 'upstream');
   h.git(['clone', '-q', '--branch', base, origin, upstream]);
   return { ...h, origin, upstream, baseBranch: base };
@@ -32,7 +33,7 @@ for (const base of ['main', 'release/next']) {
     const h = setup(t, base);
     const stale = h.git(['rev-parse', base]);
     const fresh = advance(h, h.upstream, 'remote.txt');
-    h.git(['push', '-q', 'origin', base], h.upstream);
+    h.git(['push', 'origin', base], h.upstream);
     assert.equal(h.git(['rev-parse', `origin/${base}`]), stale);
 
     const wt = h.json(['worktree', 'T1']);
@@ -67,7 +68,7 @@ test('worktree keeps a divergent local base while refreshing origin', (t) => {
   const h = setup(t);
   const local = advance(h, h.repo, 'local.txt');
   const remote = advance(h, h.upstream, 'remote.txt');
-  h.git(['push', '-q', 'origin', 'main'], h.upstream);
+  h.git(['push', 'origin', 'main'], h.upstream);
   const r = h.run(['worktree', 'T1', '--json']);
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stderr, new RegExp(`using local base main at ${local}; origin/main is at ${remote}`));
@@ -79,7 +80,7 @@ test('worktree keeps a divergent local base while refreshing origin', (t) => {
 test('worktree uses the fetched base when no local base branch exists', (t) => {
   const h = setup(t);
   const fresh = advance(h, h.upstream, 'remote.txt');
-  h.git(['push', '-q', 'origin', 'main'], h.upstream);
+  h.git(['push', 'origin', 'main'], h.upstream);
   h.git(['checkout', '-q', '--detach']);
   h.git(['branch', '-D', 'main']);
   h.git(['update-ref', '-d', 'refs/remotes/origin/main']);
@@ -91,7 +92,7 @@ test('worktree refreshes origin even when its configured fetch excludes the base
   const h = setup(t);
   h.git(['config', 'remote.origin.fetch', '+refs/heads/other:refs/remotes/origin/other']);
   const fresh = advance(h, h.upstream, 'remote.txt');
-  h.git(['push', '-q', 'origin', 'main'], h.upstream);
+  h.git(['push', 'origin', 'main'], h.upstream);
   const wt = h.json(['worktree', 'T1']);
   assert.equal(h.git(['rev-parse', 'HEAD'], wt.path), fresh);
   assert.equal(h.git(['rev-parse', 'origin/main']), fresh);
@@ -113,7 +114,7 @@ test('worktree refuses a failed origin fetch without recording or creating a tas
 test('worktree uses a local base missing from origin instead of its stale tracking ref', (t) => {
   const h = setup(t);
   h.git(['symbolic-ref', 'HEAD', 'refs/heads/other'], h.origin);
-  h.git(['push', '-q', 'origin', '--delete', 'main']);
+  h.git(['push', 'origin', ':main']);
   const local = advance(h, h.repo, 'local.txt');
   h.git(['update-ref', 'refs/remotes/origin/main', h.git(['rev-parse', 'HEAD~1'])]);
 
@@ -141,7 +142,7 @@ test('worktree refuses a locked tracking ref that does not match the origin tip'
   const h = setup(t);
   const stale = h.git(['rev-parse', 'origin/main']);
   advance(h, h.upstream, 'remote.txt');
-  h.git(['push', '-q', 'origin', 'main'], h.upstream);
+  h.git(['push', 'origin', 'main'], h.upstream);
   const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
   fs.writeFileSync(path.join(h.repo, '.git', 'refs', 'remotes', 'origin', 'main.lock'), '');
 
@@ -159,7 +160,7 @@ for (const recovered of [true, false]) {
     const h = setup(t);
     const stale = h.git(['rev-parse', 'origin/main']);
     const fresh = advance(h, h.upstream, 'remote.txt');
-    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    h.git(['push', 'origin', 'main'], h.upstream);
     const marker = path.join(h.base, 'upload-pack-failed');
     const uploadPack = path.join(h.base, 'upload-pack.js');
     // A peer may finish importing the new tip before this caller's object write fails.
@@ -201,7 +202,7 @@ for (const error of ['lock', 'fetching ref refs/remotes/origin/main failed: inco
   test(`worktree retries once after ${error} and uses the fresh tracking ref`, (t) => {
     const h = setup(t);
     const fresh = advance(h, h.upstream, 'remote.txt');
-    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    h.git(['push', 'origin', 'main'], h.upstream);
     const attempts = path.join(h.base, 'fetch-attempts');
     const r = h.run(['worktree', 'T1', '--json'], {
       hooks: { HOOK_FETCH_ERROR: error, HOOK_FETCH_ATTEMPTS: attempts },
@@ -218,7 +219,7 @@ for (const error of ['lock', 'incorrect old value provided', 'fatal: unpack-obje
   test(`worktree refuses repeated ${error} without creating or recording a branch`, (t) => {
     const h = setup(t);
     advance(h, h.upstream, 'remote.txt');
-    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    h.git(['push', 'origin', 'main'], h.upstream);
     const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
     const attempts = path.join(h.base, 'fetch-attempts');
     const r = h.run(['worktree', 'T1'], {
@@ -266,7 +267,7 @@ for (const command of ['worktree', 'spawn']) {
   test(`one dispatch prepares six ${command} tasks from one slow base fetch`, { timeout: 60000 }, async (t) => {
     const h = setup(t);
     const fresh = advance(h, h.upstream, 'remote.txt');
-    h.git(['push', '-q', 'origin', 'main'], h.upstream);
+    h.git(['push', 'origin', 'main'], h.upstream);
     const ids = ['T1'];
     for (let i = 2; i <= 6; i++) {
       ids.push(h.ok(['task', 'add', '--title', `Parallel ${i}`, '--acceptance', 'uses fresh base']));
@@ -302,7 +303,7 @@ test('a later dispatch fetches again even when the previous fetch did not move t
   const h = setup(t);
   h.json(['worktree', 'T1']);
   const fresh = advance(h, h.upstream, 'remote.txt');
-  h.git(['push', '-q', 'origin', 'main'], h.upstream);
+  h.git(['push', 'origin', 'main'], h.upstream);
   const id = h.ok(['task', 'add', '--title', 'Next dispatch', '--acceptance', 'fresh base']);
   const wt = h.json(['worktree', id]);
   assert.equal(h.git(['rev-parse', 'HEAD'], wt.path), fresh);

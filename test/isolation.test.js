@@ -236,7 +236,8 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['git', 'status'], 0, 0],
     [['git', '-C', wt, 'log', '-1'], 0, 0],
     [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 0],
-    [['git', 'push', '-q', local, 'HEAD:refs/heads/fixture', '--force'], 0, 0],
+    [['git', 'push', local, '+HEAD:refs/heads/fixture'], 0, 0],
+    [['git', 'push', '--force', local, 'HEAD:refs/heads/fixture'], 126, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], NET, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
@@ -278,7 +279,7 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
     ['git', 'init', '-q', fixture],
     ['git', '-C', fixture, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'fixture'],
     ['git', 'init', '-q', '--bare', `${fixture}.git`],
-    ['git', '-C', fixture, 'push', '-q', `${fixture}.git`, 'HEAD:refs/heads/main'],
+    ['git', '-C', fixture, 'push', `${fixture}.git`, 'HEAD:refs/heads/main'],
   ];
   const real = fs.realpathSync(realState);
   for (const harness of ['claude', 'codex']) {
@@ -323,17 +324,23 @@ test('a push counts as local only when every URL git would use is local, so rewr
   h.git(['-C', fx, 'remote', 'add', 'two', local]);
   h.git(['-C', fx, 'remote', 'set-url', '--add', '--push', 'two', local]);
   h.git(['-C', fx, 'remote', 'set-url', '--add', '--push', 'two', away]);
+  h.git(['-C', fx, 'remote', 'add', 'loc', local]);
+  h.git(['-C', fx, 'remote', 'add', 'up', away]);
   const rewritten = path.join(h.base, 'rewritten.git');
   const cases = [
-    [['git', '-C', fx, 'push', '-q', local, 'HEAD:refs/heads/plain', '--force'], 0, 0],
+    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/plain'], 0, 0],
+    [['git', '-C', fx, 'push', 'loc', 'HEAD:refs/heads/named'], 0, 0],
+    // An abbreviated option takes the next argument as its value; any option
+    // voids the local exception, so `loc` cannot vouch for `up`.
+    [['git', '-C', fx, 'push', '--push-opt', 'loc', 'up', 'HEAD:refs/heads/x', '--force'], 126, 126],
     [['git', '-C', fx, '-c', `url.${away}.insteadOf=${rewritten}`, 'push', rewritten, 'HEAD:refs/heads/x'], 126, 126],
     [['git', '-C', fx, '-c', 'remote.two.pushurl=' + away, 'push', 'two', 'HEAD'], 126, 126],
     [['git', '-C', fx, 'config', `url.${away}.insteadOf`, rewritten], 0, 0],
-    [['git', '-C', fx, 'push', rewritten, 'HEAD:refs/heads/x', '--force'], 126, 126],
-    [['git', '-C', fx, 'push', 'two', 'HEAD:refs/heads/x', '--force'], 126, 126],
+    [['git', '-C', fx, 'push', rewritten, '+HEAD:refs/heads/x'], 126, 126],
+    [['git', '-C', fx, 'push', 'two', '+HEAD:refs/heads/x'], 126, 126],
     [['git', '-C', fx, 'config', '--unset', `url.${away}.insteadOf`], 0, 0],
     [['git', '-C', fx, 'config', `url.${away}.pushInsteadOf`, local], 0, 0],
-    [['git', '-C', fx, 'push', local, 'HEAD:refs/heads/x', '--force'], 126, 126],
+    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/x'], 126, 126],
   ];
   for (const harness of ['claude', 'codex']) {
     for (const rung of ['hard', 'small']) {
