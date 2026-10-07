@@ -8,6 +8,7 @@ const cp = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { makeRepo, BIN } = require('./helpers');
 const { CHROME, openBrowser } = require('./browser');
+const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 // A project with something in every column: a decision, an owner task, a
 // claimed task with a message, a submitted task, and work ready and blocked.
@@ -87,6 +88,37 @@ test('the board escapes every text the state holds', (t) => {
   assert.match(page, /Pick &lt;script&gt;alert\(1\)&lt;\/script&gt;\?/);
   assert.match(page, /look &lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(page, /href="https:\/\/example\.com\/x&quot;onmouseover=&quot;alert\(1\)"/);
+});
+
+test('accepted task gate pips and ledger stop counting tests after the owner changes mode', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const sha = gateFixture(h);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  h.ok(['project', 'set', '--tests-mode', 'run-only']);
+  gateEvidence(h, 'tests', 'checker');
+  gateEvidence(h, 'clean', 'checker');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  h.ok(['accept', 'T1']);
+  const sheet = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article id="T1"[\s\S]*?<\/article>/)[0];
+  assert.match(sheet(), /class="pip pass">tests<\/span>/);
+  assert.doesNotMatch(sheet(), /does not count:/);
+
+  h.ok(['project', 'set', '--tests-mode', 'prove']);
+  const shown = h.json(['task', 'show', 'T1']);
+  assert.equal(shown.status, 'accepted');
+  assert.equal(shown.gates.gates.find((g) => g.type === 'tests').ok, false);
+  const stale = sheet();
+  assert.match(stale, /class="pip missing">tests<\/span>/);
+  assert.doesNotMatch(stale, /class="pip pass">tests<\/span>/);
+  assert.match(stale, /class="nocount">\(does not count: tests evidence mode run-only no longer matches prove/);
+
+  gateEvidence(h, 'tests', 'checker');
+  const checked = sheet();
+  assert.match(checked, /class="pip pass">tests<\/span>/);
+  assert.equal((checked.match(/does not count: tests evidence mode run-only/g) || []).length, 1, 'older mode stays uncounted after a new matching pass');
 });
 
 test('the snapshot opens offline in a browser, with and without scripts, and requests nothing but itself', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {

@@ -180,6 +180,28 @@ test('terminal fallback cannot release another agent claim without explicit owne
   }
 });
 
+test('terminal fallback cannot set tests policy on init or project set', { skip: !PTY_AVAILABLE }, (t) => {
+  for (const [flag, value] of [
+    ['--tests-mode', 'none'], ['--tests-by-kind', '{"code":"run-only"}'], ['--tests-expensive', 'true'],
+    ['--tests-paths', '["src/**"]'], ['--tests-keep', '["lib/**"]'],
+  ]) {
+    const h = makeRepo(t);
+    const deniedInit = terminal(h, ['init', '--name', 'demo', '--goal', 'owner policy', flag, value]);
+    assert.equal(deniedInit.code, 1, deniedInit.stdout + deniedInit.stderr);
+    assert.match(deniedInit.stdout, /only the owner/);
+    assert.ok(!fs.existsSync(h.state));
+    h.init();
+    const project = h.readState('project.json');
+    const before = events(h);
+    const deniedSet = terminal(h, ['project', 'set', flag, value]);
+    assert.equal(deniedSet.code, 1, deniedSet.stdout + deniedSet.stderr);
+    assert.match(deniedSet.stdout, /only the owner/);
+    assert.deepEqual(h.readState('project.json'), project);
+    assert.equal(events(h), before);
+    assertOwnerRequest(deniedSet.stdout);
+  }
+});
+
 test('--agent owner recovers missing identity and overrides the environment', (t) => {
   const h = setup(t);
   assert.equal(h.run(['owner-done', 'T1'], { env: noAgent }).code, 2);
