@@ -265,6 +265,21 @@ test('a command adapter that reads only {brief} gets the goal, the house rules a
   assert.ok(text.includes('"the agent knows the goal"'), 'the acceptance travels with the brief');
 });
 
+test('a command adapter without an instruction placeholder is refused before startup', (t) => {
+  const { h, env } = setup(t);
+  const marker = path.join(h.base, 'adapter-started');
+  const script = 'require("node:fs").writeFileSync(process.argv[1], "started")';
+  h.ok(['ladder', 'set', 'small', '--harness', 'command', '--clear', 'profile', '--clear', 'effort', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, marker])]);
+  for (const mode of ['--dry-run', '--wait']) {
+    const r = h.run(['spawn', '--role', 'small', '--task', 'T1', mode], { env });
+    assert.notEqual(r.code, 0, mode);
+    assert.match(r.stderr, /command.*\{prompt\}.*\{brief\}.*house rules/, mode);
+  }
+  assert.ok(!fs.existsSync(marker), 'the adapter never starts');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(!events.some((e) => e.cmd === 'startup' || e.cmd === 'spawn'), 'no receipt claims the rules were delivered');
+});
+
 // The fixture brief names a directory and a file; the diff touches those, a test, the
 // changelog and two files the task never named.
 function scoped(t, brief) {
