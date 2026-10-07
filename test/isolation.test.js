@@ -476,34 +476,43 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
   assert.deepEqual(events.filter((e) => e.cmd === 'hook report').map((e) => e.detail.report), noted.map(() => 'hooked'), 'the hook payload came through stdin');
 });
 
-test('a brokered check tests still running when its agent exits is killed with its test run, and spawn --wait returns', { skip: NO_STUBS, timeout: 120000 }, async (t) => {
+test('a brokered command still running when its agent exits is killed, and spawn --wait returns', { skip: NO_STUBS, timeout: 120000 }, async (t) => {
   const { h, u } = setup(t);
-  h.ok(['project', 'set', '--tests-mode', 'run-only']);
-  const sha = h.git(['rev-parse', 'HEAD']);
+  // Stands in for a slow brokered command: preloaded into every node process
+  // the spawn starts, it holds only the CLI the broker runs for the note
+  // "late", before it writes anything. The agent's own code never runs there.
+  const preload = path.join(h.base, 'slow-broker.js');
+  fs.writeFileSync(preload, `
+if (process.env.TOWER_CRANE_VIA === 'broker' && process.argv.includes('late')) {
+  require('node:fs').writeFileSync(process.env.SLOW_BROKER_PID, String(process.pid));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+}
+`);
   for (const harness of ['claude', 'codex']) {
-    const pidFile = path.join(h.base, `${harness}-test-run.pid`);
-    const hang = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1e9)`)}`;
-    // The agent leaves the check running in the background and exits once
-    // its test command is up.
-    const background = `const cp=require("child_process"),f=require("fs");cp.spawn(process.execPath,${JSON.stringify([BIN, 'check', 'tests', 'T1', '--cmd', hang])},{detached:true,stdio:"ignore"}).unref();const end=Date.now()+30000;while(!f.existsSync(${JSON.stringify(pidFile)})&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50)`;
+    const pidFile = path.join(h.base, `${harness}-late.pid`);
+    // The agent leaves the note waiting in the background and exits once the
+    // broker is running it.
+    const background = `const cp=require("child_process"),f=require("fs");cp.spawn(process.execPath,${JSON.stringify([BIN, 'task', 'note', 'T1', 'late'])},{detached:true,stdio:"ignore"}).unref();const end=Date.now()+30000;while(!f.existsSync(${JSON.stringify(pidFile)})&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50)`;
     let pid = null;
     t.after(() => {
       if (pid && detachedAlive({ pid })) process.kill(pid, 'SIGKILL');
     });
     isolated(h, 'hard', harness);
-    const run = [[process.execPath, BIN, 'claim', 'T1'], [process.execPath, BIN, 'submit', 'T1', '--sha', sha], [process.execPath, '-e', background]];
+    const run = [[process.execPath, BIN, 'task', 'note', 'T1', 'early'], [process.execPath, '-e', background]];
+    const env = { ...u.env, STUB_RUN: JSON.stringify(run), NODE_OPTIONS: `--require ${JSON.stringify(preload)}`, SLOW_BROKER_PID: pidFile };
     const started = Date.now();
-    const r = await h.runAsync(['spawn', '--role', 'hard', '--task', 'T1', '--wait', '--json'], { env: { ...u.env, STUB_RUN: JSON.stringify(run) } });
+    const r = await h.runAsync(['spawn', '--role', 'hard', '--task', 'T1', '--wait', '--json'], { env });
     assert.equal(r.code, 0, r.stderr);
     assert.ok(Date.now() - started < 60000, `${harness}: spawn --wait returned`);
-    assert.deepEqual(u.report().ran.map((x) => x.code), [0, 0, 0], JSON.stringify(u.report().ran.map((x) => x.stderr)));
+    assert.deepEqual(u.report().ran.map((x) => x.code), [0, 0], JSON.stringify(u.report().ran.map((x) => x.stderr)));
+    assert.ok(fs.existsSync(pidFile), `${harness}: the broker ran the late note`);
     pid = Number(fs.readFileSync(pidFile, 'utf8'));
     const deadline = Date.now() + 10000;
     while (detachedAlive({ pid }) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.ok(!detachedAlive({ pid }), `${harness}: the test run stopped with the broker`);
-    assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.filter((e) => e.type === 'tests'), [], `${harness}: no tests evidence after the spawn ended`);
-    h.ok(['rework', 'T1', '--agent', 'owner', '--reason', 'next harness']);
+    assert.ok(!detachedAlive({ pid }), `${harness}: the brokered command stopped with the broker`);
   }
+  const notes = h.readState('tasks.json').tasks[0].notes.map((n) => n.text);
+  assert.deepEqual(notes, ['early', 'early'], 'nothing the broker was still running wrote after its spawn ended');
 });
 
 test('a sandboxed role cannot write the state directory itself', () => {

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { TMP_ROOT, detachedAlive } = require('./helpers');
+const { TMP_ROOT, detachedAlive, makeRepo } = require('./helpers');
 const B = require('../lib/broker');
 const { resolveCommand, parseOptions, GLOBAL } = require('../bin/tower-crane');
 
@@ -91,4 +91,58 @@ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   const { r, e } = await answer;
   assert.ok(e || r.code !== 0, 'the agent gets no success for a command the broker stopped');
   assert.ok(!fs.existsSync(job.broker), 'broker.json is gone');
+});
+
+test('a brokered command runs no git, whose repository config and commits the agent writes', async (t) => {
+  const h = makeRepo(t);
+  h.env.TOWER_CRANE_TMP = path.join(h.base, 'gate-tmp');
+  h.init(['--ci-local', JSON.stringify({ command: [process.execPath, '-e', ''], timeout: 5 })]);
+  h.git(['switch', '-qc', 'change']);
+  fs.writeFileSync(path.join(h.repo, 'change.txt'), 'change\n');
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'change']);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.git(['switch', '-q', 'main']);
+  h.ok(['task', 'add', '--title', 'gated', '--kind', 'docs', '--acceptance', 'checked']);
+  h.ok(['claim', 'T1', '--agent', 'worker-T1-1']);
+  h.ok(['submit', 'T1', '--agent', 'worker-T1-1', '--sha', sha, '--branch', 'change', '--pr', '1']);
+  // With ok local CI evidence on a submitted task, the sketch's gate report
+  // reads the repository with git (merge-tree, whose merge drivers the
+  // repository's config names).
+  assert.equal(h.json(['check', 'ci', 'T1', '--agent', 'checker']).ok, true);
+
+  const log = path.join(h.base, 'git.log');
+  const preload = path.join(h.base, 'git-log.js');
+  fs.writeFileSync(preload, `
+const cp = require('node:child_process');
+const fs = require('node:fs');
+for (const name of ['spawnSync', 'execFileSync', 'spawn', 'execFile']) {
+  const original = cp[name];
+  cp[name] = function (command, args, ...rest) {
+    if (process.env.TOWER_CRANE_VIA === 'broker' && /(^|[\\\\/])git(\\.exe)?$/.test(command)) fs.appendFileSync(process.env.BROKER_GIT_LOG, JSON.stringify(args) + '\\n');
+    return original.call(this, command, args, ...rest);
+  };
+}
+`);
+  const saved = { NODE_OPTIONS: process.env.NODE_OPTIONS, BROKER_GIT_LOG: process.env.BROKER_GIT_LOG };
+  process.env.NODE_OPTIONS = `--require ${JSON.stringify(preload)}`;
+  process.env.BROKER_GIT_LOG = log;
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  });
+  const job = { state: h.state, task: 'T1', agent: 'worker-T1-1', role: 'worker', cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T1-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const r = await B.forward(job.broker, ['task', 'note', 'T1', 'brokered'], h.state);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].notes.map((n) => [n.agent, n.text]), [['worker-T1-1', 'brokered']]);
+  assert.equal(fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '', '', 'the broker ran git');
+});
+
+test('a worker cannot have the broker run its tests, its cleanup or git', () => {
+  const job = { state: '/s', task: 'T1', agent: 'worker-T1-1', role: 'worker' };
+  for (const argv of [['check', 'tests', 'T1', '--cmd', 'cat ~/.ssh/id_ed25519'], ['check', 'tests', 'T1'], ['check', 'clean', 'T1'], ['check', 'ci', 'T1'], ['worktree', 'T1']]) {
+    assert.throws(() => B.authorize(job, argv), /changes state only with/, argv.join(' '));
+  }
+  for (const role of Object.keys(B.ROLES)) for (const cmd of B.ROLES[role]) assert.ok(!/^(check|worktree|merge|spawn)\b/.test(cmd), `${role}: ${cmd}`);
 });
