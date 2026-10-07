@@ -1,12 +1,20 @@
 # T10 board screenshots
 
-Captured with the Playwright MCP from code `0e3ebfdf8f46ad96f9c80a2df80120eaac533ecf` on 2026-10-07. All 144 view/state images are from this head: 18 states at four screen sizes in light and dark. The six original exploration screenshots remain unchanged.
+The gallery has 144 view/state images at four screen sizes in light and dark. T61 retakes 24 images from code `17e1865c2dff91d87200476297f48af818add5bf` on 2026-10-07: read-only Settings, budget attention and queue ends. The other 120 images remain from `0e3ebfdf8f46ad96f9c80a2df80120eaac533ecf`. The six original exploration screenshots remain unchanged.
 
 The disposable fixture has 30 tasks, six decisions, an owner task, six live claims, two submitted tasks, three accepted docs tasks, messages from claimants and an unrelated orchestrator note. It was built with the Tower Crane CLI. The budget fixture has no decisions or owner tasks: token and agent-time budgets alone create attention.
 
 `state-viewer`, `viewer-sheet` and `viewer-settings` use a real serve process running as `worker-T10-2`. Owner-control surfaces use the final board and Settings renderers in an isolated local preview. The preview supplies SSE and a synthetic 409 reply for the refused-save illustration; it has no owner state write capability. The integration tests exercise the actual owner routes, token checks, refusals and CLI receipts. `state-snapshot` uses the final snapshot renderer; the offline browser tests separately open the CLI-rendered file with scripts disabled and verify zero external requests.
 
 Sizes are CSS pixels. 1280x800 and 390x844 use 2x device scale; desktop images use 1x. `manifest.json` records every PNG's dimensions, hash and code head. `verification.json` records the test results and wheel geometry.
+
+## T61 polish verification
+
+The 24 retakes use real serve processes running as `worker-T61-1`, driven by Node over Chrome's DevTools protocol. Disposable fixtures were built only through the Tower Crane CLI: the queue has 30 tasks, 10 claims and nine decisions; the budget fixture reports 95,000 of 100,000 tokens and 57 of 60 minutes. No owner identity was used for these captures.
+
+Read-only Settings now gives `tower-crane serve --agent owner`. The budget plates have one group heading and show `57 min used of 1 h` at 95%. The desktop queue-end images keep all four column headings visible; the phone queue-end images show the end of Needs you. The existing design tokens are unchanged.
+
+The board, snapshot and Settings integration suite passed 22/22 with Chrome, zero skipped. Before the implementation, the three regression cases failed for the missing Settings command, repeating budget labels and static column headings. `verification-T61.json` records the final results and heading geometry in both themes. `manifest.json` records the code head and capture tool per image. The earlier `verification.json` remains the record of T10's full capture.
 
 ## Explored directions
 

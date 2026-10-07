@@ -1,0 +1,282 @@
+{
+  "code_head": "17e1865c2dff91d87200476297f48af818add5bf",
+  "themes": [
+    "light",
+    "dark"
+  ],
+  "geometry": [
+    {
+      "width": 3840,
+      "height": 1080,
+      "theme": "light",
+      "columns": [
+        {
+          "name": "need",
+          "height": 908,
+          "content": 1514,
+          "scroll": 606,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "work",
+          "height": 908,
+          "content": 1090,
+          "scroll": 182,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "next",
+          "height": 908,
+          "content": 1168,
+          "scroll": 260,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "since",
+          "height": 908,
+          "content": 1782,
+          "scroll": 874,
+          "heading": 123.984375,
+          "top": 123.984375
+        }
+      ]
+    },
+    {
+      "width": 3840,
+      "height": 1080,
+      "theme": "dark",
+      "columns": [
+        {
+          "name": "need",
+          "height": 908,
+          "content": 1514,
+          "scroll": 606,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "work",
+          "height": 908,
+          "content": 1090,
+          "scroll": 182,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "next",
+          "height": 908,
+          "content": 1168,
+          "scroll": 260,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "since",
+          "height": 908,
+          "content": 1782,
+          "scroll": 874,
+          "heading": 123.984375,
+          "top": 123.984375
+        }
+      ]
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "theme": "light",
+      "columns": [
+        {
+          "name": "need",
+          "height": 494,
+          "content": 2214,
+          "scroll": 1720,
+          "heading": 257.828125,
+          "top": 257.828125
+        },
+        {
+          "name": "work",
+          "height": 494,
+          "content": 2164,
+          "scroll": 1670,
+          "heading": 257.828125,
+          "top": 257.828125
+        },
+        {
+          "name": "next",
+          "height": 494,
+          "content": 1269,
+          "scroll": 775,
+          "heading": 257.828125,
+          "top": 257.828125
+        },
+        {
+          "name": "since",
+          "height": 109,
+          "content": 109,
+          "scroll": 0,
+          "heading": 124.984375,
+          "top": 124.984375
+        }
+      ]
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "theme": "dark",
+      "columns": [
+        {
+          "name": "need",
+          "height": 494,
+          "content": 2214,
+          "scroll": 1720,
+          "heading": 257.828125,
+          "top": 257.828125
+        },
+        {
+          "name": "work",
+          "height": 494,
+          "content": 2164,
+          "scroll": 1670,
+          "heading": 257.828125,
+          "top": 257.828125
+        },
+        {
+          "name": "next",
+          "height": 494,
+          "content": 1269,
+          "scroll": 775,
+          "heading": 257.828125,
+          "top": 257.828125
+        },
+        {
+          "name": "since",
+          "height": 109,
+          "content": 109,
+          "scroll": 0,
+          "heading": 124.984375,
+          "top": 124.984375
+        }
+      ]
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "theme": "light",
+      "columns": [
+        {
+          "name": "need",
+          "height": 908,
+          "content": 1857,
+          "scroll": 949,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "work",
+          "height": 908,
+          "content": 2160,
+          "scroll": 1252,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "next",
+          "height": 908,
+          "content": 1269,
+          "scroll": 361,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "since",
+          "height": 908,
+          "content": 2291,
+          "scroll": 1383,
+          "heading": 123.984375,
+          "top": 123.984375
+        }
+      ]
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "theme": "dark",
+      "columns": [
+        {
+          "name": "need",
+          "height": 908,
+          "content": 1857,
+          "scroll": 949,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "work",
+          "height": 908,
+          "content": 2160,
+          "scroll": 1252,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "next",
+          "height": 908,
+          "content": 1269,
+          "scroll": 361,
+          "heading": 123.984375,
+          "top": 123.984375
+        },
+        {
+          "name": "since",
+          "height": 908,
+          "content": 2291,
+          "scroll": 1383,
+          "heading": 123.984375,
+          "top": 123.984375
+        }
+      ]
+    }
+  ],
+  "regression": {
+    "before": "Settings command, budget plate text and sticky headings fail",
+    "after": "All three focused regressions pass with Chrome"
+  },
+  "focused_suite": {
+    "command": "node --test --test-concurrency=1 test/board.test.js test/render.test.js test/settings.test.js",
+    "passed": 22,
+    "failed": 0,
+    "skipped": 0,
+    "exit": 0
+  },
+  "capture": {
+    "tool": "Chrome DevTools protocol via Node",
+    "images": 24,
+    "serve_agent": "worker-T61-1",
+    "fixture": "Real CLI-created disposable repositories: 30 tasks, 10 active claims, 9 decisions; separate budget fixture at 95000/100000 tokens and 57/60 minutes",
+    "sizes": [
+      [
+        3840,
+        1080,
+        1
+      ],
+      [
+        1280,
+        800,
+        2
+      ],
+      [
+        1920,
+        1080,
+        1
+      ],
+      [
+        390,
+        844,
+        2
+      ]
+    ]
+  }
+}
