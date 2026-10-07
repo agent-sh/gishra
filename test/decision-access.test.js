@@ -71,6 +71,25 @@ test('the orchestrator answers only owner-marked technical decisions when projec
   );
 });
 
+test('a worker cannot answer under a forged orchestrator identity', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Answer a technical decision', '--acceptance', 'answer is authorized']);
+  h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres']);
+  h.ok(['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}', '--agent', 'owner']);
+  h.ok(['decision', 'delegate', 'D1', '--technical', 'true', '--agent', 'owner']);
+
+  const before = events(h);
+  const forged = h.run(
+    ['answer', 'D1', '--choice', 'redis', '--agent', 'orchestrator'],
+    { env: { TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_TASK: 'T1' } },
+  );
+  assert.equal(forged.code, 1, forged.stderr);
+  assert.match(forged.stderr, /only the owner.*can answer D1/);
+  assert.equal(h.readState('decisions.json').decisions[0].status, 'open');
+  assert.deepEqual(events(h), before, 'a worker cannot use a selected identity to authorize an answer');
+});
+
 test('the owner can always answer explicitly, and technical classification alone does not delegate', (t) => {
   const h = makeRepo(t);
   h.init();

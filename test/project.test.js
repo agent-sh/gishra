@@ -242,11 +242,13 @@ for (const [flag, value] of [
   ['--ci-local', JSON.stringify({ command: [process.execPath, '-e', ''], timeout: 5 })],
   ['--decision-delegation', '{"orchestrator_technical":true}'],
 ]) {
-  test(`${flag} requires explicit owner on init and project set without writing state`, (t) => {
+  const ownerRequired = flag === '--decision-delegation';
+  const allowed = ownerRequired ? /only the owner with an explicit identity/ : /only the orchestrator or the owner/;
+  test(`${flag} requires ${ownerRequired ? 'explicit owner identity' : 'the orchestrator or explicit owner'} on init and project set without writing state`, (t) => {
     const h = makeRepo(t);
     const init = h.run(['init', '--name', 'demo', '--goal', 'owner policy', flag, value, '--agent', 'worker-T9-1']);
     assert.equal(init.code, 1, init.stderr);
-    assert.match(init.stderr, /only the owner/);
+    assert.match(init.stderr, allowed);
     assert.ok(!fs.existsSync(h.state), 'refused init creates no state directory');
     h.init();
     const files = ['project.json', 'tasks.json', 'decisions.json', 'events.jsonl', 'sketch.md', 'sketch.html'];
@@ -255,7 +257,7 @@ for (const [flag, value] of [
     for (const input of [value, 'null']) {
       const denied = h.run(['project', 'set', '--name', 'must not persist', flag, input, '--agent', 'worker-T9-1']);
       assert.equal(denied.code, 1, denied.stderr);
-      assert.match(denied.stderr, /only the owner/);
+      assert.match(denied.stderr, allowed);
       assert.deepEqual(snapshot(), before);
     }
     assert.equal(h.run(['project', 'set', flag, value]).code, 0, 'explicit owner from env may set policy');

@@ -13,7 +13,7 @@ const withoutTowerCrane = (env) => Object.fromEntries(Object.entries(env).filter
 const terminal = (h, args, env = {}) => runPty([...args, '--state', h.state], { cwd: h.repo, env: { ...withoutTowerCrane(h.env), ...env } });
 
 function assertOwnerRequest(output) {
-  assert.match(output, /tower-crane ask.*task note/);
+  assert.match(output, /tower-crane (ask|msg --to orchestrator).*task note/);
   assert.doesNotMatch(output, /--agent owner|TOWER_CRANE_AGENT=owner/);
 }
 
@@ -76,7 +76,7 @@ test('terminal fallback cannot clear owner work without explicit owner identity'
     const before = events(h);
     const blocked = terminal(h, ['owner-done', 'T1']);
     assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
-    assert.match(blocked.stdout, /only the owner/);
+    assert.match(blocked.stdout, /only the (orchestrator or the )?owner/);
     assertOwnerRequest(blocked.stdout);
     assert.equal(events(h), before);
     assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
@@ -95,7 +95,7 @@ test('agents cannot clear or replace an existing owner request through task upda
     for (const reason of ['', '   ', 'approve funding']) {
       const blocked = h.run(['task', 'update', 'T1', '--title', 'Changed', '--needs-owner', reason, '--agent', agent]);
       assert.equal(blocked.code, 1, blocked.stderr);
-      assert.match(blocked.stderr, /only the owner/);
+      assert.match(blocked.stderr, /only the (orchestrator or the )?owner/);
       assertOwnerRequest(blocked.stderr);
       assert.equal(events(h), before);
       assert.deepEqual(h.readState('tasks.json'), tasksBefore);
@@ -127,7 +127,7 @@ test('terminal task update needs explicit owner to clear or replace owner work',
     for (const reason of ['', '   ', 'approve funding']) {
       const blocked = terminal(h, ['task', 'update', 'T1', '--title', 'Changed', '--needs-owner', reason]);
       assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
-      assert.match(blocked.stdout, /only the owner/);
+      assert.match(blocked.stdout, /only the (orchestrator or the )?owner/);
       assertOwnerRequest(blocked.stdout);
       assert.equal(events(h), before);
       assert.deepEqual(h.readState('tasks.json'), tasksBefore);
@@ -156,7 +156,7 @@ test('terminal fallback cannot waive gates without explicit owner identity', { s
     const before = events(h);
     const blocked = terminal(h, waive);
     assert.equal(blocked.code, 1, blocked.stdout + blocked.stderr);
-    assert.match(blocked.stdout, /only the owner can waive/);
+    assert.match(blocked.stdout, /only the owner with an explicit identity can change waive\./);
     assertOwnerRequest(blocked.stdout);
     assert.equal(events(h), before);
     assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
@@ -200,14 +200,14 @@ test('terminal fallback cannot set owner policies on init or project set', { ski
     const h = makeRepo(t);
     const deniedInit = terminal(h, ['init', '--name', 'demo', '--goal', 'owner policy', flag, value]);
     assert.equal(deniedInit.code, 1, deniedInit.stdout + deniedInit.stderr);
-    assert.match(deniedInit.stdout, /only the owner/);
+    assert.match(deniedInit.stdout, /only the (orchestrator or the )?owner/);
     assert.ok(!fs.existsSync(h.state));
     h.init();
     const project = h.readState('project.json');
     const before = events(h);
     const deniedSet = terminal(h, ['project', 'set', flag, value]);
     assert.equal(deniedSet.code, 1, deniedSet.stdout + deniedSet.stderr);
-    assert.match(deniedSet.stdout, /only the owner/);
+    assert.match(deniedSet.stdout, /only the (orchestrator or the )?owner/);
     assert.deepEqual(h.readState('project.json'), project);
     assert.equal(events(h), before);
     assertOwnerRequest(deniedSet.stdout);
@@ -266,7 +266,7 @@ test('owner-done and waivers require the resolved name owner exactly', (t) => {
   for (const agent of ['reviewer', 'Owner']) {
     const r = h.run(['owner-done', 'T1', '--agent', agent]);
     assert.equal(r.code, 1, r.stderr);
-    assert.match(r.stderr, /only the owner/);
+    assert.match(r.stderr, /only the (orchestrator or the )?owner/);
     assertOwnerRequest(r.stderr);
     assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
   }
@@ -277,7 +277,7 @@ test('owner-done and waivers require the resolved name owner exactly', (t) => {
   for (const agent of ['reviewer', 'Owner']) {
     const r = h.run([...waive, '--agent', agent]);
     assert.equal(r.code, 1, r.stderr);
-    assert.match(r.stderr, /only the owner can waive/);
+    assert.match(r.stderr, /only the owner with an explicit identity can change waive\./);
     assertOwnerRequest(r.stderr);
     assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
   }
