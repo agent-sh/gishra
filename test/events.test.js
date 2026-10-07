@@ -303,6 +303,40 @@ const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, ...args], { en
   assert.deepEqual(JSON.parse(r.stdout), { type: 'timeout', offset: fs.statSync(path.join(h.state, 'events.jsonl')).size });
 });
 
+for (const command of ['wait', 'spend']) {
+  test(`sandboxed worker ${command} does not report a hidden live worker exited`, async (t) => {
+    const h = setup(t);
+    const script = path.join(h.base, 'live-worker.js');
+    const claimed = path.join(h.base, 'claimed');
+    fs.writeFileSync(script, `const cp = require('node:child_process'); const fs = require('node:fs');
+const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'claim', process.env.TOWER_CRANE_TASK], { env: process.env });
+if (r.status !== 0) process.exit(1);
+fs.writeFileSync(${JSON.stringify(claimed)}, '');
+setInterval(() => {}, 1000);\n`);
+    h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
+    commandWorker(h, [process.execPath, script]);
+    const ready = created(claimed);
+    const live = h.json(['spawn', '--task', 'T1']);
+    h.workerPids.push(live.pid);
+    await ready;
+    h.ok(['task', 'add', '--title', 'Sandboxed worker', '--acceptance', 'works']);
+    h.ok(['brief', 'set', 'T2', '-'], { input: 'stand-in\n' });
+    commandWorker(h, [process.execPath, '-e', 'process.exit(0)']);
+    const exited = h.json(['spawn', '--task', 'T2', '--wait']);
+    const args = command === 'wait'
+      ? ['wait', '--task', 'T1', '--after', '0', '--types', 'worker-exited', '--timeout', '0.1']
+      : ['spend', 'T2', '--from-spawn', exited.agent];
+    const result = h.run([...args, '--agent', exited.agent], {
+      env: { TOWER_CRANE_TASK: 'T2', TOWER_CRANE_AGENT: exited.agent },
+      hooks: { HOOK_HIDDEN_PIDS: JSON.stringify([live.pid, live.monitor_pid]) },
+    });
+    assert.equal(result.code, command === 'wait' ? 2 : 0, result.stderr || result.stdout);
+    assert.equal(log(h).filter((e) => e.type === 'worker-exited' && e.task === 'T1').length, 0);
+    assert.equal(h.readState('tasks.json').tasks[0].claim.agent, live.agent);
+    assert.doesNotThrow(() => process.kill(live.pid, 0), 'the hidden worker is still alive');
+  });
+}
+
 test('a spawned worker that exits before claiming wakes without waiting for a lease', async (t) => {
   const h = setup(t);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
@@ -322,7 +356,7 @@ test('a lease stale without progress emits stall only once across waiters', asyn
   const start = Date.now();
   fs.writeFileSync(clock, String(start));
   h.ok(['claim', 'T1', '--lease', '1', '--agent', 'worker'], { hooks: { HOOK_CLOCK_FILE: clock } });
-  const result = await waiting(t, h, ['--types', 'stall', '--agent', 'worker'], { HOOK_CLOCK_FILE: clock });
+  const result = await waiting(t, h, ['--types', 'stall'], { HOOK_CLOCK_FILE: clock });
   fs.writeFileSync(clock, String(start + 60001));
   const e = await event(result, 'stall');
   assert.equal(e.detail.agent, 'worker');
@@ -330,6 +364,41 @@ test('a lease stale without progress emits stall only once across waiters', asyn
   const r = h.run(['wait', '--types', 'stall', '--timeout', '0.1', '--agent', 'worker'], { hooks: { HOOK_CLOCK_FILE: clock } });
   assert.equal(r.code, 2);
   assert.equal(log(h).filter((x) => x.type === 'stall').length, 1);
+});
+
+test('workers consume stall observations without detecting stale leases themselves', async (t) => {
+  const h = setup(t);
+  const clock = path.join(h.base, 'clock');
+  const start = Date.now();
+  const hooks = { HOOK_CLOCK_FILE: clock };
+  fs.writeFileSync(clock, String(start));
+  h.ok(['claim', 'T1', '--lease', '1', '--agent', 'worker'], { hooks });
+  fs.writeFileSync(clock, String(start + 60001));
+  const args = ['wait', '--types', 'stall', '--after', '0', '--timeout', '0.1'];
+  assert.equal(h.run([...args, '--agent', 'worker'], { hooks }).code, 2);
+  assert.equal(log(h).filter((e) => e.type === 'stall').length, 0);
+  const observed = await event(Promise.resolve(h.run([...args, '--agent', 'orchestrator'], { hooks })), 'stall');
+  const consumed = await event(Promise.resolve(h.run([...args, '--agent', 'worker'], { hooks })), 'stall');
+  assert.equal(consumed.id, observed.id);
+});
+
+test('a spawned orchestrator observes stale leases under its generated identity', async (t) => {
+  const h = setup(t);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
+  h.ok(['ladder', 'set', 'orchestrator', '--harness', 'command',
+    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)']),
+    ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
+  const observer = h.json(['spawn', '--task', 'T1', '--role', 'orchestrator', '--wait']);
+  const clock = path.join(h.base, 'clock');
+  const start = Date.now();
+  const hooks = { HOOK_CLOCK_FILE: clock };
+  fs.writeFileSync(clock, String(start));
+  h.ok(['claim', 'T1', '--lease', '1', '--agent', 'worker'], { hooks });
+  fs.writeFileSync(clock, String(start + 60001));
+  const result = h.run(['wait', '--agent', observer.agent, '--types', 'stall', '--timeout', '0.1'], {
+    env: { TOWER_CRANE_TASK: 'T1', TOWER_CRANE_AGENT: observer.agent }, hooks,
+  });
+  assert.equal((await event(Promise.resolve(result), 'stall')).agent, observer.agent);
 });
 
 test('worker progress after lease expiry postpones stall until progress is stale', async (t) => {
