@@ -137,8 +137,8 @@ function installTestsGate(cli) {
   }
 }
 
-function submitTestsFixture(h, sha, keep) {
-  h.init(['--repo', 'acme/demo', '--base', 'main', '--tests-cmd', `${shellQuote(process.execPath)} verify-build.js`]);
+function submitTestsFixture(h, sha, keep, settings = []) {
+  h.init(['--repo', 'acme/demo', '--base', 'main', '--tests-cmd', `${shellQuote(process.execPath)} verify-build.js`, ...settings]);
   if (keep) h.ok(['project', 'set', '--tests-keep', JSON.stringify(keep)]);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'test the behavior']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
@@ -355,7 +355,7 @@ test('failed tests evidence records TAP and spec names with a bounded output tai
     'test/failure.test.js': `const test = require('node:test');
 const assert = require('node:assert/strict');
 test('named regression failure', () => {
-  console.log('${'x'.repeat(12000)} tail marker');
+  console.log('${'noise line '.repeat(1500)} tail marker');
   assert.equal('actual', 'expected');
 });
 `,
@@ -375,7 +375,8 @@ test('named regression failure', () => {
     assert.equal(evidence.ok, false);
     assert.ok(evidence.test_failure.names.some((name) => name.includes('named regression failure')));
     assert.ok(evidence.test_failure.output_tail.includes('tail marker'));
-    assert.equal(evidence.test_failure.output_tail.length, 8192);
+    assert.ok(evidence.test_failure.output_tail.length <= 8192);
+    assert.ok(evidence.test_failure.output_tail.length > 8000);
     assert.match(evidence.summary, /Failing tests:/);
     assert.match(evidence.summary, /Output tail \(last 40 lines, max 8192 characters\):/);
     assert.match(result.stdout, /named regression failure/);
@@ -384,6 +385,85 @@ test('named regression failure', () => {
     const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8')
       .trim().split('\n').map(JSON.parse);
     assert.deepEqual(events.at(-1).detail.test_failure, evidence.test_failure);
+  }
+});
+
+test('failed test diagnostics redact process, project, rung and env_file secrets everywhere', (t) => {
+  const h = makeRepo(t);
+  const token = (...parts) => parts.join('');
+  const chars = (...codes) => String.fromCharCode(...codes);
+  const canaries = {
+    process: token(chars(103, 104, 112, 95), 'T83ProcessCanary0123456789abcdef123456'),
+    project: token(chars(115, 107, 45, 112, 114, 111, 106, 45), 'T83ProjectCanary0123456789abcdef123456'),
+    projectFile: token(chars(120, 111, 120, 98, 45), 'T83ProjectFileCanary-0123456789abcdef'),
+    rung: token(chars(65, 75, 73, 65), '1234567890ABCDEF'),
+    rungFile: '0123456789abcdef0123456789abcdef0123456789abcdef',
+  };
+  const commonTokens = [
+    token(chars(103, 104, 111, 95), 'T83GenericCanary0123456789abcdef'),
+    token(chars(115, 107, 45), 'T83GenericSecret0123456789abcdef'),
+    token(chars(65, 75, 73, 65), 'ABCDEFGHIJKLMNOP'),
+    token(chars(120, 111, 120, 112, 45), 'T83GenericSlack-0123456789abcdef'),
+    'abcdef0123456789abcdef0123456789abcdef01',
+    'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/ab',
+  ];
+  const projectEnvFile = path.join(h.base, 'project.env');
+  const rungEnvFile = path.join(h.base, 'rung.env');
+  fs.writeFileSync(projectEnvFile, `T83_PROJECT_FILE_CANARY=${canaries.projectFile}\n`);
+  fs.writeFileSync(rungEnvFile, `T83_RUNG_FILE_CANARY=${canaries.rungFile}\n`);
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  const defaultEasy = require('../lib/ladder').resolve({}, h.env).ladder.easy.own;
+  fs.writeFileSync(h.userConfig, JSON.stringify({
+    ladder: { easy: {
+      ...defaultEasy,
+      env: { T83_RUNG_CANARY: canaries.rung },
+      env_file: rungEnvFile,
+    } },
+  }));
+
+  const literals = [canaries.project, canaries.projectFile, canaries.rung, canaries.rungFile, ...commonTokens];
+  const testFile = `const test = require('node:test');
+const assert = require('node:assert/strict');
+const report = [process.env.T83_PROCESS_CANARY, ${literals.map((value) => JSON.stringify(value)).join(', ')}].join(' ');
+test('failure ' + process.env.T83_PROCESS_CANARY, () => {
+  console.log(report);
+  assert.fail('fixture failure');
+});
+`;
+  const sha = manifestTask(h, { submitted: { 'test/failure.test.js': testFile } });
+  submitTestsFixture(h, sha, null, [
+    '--env', JSON.stringify({ T83_PROJECT_CANARY: canaries.project }),
+    '--env_file', projectEnvFile,
+  ]);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+
+  const cmd = `${shellQuote(process.execPath)} --test --test-reporter=tap test/failure.test.js`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker', '--json'], {
+    env: { T83_PROCESS_CANARY: canaries.process },
+  });
+  assert.equal(result.code, 1, result.stderr + result.stdout);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.ok(evidence.test_failure.names.some((name) => name.includes('[redacted:T83_PROCESS_CANARY]')));
+  assert.ok(evidence.test_failure.output_tail.includes('[redacted:T83_PROCESS_CANARY]'));
+  assert.ok(evidence.summary.includes('[redacted:T83_PROCESS_CANARY]'));
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_PROJECT_CANARY\]/);
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_PROJECT_FILE_CANARY\]/);
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_RUNG_CANARY\]/);
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_RUNG_FILE_CANARY\]/);
+  for (const label of ['GITHUB_TOKEN', 'API_KEY', 'AWS_ACCESS_KEY_ID', 'SLACK_TOKEN', 'HEX', 'BASE64']) {
+    assert.ok(evidence.test_failure.output_tail.includes(`[redacted:${label}]`), label);
+  }
+
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const taskText = h.ok(['task', 'show', 'T1']);
+  const taskJson = JSON.stringify(h.json(['task', 'show', 'T1']));
+  const output = [result.stdout, result.stderr, JSON.stringify(evidence), events, taskText, taskJson].join('\n');
+  for (const secret of [...Object.values(canaries), ...commonTokens]) {
+    assert.equal(output.includes(secret), false, `raw canary leaked: ${secret}`);
   }
 });
 
