@@ -29,10 +29,11 @@ const merged = process.env.FIXTURE_MERGED;
 if (args[0] === 'pr' && args[1] === 'merge') {
   fs.writeFileSync(merged, 'merged');
 } else if (args[0] === 'pr') {
+  const pr = args[2];
   console.log(JSON.stringify({
     headRefOid: process.env.FIXTURE_SHA,
-    headRefName: process.env.FIXTURE_PR_HEAD || 'fixture-change',
-    state: process.env.FIXTURE_PR_STATE || (fs.existsSync(merged) ? 'MERGED' : 'OPEN'),
+    headRefName: process.env['FIXTURE_PR_HEAD_' + pr] || process.env.FIXTURE_PR_HEAD || 'fixture-change',
+    state: process.env['FIXTURE_PR_STATE_' + pr] || process.env.FIXTURE_PR_STATE || (fs.existsSync(merged) ? 'MERGED' : 'OPEN'),
     mergeCommit: {oid: process.env.FIXTURE_SHA},
   }));
 } else {

@@ -16,6 +16,27 @@ function pass(h, type, agent, sha) {
   else gateEvidence(h, type, agent);
 }
 
+function t68Rework(t) {
+  const h = makeRepo(t);
+  const oldSha = gateFixture(h);
+  h.init(['--repo', 'acme/demo', '--base', 'main']);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works', '--kind', 'docs']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  const oldBranch = 'tower-crane/T68';
+  const newBranch = 'tower-crane/T68-rework';
+  h.ok(['submit', 'T1', '--sha', oldSha, '--branch', oldBranch, '--pr', '34', '--agent', 'w-1']);
+  h.ok(['rework', 'T1', '--reason', 'T68 rework', '--agent', 'owner']);
+  h.ok(['claim', 'T1', '--agent', 'w-2']);
+
+  fs.appendFileSync(path.join(h.repo, 'README.md'), 'Reworked on a new branch.\n');
+  h.git(['add', 'README.md']);
+  h.git(['commit', '-q', '-m', 'rework']);
+  const newSha = h.git(['rev-parse', 'HEAD']);
+  h.env.FIXTURE_PR_HEAD_34 = oldBranch;
+  h.env.FIXTURE_PR_STATE_34 = 'OPEN';
+  return { h, oldBranch, newBranch, newSha };
+}
+
 test('the claimant resubmits a newer head and its gates need evidence at that head', (t) => {
   const h = makeRepo(t);
   const oldSha = gateFixture(h);
@@ -112,28 +133,26 @@ test('resubmission belongs to the current submitter and stops after acceptance o
   assert.equal(h.json(['submit', 'T1', '--sha', 'abcdef3', '--agent', 'w-2']).submitted_by, 'w-2');
 });
 
-test('submit refuses a T68-style rework branch beside its open PR #34', (t) => {
-  const h = makeRepo(t);
-  const oldSha = gateFixture(h);
-  h.init(['--repo', 'acme/demo', '--base', 'main']);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works', '--kind', 'docs']);
-  h.ok(['claim', 'T1', '--agent', 'w-1']);
-  const oldBranch = 'tower-crane/T68';
-  const newBranch = 'tower-crane/T68-rework';
-  h.ok(['submit', 'T1', '--sha', oldSha, '--branch', oldBranch, '--pr', '34', '--agent', 'w-1']);
-  h.ok(['rework', 'T1', '--reason', 'T68 rework', '--agent', 'owner']);
-  h.ok(['claim', 'T1', '--agent', 'w-2']);
-
-  fs.appendFileSync(path.join(h.repo, 'README.md'), 'Reworked on a new branch.\n');
-  h.git(['add', 'README.md']);
-  h.git(['commit', '-q', '-m', 'rework']);
-  const newSha = h.git(['rev-parse', 'HEAD']);
-  h.env.FIXTURE_PR_HEAD = oldBranch;
-  h.env.FIXTURE_PR_STATE = 'OPEN';
+test('submit refuses changing only the PR while its old PR is open', (t) => {
+  const { h, oldBranch, newSha } = t68Rework(t);
   const before = h.json(['task', 'show', 'T1']);
   const beforeEvents = events(h);
 
-  const refused = h.run(['submit', 'T1', '--sha', newSha, '--branch', newBranch, '--pr', '39', '--agent', 'w-2']);
+  const refused = h.run(['submit', 'T1', '--sha', newSha, '--pr', '39', '--agent', 'w-2']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stderr, /open PR #34/);
+  assert.ok(refused.stderr.includes(oldBranch), refused.stderr);
+  assert.match(refused.stderr, /PR #39/);
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+});
+
+test('submit refuses changing only the branch while the task PR is open', (t) => {
+  const { h, oldBranch, newBranch, newSha } = t68Rework(t);
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
+
+  const refused = h.run(['submit', 'T1', '--sha', newSha, '--branch', newBranch, '--agent', 'w-2']);
   assert.equal(refused.code, 1, refused.stdout);
   assert.match(refused.stderr, /open PR #34/);
   assert.ok(refused.stderr.includes(oldBranch), refused.stderr);
@@ -142,26 +161,41 @@ test('submit refuses a T68-style rework branch beside its open PR #34', (t) => {
   assert.deepEqual(events(h), beforeEvents);
 });
 
-test('a closed task PR allows submission from a different branch', (t) => {
-  const h = makeRepo(t);
-  const oldSha = gateFixture(h);
-  h.init(['--repo', 'acme/demo', '--base', 'main']);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works', '--kind', 'docs']);
-  h.ok(['claim', 'T1', '--agent', 'w-1']);
-  const oldBranch = 'tower-crane/T68';
-  const newBranch = 'tower-crane/T68-rework';
-  h.ok(['submit', 'T1', '--sha', oldSha, '--branch', oldBranch, '--pr', '34', '--agent', 'w-1']);
-  h.ok(['rework', 'T1', '--reason', 'T68 rework', '--agent', 'owner']);
-  h.ok(['claim', 'T1', '--agent', 'w-2']);
+test('submit refuses changing both PR and branch beside an open PR', (t) => {
+  const { h, oldBranch, newBranch, newSha } = t68Rework(t);
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
 
-  fs.appendFileSync(path.join(h.repo, 'README.md'), 'Reworked on a new branch.\n');
-  h.git(['add', 'README.md']);
-  h.git(['commit', '-q', '-m', 'rework']);
-  const newSha = h.git(['rev-parse', 'HEAD']);
-  const submitted = h.json(['submit', 'T1', '--sha', newSha, '--branch', newBranch, '--pr', '39', '--agent', 'w-2'], {
-    env: { FIXTURE_PR_HEAD: oldBranch, FIXTURE_PR_STATE: 'CLOSED' },
-  });
+  const refused = h.run(['submit', 'T1', '--sha', newSha, '--branch', newBranch, '--pr', '39', '--agent', 'w-2']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stderr, /open PR #34/);
+  assert.match(refused.stderr, /PR #39/);
+  assert.ok(refused.stderr.includes(oldBranch), refused.stderr);
+  assert.ok(refused.stderr.includes(newBranch), refused.stderr);
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+});
+
+test('after closing the old PR, a new PR supplies or verifies the submitted branch', (t) => {
+  const { h, oldBranch, newBranch, newSha } = t68Rework(t);
+  h.env.FIXTURE_PR_STATE_34 = 'CLOSED';
+  h.env.FIXTURE_PR_HEAD_39 = newBranch;
+  h.env.FIXTURE_PR_STATE_39 = 'OPEN';
+  const before = h.json(['task', 'show', 'T1']);
+  const beforeEvents = events(h);
+
+  const wrongBranch = 'tower-crane/T68-wrong';
+  const refused = h.run(['submit', 'T1', '--sha', newSha, '--branch', wrongBranch, '--pr', '39', '--agent', 'w-2']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.ok(refused.stderr.includes(newBranch), refused.stderr);
+  assert.ok(refused.stderr.includes(wrongBranch), refused.stderr);
+  assert.deepEqual(h.json(['task', 'show', 'T1']), before);
+  assert.deepEqual(events(h), beforeEvents);
+
+  const submitted = h.json(['submit', 'T1', '--sha', newSha, '--pr', '39', '--agent', 'w-2']);
   assert.deepEqual([submitted.status, submitted.sha, submitted.branch, submitted.pr], ['submitted', newSha, newBranch, 39]);
+  const checked = h.json(['submit', 'T1', '--sha', newSha, '--branch', newBranch, '--pr', '39', '--agent', 'w-2']);
+  assert.deepEqual([checked.branch, checked.pr], [newBranch, 39]);
 });
 
 test('review evidence must pin the reviewed sha when a worker resubmits during review', (t) => {
