@@ -73,6 +73,8 @@ Every agent runs under the agent file of its job in `agents/`: `tower-crane-work
 
 **gh auth**: a gh login kept in the system keyring is out of a sandboxed agent's reach, since the sandbox hides the user's D-Bus socket. When the spawning environment has no `GH_TOKEN` or `GITHUB_TOKEN`, spawn asks `gh auth token` as the agent starts and hands the token to the agent process as `GH_TOKEN`. It is not written to files, argv, dry-run output or events. Agent commands can read `GH_TOKEN`, so a command that talks to GitHub without gh is not held to the gh allowlist. Harness output is persisted unredacted (the spawn log, and transcripts in the agent's home), so a token an agent prints is kept there.
 
+Codex roles with `gitPush: branch` also get an explicit `git push` allow rule. This authorizes publishing without asking the orchestrator; the forbidden force prefixes and git shim still guard the push. Reviewer and small roles receive no push allow rule.
+
 **Sandbox paths** are real paths: a state directory, git directory or cache reached through a symlink is named by its target in `allowWrite` and the codex permission profile, since that is what the sandbox mounts.
 
 Credentials are never copied: the home links to the user's file itself, resolved past any link, so a refreshed token is seen at once, nothing tower-crane writes holds one, and a spawn started inside another agent (with that agent's home as its `HOME` and config directory) links to the user's original files, never into the parent's home, so removing the parent breaks nothing. Each home records where the user's files are in `.tower-crane-origin.json` for that case. On Windows a file link falls back to a hard link when symlinks need developer mode.

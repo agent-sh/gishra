@@ -228,6 +228,50 @@ process.exit(r.status ?? 1);`;
   h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
 }
 
+test('review dispatch computes its diff once outside the state lock', (t) => {
+  const h = setup(t);
+  ready(h);
+  commandReviewer(h, path.join(h.base, 'context.txt'));
+  const report = path.join(h.base, 'diff-calls.jsonl');
+  h.json(['spawn', '--task', 'T1', '--role', 'review', '--wait'], {
+    hooks: { HOOK_REVIEW_DIFF_REPORT: report },
+  });
+  const calls = fs.readFileSync(report, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls, Array.from({ length: 3 }, () => ({ locked: false })));
+});
+
+test('review dispatch refuses a submitted head or configured base changed after diff preparation', async (t) => {
+  for (const change of ['head', 'base']) {
+    const h = setup(t);
+    h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+    commandReviewer(h, path.join(h.base, 'context.txt'));
+    h.git(['commit', '--allow-empty', '-qm', 'next head']);
+    const next = h.git(['rev-parse', 'HEAD']);
+    const paused = path.join(h.base, 'diff-ready');
+    const running = h.runAsync(['spawn', '--task', 'T1', '--role', 'review', '--wait'], {
+      hooks: { HOOK_STOP_REVIEW_DIFF: paused },
+    });
+    try {
+      const deadline = Date.now() + 10000;
+      while (!fs.existsSync(paused)) {
+        assert.ok(Date.now() < deadline, 'diff preparation did not finish');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.ok(!fs.existsSync(path.join(h.state, 'lock')), 'diff preparation leaves state writable');
+      if (change === 'head') h.ok(['submit', 'T1', '--agent', 'builder', '--sha', next]);
+      else h.ok(['project', 'set', '--base', 'fixture-change']);
+    } finally {
+      fs.writeFileSync(`${paused}.go`, '');
+    }
+    const result = await running;
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /changed.*diff.*retry/i);
+    const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(!events.some((e) => e.cmd === 'spawn'));
+    assert.ok(!fs.existsSync(path.join(h.state, 'reviews')), 'a stale packet is never written');
+  }
+});
+
 test('accept runs tests, clean and CI before dispatch, and records review pending until a later accept', async (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'review-context.txt');
