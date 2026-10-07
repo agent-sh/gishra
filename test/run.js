@@ -2,16 +2,26 @@
 
 const cp = require('node:child_process');
 const os = require('node:os');
+const { createRepoSeed, cleanupRepoSeed } = require('./repo-seed');
 
 const args = ['--test'];
 const concurrency = process.platform === 'win32'
-  ? 3
+  ? 6
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
-// Windows process-bound integration files benefit from a larger independent file pool.
+// Windows CI is process-bound, so run independent files in a larger pool.
 args.push(`--test-concurrency=${concurrency}`);
 args.push('test/*.test.js', 'test/gates/*.test.js');
 
-const result = cp.spawnSync(process.execPath, args, { stdio: 'inherit' });
+const seed = createRepoSeed();
+let result;
+try {
+  result = cp.spawnSync(process.execPath, args, {
+    stdio: 'inherit',
+    env: { ...process.env, TC_TEST_REPO_SEED: seed.repo },
+  });
+} finally {
+  cleanupRepoSeed(seed);
+}
 if (result.error) {
   console.error(result.error.message);
   process.exitCode = 1;

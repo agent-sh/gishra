@@ -5,11 +5,14 @@ const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 const assert = require('node:assert/strict');
+const { createRepoSeed, cleanupRepoSeed } = require('./repo-seed');
 
 const ROOT = path.join(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'tower-crane.js');
 const HOOKS = path.join(__dirname, 'fixtures', 'hooks.js');
 const TMP_ROOT = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
+const SHARED_REPO_SEED = process.env.TC_TEST_REPO_SEED;
+delete process.env.TC_TEST_REPO_SEED;
 
 // Tests must not see the developer's git config (hooks, signing), an
 // agent's TOWER_CRANE_* variables or the developer's own ladder defaults, so every
@@ -17,7 +20,9 @@ const TMP_ROOT = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
 // absent until a test writes it.
 function baseEnv(home) {
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (k.startsWith('TOWER_CRANE_') || k.startsWith('GIT_')) delete env[k];
+  for (const k of Object.keys(env)) {
+    if (k.startsWith('TOWER_CRANE_') || k.startsWith('GIT_') || k === 'TC_TEST_REPO_SEED') delete env[k];
+  }
   // Existing fixtures act as the owner, so they must provide that identity.
   env.TOWER_CRANE_AGENT = 'owner';
   env.GIT_CONFIG_GLOBAL = path.join(home, 'gitconfig');
@@ -30,63 +35,17 @@ function git(args, cwd, env) {
   return cp.execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
-// Reuse a clean local Git seed so each fixture needs one setup process.
+// The test runner shares its clean Git seed with all isolated file workers.
 let repoSeed;
 function getRepoSeed() {
   if (repoSeed) return repoSeed;
-  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-seed-')));
-  const gitconfig = path.join(base, 'gitconfig');
-  fs.writeFileSync(
-    gitconfig,
-    '[user]\n\tname = tower-crane test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n',
-  );
-  const env = baseEnv(base);
-  const repo = path.join(base, 'repo');
-  try {
-    fs.mkdirSync(repo);
-    git(['init', '-q', '-b', 'main'], repo, env);
-    fs.writeFileSync(path.join(repo, 'README.md'), '# test\n');
-    git(['add', '.'], repo, env);
-    git(['commit', '-q', '-m', 'init'], repo, env);
-    repoSeed = { base, repo };
-    process.once('exit', () => {
-      fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    });
-    return repoSeed;
-  } catch (error) {
-    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    throw error;
+  if (SHARED_REPO_SEED) {
+    repoSeed = { base: path.dirname(SHARED_REPO_SEED), repo: SHARED_REPO_SEED };
+  } else {
+    repoSeed = createRepoSeed(TMP_ROOT);
+    process.once('exit', () => cleanupRepoSeed(repoSeed));
   }
-}
-
-function removeCloneRemote(repo) {
-  const config = path.join(repo, '.git', 'config');
-  let skip = false;
-  const lines = fs.readFileSync(config, 'utf8').split(/\r?\n/).filter((line) => {
-    const header = line.match(/^\s*\[([^\]]+)\]\s*$/);
-    if (header) skip = /^(remote|branch)\s+"[^"]+"$/i.test(header[1]);
-    return !skip;
-  });
-  fs.writeFileSync(config, `${lines.join('\n').trimEnd()}\n`);
-  const packedRefs = path.join(repo, '.git', 'packed-refs');
-  if (fs.existsSync(packedRefs)) {
-    let dropPeeled = false;
-    const refs = fs.readFileSync(packedRefs, 'utf8').split(/\r?\n/).filter((line) => {
-      if (line.startsWith('^')) {
-        const keep = !dropPeeled;
-        dropPeeled = false;
-        return keep;
-      }
-      const isRemote = /^[0-9a-f]{40,64}\s+refs\/remotes\//.test(line);
-      dropPeeled = isRemote;
-      return !isRemote;
-    });
-    fs.writeFileSync(packedRefs, `${refs.join('\n').trimEnd()}\n`);
-  }
-  fs.rmSync(path.join(repo, '.git', 'refs', 'remotes'), { recursive: true, force: true });
-  fs.rmSync(path.join(repo, '.git', 'logs', 'refs', 'remotes'), { recursive: true, force: true });
-  fs.rmSync(path.join(repo, '.git', 'FETCH_HEAD'), { force: true });
-  fs.mkdirSync(path.join(repo, '.git', 'refs', 'remotes', 'origin'), { recursive: true });
+  return repoSeed;
 }
 
 function makeRepo(t) {
@@ -99,8 +58,13 @@ function makeRepo(t) {
   );
   const env = baseEnv(base);
   const repo = path.join(base, 'repo');
-  git(['clone', '--local', '-q', seed.repo, repo], base, env);
-  removeCloneRemote(repo);
+  try {
+    fs.cpSync(seed.repo, repo, { recursive: true });
+    fs.mkdirSync(path.join(repo, '.git', 'refs', 'remotes', 'origin'), { recursive: true });
+  } catch (error) {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    throw error;
+  }
   return context(t, base);
 }
 
