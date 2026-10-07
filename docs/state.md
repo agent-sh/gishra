@@ -48,6 +48,7 @@ The owner hands the run to an orchestrator and is asked only when the owner is r
 
 - **operational**: the orchestrator or the owner. The orchestrator acts under its own identity; the event records that agent, and `project set`, `ladder set`, `ladder harness` and `ladder save-user` events add `"authority": "orchestrator"`.
 - **owner-required**: the owner only. When the orchestrator tries one, the command writes nothing it asked for, opens a decision for the owner and refuses with its id. The decision and its `ask` event carry `escalation: { settings, change }` naming the settings and the requested values. The same open request reuses that decision. The owner makes the change and answers it; only the owner answers an escalation.
+- **refused**: no identity makes the change while the task stands as it is. The command writes nothing and names the step that comes first (`rework`); no decision opens.
 
 Workers, reviewers and every other identity are refused both. For an operational change they ask the orchestrator (`tower-crane msg --to orchestrator` or a task note), not the owner; owner-required changes they request with `tower-crane ask`.
 
@@ -66,8 +67,12 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `ladder.save_user` | operational | `ladder save-user`: writes only the default harness and the primary rungs the project defines to the user file, keeping its personal fallbacks and other keys |
 | `ladder.web_mcp` | owner-required | `ladder set research --web-mcp`, `--clear web_mcp`: the explicit web server command and tools |
 | `research.min_sources` | owner-required | `project set --research-min-sources` |
-| `task.kind`, `task.tier` | operational | `task update --kind`, `--tier` when the value changes |
+| `task.kind` | operational | `task update --kind` to any kind, except leaving `code` (`task.downgrade`) |
+| `task.downgrade` | owner-required | `task update --kind` from `code` to `docs`, `research`, `design` or `ops`, which drops the tests and clean gates, at any status |
+| `task.kind.submitted` | refused | `task update --kind` on a submitted or accepted task, whoever asks; `rework` the task first |
+| `task.tier` | operational | `task update --tier` when the value changes |
 | `task.needs_owner` | operational | `owner-done`; `task update --needs-owner` clearing or replacing an existing reason |
+| `task.cancel_needs_owner` | owner-required | `task update --status cancelled` on a task with an owner ask (`needs_owner`) |
 | `waive.review` | operational | `accept --waive review` when the reviewer is capped or down at the submitted head: a `check ci` there recorded a capped review run (`ci.capped_review`, kept as `capped_review` on the evidence), or a review spawn there exited without a verdict |
 | `merge.admin` | owner-required | `project set --merge-admin` |
 | `waive.sources` | owner-required | `accept --waive sources` |
@@ -326,7 +331,7 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 }
 ```
 
-- `kind`: `code`, `docs`, `research`, `design`, `ops`. Changing it is operational ([Authority](#authority)).
+- `kind`: `code`, `docs`, `research`, `design`, `ops`. Changing it is operational, except leaving `code` (owner-required) and any change on a submitted or accepted task (refused until `rework`) ([Authority](#authority)).
 - `needs`: capability names, currently only `browser`; defaults to `[]` for new and legacy tasks. Set through `task add/update --needs JSON` or plan import. Duplicate names are removed. A change bumps the revision and requires rework for an accepted task. A `design` task requests the kit automatically; only explicit `needs: ["browser"]` requires a capable route before dispatch.
 - `ci_local`: optional local CI override with exactly one of `command` or `args`, and optional `timeout`, using the `ci.local.by_kind` override shape above. Only `task update ID --ci-local JSON` by the orchestrator or the owner sets it; `--ci-local null` removes it. An accepted task needs `rework` before the override can change. Changing it does not bump the revision; receipt validation checks the current resolved variant, command and timeout.
 - `size`: `S` (under an hour), `M` (a few hours), `L` (a day). Anything larger is split; `validate` reports it.
