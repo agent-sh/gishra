@@ -209,18 +209,29 @@ test('every spawn gets a fresh home, and an exited agent\'s home is removed', { 
   }
 });
 
-test('a codex agent writes only where its agent file says; reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
-  const { h, u } = setup(t);
+test('a codex agent writes only where its agent file says; a worker writes its git metadata, reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  // A worker fetches, adds, commits and pushes: it writes the repository's
+  // git directory and its worktree's admin directory inside it.
+  const common = fs.realpathSync(h.git(['rev-parse', '--path-format=absolute', '--git-common-dir'], wt));
+  const own = fs.realpathSync(h.git(['rev-parse', '--path-format=absolute', '--git-dir'], wt));
   for (const [rung, worktree] of [['hard', 'write'], ['review', 'read'], ['small', 'read']]) {
     isolated(h, rung, 'codex');
     spawn(h, u, rung);
     const { config } = u.report();
     const rules = config.permissions['tower-crane'].filesystem;
+    for (const d of [common, own]) assert.equal(rules[d], worktree === 'write' ? 'write' : undefined, `${rung}: ${d}`);
     assert.deepEqual(rules[':workspace_roots'], { '.': worktree }, rung);
     assert.equal(rules[':root'], 'read', rung);
     assert.equal(rules[h.state], 'write', `${rung}: state through the CLI`);
     assert.equal(rules[path.join(h.state, 'homes')], 'read', `${rung}: agent homes are not writable`);
     assert.equal(config.permissions['tower-crane'].network.enabled, true);
+  }
+  for (const [rung, writes] of [['hard', true], ['small', false]]) {
+    isolated(h, rung, 'claude');
+    spawn(h, u, rung);
+    const allow = u.report().settings.sandbox.filesystem.allowWrite;
+    for (const d of [common, own]) assert.equal(allow.includes(d), writes, `claude ${rung}: ${d}`);
   }
 });
 
@@ -238,6 +249,11 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 0],
     [['git', 'push', local, '+HEAD:refs/heads/fixture'], 0, 0],
     [['git', 'push', '--force', local, 'HEAD:refs/heads/fixture'], 126, 126],
+    [['git', 'push', local, ':refs/heads/fixture'], 0, 0],
+    [['git', 'push', 'origin', ':refs/heads/gone'], 126, 126],
+    [['git', 'push', 'origin', '--delete', 'gone'], 126, 126],
+    [['git', 'push', '-d', 'origin', 'gone'], 126, 126],
+    [['git', 'push', '--prune', 'origin', 'refs/heads/*:refs/heads/*'], 126, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], NET, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
