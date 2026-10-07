@@ -269,11 +269,12 @@ for (const harness of ['codex', 'claude']) {
 
 test('a still-running worker cannot be resumed', async (t) => {
   const { h, script } = setup(t);
-  fs.appendFileSync(script, '\nsetInterval(() => {}, 1000);\n');
+  const ready = path.join(h.base, 'live-ready');
+  fs.appendFileSync(script, `\nfs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
   const first = h.json(['spawn', '--task', 'T1']);
   t.after(() => { try { process.kill(first.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; } });
   const deadline = Date.now() + 10000;
-  while (!events(h).some((e) => e.cmd === 'spawn session')) {
+  while (!fs.existsSync(ready) || fs.readFileSync(ready, 'utf8') !== String(first.pid)) {
     if (Date.now() > deadline) throw new Error('worker did not start');
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -331,10 +332,11 @@ test('an earlier attempt exit cannot collect or resume a live attempt with a reu
   const { h, script } = setup(t);
   const first = h.json(['spawn', '--task', 'T1', '--wait']);
   sendBack(h);
-  fs.appendFileSync(script, '\nsetInterval(() => {}, 1000);\n');
+  const ready = path.join(h.base, 'live-ready');
+  fs.appendFileSync(script, `\nfs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
   const live = h.json(['spawn', '--task', 'T1']);
   const deadline = Date.now() + 10000;
-  while (!events(h).some((e) => e.cmd === 'spawn session' && e.detail.attempt === live.attempt)) {
+  while (!fs.existsSync(ready) || fs.readFileSync(ready, 'utf8') !== String(live.pid)) {
     if (Date.now() > deadline) throw new Error('resumed worker did not start');
     await new Promise((resolve) => setTimeout(resolve, 50));
   }

@@ -160,7 +160,7 @@ test('detached supervision renews a short lease during backoff and does not allo
     env: { NODE_OPTIONS: `--require "${HOOKS.replace(/\\/g, '/')}"`, HOOK_CLOCK_FILE: clockFile },
   });
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'retry was not recorded');
-  assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /retrying 1/);
+  await until(() => /retrying 1/.test(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8')), 'saved board did not render the retry phase');
   fs.writeFileSync(clockFile, String(now + 40000));
   await until(() => log(h).some((e) => e.cmd === 'renew'), 'supervisor did not renew the short lease');
   const task = h.json(['task', 'show', 'T1']);
