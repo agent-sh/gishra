@@ -304,6 +304,8 @@ test('a missing isolated codex rollout falls back to a fresh worker and records 
   assert.ok(fs.existsSync(rollout));
   fs.unlinkSync(rollout);
   sendBack(h);
+  h.ok(['claim', 'T1', '--agent', first.agent]);
+  assert.equal(h.json(['task', 'show', 'T1']).claim.agent, first.agent);
 
   const result = h.run(['spawn', '--task', 'T1', '--wait', '--json']);
   assert.equal(result.code, 0, result.stderr);
@@ -311,8 +313,15 @@ test('a missing isolated codex rollout falls back to a fresh worker and records 
   assert.equal(next.resumed, false);
   assert.equal(next.agent, 'worker-T1-2');
   assert.equal(next.session_id, null);
-  const spawn = events(h).findLast((e) => e.cmd === 'spawn' && e.task === 'T1' && e.detail.agent === next.agent);
+  const log = events(h);
+  const spawn = log.findLast((e) => e.cmd === 'spawn' && e.task === 'T1' && e.detail.agent === next.agent);
   assert.equal(spawn.detail.resume_fallback_reason, 'recorded codex session has no rollout file in the isolated sessions directory');
+  const claim = log.findLast((e) => e.cmd === 'claim' && e.task === 'T1' && e.detail.holder === next.agent);
+  assert.equal(claim.detail.took_over_from, first.agent);
+  assert.ok(log.indexOf(claim) < log.indexOf(spawn), 'the fresh spawn takes ownership before its spawn event');
+  const held = h.json(['task', 'show', 'T1']).claim;
+  assert.equal(held.agent, next.agent);
+  assert.equal(held.from, 'rework');
   const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
   assert.equal(input.prior, '');
   assert.match(input.prompt, /Add the worktree guard/);
