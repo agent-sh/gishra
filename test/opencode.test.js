@@ -174,6 +174,8 @@ test('opencode small denies edits, publishing and skills; args cannot override i
   assert.equal(preview.argv[preview.argv.indexOf('--agent') + 1], 'gishra-small');
   assert.notEqual(preview.env.HOME, f.home);
   assert.equal(preview.env.OPENCODE_DISABLE_PROJECT_CONFIG, '1');
+  assert.equal(preview.env.OPENCODE_DISABLE_DEFAULT_PLUGINS, '0');
+  assert.equal(preview.env.OPENCODE_PURE, '0');
   assert.equal(preview.startup.rules.every((rule) => rule.loaded === 'read'), true);
   const permissions = JSON.parse(preview.env.OPENCODE_PERMISSION);
   assert.equal(permissions.edit, 'deny');
