@@ -39,7 +39,7 @@ test('project set stores, replaces and clears test paths and ignored CI apps', (
   assert.deepEqual(h.json(['project', 'set', '--tests-paths', 'null', '--ci-ignore-apps', 'null']), cleared);
 });
 
-for (const flag of ['--tests-paths', '--tests-keep', '--ci-ignore-apps']) {
+for (const flag of ['--tests-paths', '--tests-keep', '--ci-ignore-apps', '--ci-required']) {
   test(`project set validates ${flag} and writes nothing on invalid input`, (t) => {
     const h = makeRepo(t);
     h.init();
@@ -93,7 +93,25 @@ test('project set and init help document the JSON settings and clearing value', 
     assert.match(help, /--tests-by-kind JSON.*null/);
     assert.match(help, /--tests-expensive JSON.*null/);
     assert.match(help, /--ci-ignore-apps JSON.*null/);
+    assert.match(help, /--ci-required JSON.*null/);
   }
+});
+
+test('required CI names and prefixes are stored, printed, replaced and cleared through the CLI', (t) => {
+  const h = makeRepo(t);
+  h.init(['--ci-required', '[" test ( ", " lint "]', '--ci-ignore-apps', '["claude"]']);
+  assert.deepEqual(h.json(['project', 'show']).ci, { required: ['test (', 'lint'], ignore_apps: ['claude'] });
+  assert.match(h.ok(['project', 'show']), /ci\.required: \["test \(","lint"\]/);
+  const set = h.json(['project', 'set', '--ci-required', '["test (windows-latest, node 24)"]']);
+  assert.deepEqual(set.ci, { required: ['test (windows-latest, node 24)'], ignore_apps: ['claude'] });
+  assert.deepEqual(h.readState('project.json'), set);
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.at(-1).detail, { 'ci-required': '["test (windows-latest, node 24)"]' });
+  assert.deepEqual(h.json(['project', 'set', '--ci-required', '[]']).ci, { required: [], ignore_apps: ['claude'] });
+  assert.deepEqual(h.json(['project', 'set', '--ci-required', 'null']).ci, { ignore_apps: ['claude'] });
+  h.ok(['project', 'set', '--ci-ignore-apps', 'null']);
+  assert.match(h.ok(['project', 'show']), /ci\.required: \[\]/);
+  assert.ok(!Object.hasOwn(h.json(['project', 'show']), 'ci'));
 });
 
 test('tests.keep is configured through init and project set without replacing tests.paths', (t) => {

@@ -73,8 +73,8 @@ test('the Settings view edits the ladder and task tiers only with the page token
     const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page.text)[1];
     assert.match(page.text, /<label for="harness">Default harness<\/label>/);
     assert.match(page.text, /<input name="model" value="opus" data-initial="opus" aria-labelledby="r-hard c-model"/);
-    assert.match(page.text, /<select name="tier" aria-labelledby="t-T1 c-tier" data-initial="medium">/);
-    assert.match((await request(s.url)).text, /<a href="settings" data-view="settings">Settings<\/a>/, 'the board links to Settings');
+    assert.match(page.text, /<select name="tier" aria-labelledby="t-T1 c-tier" data-initial="medium"(?: data-preserve="[0-9a-f]{64}")?>/);
+    assert.match((await request(s.url)).text, /<a href="settings" data-view="settings"(?: data-preserve="[0-9a-f]{64}")?>Settings<\/a>/, 'the board links to Settings');
     assert.notEqual((await startAgain(h)).token, token, 'each run has its own token');
 
     const ladder = `${s.url}api/ladder`;
@@ -197,7 +197,7 @@ test("in a browser, saving one form keeps the other form's unsaved edits, and a 
   const tierSelect = `document.querySelector('tr[data-task="T1"] select')`;
   const set = (el, value, event) => b.inPage(`(function (el) { el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event(${JSON.stringify(event)}, { bubbles: true })); })(${el})`);
   const click = (form) => b.inPage(`document.querySelector('#${form} button[type="submit"]').click()`);
-  const saved = (form) => `document.querySelector('#${form} .msg').textContent.startsWith('Saved.') || !window.firstLoad`;
+  const saved = (form) => `document.querySelector('#${form} .msg').textContent.startsWith('Saved.') || (!window.firstLoad && document.documentElement.hasAttribute('data-position-restored'))`;
   const settle = () => new Promise((r) => setTimeout(r, 800));
   await b.inPage('window.firstLoad = true');
 
@@ -265,7 +265,7 @@ test('in a browser, a form is read-only while its save waits, so typing then los
     const typed = await b.inPage(`${easyModel}.value`);
     fs.writeFileSync(`${paused}.go`, '');
     assert.equal((await holder).code, 0);
-    await b.until(`document.readyState === 'complete' && !document.querySelector('#ladder-form[aria-busy]') && ${easyModel} && !${easyModel}.disabled`, 'the save to finish');
+    await b.until(`document.readyState === 'complete' && !document.querySelector('#ladder-form[aria-busy]') && ${easyModel} && !${easyModel}.disabled && (${otherDirty} || document.documentElement.hasAttribute('data-position-restored'))`, 'the save to finish');
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(h.readState('project.json').ladder.easy.effort, round === 1 ? 'high' : 'low');
     assert.equal(await b.inPage(`${easyModel}.value`), typed, `round ${round}: what was typed during the save is still there`);

@@ -11,7 +11,14 @@ cp.spawnSync = function github(file, args, ...rest) {
   const filter = args[args.indexOf('--jq') + 1] || '';
   let items;
   if (args[0] === 'pr' && args[1] === 'view') {
-    return { status: 0, stdout: JSON.stringify({ headRefOid: data.sha }), stderr: '' };
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        headRefOid: data.sha,
+        ...(data.pr === undefined ? { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' } : data.pr),
+      }),
+      stderr: '',
+    };
   }
   if (args[0] === 'api' && args.includes('--paginate')) {
     if (args[1].endsWith(`/commits/${data.sha}/check-runs?per_page=100`)) {
