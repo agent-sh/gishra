@@ -22,6 +22,7 @@ function setup(t, retry = false, stubborn = false) {
   h.ok(['task', 'add', '--title', 'Keep unfinished work', '--acceptance', 'original requirement']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Finish the work.\n' });
   const seen = path.join(h.base, 'seen.json');
+  const finish = path.join(h.base, 'finish');
   const script = path.join(h.base, 'harness.js');
   fs.writeFileSync(script, `
 const fs = require('node:fs');
@@ -42,13 +43,135 @@ fs.writeFileSync('README.md', '# unfinished tracked work\\n');
 fs.writeFileSync('unfinished.txt', 'keep this untracked work\\n');
 console.log(JSON.stringify({ type: 'thread.started', thread_id: session || 'interrupted-session' }));
 if (${retry}) process.exit(75);
-if (!session) setInterval(() => {}, 1000);
+if (!session) {
+  const timer = setInterval(() => {
+    if (fs.existsSync(${JSON.stringify(finish)})) clearInterval(timer);
+  }, 25);
+}
 `);
   h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
     '--command', JSON.stringify([process.execPath, script, BIN, seen, '{session}', '{prompt}']),
     '--supervision', JSON.stringify({ retries: 1, backoff_ms: 30000, max_backoff_ms: 30000 })]);
   h.seen = () => fs.existsSync(seen) ? JSON.parse(fs.readFileSync(seen)) : [];
+  h.finish = () => fs.writeFileSync(finish, '');
   return h;
+}
+
+function pauseExit(h, point) {
+  const paused = path.join(h.base, `${point}.paused`);
+  const go = `${paused}.go`;
+  const preload = path.join(h.base, `${point}.js`);
+  fs.writeFileSync(preload, `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const path = require('node:path');
+const paused = ${JSON.stringify(paused)};
+const pause = () => {
+  if (fs.existsSync(paused)) return;
+  fs.writeFileSync(paused, '');
+  const deadline = Date.now() + 15000;
+  while (!fs.existsSync(paused + '.go')) {
+    if (Date.now() >= deadline) throw new Error('exit pause timed out');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+};
+if (${JSON.stringify(point)} === 'hook' && process.argv[2] === 'hook' && process.argv[3] === 'stop') pause();
+if (${JSON.stringify(point)} === 'collect' && path.basename(process.argv[1]) === 'spawn-monitor.js') {
+  const original = cp.spawnSync;
+  cp.spawnSync = function(command, args, options) {
+    if (args[1] === 'spend') pause();
+    return original.call(this, command, args, options);
+  };
+}
+`);
+  return { paused, release: () => fs.writeFileSync(go, ''), opts: { env: { NODE_OPTIONS: `--require "${preload.replace(/\\/g, '/')}"` } } };
+}
+
+test('interrupt during detached usage collection releases directly without fencing the next claim', async (t) => {
+  const h = setup(t);
+  const pause = pauseExit(h, 'collect');
+  const first = h.json(['spawn', '--task', 'T1'], pause.opts);
+  try {
+    await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not record its session');
+    h.finish();
+    await until(() => fs.existsSync(pause.paused), 'usage collection did not pause');
+    assert.equal(detachedAlive({ pid: first.monitor_pid }), true);
+    assert.equal(h.json(['task', 'show', 'T1']).run.active, false);
+    h.ok(['interrupt', 'T1']);
+    const interrupted = h.json(['task', 'show', 'T1']);
+    assert.equal(interrupted.run.phase, 'stopped');
+    assert.equal(interrupted.run.active, false);
+    h.ok(['claim', 'T1', '--agent', first.agent]);
+    const next = h.json(['spawn', '--task', 'T1', '--wait']);
+    assert.equal(next.resumed, true);
+    assert.equal(next.agent, first.agent);
+    assert.equal(events(h).filter((e) => e.cmd === 'spawn phase' && e.detail.phase === 'stopping').length, 0);
+  } catch (error) {
+    if (detachedAlive({ pid: first.monitor_pid })) process.kill(first.monitor_pid, 'SIGTERM');
+    throw error;
+  } finally {
+    pause.release();
+  }
+  await until(() => !detachedAlive({ pid: first.monitor_pid }), 'usage collector did not finish');
+});
+
+test('an interrupt committed while exit hooks are pending is finalized under the state lock', async (t) => {
+  const h = setup(t);
+  h.ok(['task', 'add', '--title', 'Next worker', '--acceptance', 'slot becomes available']);
+  const pause = pauseExit(h, 'hook');
+  const first = h.json(['spawn', '--task', 'T1'], pause.opts);
+  try {
+    await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not record its session');
+    h.finish();
+    await until(() => fs.existsSync(pause.paused), 'exit hook did not pause');
+    h.ok(['interrupt', 'T1']);
+    assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'stopping');
+    pause.release();
+    await until(() => events(h).some((e) => e.cmd === 'spawn exit'), 'exit finalization did not record its receipt');
+    assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'stopped');
+    assert.equal(h.json(['task', 'show', 'T1']).run.active, false);
+    await until(() => !detachedAlive({ pid: first.monitor_pid }), 'exit finalization did not finish');
+    assert.equal(events(h).filter((e) => e.cmd === 'spawn exit').length, 1);
+    h.ok(['claim', 'T2', '--agent', 'next-worker']);
+    h.ok(['release', 'T2', '--agent', 'next-worker', '--reason', 'slot verified']);
+    const next = h.json(['spawn', '--task', 'T1', '--wait']);
+    assert.equal(next.resumed, true);
+  } catch (error) {
+    if (detachedAlive({ pid: first.monitor_pid })) process.kill(first.monitor_pid, 'SIGTERM');
+    throw error;
+  } finally {
+    pause.release();
+  }
+});
+
+for (const fresh of [false, true]) {
+  test(`submission and rework end an earlier interrupt for ${fresh ? 'fresh' : 'resumed'} dispatch`, async (t) => {
+    const h = setup(t);
+    const first = h.json(['spawn', '--task', 'T1']);
+    await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not record its session');
+    h.ok(['interrupt', 'T1']);
+    await until(() => !detachedAlive({ pid: first.monitor_pid }), 'interrupted monitor did not finish');
+    h.ok(['claim', 'T1', '--agent', first.agent]);
+    const claim = h.json(['task', 'show', 'T1']).claim;
+    h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', first.agent]);
+    h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer-T1-1',
+      '--summary', 'Add the missing regression', '--ref', 'current-review']);
+    h.ok(['rework', 'T1', '--reason', 'Fix the current review feedback']);
+    if (fresh) h.ok(['ladder', 'set', 'medium', '--args', '["new-route"]']);
+    h.finish();
+    const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);
+    assert.equal(dry.resumed, !fresh);
+    assert.match(dry.argv.join('\n'), /Rework T1/);
+    assert.match(dry.argv.join('\n'), /Fix the current review feedback/);
+    assert.match(dry.argv.join('\n'), /Add the missing regression/);
+    assert.match(dry.argv.join('\n'), /current-review/);
+    assert.doesNotMatch(dry.argv.join('\n'), /Interrupt T1/);
+    const next = h.json(['spawn', '--task', 'T1', '--wait']);
+    assert.equal(next.resumed, !fresh);
+    const task = h.json(['task', 'show', 'T1']);
+    assert.equal(task.claim.from, 'rework');
+    if (!fresh) assert.equal(task.claim.since, claim.since);
+  });
 }
 
 test('interrupt stops supervision, preserves dirty work and resumes the original worker without rework', async (t) => {
