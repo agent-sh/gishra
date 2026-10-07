@@ -1,8 +1,20 @@
 'use strict';
 
 const fs = require('node:fs');
+const path = require('node:path');
 const cp = require('node:child_process');
 const original = cp.spawnSync;
+const BIN = path.join(__dirname, '..', '..', 'bin', 'tower-crane.js');
+
+// Holds a gh call open until the test releases it, so another command can run meanwhile.
+function pause(ready, release) {
+  fs.writeFileSync(ready, 'ready');
+  const deadline = performance.now() + 20000;
+  while (!fs.existsSync(release)) {
+    if (performance.now() > deadline) throw new Error('paused gh fixture was not released');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
 
 // Only GitHub is stubbed. Worktrees, commits, fetches and the bare remote are real.
 cp.spawnSync = function stackGh(command, args, opts) {
@@ -14,6 +26,16 @@ cp.spawnSync = function stackGh(command, args, opts) {
     fs.writeFileSync(file, JSON.stringify(data));
     return { status, stdout: typeof value === 'string' ? value : JSON.stringify(value), stderr };
   };
+  // data.during runs tower-crane commands once while this gh call is in flight.
+  const key = args.slice(0, 2).join(' ');
+  for (const cli of data.during?.[key] || []) {
+    const r = original(process.execPath, [BIN, ...cli], { cwd: data.repo, env: process.env, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`tower-crane ${cli.join(' ')} failed: ${r.stderr}`);
+  }
+  if (data.during) delete data.during[key];
+  if (key === 'pr view' && args[2] === process.env.TEST_STACK_PAUSE_VIEW) {
+    pause(process.env.TEST_STACK_PAUSE_READY, process.env.TEST_STACK_PAUSE_RELEASE);
+  }
   const git = (gitArgs) => {
     const r = original('git', gitArgs, { ...opts, cwd: data.repo });
     if (r.status !== 0) throw new Error(String(r.stderr));
@@ -61,6 +83,7 @@ cp.spawnSync = function stackGh(command, args, opts) {
   if (args[1] === 'unstack') { data.linked = false; return finish(); }
   if (args[1] === 'merge') {
     if (data.queued) return finish('queued');
+    if (data.mergeUnavailable) return finish('', 9, 'Stacked pull requests are not enabled');
     const end = data.order.indexOf(Number(args[2]));
     for (const n of data.order.slice(0, end + 1)) {
       data.prs[n].state = 'MERGED';

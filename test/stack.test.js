@@ -322,6 +322,95 @@ for (const related of [false, true]) {
   });
 }
 
+for (const [setting, cli] of [['base', ['project', 'set', '--base', 'release']], ['admin', ['project', 'set', '--merge-admin', 'true']]]) {
+  test(`a project ${setting} change during the final head checks stops the stack merge`, (t) => {
+    const f = setup(t);
+    upper(f);
+    f.accept('T1');
+    f.accept('T2');
+    f.write((d) => { d.during = { 'pr view': [cli] }; });
+    const r = f.h.run(['merge', 'T2']);
+    assert.equal(r.code, 1);
+    assert.match(r.stdout, /changed during stack head checks/);
+    assert.equal(f.read().calls.some((c) => c.args[0] === 'stack' && c.args[1] === 'merge'), false);
+  });
+}
+
+test('exit 9 from stack merge leaves a stack another worker claimed meanwhile', (t) => {
+  const f = setup(t);
+  upper(f);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => {
+    d.mergeUnavailable = true;
+    d.during = { 'stack merge': [['rework', 'T2', '--reason', 'another worker takes over'], ['claim', 'T2', '--agent', 'worker-new']] };
+  });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /stack metadata not applied/);
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(task.claim.agent, 'worker-new');
+  assert.equal(task.stack.linked, true);
+  assert.equal(task.stack_disabled, undefined);
+  assert.equal(f.h.json(['task', 'show', 'T1']).stack_disabled, undefined);
+});
+
+test('a worktree prepared before its dependency was submitted moves onto the dependency head at dispatch', (t) => {
+  const f = setup(t);
+  f.add('top', 'T2');
+  const early = f.h.json(['worktree', 'T3']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], early.path), f.h.git(['rev-parse', 'main']));
+  const { wt, sha } = upper(f);
+  const again = f.h.json(['worktree', 'T3']);
+  assert.equal(again.path, early.path);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], early.path), sha);
+  const task = f.h.json(['task', 'show', 'T3']);
+  assert.equal(task.stack.parent, 'T2');
+  assert.equal(task.stack.base, wt.branch);
+});
+
+test('a stale worktree with its own work refuses stacked dispatch', (t) => {
+  const f = setup(t);
+  f.add('top', 'T2');
+  const early = f.h.json(['worktree', 'T3']);
+  fs.writeFileSync(path.join(early.path, 'T3.txt'), 'T3\n');
+  f.h.git(['add', 'T3.txt'], early.path);
+  f.h.git(['commit', '-qm', 'early T3'], early.path);
+  const head = f.h.git(['rev-parse', 'HEAD'], early.path);
+  upper(f);
+  const r = f.h.run(['worktree', 'T3']);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /prepared before T2 was submitted and holds its own changes/);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], early.path), head);
+  assert.equal(f.h.json(['task', 'show', 'T3']).stack, undefined);
+});
+
+test('concurrent sibling dispatch on one submitted dependency records a single stack child', async (t) => {
+  const f = setup(t);
+  f.add('sibling', 'T1');
+  const ready = path.join(f.h.base, 'view-ready');
+  const release = path.join(f.h.base, 'view-release');
+  const slow = f.h.runAsync(['worktree', 'T3'], {
+    env: { TEST_STACK_PAUSE_VIEW: '11', TEST_STACK_PAUSE_READY: ready, TEST_STACK_PAUSE_RELEASE: release },
+  });
+  try {
+    const deadline = performance.now() + 15000;
+    while (!fs.existsSync(ready)) {
+      if (performance.now() > deadline) throw new Error('T3 preparation never read the dependency PR');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    f.h.json(['worktree', 'T2']);
+  } finally {
+    fs.writeFileSync(release, 'release');
+  }
+  const r = await slow;
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /changed during stack dispatch/);
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack.parent, 'T1');
+  assert.equal(f.h.json(['task', 'show', 'T3']).stack, undefined);
+  assert.match(f.h.run(['worktree', 'T3']).stderr, /one available stack chain/);
+});
+
 test('main movement refreshes an idle stack and changed heads require fresh submissions', (t) => {
   const f = setup(t);
   upper(f);
