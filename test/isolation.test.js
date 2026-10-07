@@ -262,9 +262,11 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['git', 'push', '-u', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
     [['git', 'push', '--set-upstream', '-q', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
     // Configuration that turns a plain push into a mirror.
-    [['git', 'config', 'remote.origin.mirror', 'true'], 0, 0],
-    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 126, 126],
-    [['git', 'config', '--unset', 'remote.origin.mirror'], 0, 0],
+    ...['true', 'yes', 'on', '1'].flatMap((v) => [
+      [['git', 'config', 'remote.origin.mirror', v], 0, 0],
+      [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 126, 126],
+      [['git', 'config', '--unset', 'remote.origin.mirror'], 0, 0],
+    ]),
     [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], NET, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
@@ -289,6 +291,14 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
       assert.deepEqual(codes, cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
     }
   }
+  // A mirror key with no value, which git reads as true.
+  const config = path.join(h.repo, '.git', 'config');
+  const before = fs.readFileSync(config, 'utf8');
+  fs.appendFileSync(config, '[remote "origin"]\n\tmirror\n');
+  isolated(h, 'hard', 'codex');
+  spawn(h, u, 'hard', { STUB_RUN: JSON.stringify([['git', 'push', 'origin', 'HEAD:refs/heads/ok']]) });
+  assert.deepEqual(u.report().ran.map((r) => r.code), [126], 'a valueless mirror key');
+  fs.writeFileSync(config, before);
 });
 
 test('an isolated reviewer posts through gh, records evidence in a symlinked state dir and runs a git fixture', { skip: NO_STUBS }, (t) => {
