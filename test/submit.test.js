@@ -114,8 +114,7 @@ test('resubmission belongs to the current submitter and stops after acceptance o
 test('review evidence must pin the reviewed sha when a worker resubmits during review', (t) => {
   const h = makeRepo(t);
   h.init();
-  for (const tier of ['easy', 'medium', 'hard', 'research']) h.ok(['ladder', 'set', tier, '--model', 'builder', '--clear', 'profile']);
-  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
+  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
     '--command', '["tower-crane-no-such-reviewer"]']);
   h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
@@ -140,9 +139,12 @@ test('review evidence must pin the reviewed sha when a worker resubmits during r
   const review = h.json(['evidence', 'T1', '--type', 'review', '--ok', '--sha', reviewedSha.toUpperCase(), '--agent', 'r-1']);
   assert.equal(review.sha, reviewedSha);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
-  assert.equal(h.run(['accept', 'T1']).code, 1);
+  const stale = h.run(['accept', 'T1']);
+  assert.equal(stale.code, 1, stale.stdout);
+  assert.match(stale.stderr, /could not start tower-crane-no-such-reviewer/);
+  assert.equal(h.json(['task', 'show', 'T1']).status, 'submitted');
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', newerSha, '--agent', 'r-1']);
-  h.ok(['accept', 'T1']);
+  assert.equal(h.json(['accept', 'T1']).status, 'accepted');
   assert.equal(h.json(['task', 'show', 'T1']).sha, newerSha);
 });
 
