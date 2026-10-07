@@ -284,6 +284,7 @@ setInterval(() => {}, 1000);\n`);
   const [ea, eb] = await Promise.all([event(a, 'worker-exited'), event(b, 'worker-exited')]);
   assert.equal(ea.id, eb.id);
   assert.equal(ea.detail.pid, spawned.pid);
+  assert.equal(ea.detail.attempt, spawned.attempt);
   assert.equal(ea.detail.tail, undefined, 'exit events never persist harness output');
   assert.match(h.json(['status']).exited_claims[0].tail, /worker alive/);
   assert.equal(log(h).filter((e) => e.type === 'worker-exited').length, 1);
@@ -354,8 +355,38 @@ test('a spawned worker that exits before claiming wakes without waiting for a le
   const e = await event(result, 'worker-exited');
   assert.equal(e.detail.pid, started.pid);
   assert.equal(e.detail.agent, started.agent);
+  assert.equal(e.detail.attempt, started.attempt);
   assert.equal(h.readState('tasks.json').tasks[0].claim, null);
   assert.equal(h.run(['wait', '--agent', 'orchestrator', '--types', 'worker-exited', '--timeout', '0.1']).code, 2);
+});
+
+test('exit observers include attempts for spawns recorded without an attempt field', (t) => {
+  const h = setup(t);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
+  commandWorker(h, [process.execPath, '-e', 'process.exit(0)']);
+  h.json(['spawn', '--task', 'T1', '--wait']);
+  const cursor = fs.statSync(path.join(h.state, 'events.jsonl')).size;
+  const hook = path.join(h.base, 'older-spawn.js');
+  fs.writeFileSync(hook, `
+const fs = require('node:fs');
+const read = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  const value = read.call(this, file, ...args);
+  if (!String(file).endsWith('events.jsonl') || typeof value !== 'string') return value;
+  return value.split('\\n').map((line) => {
+    if (!line) return line;
+    const event = JSON.parse(line);
+    if (event.cmd === 'spawn') delete event.detail.attempt;
+    return JSON.stringify(event);
+  }).join('\\n');
+};
+`);
+  const opts = { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } };
+  const started = h.json(['spawn', '--task', 'T1', '--wait'], opts);
+  const observed = h.json(['wait', '--agent', 'orchestrator', '--after', String(cursor), '--types', 'worker-exited', '--timeout', '1'], opts);
+  assert.equal(observed.detail.pid, started.pid);
+  assert.equal(observed.detail.attempt, 2);
+  assert.equal(observed.detail.attempt, started.attempt);
 });
 
 test('a lease stale without progress emits stall only once across waiters', async (t) => {
