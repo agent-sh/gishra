@@ -1,5 +1,5 @@
 'use strict';
-// Shared recorder for the T101 probes. Scratch repos come from test/helpers,
+// Shared recorder for the T101 probes. Scratch repos come from test/helpers.js,
 // under TOWER_CRANE_TEST_TMP; nothing here touches a real state directory.
 const fs = require('node:fs');
 const path = require('node:path');
