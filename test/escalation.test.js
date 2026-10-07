@@ -188,6 +188,31 @@ test('a reviewer without permission to create a worker home leaves the climb for
   assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
 });
 
+test('a brokered failed review records the climb and leaves dispatch to its host', async (t) => {
+  const h = setup(t, 'review');
+  const spawn = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+  const B = require('../lib/broker');
+  const binding = path.join(h.base, 'review-broker', B.FILE);
+  const broker = await B.start({
+    state: h.state, task: 'T1', agent: 'reviewer-T1-1', role: 'reviewer', cwd: spawn.cwd, broker: binding,
+  });
+  try {
+    const result = await B.forward(binding, ['evidence', 'T1', '--type', 'review', '--fail',
+      '--sha', h.git(['rev-parse', 'HEAD']), '--summary', 'wrong result'], h.state);
+    assert.equal(result.code, 0, result.stderr);
+    const task = h.json(['task', 'show', 'T1']);
+    assert.equal(task.tier, 'medium');
+    assert.equal(task.escalation_pending, true);
+    assert.equal(h.readAttempts().length, 1);
+    h.ok(['recover', 'T1', '--agent', 'orchestrator']);
+    await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
+    assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
+  } finally {
+    broker.close();
+  }
+});
+
 test('failure at the range top opens one owner decision and blocks further dispatch', async (t) => {
   const h = setup(t, 'top', 'easy..hard');
   h.ok(['spawn', '--task', 'T1']);
