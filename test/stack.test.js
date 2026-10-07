@@ -231,6 +231,52 @@ test('sync rework preserves a brief deletion that races its append', (t) => {
   assert.equal(fs.existsSync(brief), false, 'a removed brief must not be recreated by appending rework notes');
 });
 
+for (const related of [false, true]) {
+  test(`slow stack sync preserves a concurrent ${related ? 'stack member' : 'unrelated task'} claim after the lock lease expires`, async (t) => {
+    const f = setup(t);
+    upper(f);
+    const id = related ? 'T2' : f.add('independent');
+    if (related) f.h.ok(['rework', id, '--reason', 'prepare for another worker']);
+    f.write((d) => { d.syncCommit = true; });
+    const ready = path.join(f.h.base, 'sync-ready');
+    const release = path.join(f.h.base, 'sync-release');
+    const clock = path.join(f.h.base, 'clock');
+    const now = Date.now();
+    fs.writeFileSync(clock, String(now));
+    const synced = f.h.runAsync(['stack', 'sync', 'T2'], {
+      env: { TEST_STACK_SYNC_READY: ready, TEST_STACK_SYNC_RELEASE: release },
+      hooks: { HOOK_CLOCK_FILE: clock },
+    });
+    try {
+      const deadline = performance.now() + 15000;
+      while (!fs.existsSync(ready)) {
+        if (performance.now() > deadline) throw new Error('gh sync never started');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      fs.writeFileSync(clock, String(now + 120000));
+      const claimed = f.h.json(['claim', id, '--agent', 'worker-concurrent'], { hooks: { HOOK_CLOCK_FILE: clock } });
+      fs.writeFileSync(release, 'release');
+      const result = await synced;
+      const task = f.h.json(['task', 'show', id]);
+      assert.equal(task.status, 'in_progress');
+      assert.deepEqual(task.claim, claimed.claim, 'sync must preserve the new worker and its lease');
+      if (related) {
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /changed during stack sync/);
+        assert.deepEqual(task.stack, claimed.stack);
+        const events = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+        assert.equal(events.some((e) => e.cmd === 'stack sync'), false, 'a stale sync result must not be recorded');
+      } else {
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(f.h.json(['task', 'show', 'T2']).status, 'rework');
+      }
+    } finally {
+      fs.writeFileSync(release, 'release');
+      await synced;
+    }
+  });
+}
+
 test('main movement refreshes an idle stack and changed heads require fresh submissions', (t) => {
   const f = setup(t);
   upper(f);

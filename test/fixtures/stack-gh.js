@@ -62,6 +62,14 @@ cp.spawnSync = function stackGh(command, args, opts) {
     return finish();
   }
   if (args[1] === 'sync') {
+    if (process.env.TEST_STACK_SYNC_READY) {
+      fs.writeFileSync(process.env.TEST_STACK_SYNC_READY, 'ready');
+      const deadline = performance.now() + 20000;
+      while (!fs.existsSync(process.env.TEST_STACK_SYNC_RELEASE)) {
+        if (performance.now() > deadline) throw new Error('slow gh fixture was not released');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
     if (data.conflict) return finish('', 1, 'Conflict detected; all branches restored');
     if (data.syncCommit) {
       const r = original('git', ['-C', opts.cwd, 'commit', '--allow-empty', '-qm', 'sync refresh'], opts);
