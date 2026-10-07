@@ -15,6 +15,14 @@ async function fixture(t) {
   bodies.set('/copy', '<p>Page 0 says <b>water</b> &amp; light.</p>');
   bodies.set('/inline', '<p>The result is <strong>42</strong>.</p><p>A<em>B</em>C is adjacent.</p>');
   bodies.set('/blocks', '<p>First paragraph.</p><p>Second paragraph.</p>');
+  bodies.set('/nested', '<p title="a > b">Visible <b>nested <em>text</em></b>.</p><!-- hidden comment --><template>hidden template<template>inner template</template>outer hidden claim</template><script>if (a < b) { hiddenScript(); }</script><style>hidden style</style><p>After blocks.</p>');
+  bodies.set('/broken-comment', '<p>Visible prefix.</p><!-- unfinished hidden claim');
+  bodies.set('/broken-script', '<p>Visible prefix.</p><script>unfinished hidden claim');
+  bodies.set('/broken-style', '<p>Visible prefix.</p><style>unfinished hidden claim');
+  bodies.set('/broken-template', '<p>Visible prefix.</p><template><template>inner</template>unfinished hidden claim');
+  bodies.set('/broken-tag', '<p>Visible prefix.</p><span title="unfinished hidden claim');
+  bodies.set('/nested-tag', '<p>Visible prefix.</p><scr<script>ipt>unfinished hidden claim</script>');
+  bodies.set('/nested-comment', '<p>Visible prefix.</p><!-- outer <!-- inner --> outer hidden claim -->');
   const redirects = new Map([
     ['/alias', '/0'], ['/private-redirect', 'http://private.example/secret'],
     ['/loopback-redirect', 'http://127.0.0.1/secret'],
@@ -111,6 +119,36 @@ test('sources gate validates a public redirect hop and preserves its final URL',
   assert.equal(JSON.parse(result.stdout).receipt.sources[0].final_url, 'http://source.example/inline');
 });
 
+test('sources gate scans nested markup, quoted attributes and raw text blocks', async (t) => {
+  const { h, doc, submit } = await fixture(t);
+  doc.sources[0].url = 'http://source.example/nested';
+  doc.claims[0].quote = 'Visible nested text. After blocks.';
+  submit();
+  const result = await h.runAsync(['check', 'sources', 'T1']);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+});
+
+for (const [page, quote] of [
+  ['nested', 'outer hidden claim'],
+  ['broken-comment', 'unfinished hidden claim'],
+  ['broken-script', 'unfinished hidden claim'],
+  ['broken-style', 'unfinished hidden claim'],
+  ['broken-template', 'unfinished hidden claim'],
+  ['broken-tag', 'unfinished hidden claim'],
+  ['nested-tag', 'unfinished hidden claim'],
+  ['nested-comment', 'outer hidden claim'],
+]) {
+  test(`sources gate excludes hidden text from ${page} markup`, async (t) => {
+    const { h, doc, submit } = await fixture(t);
+    doc.sources[0].url = `http://source.example/${page}`;
+    doc.claims[0].quote = quote;
+    submit();
+    const result = await h.runAsync(['check', 'sources', 'T1']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /quote.*not found/);
+  });
+}
+
 test('sources gate pins its DNS answer for the real HTTP transport despite rebinding', async (t) => {
   const { h, doc, requests, submit } = await fixture(t);
   h.env.HOOK_SOURCES_PIN = '1';
@@ -124,6 +162,26 @@ test('sources gate pins its DNS answer for the real HTTP transport despite rebin
   assert.deepEqual(JSON.parse(fs.readFileSync(h.env.HOOK_SOURCES_TRACE, 'utf8')), {
     lookups: 1, address: '93.184.216.34', host: 'source.example',
   });
+  assert.deepEqual(requests, ['/0']);
+});
+
+test('sources gate falls back from unreachable IPv6 to IPv4 using its full pinned DNS answer', async (t) => {
+  const { h, doc, requests, submit } = await fixture(t);
+  h.env.HOOK_SOURCES_PIN = '1';
+  h.env.HOOK_SOURCES_DUAL_STACK = '1';
+  h.env.HOOK_SOURCES_TRACE = path.join(h.base, 'socket.json');
+  h.ok(['project', 'set', '--research-min-sources', '1']);
+  doc.sources = doc.sources.slice(0, 1);
+  doc.claims = doc.claims.slice(0, 1);
+  submit();
+  const result = await h.runAsync(['check', 'sources', 'T1']);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  const trace = JSON.parse(fs.readFileSync(h.env.HOOK_SOURCES_TRACE, 'utf8'));
+  assert.equal(trace.lookups, 1);
+  assert.deepEqual(trace.addresses, [
+    { address: '2606:4700:4700::1111', family: 6 },
+    { address: '93.184.216.34', family: 4 },
+  ]);
   assert.deepEqual(requests, ['/0']);
 });
 

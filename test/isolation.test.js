@@ -152,6 +152,11 @@ test('research Claude gets native or explicit web MCP tools with worker file and
   isolated(h, 'hard', 'claude');
   spawn(h, u, 'hard');
   const worker = u.report();
+  const filesystem = report => {
+    const { allowRead, ...shared } = report.settings.sandbox.filesystem;
+    assert.deepEqual(allowRead, [path.dirname(report.home)]);
+    return shared;
+  };
   isolated(h, 'research', 'claude');
   const dry = h.json(['spawn', '--role', 'research', '--task', 'T1', '--dry-run'], { env: u.env });
   assert.match(dry.home.agent_file, /tower-crane-researcher\.md$/);
@@ -159,7 +164,7 @@ test('research Claude gets native or explicit web MCP tools with worker file and
   const native = u.report();
   assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebSearch'));
   assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebFetch'));
-  assert.deepEqual(native.settings.sandbox.filesystem, worker.settings.sandbox.filesystem);
+  assert.deepEqual(filesystem(native), filesystem(worker));
   assert.deepEqual(native.settings.sandbox.network.allowedDomains, ['*']);
   assert.ok(native.memory.join('\n').includes('Use the network'));
   h.ok(['ladder', 'set', 'research', '--web-mcp', '{"name":"harness-web","command":"node","args":["/configured/server.mjs"]}']);
@@ -172,7 +177,7 @@ test('research Claude gets native or explicit web MCP tools with worker file and
   assert.ok(allowed.includes('mcp__harness-web__websearch'));
   assert.ok(allowed.includes('mcp__harness-web__webfetch'));
   assert.ok(!allowed.includes('mcp__harness-web'));
-  assert.deepEqual(web.settings.sandbox.filesystem, worker.settings.sandbox.filesystem);
+  assert.deepEqual(filesystem(web), filesystem(worker));
   noSecretsCopied(h);
   assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[],"env":{"TOKEN":"secret"}}']).code, 2);
   assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[]}', '--agent', 'worker-T1-1']).code, 1);
@@ -191,8 +196,17 @@ test('research Codex explicitly enables live search with worker file and git con
   assert.ok(researcher.args.includes('web_search="live"'));
   const workerFs = worker.config.permissions['tower-crane'].filesystem;
   const researchFs = researcher.config.permissions['tower-crane'].filesystem;
-  delete workerFs[path.join(worker.home)];
-  delete researchFs[path.join(researcher.home)];
+  for (const [report, rules] of [[worker, workerFs], [researcher, researchFs]]) {
+    const ownHome = path.dirname(report.home);
+    const sessions = path.join(h.state, 'homes', '.codex', path.basename(ownHome));
+    assert.equal(rules[path.join(h.state, 'homes')], 'none');
+    assert.equal(rules[ownHome], 'read');
+    assert.equal(rules[sessions], 'write');
+    assert.equal(rules[report.home], 'write');
+    delete rules[ownHome];
+    delete rules[sessions];
+    delete rules[report.home];
+  }
   assert.deepEqual(researchFs, workerFs);
   assert.deepEqual(researcher.rules, worker.rules);
   noSecretsCopied(h);
