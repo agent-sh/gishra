@@ -42,10 +42,17 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
 }
 
 for (const nextHarness of ['codex', 'claude']) {
-  test(`outage exhausts same-route retries before a fresh ${nextHarness} fallback and records route spend`, (t) => {
+  test(`outage exhausts same-route retries before a fresh ${nextHarness} fallback and records route spend`, async (t) => {
     const h = setup(t, { nextHarness });
-    const result = h.spawn();
+    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.spawnEnv });
+    // Windows pipe closure and hook writers can outlive the final harness.
+    // Assert the recorded exit and usage instead of timing a foreground CLI.
+    const result = await h.runAsync(['wait', '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '20']);
     assert.equal(result.code, 0, result.stderr);
+    const exited = JSON.parse(result.stdout);
+    assert.equal(exited.detail.agent, spawned.agent);
+    assert.equal(exited.detail.code, 0);
+    await until(() => events(h).filter((e) => e.cmd === 'spend').length === 2, 'route usage receipts were not recorded');
     const attempts = h.attempts();
     assert.deepEqual(attempts.map((a) => a.model), ['first', 'first', 'first', 'second']);
     assert.deepEqual(attempts.map((a) => a.retry), ['0', '1', '2', '0']);
