@@ -9,6 +9,7 @@ const { pathToFileURL } = require('node:url');
 const { makeRepo, BIN } = require('./helpers');
 const { CHROME, openBrowser } = require('./browser');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { preserve } = require('../lib/board/identity');
 
 // A project with something in every column: a decision, an owner task, a
 // claimed task with a message, a submitted task, and work ready and blocked.
@@ -56,6 +57,95 @@ async function withServers(fn) {
 const tokenOf = (page) => /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
 const post = (url, token, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tower-crane-token': token }, body: JSON.stringify(body) });
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+
+test('blocker rows and repeated mentions have distinct identities without breaking serve', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Rollout', '--acceptance', 'verified']);
+  h.ok(['task', 'add', '--title', 'Approve rollout', '--acceptance', 'verified', '--dep', 'T1', '--needs-owner', 'approve T1 rollout']);
+  h.ok(['ask', '--question', 'Check T1 then T1?', '--option', 'yes', '--option', 'no', '--blocks', 'T2']);
+  const identities = (page) => {
+    assert.doesNotThrow(() => preserve(page, { strict: true }), 'valid markup passes strict identity checking');
+    const blockers = page.match(/<article id="T2"[\s\S]*?<ul class="blockers box">([\s\S]*?)<\/ul>/)[1];
+    const keys = [...blockers.matchAll(/data-preserve="([^"]+)"/g)].map((m) => m[1]);
+    assert.equal(keys.length, 4, 'dependency, owner and both decision mentions link to T1');
+    assert.equal(new Set(keys).size, keys.length, 'each link has its own identity');
+    assert.ok(keys.every((key) => /^[0-9a-f]{64}$/.test(key)), 'valid rows need no duplicate suffix');
+    return keys;
+  };
+  let keys;
+  await withServers(async (servers) => {
+    for (const agent of ['owner', 'viewer']) {
+      const url = await startServe(servers, h, agent);
+      const response = await fetch(url);
+      assert.equal(response.status, 200, 'the board renders for valid repeated blocker references');
+      const served = identities(await response.text());
+      if (keys) assert.deepEqual(served, keys);
+      else keys = served;
+    }
+  });
+  assert.deepEqual(identities(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8')), keys);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  assert.deepEqual(identities(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8')), keys, 'dependency status changes keep row identities');
+  h.ok(['owner-done', 'T2']);
+  const page = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
+  const remaining = page.match(/<article id="T2"[\s\S]*?<ul class="blockers box">([\s\S]*?)<\/ul>/)[1];
+  assert.deepEqual([...remaining.matchAll(/data-preserve="([^"]+)"/g)].map((m) => m[1]), [keys[0], ...keys.slice(2)], 'surviving rows keep their keys after a sibling disappears');
+});
+
+test('duplicate preservation identities are safe in production and rejected by strict tests', () => {
+  const html = '<main><a href="#T1">first</a><a href="#T1">second</a><a href="#T1">third</a></main>';
+  const page = preserve(html);
+  const keys = [...page.matchAll(/data-preserve="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(new Set(keys).size, 4, 'even accidental duplicates remain addressable');
+  assert.deepEqual([...preserve(html).matchAll(/data-preserve="([^"]+)"/g)].map((m) => m[1]), keys, 'suffixes are deterministic');
+  assert.throws(() => preserve(html, { strict: true }), /duplicate board preservation identity/);
+});
+
+test('Settings signals restoration only after a delayed animation frame restores focus and scroll', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Rollout', '--acceptance', 'verified']);
+  await withServers(async (servers) => {
+    const b = await openBrowser(t);
+    await b.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+    await b.send('Page.enable');
+    await b.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      window.restorationFrames = [];
+      window.requestAnimationFrame = (callback) => window.restorationFrames.push(callback);
+      const stream = window.EventSource;
+      window.EventSource = function (url) { window.testStream = new stream(url); return window.testStream; };
+    ` });
+    for (const agent of ['owner', 'viewer']) {
+      await t.test(agent, async () => {
+        const url = await startServe(servers, h, agent);
+        await b.goto(`${url}settings`);
+        await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+        const page = await (await fetch(url)).text();
+        const version = JSON.parse(page.match(/<script[^>]*id="boot">([^<]+)<\/script>/)[1]).version;
+        assert.equal(await b.inPage(`(() => {
+          window.testStream.dispatchEvent(new MessageEvent('reload', { data: ${JSON.stringify(JSON.stringify({ version }))} }));
+          return sessionStorage.getItem('tower-crane:position:' + location.href);
+        })()`), null, 'the displayed version does not start another reload');
+        const control = agent === 'owner' ? `document.querySelector('tr[data-rung="easy"] input[name="model"]')` : `document.querySelector('.views a[data-view="settings"]')`;
+        const table = `document.querySelector('main .panel')`;
+        await b.inPage(`(() => { window.firstLoad = true; ${control}.focus({ preventScroll: true }); ${table}.scrollLeft = 100; })()`);
+        const left = await b.inPage(`${table}.scrollLeft`);
+        assert.ok(left > 0, 'the ladder table starts scrolled');
+        h.ok(['task', 'note', 'T1', `delayed restoration as ${agent}`]);
+        await b.until(`window.firstLoad !== true && document.readyState === 'complete' && document.querySelector('.conn').dataset.conn === 'live' && window.restorationFrames.length > 0`, 'the reload before its restoration frame');
+        assert.deepEqual(await b.inPage(`[document.documentElement.hasAttribute('data-position-restored'), document.activeElement.tagName, ${table}.scrollLeft]`), [false, 'BODY', 0], 'a loaded document is not yet restored');
+        await b.inPage(`window.beforeSecond = true`);
+        h.ok(['task', 'note', 'T1', `second update before restoration as ${agent}`]);
+        await b.until(`window.beforeSecond !== true && document.readyState === 'complete' && document.querySelector('.conn').dataset.conn === 'live' && window.restorationFrames.length > 0`, 'the second reload before restoring');
+        assert.equal(await b.inPage(`document.documentElement.hasAttribute('data-position-restored')`), false, 'the second reload has not restored yet');
+        await b.inPage(`window.restorationFrames.splice(0).forEach((callback) => callback(performance.now()))`);
+        await b.restored(`window.beforeSecond !== true`, 'the completed restoration');
+        assert.deepEqual(await b.inPage(`[document.activeElement === ${control}, ${table}.scrollLeft]`), [true, left], 'the marker follows restored focus and scroll through both reloads');
+      });
+    }
+  });
+});
 
 test('the snapshot names no network resource and carries no token or owner forms', (t) => {
   const h = makeRepo(t);
@@ -193,7 +283,7 @@ test('in a browser, every board write goes through its form: answer, comments, o
     // Answer with the option button, as a person would.
     let n = events();
     await b.inPage(`document.querySelector('form[data-api="/api/decisions/D1/answer"] button[value="redis"]').click()`);
-    await b.until(`!document.querySelector('form[data-api="/api/decisions/D1/answer"]')`, 'the answered decision to leave the board');
+    await b.restored(`!document.querySelector('form[data-api="/api/decisions/D1/answer"]')`, 'the answered decision to leave the board');
     const d1 = h.readState('decisions.json').decisions[0];
     assert.deepEqual([d1.status, d1.answer, d1.answered_by], ['answered', 'redis', 'owner']);
     assert.equal(events(), n + 1);
@@ -201,26 +291,26 @@ test('in a browser, every board write goes through its form: answer, comments, o
     // A comment on a task, from its sheet.
     await b.goto(`${url}#T1`);
     await b.inPage(`(() => { const f = document.querySelector('#T1 form[data-api="/api/tasks/T1/comments"]'); f.querySelector('textarea').value = 'please split the API part'; f.querySelector('button[type="submit"]').click(); })()`);
-    await b.until(`[...document.querySelectorAll('#T1 .thread .msg p')].some((p) => p.textContent === 'please split the API part')`, 'the comment in the thread');
+    await b.restored(`[...document.querySelectorAll('#T1 .thread .msg p')].some((p) => p.textContent === 'please split the API part')`, 'the comment in the thread');
     const t1 = h.readState('tasks.json').tasks[0];
     assert.deepEqual([t1.notes.at(-1).agent, t1.notes.at(-1).text], ['owner', 'please split the API part']);
 
     // Owner-done from the board plate.
     await b.goto(`${url}#board`);
     await b.inPage(`document.querySelector('form[data-api="/api/tasks/T3/owner-done"] button[type="submit"]').click()`);
-    await b.until(`!document.querySelector('form[data-api="/api/tasks/T3/owner-done"]')`, 'the owner task to clear');
+    await b.restored(`!document.querySelector('form[data-api="/api/tasks/T3/owner-done"]')`, 'the owner task to clear');
     assert.equal(h.readState('tasks.json').tasks[2].needs_owner, null);
 
     // Rework from the submitted task's sheet.
     await b.goto(`${url}#T5`);
     await b.inPage(`(() => { const f = document.querySelector('#T5 form[data-api="/api/tasks/T5/rework"]'); f.querySelector('textarea').value = 'docs miss the retry header'; f.querySelector('button').click(); })()`);
-    await b.until(`!document.querySelector('#T5 form[data-api="/api/tasks/T5/rework"]')`, 'the rework form to go once the task is in rework');
+    await b.restored(`!document.querySelector('#T5 form[data-api="/api/tasks/T5/rework"]')`, 'the rework form to go once the task is in rework');
     assert.equal(h.readState('tasks.json').tasks[4].status, 'rework');
 
     // Tier from a sheet, with the tier it was based on.
     await b.goto(`${url}#T2`);
     await b.inPage(`(() => { const f = document.querySelector('#T2 form[data-kind="tier"]'); f.querySelector('select').value = 'hard'; f.querySelector('button').click(); })()`);
-    await b.until(`document.querySelector('#T2 form[data-kind="tier"]') && document.querySelector('#T2 form[data-kind="tier"]').dataset.base === 'hard'`, 'the sheet to show the saved tier');
+    await b.restored(`document.querySelector('#T2 form[data-kind="tier"]') && document.querySelector('#T2 form[data-kind="tier"]').dataset.base === 'hard'`, 'the sheet to show the saved tier');
     assert.equal(h.readState('tasks.json').tasks[1].tier, 'hard');
     const tierEvent = log(h).pop();
     assert.deepEqual([tierEvent.cmd, tierEvent.agent, tierEvent.detail.tier, tierEvent.detail.via], ['task update', 'owner', 'hard', 'serve']);
@@ -247,13 +337,13 @@ test('in a browser, a change elsewhere updates the board in place and waits whil
     await b.inPage('window.firstLoad = true');
 
     h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'rebased, CI running', '--agent', 'w-1']);
-    await b.until(`document.querySelector('.card[data-key="T1"] .last p').textContent === 'rebased, CI running'`, 'the card to show the new message');
+    await b.restored(`document.querySelector('.card[data-key="T1"] .last p').textContent === 'rebased, CI running'`, 'the card to show the new message');
     assert.equal(await b.inPage('window.firstLoad === true && document.querySelector(\'.card[data-key="T1"]\').classList.contains(\'changed\')'), true, 'updated in place, and the card marks the change');
 
     // History keeps its filters across an update.
     await b.inPage(`(() => { location.hash = 'history'; document.getElementById('hf-messages').click(); const q = document.getElementById('hf-task'); q.value = 'T1'; q.dispatchEvent(new Event('input', { bubbles: true })); q.blur(); })()`);
     h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'CI green', '--agent', 'w-1']);
-    await b.until(`document.querySelector('#history').textContent.includes('CI green')`, 'History to show the new message');
+    await b.restored(`document.querySelector('#history').textContent.includes('CI green')`, 'History to show the new message');
     assert.deepEqual(await b.inPage(`[document.getElementById('hf-messages').checked, document.getElementById('hf-task').value, [...document.querySelectorAll('#history .ev')].filter((li) => getComputedStyle(li).display !== 'none' && !li.hidden).every((li) => li.dataset.kind === 'messages' && li.dataset.task === 'T1')]`), [true, 'T1', true]);
     await b.inPage(`location.hash = 'board'`);
 
@@ -261,12 +351,12 @@ test('in a browser, a change elsewhere updates the board in place and waits whil
     await b.inPage(`(() => { const d = document.querySelector('.col-need article[data-key="D1"] > details.more'); d.open = true; const ta = d.querySelector('textarea'); ta.focus(); })()`);
     await b.type('my draft');
     h.ok(['ask', '--question', 'Ship on Friday?', '--option', 'yes', '--option', 'no']);
-    await b.until(`document.querySelector('[data-notice]').classList.contains('on')`, 'the waiting notice');
+    await b.restored(`document.querySelector('[data-notice]').classList.contains('on')`, 'the waiting notice');
     assert.equal(await b.inPage(`document.querySelector('.col-need textarea').value`), 'my draft');
-    await b.until(`document.querySelector('.col-since').textContent.includes('Ship on Friday?')`, 'the other columns to update');
+    await b.restored(`document.querySelector('.col-since').textContent.includes('Ship on Friday?')`, 'the other columns to update');
     assert.equal(await b.inPage(`document.querySelector('.col-need').textContent.includes('Ship on Friday?')`), false, 'the held column has not changed yet');
     await b.inPage(`(() => { const ta = document.querySelector('.col-need textarea'); ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.blur(); })()`);
-    await b.until(`document.querySelector('.col-need').textContent.includes('Ship on Friday?')`, 'the held update to apply');
+    await b.restored(`document.querySelector('.col-need').textContent.includes('Ship on Friday?')`, 'the held update to apply');
     assert.equal(await b.inPage('window.firstLoad === true'), true, 'still the same page');
   });
 });
@@ -301,7 +391,7 @@ test('live CLI writes keep Plan, its task sheet, scroll and the focused control 
       if (width >= 720) assert.ok(plan.graph[0] > 0, 'the graph is scrolled horizontally');
       const update = `place kept at ${width}`;
       h.ok(['task', 'note', 'T1', update, '--agent', 'orchestrator']);
-      await b.until(`document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live state change');
+      await b.restored(`document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live state change');
       assert.deepEqual(await b.inPage(`[location.hash, document.documentElement.dataset.view, getComputedStyle(document.querySelector('#plan')).display !== 'none', !!document.querySelector('.sheet.open'), window.firstLoad]`), ['#plan', 'plan', true, false, true]);
       assert.deepEqual(await b.inPage(position), plan, `Plan keeps both scroll axes at ${width}`);
       assert.equal(await b.inPage(`document.activeElement === document.querySelector(${link})`), true, 'the same Plan link keeps focus');
@@ -319,7 +409,7 @@ test('live CLI writes keep Plan, its task sheet, scroll and the focused control 
       const sheetScroll = await b.inPage(`document.querySelector('#T1 .sbody').scrollTop`);
       assert.ok(sheetScroll > 0, 'the task sheet is scrolled');
       h.ok(['task', 'note', 'T1', `${update} with sheet`, '--agent', 'orchestrator']);
-      await b.until(`document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(`${update} with sheet`)})`, 'the task sheet update');
+      await b.restored(`document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(`${update} with sheet`)})`, 'the task sheet update');
       assert.deepEqual(await b.inPage(`[location.hash, document.documentElement.dataset.view, document.querySelector('.sheet.open').id, document.querySelector('main').inert, document.querySelector('.topbar').inert]`), ['#T1', 'plan', 'T1', true, true]);
       assert.equal(await b.inPage(`document.activeElement.getAttribute('data-copy')`), copy, 'the same sheet button keeps focus');
       assert.equal(await b.inPage(`document.querySelector('#T1 .sbody').scrollTop`), sheetScroll, 'the sheet keeps its scroll');
@@ -361,7 +451,7 @@ test('live CLI writes keep Settings and Spend focus and table scroll at 390px', 
         if (view === 'spend') assert.ok(new Set(before.tables.filter(([x]) => x > 0).map(([x]) => x)).size > 1, 'separate tables have distinct horizontal positions');
         const update = `${view} stays put as ${agent}`;
         h.ok(['task', 'note', 'T1', update]);
-        await b.until(view === 'settings' ? `window.firstLoad !== true && document.readyState === 'complete' && document.querySelector('.conn').dataset.conn === 'live'` : `document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live update');
+        await b.restored(view === 'settings' ? `window.firstLoad !== true && document.readyState === 'complete' && document.querySelector('.conn').dataset.conn === 'live'` : `document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live update');
         assert.equal(await b.inPage('location.href'), page, 'the current route stays');
         assert.deepEqual(await b.inPage(`[document.activeElement === document.querySelector(${focused}), ${position}]`), [true, before], 'focus and all scroll offsets stay on the same controls and containers');
       });
@@ -379,6 +469,13 @@ test('every view keeps disclosures, event identity, focus and scroll through liv
     const owner = await startServe(servers, h);
     const viewer = await startServe(servers, h, 'viewer');
     const b = await openBrowser(t);
+    await b.send('Page.enable');
+    await b.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      if (location.pathname.endsWith('/settings')) {
+        const frame = window.requestAnimationFrame.bind(window);
+        window.requestAnimationFrame = (callback) => setTimeout(() => frame(callback), 300);
+      }
+    ` });
     for (const width of [1280, 390]) {
       await b.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: false });
       for (const view of ['board', 'plan', 'history', 'spend', 'sheet', 'settings', 'settings-viewer']) {
@@ -426,7 +523,7 @@ test('every view keeps disclosures, event identity, focus and scroll through liv
           const event = eventView ? await b.inPage(`document.activeElement.closest('.ev').querySelector('.txt').textContent`) : null;
           const update = `update for ${view} at ${width}`;
           h.ok(['task', 'note', 'T1', update]);
-          await b.until(settings ? `window.firstLoad !== true && document.readyState === 'complete' && document.querySelector('.conn').dataset.conn === 'live'` : `document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live update');
+          await b.restored(settings ? `window.firstLoad !== true && document.readyState === 'complete' && document.querySelector('.conn').dataset.conn === 'live'` : `document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live update');
           assert.equal(await b.inPage('location.href'), url, 'the route stays');
           if (eventView) {
             assert.equal(await b.inPage(`document.activeElement.closest('.ev')?.querySelector('.txt').textContent`), event, 'focus remains in the original event row');
@@ -439,18 +536,18 @@ test('every view keeps disclosures, event identity, focus and scroll through liv
             const elements = [scope, ...scope.querySelectorAll('*'), document.querySelector('.views'), document.querySelector('main')];
             const restored = [...new Set(elements)].filter((el) => el.matches('a, button, input, textarea, select, summary, details, [tabindex]') || /auto|scroll/.test(getComputedStyle(el).overflow));
             const keys = restored.map((el) => el.dataset.preserve);
-            return [keys.every(Boolean), new Set(keys).size === keys.length];
+            return [keys.every((key) => /^[0-9a-f]{64}$/.test(key)), new Set(keys).size === keys.length];
           })()`), [true, true], 'every restored control, disclosure and scroll container has a unique server identity');
           if (view === 'spend') {
             h.ok(['spend', spendTask, '--tokens', '10000', '--rung', 'easy']);
-            await b.until(`document.querySelector('#spend a[href="#${spendTask}"]') && !document.querySelector('#spend details a[href="#${spendTask}"]')`, 'the focused task to move out of the disclosure');
+            await b.restored(`document.querySelector('#spend a[href="#${spendTask}"]') && !document.querySelector('#spend details a[href="#${spendTask}"]')`, 'the focused task to move out of the disclosure');
             assert.deepEqual(await b.inPage(`[document.activeElement.getAttribute('href'), document.querySelector('#spend details').open]`), [`#${spendTask}`, true], 'the same task action keeps focus after its row changes rank');
           }
           if (view === 'board') {
             const task = width === 1280 ? 'T6' : 'T7';
             await b.inPage(`document.querySelector('.col-next a[href="#${task}"]').focus({ preventScroll: true })`);
             h.ok(['claim', task, '--agent', `moving-${width}`]);
-            await b.until(`document.querySelector('.col-work .card[data-key="${task}"]')`, 'the task to move to Working now');
+            await b.restored(`document.querySelector('.col-work .card[data-key="${task}"]')`, 'the task to move to Working now');
             assert.equal(await b.inPage(`document.activeElement === document.querySelector('.col-work a[href="#${task}"]')`), true, 'the same task action keeps focus after moving between columns');
           }
         });
@@ -475,7 +572,7 @@ test('live updates match task sheet buttons by form and fall back when the focus
         assert.equal(await b.inPage(`document.activeElement === document.querySelector(${button})`), true, 'the action starts focused');
 
         h.ok(['owner-done', 'T1', '--note', 'access granted']);
-        await b.until(`!document.querySelector('#T1 form[data-api="/api/tasks/T1/owner-done"]')`, 'the owner-done form to be removed by the live update');
+        await b.restored(`!document.querySelector('#T1 form[data-api="/api/tasks/T1/owner-done"]')`, 'the owner-done form to be removed by the live update');
         assert.deepEqual(await b.inPage(`[location.hash, document.querySelector('.sheet.open').id]`), ['#T1', 'T1'], 'the task sheet stays open');
         const expected = action === 'comments' ? button : JSON.stringify('#T1 h2');
         assert.equal(await b.inPage(`document.activeElement === document.querySelector(${expected})`), true, action === 'comments' ? 'Send comment keeps focus when Mark done disappears' : 'focus moves to the heading when Mark done disappears');
@@ -567,7 +664,7 @@ test('budget-only attention agrees across the queue, navigation, title and icon,
     await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
     const originalIcon = await b.inPage(`document.querySelector('link[rel="icon"]').href`);
     h.ok(['spend', 'T1', '--tokens', '95', '--minutes', '57', '--agent', 'w-1']);
-    await b.until(`document.querySelector('.col-need').textContent.includes('Tokens at 95%')`, 'budget alerts');
+    await b.restored(`document.querySelector('.col-need').textContent.includes('Tokens at 95%')`, 'budget alerts');
     const counts = await b.inPage(`[document.querySelector('#h-need .n').textContent, document.querySelector('.views a[data-view="board"] .n').textContent, document.title.split(' ')[0], JSON.parse(document.getElementById('boot').textContent).attention]`);
     assert.deepEqual(counts.slice(0, 3), ['2', '2', '(2)']);
     assert.notEqual(await b.inPage(`document.querySelector('link[rel="icon"]').href`), originalIcon);
@@ -618,7 +715,7 @@ test('desktop columns keep headings visible, reach the last items and keep their
       }
       const expected = await b.inPage(`['need','work'].map((name) => { const c = document.querySelector('[data-region="' + name + '"]'); c.scrollTop = 160; return c.scrollTop; })`);
       h.ok(['task', 'note', 'T2', `update at ${width}`, '--agent', 'orchestrator']);
-      await b.until(`document.querySelector('.col-since').textContent.includes('update at ${width}')`, 'the live update');
+      await b.restored(`document.querySelector('.col-since').textContent.includes('update at ${width}')`, 'the live update');
       assert.deepEqual(await b.inPage(`['need','work'].map((name) => document.querySelector('[data-region="' + name + '"]').scrollTop)`), expected, `column roots retain their scroll at ${width}`);
     }
   });
@@ -647,18 +744,18 @@ test('task sheets contain keyboard focus, restore the invoking link and keep mod
       assert.equal(await b.inPage(`document.querySelector('#T1 .panel').contains(document.activeElement)`), true, 'Tab stays in the sheet');
     }
     h.ok(['msg', '--task', 'T1', '--to', 'orchestrator', 'modal refresh', '--agent', 'w-1']);
-    await b.until(`document.querySelector('#T1 .thread').textContent.includes('modal refresh')`, 'the sheet refresh');
+    await b.restored(`document.querySelector('#T1 .thread').textContent.includes('modal refresh')`, 'the sheet refresh');
     assert.equal(await b.inPage(`document.querySelector('main').inert && document.querySelector('.topbar').inert && document.querySelector('#T1 .panel').contains(document.activeElement)`), true);
     await b.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await b.until(`!document.querySelector('.sheet.open')`, 'sheet close');
     assert.equal(await b.inPage(`document.activeElement === document.querySelector('.col-work [href="#T1"]') && !document.querySelector('main').inert && !document.querySelector('.topbar').inert`), true, 'focus returns to the same invoking card, even when refreshed');
 
     h.ok(['ask', '--question', 'Another decision for Metrics?', '--option', 'yes', '--option', 'no', '--blocks', 'T4']);
-    await b.until(`document.querySelector('.col-need [data-key="D2"]')`, 'the second decision');
+    await b.restored(`document.querySelector('.col-need [data-key="D2"]')`, 'the second decision');
     await b.inPage(`(() => { const a = document.querySelector('.col-need [data-key="D2"] [href="#T4"]'); a.focus(); a.click(); })()`);
     await b.until(`document.querySelector('#T4').classList.contains('open')`, 'the Metrics sheet');
     h.ok(['task', 'note', 'T4', 'receipt available', '--agent', 'reviewer']);
-    await b.until(`document.querySelector('#T4 .thread').textContent.includes('receipt available')`, 'the sheet refresh');
+    await b.restored(`document.querySelector('#T4 .thread').textContent.includes('receipt available')`, 'the sheet refresh');
     await b.inPage(`document.querySelector('#T4 [data-close]').click()`);
     await b.until(`!document.querySelector('.sheet.open')`, 'sheet close');
     assert.equal(await b.inPage(`document.activeElement === document.querySelector('.col-need [data-key="D2"] [href="#T4"]')`), true, 'duplicate task links in one column return to the invoking decision, not its first neighbor');
