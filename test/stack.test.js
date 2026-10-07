@@ -277,6 +277,51 @@ for (const related of [false, true]) {
   });
 }
 
+for (const related of [false, true]) {
+  test(`slow PR linking preserves a concurrent ${related ? 'member' : 'unrelated'} claim after lock expiry`, async (t) => {
+    const f = setup(t);
+    const wt = f.h.json(['worktree', 'T2']);
+    f.submit('T2', 12, wt);
+    const id = related ? 'T2' : f.add('independent');
+    const ready = path.join(f.h.base, 'link-ready');
+    const release = path.join(f.h.base, 'link-release');
+    const clock = path.join(f.h.base, 'clock');
+    const now = Date.now();
+    fs.writeFileSync(clock, String(now));
+    const linked = f.h.runAsync(['stack', 'link', 'T2'], {
+      env: { TEST_STACK_LINK_READY: ready, TEST_STACK_LINK_RELEASE: release },
+      hooks: { HOOK_CLOCK_FILE: clock },
+    });
+    try {
+      const deadline = performance.now() + 15000;
+      while (!fs.existsSync(ready)) {
+        if (performance.now() > deadline) throw new Error('gh link never started');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      fs.writeFileSync(clock, String(now + 120000));
+      const opts = { hooks: { HOOK_CLOCK_FILE: clock } };
+      if (related) f.h.ok(['rework', id, '--reason', 'another worker takes over'], opts);
+      const claimed = f.h.json(['claim', id, '--agent', 'worker-concurrent'], opts);
+      fs.writeFileSync(release, 'release');
+      const result = await linked;
+      const task = f.h.json(['task', 'show', id]);
+      assert.equal(task.status, 'in_progress');
+      assert.deepEqual(task.claim, claimed.claim);
+      if (related) {
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /changed during stack link/);
+        assert.deepEqual(task.stack, claimed.stack);
+      } else {
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(f.h.json(['task', 'show', 'T2']).stack.linked, true);
+      }
+    } finally {
+      fs.writeFileSync(release, 'release');
+      await linked;
+    }
+  });
+}
+
 test('main movement refreshes an idle stack and changed heads require fresh submissions', (t) => {
   const f = setup(t);
   upper(f);

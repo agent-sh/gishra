@@ -45,6 +45,14 @@ cp.spawnSync = function stackGh(command, args, opts) {
   if (args[1] === '--version') return finish(`gh-stack v${data.version || '0.2.0'}`);
   if (data.unavailable) return finish('', 9, 'Stacked pull requests are not enabled');
   if (args[1] === 'link') {
+    if (process.env.TEST_STACK_LINK_READY) {
+      fs.writeFileSync(process.env.TEST_STACK_LINK_READY, 'ready');
+      const deadline = performance.now() + 20000;
+      while (!fs.existsSync(process.env.TEST_STACK_LINK_RELEASE)) {
+        if (performance.now() > deadline) throw new Error('slow link fixture was not released');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      }
+    }
     data.linked = true;
     data.order = args.slice(2, args.indexOf('--base')).map(Number);
     return finish();

@@ -14,6 +14,10 @@ Stack merges record ordinary `merge` evidence and matching gate audit events for
 
 Sync holds the state lock only for its initial read and final compare-and-apply. Its gh commands and branch reads, fetches and pushes run unlocked. Application compares project configuration, stack membership, complete member task records and member events against the snapshot. A difference refuses application without writing sync events, briefs or task records. Writes to unrelated tasks are preserved by applying to freshly read state.
 
+Linking, completed-chain retirement and unstacking use the same snapshot, unlocked commands and compare-and-apply rule. Automatic linking runs after exit collection commits, outside that mutation. A stale link or unstack result cannot clear a new claim or replace member metadata. Remote PR changes may already have completed when application is refused; inspect them before retrying.
+
+The shared command runner rejects Git and gh calls inside state mutation transactions. Spawn prepares repository directories and credentials before its write; acceptance and review dispatch prepare local CI inputs and snapshots before their writes and reject changed inputs. View rendering starts after the mutation releases its lock and reads current state.
+
 Tests, cleanup, review diffs and local CI use the dependency branch as the base for stacked tasks. A successful sync changes that base to main when the lower task has merge evidence. Old head evidence cannot count after the worker resubmits a refreshed head. Stack merge rechecks all lower heads because GitHub's stack merge command has no head-match option; see cli.md for its limits and the ordinary admin fallback.
 
 Tower Crane keeps a project's plan and progress in plain files. People and dashboards read them; the `tower-crane` CLI and serve's owner forms write through the same locked, validated functions. An agent that needs to change state runs a command.

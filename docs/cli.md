@@ -6,7 +6,7 @@ Agent identity comes from `--agent NAME`, then `TOWER_CRANE_AGENT`. With neither
 
 `accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's live or unverified claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `TOWER_CRANE_AGENT=owner`. The terminal fallback never grants these owner powers. Any agent may release a spawned claim verified exited under the lock. An agent requests other owner action with `tower-crane ask` or a task note.
 
-Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. `render` takes the lock too. A refused command writes nothing.
+Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing.
 
 ## Plan
 
@@ -76,6 +76,8 @@ The list settings also work with `init`. Omitted options leave their fields unch
 Dependent tasks can start while a single dependency chain is submitted or accepted but unmerged. `worktree` and `spawn` check the GitHub stacks endpoint, verify the dependency PR's current head and repository, fetch its branch, and create the upper branch at that head. The worker prompt names the dependency branch as the PR base. `ready` and `claim` allow submitted dependencies when they form one chain with a PR, branch and sha; dispatch still verifies availability. Independent dependency chains and forks wait for the ordinary accepted-dependency flow.
 
 The dispatch supervisor links submitted PRs with `gh stack link <lower-pr> <upper-pr>` in bottom-to-top order. Native dispatches use `stack link ID` after recording the PR with `submit`. Linking verifies every member's submitted head, PR base and same-repository origin. Auto-merge must be disabled. Workers retain their existing gh permissions; linking and synchronization run under the dispatcher's policy.
+
+Stack operations that contact GitHub and change task metadata snapshot the project, members and member events, execute GitHub commands without the state lock, then compare against freshly read state before applying. Linking, retirement and unstacking preserve concurrent claims and refuse changed member or project inputs. A refusal can follow a successful remote operation, so inspect the PRs and branches before retrying. Automatic linking follows the collector's state write.
 
 When stacks become available again, a successful `stack link ID` clears ordinary-merge fallback markers for that chain and restores the stack merge guard.
 
