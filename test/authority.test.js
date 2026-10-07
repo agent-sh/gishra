@@ -237,3 +237,43 @@ test('a tool that is not a harness built-in or changes the rung sandbox is owner
   h.ok(['ladder', 'set', 'review', '--tools', '["Edit"]']);
   assert.deepEqual(h.readState('project.json').ladder.review.tools, ['Edit']);
 });
+
+test('moving a sandboxed rung, a fallback route or the default harness off claude and codex is owner-required', (t) => {
+  const h = setup(t);
+  const unconfined = (harness, args) => ({ unconfined: [{ harness, ...(args ? { args } : {}) }] });
+  let opened = 0;
+  for (const [args, change] of [
+    [['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'anthropic/claude-x'], { ladder: { hard: unconfined('opencode') } }],
+    [['ladder', 'set', 'review', '--fallbacks', '[{"harness":"pi","model":"m","args":["--anything"]}]'], { ladder: { review: unconfined('pi', ['--anything']) } }],
+    [['ladder', 'harness', 'opencode'], { harness: 'opencode', ladder: { easy: unconfined('opencode'), medium: unconfined('opencode'), review: unconfined('opencode'), small: unconfined('opencode') } }],
+    [['ladder', 'set', 'orchestrator', '--harness', 'pi', '--model', 'm', '--args', '["--anything"]'], { ladder: { orchestrator: unconfined('pi', ['--anything']) } }],
+  ]) {
+    const before = h.readState('project.json');
+    const r = h.run(args, as('orchestrator'));
+    opened += 1;
+    assert.equal(r.code, 1, `${args.join(' ')}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(`ladder\\.reach is owner-required; opened D${opened} `));
+    assert.deepEqual(h.readState('project.json'), before);
+    assert.deepEqual(h.readState('decisions.json').decisions.at(-1).escalation, { settings: ['ladder.reach'], change });
+    const worker = h.run(args, as('worker-T1-1'));
+    assert.equal(worker.code, 1);
+    assert.match(worker.stderr, /only the owner/);
+  }
+  // The orchestrator runs unsandboxed, so moving its rung without args drops nothing.
+  h.ok(['ladder', 'set', 'orchestrator', '--harness', 'opencode', '--model', 'anthropic/claude-x'], as('orchestrator'));
+  // Once the owner moved a rung, the orchestrator tunes it.
+  h.ok(['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'anthropic/claude-x']);
+  h.ok(['ladder', 'set', 'hard', '--model', 'anthropic/claude-y', '--effort', 'high'], as('orchestrator'));
+  assert.equal(h.readState('project.json').ladder.hard.model, 'anthropic/claude-y');
+  assert.equal(h.readState('decisions.json').decisions.length, opened);
+});
+
+test('an orchestrator init with an owner-required setting is told to init without it', (t) => {
+  const h = makeRepo(t);
+  const r = h.run(['init', '--name', 'demo', '--goal', 'autonomy', '--merge-admin', 'true'], as('orchestrator'));
+  assert.equal(r.code, 1, r.stderr);
+  assert.match(r.stderr, /merge\.admin is owner-required; init without it/);
+  assert.doesNotMatch(r.stderr, /open a decision/);
+  assert.ok(!fs.existsSync(h.state), 'refused init creates no state directory');
+  h.ok(['init', '--name', 'demo', '--goal', 'autonomy'], as('orchestrator'));
+});

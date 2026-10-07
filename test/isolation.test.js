@@ -789,7 +789,7 @@ test('only the orchestrator or the owner widens a rung, a command needs the owne
   }
   const command = as('orchestrator', ['--harness', 'command', '--command', '["sh"]', '--clear', 'model']);
   assert.equal(command.code, 1);
-  assert.match(command.stderr, /ladder\.command is owner-required; opened D1/);
+  assert.match(command.stderr, /ladder\.command, ladder\.reach are owner-required; opened D1/);
   h.ok(['ladder', 'set', 'small', '--model', 'sonnet', '--agent', 'orchestrator']);
   assert.equal(as('orchestrator', ['--tools', '["Agent"]']).code, 0);
   assert.equal(as('owner', ['--args', '["--verbose","--max-turns","40"]']).code, 0);

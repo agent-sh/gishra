@@ -168,22 +168,49 @@ test('only the owner can waive tests or clean, the orchestrator escalates, and a
   ]);
 });
 
-test('the orchestrator waives review for a capped or down reviewer and the waiver counts', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h);
-  ev(h, 'tests', 'orchestrator');
-  ev(h, 'clean', 'orchestrator');
-  const waive = ['accept', 'T1', '--waive', 'review', '--reason', 'reviewer capped'];
-  const worker = h.run([...waive, '--agent', 'w-2']);
-  assert.equal(worker.code, 1, worker.stderr);
-  assert.match(worker.stderr, /waive\.review is operational/);
-  h.ok([...waive, '--agent', 'orchestrator']);
-  const task = h.readState('tasks.json').tasks[0];
-  assert.equal(task.status, 'accepted');
-  assert.deepEqual(task.evidence.filter((e) => e.waived).map((e) => [e.type, e.agent]), [['review', 'orchestrator']]);
-  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
-});
+// A review spawn at the submitted head whose process exited without a verdict.
+function reviewerDown(h) {
+  const { revision } = h.readState('tasks.json').tasks[0];
+  const at = new Date().toISOString();
+  const detail = { agent: 'r-9', role: 'reviewer', rung: 'review', sha: h.sha, revision, pid: 999999, attempt: 1 };
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), [
+    { at, agent: 'orchestrator', cmd: 'spawn', task: 'T1', detail },
+    { at, agent: 'orchestrator', cmd: 'spawn exit', task: 'T1', detail: { agent: 'r-9', pid: 999999, attempt: 1, code: 1 } },
+  ].map((e) => `${JSON.stringify(e)}\n`).join(''));
+}
+
+// A check ci at the submitted head that found the review app at its usage limit.
+function reviewerCapped(h) {
+  h.ok(['project', 'set', '--ci-capped-review', '[{"app":"reviewbot","pattern":"usage limit"}]']);
+  h.ok(['check', 'ci', 'T1', '--agent', 'orchestrator'], { env: { FIXTURE_CAPPED: '1' } });
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.at(-1).capped_review, ['bot-review (reviewbot)']);
+}
+
+for (const [state, makeOut] of [['capped', reviewerCapped], ['down', reviewerDown]]) {
+  test(`the orchestrator waives review only for a ${state} reviewer and the waiver counts`, (t) => {
+    const h = makeRepo(t);
+    h.init();
+    submitted(h);
+    ev(h, 'tests', 'orchestrator');
+    ev(h, 'clean', 'orchestrator');
+    const waive = ['accept', 'T1', '--waive', 'review', '--reason', `reviewer ${state}`];
+    // A reviewer that is neither capped nor down: waiving it is the owner's.
+    const live = h.run([...waive, '--agent', 'orchestrator']);
+    assert.equal(live.code, 1, live.stderr);
+    assert.match(live.stderr, /waive\.review_live is owner-required; opened D1 for the owner/);
+    assert.equal(h.readState('tasks.json').tasks[0].evidence.filter((e) => e.waived).length, 0);
+    makeOut(h);
+    const worker = h.run([...waive, '--agent', 'w-2']);
+    assert.equal(worker.code, 1, worker.stderr);
+    assert.match(worker.stderr, /waive\.review is operational/);
+    h.ok([...waive, '--agent', 'orchestrator']);
+    const task = h.readState('tasks.json').tasks[0];
+    assert.equal(task.status, 'accepted');
+    assert.deepEqual(task.evidence.filter((e) => e.waived).map((e) => [e.type, e.agent]), [['review', 'orchestrator']]);
+    assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+    assert.equal(h.readState('decisions.json').decisions.length, 1);
+  });
+}
 
 test('rework sends the task back with the reason in the brief, and it can be claimed again', (t) => {
   const h = makeRepo(t);
