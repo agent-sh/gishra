@@ -113,6 +113,26 @@ test('research web MCP and provider fallbacks coexist and require owner identity
   assert.deepEqual(h.json(['ladder', 'show']).ladder.research.fallbacks, fallbacks);
 });
 
+test('research web MCP inheritance remains Claude-only and refuses additional MCP servers', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
+  const fallbacks = [{ harness: 'claude', model: 'backup' }, { harness: 'codex', model: 'second' }];
+  h.ok(['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server), '--fallbacks', JSON.stringify(fallbacks)]);
+  const routes = require('../lib/ladder').routes(h.json(['ladder', 'show']).ladder.research);
+  assert.deepEqual(routes[1].web_mcp, server);
+  assert.equal(routes[2].web_mcp, undefined);
+  const extra = h.run(['ladder', 'set', 'research', '--fallbacks',
+    JSON.stringify([{ harness: 'claude', model: 'backup', mcp: ['other'] }])]);
+  assert.equal(extra.code, 1, extra.stderr);
+  assert.match(extra.stderr, /web_mcp cannot be combined with mcp/);
+  assert.deepEqual(h.json(['ladder', 'show']).ladder.research.fallbacks, fallbacks);
+  const nonClaude = h.run(['ladder', 'set', 'research', '--fallbacks',
+    JSON.stringify([{ harness: 'codex', model: 'second', web_mcp: server }])]);
+  assert.equal(nonClaude.code, 1, nonClaude.stderr);
+  assert.match(nonClaude.stderr, /web_mcp applies only to claude/);
+});
+
 test('ladder save-user makes the project ladder the default for new projects', (t) => {
   const h = makeRepo(t);
   h.init();

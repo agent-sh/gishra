@@ -366,7 +366,10 @@ test('local CI selects kind args, replacement commands and the default with audi
     assert.deepEqual(JSON.parse(fs.readFileSync(h.log, 'utf8')), command.slice(3));
     const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.deepEqual(events.findLast((v) => v.cmd === 'check ci').detail.receipt, e.receipt);
-    assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+    const gates = h.json(['task', 'show', 'T1']).gates;
+    assert.equal(gates.gates.find(g => g.type === 'ci').ok, true);
+    assert.equal(gates.ok, kind !== 'research');
+    if (kind === 'research') assert.equal(gates.gates.find(g => g.type === 'sources').ok, false);
   }
 });
 

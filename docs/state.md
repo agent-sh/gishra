@@ -144,7 +144,7 @@ Supervision defaults are `retries: 5`, `backoff_ms: 30000`, `max_backoff_ms: 600
 
 `progress_paths` adds relative files or directories inside the worktree to the durable log and claimant events that always count as progress. Directory checks skip symlinks, `.git`, `.tower-crane` and `node_modules`. Absolute paths and `..` components are refused. Linux samples the harness and descendant CPU ticks. Without CPU metadata, the supervisor keeps the lease but does not infer a stall from quiet output alone.
 
-`fallbacks` defaults to an empty list. For example, an easy rung with `profile: "luna"` can configure `"fallbacks": [{"profile":"sol","effort":"high"}]`. A fallback without `harness` uses the primary route's resolved harness. It inherits the primary `supervision` unless it names its own; all other route fields are independent, so model, profile, provider, args, tools and environment settings from one route cannot bleed into another. Project environment, sandbox and scope defaults still apply to each route. Every route is validated for its resolved harness. Nested fallback lists are refused. The list is captured under the spawn lock with the primary route; later ladder edits apply to new dispatches.
+`fallbacks` defaults to an empty list. For example, an easy rung with `profile: "luna"` can configure `"fallbacks": [{"profile":"sol","effort":"high"}]`. A fallback without `harness` uses the primary route's resolved harness. It inherits the primary `supervision` unless it names its own. Research Claude fallbacks also inherit the primary `web_mcp` unless they supply their own. Other route fields are independent, so model, profile, provider, args, tools and environment settings from one route cannot bleed into another. Project environment, sandbox and scope defaults still apply to each route. Every route is validated for its resolved harness, including its inherited web MCP. Nested fallback lists are refused. The list is captured under the spawn lock with the primary route; later ladder edits apply to new dispatches.
 
 Every rung must be able to run on the harness it resolves to: a `codex` rung needs a `model` or a `profile`, `claude`, `opencode`, `agy` and `pi` rungs need a `model`, and a `command` rung needs a `command`. A field the resolved harness does not use (a `profile` on pi, say) is refused, not ignored, so a switch of harness never quietly runs a model nobody chose. A ladder write is refused when it leaves a rung unable to run that could run before; `spawn` refuses a rung that cannot run, and `validate` reports every such rung. Loading checks only the shape (known rungs, harnesses and field types): a rung that falls back to the user file can break when that file changes, and the project must still load so `tower-crane ladder set` can repair it, one rung at a time.
 
@@ -262,11 +262,13 @@ Hosted CI evidence and its audit event also carry `ci_policy`: `{ "required": []
 
 The CLI refuses manual software verdicts, and software receipts require matching records in tasks.json and events.jsonl. Plain files cannot stop a writer running as the same user from forging those records or an owner waiver. Command receipts show what ran; acceptance does not check whether a caller-supplied test or cleanup command is the right one for the project. The reviewer checks those commands.
 
+Research Claude fallback routes inherit the primary `web_mcp` unless they specify their own. The same `{name, command, args}` validation and owner controls apply to an explicit fallback server. Other harnesses do not inherit it. Combining an inherited or explicit web MCP with `mcp` is refused so only the web server loads.
+
 ### Research sources
 
 `project.research` is optional and accepts only `min_sources`, a positive integer; it defaults to 10. The explicit owner sets it with `project set --research-min-sources N` (also accepted by `init`). Changing the minimum invalidates sources evidence recorded under a different minimum.
 
-Tasks of kind `research` on the `research` tier require sources evidence. Kind `research` selects this tier by default. Changing only the kind preserves the existing tier and its role; an ordinary worker does not gain a sources requirement or web permissions from a kind label change. Code tasks may use the research tier for model selection and retain their code gates.
+Tasks of kind `research` require sources evidence on every tier. Kind `research` selects the research tier by default. Changing only the kind preserves the existing tier and its role; verification follows the new kind. Tier changes do not remove the sources requirement or citation-review instructions. Code tasks may use the research tier for model selection and retain their code gates.
 
 A research deliverable is committed at `research/<task id>.json`:
 
@@ -304,7 +306,7 @@ Any agent recovers a verified exited task with `release ID --reason R`. The dete
 `tower-crane accept` refuses unless the task's current revision has, at the submitted `sha`:
 
 - `code` tasks: `tests` ok, `clean` ok, and `review` ok from an agent other than the one that submitted
-- `research` tasks on the `research` tier: `sources` ok and `review` ok from another agent
+- `research` tasks on any tier: `sources` ok and `review` ok from another agent
 - other tasks: `review` ok from another agent
 - any task with a PR, whatever its kind: `ci` ok as well
 
@@ -312,7 +314,7 @@ Tests modes change how `check tests` produces evidence, not which gates acceptan
 
 Successful tests evidence counts only when its audited `tests_mode` matches the mode currently resolved for the project and task kind. A mode change, a missing mode on older evidence or a malformed current policy needs a new tests check. The audit event must contain the same mode as the evidence; changing the mode in tasks.json alone cannot retarget evidence. Owner waivers still apply. Task views, board gate pips and evidence ledger (including accepted tasks), acceptance and merge use this same rule.
 
-Before acceptance, `accept ID --cmd "<scoped tests>"` runs unattempted software gates in order: tests and clean for code, sources for research kind on the research tier, then CI for every task with a PR. Pass `--cmd` when tests are missing in prove or run-only mode; without it the missing tests gate blocks. None mode records its audited tests result without a command. Expensive prove also accepts `--proof-cmd` with the `{tests}` placeholder. Eligible successful receipts are reused. Failed, stale local-CI or unaudited attempted receipts require an explicit `check` rerun. Results are recorded even if a later gate refuses acceptance. A head, revision or status change during a gate refuses the attempt. Review dispatch is guarded again under the state lock.
+Before acceptance, `accept ID --cmd "<scoped tests>"` runs unattempted software gates in order: tests and clean for code, sources for research kind on every tier, then CI for every task with a PR. Pass `--cmd` when tests are missing in prove or run-only mode; without it the missing tests gate blocks. None mode records its audited tests result without a command. Expensive prove also accepts `--proof-cmd` with the `{tests}` placeholder. Eligible successful receipts are reused. Failed, stale local-CI or unaudited attempted receipts require an explicit `check` rerun. Results are recorded even if a later gate refuses acceptance. A head, revision or status change during a gate refuses the attempt. Review dispatch is guarded again under the state lock.
 
 When software gates pass and no review has been attempted at the current head and revision, `accept` dispatches a reviewer and exits 0 with `review_pending: true` and its agent name in JSON; the task stays submitted. A repeated accept reuses a live review dispatch. Call accept again after review evidence arrives. Failed reviews require rework or an explicit stronger review dispatch. `spawn --role review` also refuses until all software gates pass; `--dry-run` checks them for a submitted task. For an unsubmitted task a dry run previews the fallback command only, and cannot dispatch a review.
 

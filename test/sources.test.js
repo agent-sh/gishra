@@ -7,7 +7,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { makeRepo } = require('./helpers');
 
-async function fixture(t) {
+async function fixture(t, tier) {
   const requests = [];
   const bodies = new Map(Array.from({ length: 10 }, (_, i) => [
     `/${i}`, `<p>Page ${i} says <b>water</b> &amp; light.</p><script>hidden claim</script>`,
@@ -44,7 +44,8 @@ async function fixture(t) {
   h.env.NODE_OPTIONS = `${h.env.NODE_OPTIONS || ''} --require=${JSON.stringify(preload)}`;
   h.env.HOOK_SOURCES_ORIGIN = `http://127.0.0.1:${server.address().port}`;
   h.init();
-  h.ok(['task', 'add', '--title', 'Research', '--kind', 'research', '--acceptance', 'claims have sources']);
+  h.ok(['task', 'add', '--title', 'Research', '--kind', 'research', '--acceptance', 'claims have sources',
+    ...(tier ? ['--tier', tier] : [])]);
   h.ok(['claim', 'T1', '--agent', 'researcher']);
   const wt = h.json(['worktree', 'T1']).path;
   const doc = {
@@ -208,7 +209,33 @@ for (const [url, expectedRequests] of [
   });
 }
 
-test('sources gate follows the research role when kind changes without moving the task tier', (t) => {
+for (const [i, tier] of ['easy', 'medium', 'hard', 'research'].entries()) {
+  test(`research kind requires sources and citation review on ${tier} tier, including after a tier move`, async (t) => {
+    const { h, submit } = await fixture(t, tier);
+    const sha = submit();
+    h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha]);
+    const report = h.json(['task', 'show', 'T1']).gates;
+    assert.equal(report.ok, false, 'review alone cannot satisfy research verification');
+    assert.equal(report.gates.find(g => g.type === 'sources')?.ok, false);
+    const blocked = h.run(['spawn', '--role', 'review', '--task', 'T1', '--dry-run']);
+    assert.equal(blocked.code, 1);
+    assert.match(blocked.stderr, /sources/);
+    const checked = await h.runAsync(['check', 'sources', 'T1']);
+    assert.equal(checked.code, 0, checked.stdout + checked.stderr);
+    for (const target of [tier, ['medium', 'hard', 'research', 'easy'][i]]) {
+      h.ok(['task', 'update', 'T1', '--tier', target]);
+      assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+      const review = h.json(['spawn', '--role', 'review', '--task', 'T1', '--dry-run']);
+      const prompt = review.argv.join('\n');
+      assert.match(prompt, /each claim maps to a cited source/);
+      assert.match(prompt, /## Sources receipt/);
+      assert.match(prompt, /"min_sources": 10/);
+      assert.match(prompt, /research\/T1\.json/);
+    }
+  });
+}
+
+test('sources gate follows research kind when kind changes without moving the task tier', (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--kind', 'docs', '--title', 'Worker task', '--acceptance', 'reviewed']);
@@ -217,7 +244,8 @@ test('sources gate follows the research role when kind changes without moving th
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha]);
   h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha]);
   h.ok(['task', 'update', 'T1', '--kind', 'research']);
-  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+  assert.equal(h.json(['task', 'show', 'T1']).tier, 'medium');
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
   h.ok(['task', 'update', 'T1', '--tier', 'research']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find(g => g.type === 'sources').ok, false);
   h.ok(['task', 'update', 'T1', '--kind', 'docs']);
