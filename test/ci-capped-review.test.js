@@ -49,6 +49,7 @@ function fixture(t) {
         type: evidence.type, ok: evidence.ok, sha: evidence.sha, agent: evidence.agent,
         at: evidence.at, summary: evidence.summary, ref: evidence.ref, revision: evidence.revision,
         source: 'check ci', commands: evidence.commands, ci_policy: evidence.ci_policy,
+        ...(evidence.capped_review ? { capped_review: evidence.capped_review } : {}),
       });
       assert.equal(evidence.source, 'check ci');
       assert.ok(Array.isArray(evidence.commands));
@@ -64,6 +65,7 @@ test('configured review cap passes the real CLI gate and is named in recorded ev
     assert.equal(r.code, 0, r.summary);
     assert.equal(r.ok, true);
     assert.match(r.summary, /ci\.capped_review: Revuto \(revuto-review\)/);
+    assert.deepEqual(r.capped_review, ['Revuto (revuto-review)']);
   }
 });
 
