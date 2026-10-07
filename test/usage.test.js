@@ -227,11 +227,13 @@ test('collectors and concurrent waiters share one private exit event and usage e
 
 test('codex session fallback opens only the exact session and counts cached input once', (t) => {
   const h = setup(t);
-  const codexHome = path.join(h.base, 'codex');
+  // The agent writes its session in its own home, which links sessions to
+  // one kept after the home is removed.
+  const codexHome = path.join(h.state, 'homes', '.codex');
   const id = '01a11284-12da-7953-94fb-07a97b081e94';
-  const file = path.join(codexHome, 'sessions', '2026', '10', '06', `rollout-2026-10-06T21-40-07-${id}.jsonl`);
+  const file = path.join('sessions', '2026', '10', '06', `rollout-2026-10-06T21-40-07-${id}.jsonl`);
   h.ok(['spawn', '--task', 'T1', '--wait'], {
-    env: { ...h.usageEnv, CODEX_HOME: codexHome, USAGE_SESSION: file, USAGE_SESSION_FIXTURE: fixture('codex-session.jsonl') },
+    env: { ...h.usageEnv, USAGE_SESSION: file, USAGE_SESSION_FIXTURE: fixture('codex-session.jsonl') },
     hooks: { ...h.usageHooks, HOOK_USAGE_FILE: fixture('codex.log') },
   });
   const s = spends(h);
@@ -288,7 +290,7 @@ test('late session detail enriches a partial total without counting it twice', (
   });
   assert.equal(spends(h).tokens, 120);
   assert.equal(spends(h).entries[0].cached, null);
-  const dir = path.join(h.usageEnv.CODEX_HOME, 'sessions', '2026', '10', '06');
+  const dir = path.join(h.state, 'homes', '.codex', 'sessions', '2026', '10', '06');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `rollout-2026-10-06T00-00-00-${id}.jsonl`), [
     JSON.stringify({ type: 'turn_context', payload: { model: 'enriched-model' } }),
