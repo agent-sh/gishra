@@ -385,6 +385,62 @@ test('a stale worktree with its own work refuses stacked dispatch', (t) => {
   assert.equal(f.h.json(['task', 'show', 'T3']).stack, undefined);
 });
 
+function resubmit(f, rewrite) {
+  f.h.ok(['rework', 'T1', '--reason', 'more lower work']);
+  fs.writeFileSync(path.join(f.lower.path, 'T1b.txt'), 'T1b\n');
+  f.h.git(['add', 'T1b.txt'], f.lower.path);
+  f.h.git(rewrite ? ['commit', '--amend', '-qm', 'T1 rewritten'] : ['commit', '-qm', 'T1 more'], f.lower.path);
+  f.h.git(['push', 'origin', `${rewrite ? '+' : ''}${f.lower.branch}`], f.lower.path);
+  const sha = f.h.git(['rev-parse', 'HEAD'], f.lower.path);
+  f.write((d) => { d.prs[11].headRefOid = sha; });
+  f.h.ok(['claim', 'T1', '--agent', 'worker-T1']);
+  f.h.ok(['submit', 'T1', '--sha', sha, '--branch', f.lower.branch, '--pr', '11', '--agent', 'worker-T1']);
+  return sha;
+}
+
+test('spawn moves a prepared dependent onto its dependency\'s resubmitted head', (t) => {
+  const f = setup(t);
+  const wt = f.h.json(['worktree', 'T2']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), f.sha);
+  const sha = resubmit(f, false);
+  worker(f);
+  f.h.ok(['spawn', '--task', 'T2', '--wait']);
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(task.status, 'submitted');
+  assert.equal(task.stack.parent_sha, sha);
+  assert.equal(f.h.git(['rev-parse', `${task.sha}^`]), sha);
+});
+
+test('worktree replaces a rewritten dependency head under an untouched prepared branch', (t) => {
+  const f = setup(t);
+  const wt = f.h.json(['worktree', 'T2']);
+  const sha = resubmit(f, true);
+  assert.throws(() => f.h.git(['merge-base', '--is-ancestor', f.sha, sha]));
+  f.h.json(['worktree', 'T2']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), sha);
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack.parent_sha, sha);
+});
+
+test('a prepared dependent with its own work refuses a resubmitted dependency until it merges the new head', (t) => {
+  const f = setup(t);
+  const wt = f.h.json(['worktree', 'T2']);
+  fs.writeFileSync(path.join(wt.path, 'T2.txt'), 'T2\n');
+  f.h.git(['add', 'T2.txt'], wt.path);
+  f.h.git(['commit', '-qm', 'early T2'], wt.path);
+  const head = f.h.git(['rev-parse', 'HEAD'], wt.path);
+  const sha = resubmit(f, false);
+  const r = f.h.run(['worktree', 'T2']);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /holds its own changes on T1 .* resubmitted/);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), head);
+  worker(f);
+  assert.notEqual(f.h.run(['spawn', '--task', 'T2', '--wait']).code, 0);
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'todo');
+  f.h.git(['merge', '-q', '--no-edit', sha], wt.path);
+  f.h.json(['worktree', 'T2']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD^2'], wt.path), sha);
+});
+
 test('concurrent sibling dispatch on one submitted dependency records a single stack child', async (t) => {
   const f = setup(t);
   f.add('sibling', 'T1');
@@ -602,4 +658,16 @@ test('older gh-stack versions fall back before creating a dependency-based branc
   assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), f.h.git(['rev-parse', 'main']));
   assert.equal(f.h.json(['task', 'show', 'T2']).stack_disabled, true);
   assert.equal(f.read().calls.some((c) => c.args[0] === 'api' && c.args[1].includes('/stacks')), false);
+});
+
+test('gh without the gh-stack extension falls back for accepted dependencies and waits for submitted ones', (t) => {
+  const f = setup(t);
+  f.write((d) => { d.missingExtension = true; });
+  const waiting = f.h.run(['worktree', 'T2']);
+  assert.equal(waiting.code, 1);
+  assert.match(waiting.stderr, /stacks unavailable; wait for T1/);
+  f.accept('T1');
+  const wt = f.h.json(['worktree', 'T2']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), f.h.git(['rev-parse', 'main']));
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack_disabled, true);
 });

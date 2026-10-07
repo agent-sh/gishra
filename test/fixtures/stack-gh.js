@@ -64,6 +64,7 @@ cp.spawnSync = function stackGh(command, args, opts) {
     return finish();
   }
   if (args[0] !== 'stack') throw new Error(`unexpected gh: ${args}`);
+  if (data.missingExtension) return finish('', 1, 'gh stack is available as an official extension.\nTo install it, run: gh extension install github/gh-stack\n');
   if (args[1] === '--version') return finish(`gh-stack v${data.version || '0.2.0'}`);
   if (data.unavailable) return finish('', 9, 'Stacked pull requests are not enabled');
   if (args[1] === 'link') {
