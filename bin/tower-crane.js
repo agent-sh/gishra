@@ -76,6 +76,8 @@ const TASK_FIELDS = {
   kind: str('K', 'code, docs, research, design or ops (default code)'),
   size: str('S', 'S (under an hour), M (a few hours) or L (a day); default M'),
   dep: many('ID', 'a task this one depends on; repeat for more'),
+  lock: many('NAME', 'exclusive resource name; repeat for several'),
+  environment: str('LABEL', "environment label; '' clears it"),
   tier: str('T', 'easy, medium, hard, research or an ascending range (easy..medium): the ladder rung that does it (default: research for kind research, else S easy, M medium, L hard)'),
   'needs-owner': str('REASON', 'what the owner has to do first'),
 };
@@ -107,8 +109,8 @@ const COMMANDS = [
   { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--fallbacks JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
   { section: 'Plan', name: 'ladder harness', pos: ['HARNESS'], usage: 'HARNESS', summary: 'set the default harness every rung without its own runs on', run: P.ladderHarness },
   { section: 'Plan', name: 'ladder save-user', summary: "write this project's ladder to the user file, the default for new projects", run: P.ladderSaveUser },
-  { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--tier T] [--dep ID] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
-  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--size S] [--kind K] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies, kind and local CI override wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request requires explicit owner identity"), 'ci-local': str('JSON', 'owner only: local CI override with command or args and optional timeout; null restores kind or default policy'), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
+  { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
+  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--lock NAME]... [--environment LABEL] [--size S] [--kind K] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies, kind and local CI override wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), lock: many('NAME', "replaces all locks; '' clears them; changes require no live lease or reservation"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request requires explicit owner identity"), 'ci-local': str('JSON', 'owner only: local CI override with command or args and optional timeout; null restores kind or default policy'), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
   { section: 'Plan', name: 'task note', pos: ['ID', 'TEXT...'], usage: 'ID TEXT', summary: 'append a note', run: T.taskNote },
   { section: 'Plan', name: 'task show', pos: ['ID'], usage: 'ID', summary: 'show one task with its gates, evidence and notes', run: T.taskShow },
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, run: T.taskList },
@@ -206,9 +208,16 @@ function convert(name, spec, raw) {
 
 // Options take their value from the next token even if it starts with "-",
 // so "--minutes -5" reaches validation instead of becoming an unknown flag.
+// spans name the token indexes each option took, for the state broker.
+// Option names come from the command line, which the state broker takes from
+// a sandboxed agent, so only a command's own option names are looked up and
+// values collect in a Map; no name can reach Object.prototype.
+const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
+
 function parseOptions(tokens, specs, where) {
-  const flags = {};
+  const flags = new Map();
   const pos = [];
+  const spans = [];
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     if (tok === '--') {
@@ -216,7 +225,7 @@ function parseOptions(tokens, specs, where) {
       break;
     }
     if (tok === '-h') {
-      flags.help = true;
+      flags.set('help', true);
       continue;
     }
     if (!tok.startsWith('--')) {
@@ -225,25 +234,28 @@ function parseOptions(tokens, specs, where) {
     }
     const eq = tok.indexOf('=');
     const name = eq === -1 ? tok.slice(2) : tok.slice(2, eq);
-    const spec = specs[name];
+    const spec = !RESERVED.has(name) && Object.hasOwn(specs, name) ? specs[name] : null;
     if (!spec) throw usage(`unknown option --${name}${where ? ` for ${where}` : ''}; see tower-crane ${where ? `${where} ` : ''}--help`);
     if (spec.type === 'bool') {
       if (eq !== -1) throw usage(`--${name} takes no value`);
-      flags[name] = true;
+      flags.set(name, true);
+      spans.push({ name, from: i, to: i });
       continue;
     }
+    const from = i;
     let raw;
     if (eq !== -1) raw = tok.slice(eq + 1);
     else {
       if (i + 1 >= tokens.length) throw usage(`--${name} needs a value (${spec.arg})`);
       raw = tokens[++i];
     }
+    spans.push({ name, from, to: i });
     const value = convert(name, spec, raw);
-    if (spec.type === 'multi') (flags[name] = flags[name] || []).push(value);
-    else if (flags[name] !== undefined) throw usage(`--${name} was given twice`);
-    else flags[name] = value;
+    if (spec.type === 'multi') flags.set(name, [...(flags.get(name) || []), value]);
+    else if (flags.has(name)) throw usage(`--${name} was given twice`);
+    else flags.set(name, value);
   }
-  return { flags, pos };
+  return { flags: Object.fromEntries(flags), pos, spans };
 }
 
 function splitGlobals(flags) {
@@ -340,6 +352,17 @@ async function main(argv) {
     for (const r of cmd.required || []) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: tower-crane ${cmd.name} ${cmd.usage}`);
     }
+    const locate = () => S.locateStateDir(globals.state, process.env, process.cwd());
+    // A sandboxed agent cannot write the state; its spawn's broker does.
+    if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {
+      const input = argv.includes('-') ? require('node:fs').readFileSync(0, 'utf8') : undefined;
+      const res = await require('../lib/broker').forward(process.env.TOWER_CRANE_BROKER, argv, locate(), input);
+      if (res) {
+        process.stdout.write(res.stdout || '');
+        process.stderr.write(res.stderr || '');
+        return res.code;
+      }
+    }
     let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
     // Terminal fallback identifies ordinary actions; owner powers need a named identity.
     const agentExplicit = agent !== undefined;
@@ -356,7 +379,7 @@ async function main(argv) {
       json: !!globals.json,
       flags: own,
       pos: parsed.pos,
-      stateDir: S.locateStateDir(globals.state, process.env, process.cwd()),
+      stateDir: locate(),
     };
     const res = await cmd.run(ctx);
     if (res && !res.printed) {
@@ -394,4 +417,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, COMMANDS };
+module.exports = { main, COMMANDS, GLOBAL, resolveCommand, parseOptions };
