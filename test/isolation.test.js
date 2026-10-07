@@ -325,6 +325,26 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
   fs.writeFileSync(config, before);
 });
 
+test('an isolated Codex worker can publish its task branch with an allow rule and guarded git', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const remote = path.join(h.base, 'publish.git');
+  h.git(['init', '-q', '--bare', remote]);
+  h.git(['remote', 'add', 'origin', remote]);
+  const branch = h.git(['branch', '--show-current'], wt);
+  isolated(h, 'hard', 'codex');
+  spawn(h, u, 'hard', { STUB_RUN: JSON.stringify([
+    ['git', 'push', '-u', 'origin', branch],
+    ['git', 'push', '--force', 'origin', branch],
+  ]) });
+  const seen = u.report();
+  assert.match(seen.rules.join('\n'), /pattern = \["git", "push"\],\n {4}decision = "allow"/);
+  assert.match(seen.rules.join('\n'), /pattern = \["git", "push", "--force"\],\n {4}decision = "forbidden"/);
+  assert.deepEqual(seen.ran.map((r) => r.code), [0, 126]);
+  assert.equal(h.git(['--git-dir', remote, 'rev-parse', `refs/heads/${branch}`]), h.git(['rev-parse', 'HEAD'], wt));
+  spawn(h, u, 'review');
+  assert.doesNotMatch(u.report().rules.join('\n'), /decision = "allow"/);
+});
+
 test('an isolated reviewer posts through gh, records evidence in a symlinked state dir and runs a git fixture', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   // The state directory reached through a symlink, as .tower-crane -> .gishra was.
