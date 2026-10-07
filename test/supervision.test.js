@@ -138,9 +138,33 @@ for (const error of ['75', 'outage', 'server', 'status-json', 'claude-error', 'c
   });
 }
 
-test('repeated transient exits exhaust bounded retries with exponential backoff and a blocked phase', (t) => {
+test('repeated transient exits render the blocked phase before foreground spend', async (t) => {
   const h = setup(t, { failures: 9 });
-  const result = h.spawn();
+  const paused = path.join(h.base, 'spawn-spend-paused');
+  const release = path.join(h.base, 'spawn-spend-release');
+  const hook = path.join(__dirname, 'fixtures', 'supervision-followups.js').replace(/\\/g, '/');
+  const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: {
+      NODE_OPTIONS: `--require "${hook}"`,
+      TOWER_CRANE_TEST_HOLD_SPAWN_SPEND: paused,
+      TOWER_CRANE_TEST_RELEASE_SPAWN_SPEND: release,
+    },
+  });
+  let result;
+  try {
+    await until(() => fs.existsSync(paused), 'foreground spend did not pause after the monitor exit');
+    const events = log(h);
+    assert.ok(events.some((e) => e.cmd === 'spawn exit'), 'the monitor recorded its exit before spend paused');
+    const task = h.json(['task', 'show', 'T1']);
+    assert.equal(task.run.phase, 'blocked');
+    assert.match(task.run.reason, /after 2 retries/);
+    for (const { file, text } of sketches(h)) {
+      assert.match(text, /blocked: transient exit after 2 retries/, `${file} shows the final blocked phase before spend`);
+    }
+  } finally {
+    fs.writeFileSync(release, 'release');
+    result = await completed;
+  }
   assert.equal(result.code, 75, result.stderr);
   assert.equal(h.readAttempts().length, 3);
   const retries = log(h).filter((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying');
@@ -148,9 +172,6 @@ test('repeated transient exits exhaust bounded retries with exponential backoff 
   const task = h.json(['task', 'show', 'T1']);
   assert.equal(task.run.phase, 'blocked');
   assert.match(task.run.reason, /after 2 retries/);
-  for (const { file, text } of sketches(h)) {
-    assert.match(text, /blocked: transient exit after 2 retries/, `${file} shows the blocked phase`);
-  }
   assert.equal(task.claim.agent, 'worker-T1-1');
   assert.equal(task.status, 'in_progress');
   assert.match(h.ok(['status']), /blocked: transient exit after 2 retries/);
