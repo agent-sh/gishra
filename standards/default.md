@@ -11,7 +11,7 @@ The way Tower Crane works unless the project names its own profile in `project.j
 
 ## Changes and pull requests
 
-- Every change reaches the base branch through a pull request. Keep branches short-lived and merge the current base into your branch with a merge commit before publishing. The PR's squash merge makes this commit harmless; push normally. A rebase that would require a force push is the orchestrator's job.
+- Every change reaches the base branch through a pull request. Keep branches short-lived. Read the configured `base` from `tower-crane project show` and replace `BASE` in `git fetch origin +refs/heads/BASE:refs/remotes/origin/BASE` and `git merge --no-ff origin/BASE` with that branch name. The PR's squash merge makes this commit harmless; push normally. A rebase that would require a force push is the orchestrator's job.
 - One task, one branch, one PR. A PR that depends on another open PR stays stacked; the orchestrator handles any history rewrite needed to update the stack.
 - The PR body says what changed, why, how it was verified, and the limits. Keep it current when the change moves.
 - Merge only when CI is green on the exact head, review passed, and the merge names that head (`--match-head-commit`). A cancelled, timed-out or never-started check is a failure, not a pass.
