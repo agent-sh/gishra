@@ -286,7 +286,7 @@ for (const [name, settings, runs] of [
     if (expensive) {
       assert.match(evidence.summary, /scoped proof/);
       assert.equal(evidence.tests_mode, 'prove');
-      assert.equal(evidence.commands.filter((c) => c.command === `${shellQuote(process.execPath)} test/value.test.js`).length, 2);
+      assert.equal(evidence.commands.filter((c) => c.command === `${shellQuote(process.execPath)} ${shellQuote('test/value.test.js')}`).length, 2);
     }
     assert.equal(h.git(['worktree', 'list', '--porcelain']).split('\n').filter((l) => l.startsWith('worktree ')).length, 1);
   });
