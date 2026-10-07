@@ -1,6 +1,6 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -9,6 +9,7 @@ const http = require('node:http');
 const { makeRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
@@ -69,6 +70,7 @@ ${waitForFinish ? `const timer = setInterval(() => {
   return h;
 }
 
+describe('supervision integration cases', { concurrency: windowsConcurrency }, () => {
 for (const attempt of bedrockOutage.attempts) {
   for (const type of ['error', 'turn.failed']) {
     test(`recorded Bedrock attempt ${attempt.attempt} ${type} reruns with the session and claim kept`, (t) => {
@@ -748,4 +750,5 @@ test('rework cannot resume a session while its transient rerun is still alive', 
   assert.equal(result.code, 1, result.stderr);
   assert.match(result.stderr, /previous worker.*still running/);
   await until(() => !detachedAlive({ pid: spawned.monitor_pid }), 'previous supervisor did not finish');
+});
 });

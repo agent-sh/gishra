@@ -5,9 +5,9 @@ const os = require('node:os');
 
 const args = ['--test'];
 const concurrency = process.platform === 'win32'
-  ? 6
+  ? 4
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
-// Windows pays more for process startup, so run more independent test files together.
+// Bound Windows file workers while slow suites parallelize independent cases internally.
 args.push(`--test-concurrency=${concurrency}`);
 args.push('test/*.test.js', 'test/gates/*.test.js');
 

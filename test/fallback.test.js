@@ -1,10 +1,11 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo } = require('./helpers');
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const supervision = { retries: 2, backoff_ms: 10, max_backoff_ms: 20, stall_ms: 60000 };
@@ -41,6 +42,7 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   return h;
 }
 
+describe('fallback integration cases', { concurrency: windowsConcurrency }, () => {
 for (const nextHarness of ['codex', 'claude']) {
   test(`outage exhausts same-route retries before a fresh ${nextHarness} fallback and records route spend`, async (t) => {
     const h = setup(t, { nextHarness });
@@ -293,4 +295,5 @@ test('a detached switch wakes a live waiter, keeps its lease, and collects route
   assert.equal(task.run.phase, 'waiting');
   assert.deepEqual(task.spend.entries.map((e) => [e.model, e.tokens]), [['first', 39], ['second', 13]]);
   assert.equal(events(h).filter((e) => e.cmd === 'worker-exited').length, 1);
+});
 });
