@@ -239,6 +239,8 @@ test('progress paths and CPU detect a stalled process without dropping its live 
   assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /blocked: no progress paths or CPU activity/);
   fs.writeFileSync(path.join(spawned.cwd, 'progress.txt'), 'progress\n');
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'running', 'path progress did not clear stall');
+  await until(() => !fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').includes('blocked: no progress paths or CPU activity'),
+    'saved board did not clear stall');
   assert.doesNotMatch(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /blocked: no progress paths or CPU activity/);
   assert.equal(h.json(['task', 'show', 'T1']).claim.agent, spawned.agent);
   assert.deepEqual(h.json(['status']).exited_claims, []);
