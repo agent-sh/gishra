@@ -73,7 +73,10 @@ function plant(h) {
   ].join('\n'), { mode: 0o755 });
   const out = path.join(h.base, 'stub.json');
   const runEnv = { ...h.env, HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_OUT: out };
-  // The developer's own harness homes must not leak in.
+  // The developer's own harness homes and gh tokens must not leak in: the
+  // fixture's gh login lives in its stub keyring. The tokens are emptied, not
+  // deleted, since the caller's own env would fill a missing key back in.
+  for (const k of ['GH_TOKEN', 'GITHUB_TOKEN']) runEnv[k] = '';
   delete runEnv.CLAUDE_CONFIG_DIR;
   delete runEnv.CODEX_HOME;
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
@@ -292,6 +295,59 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
   }
   assert.equal(h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'review').length, 2);
   for (const f of walk(realState)) assert.ok(!fs.readFileSync(f, 'utf8').includes('stub-gh-token'), `${f} holds the gh token`);
+});
+
+test('a gh token in the spawning environment passes through, and the keyring is asked only without one', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'review', harness);
+    spawn(h, u, 'review');
+    assert.equal(u.report().ghToken, 'stub-gh-token', `${harness}: the keyring's token`);
+    spawn(h, u, 'review', { GH_TOKEN: 'spawner-token' });
+    assert.equal(u.report().ghToken, 'spawner-token', `${harness}: the spawner's own token`);
+    spawn(h, u, 'review', { GITHUB_TOKEN: 'spawner-github-token' });
+    assert.equal(u.report().ghToken, null, `${harness}: GITHUB_TOKEN is left for gh to read`);
+  }
+});
+
+test('a push counts as local only when every URL git would use is local, so rewriting cannot reach another machine', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const local = path.join(h.base, 'local.git');
+  h.git(['init', '-q', '--bare', local]);
+  const away = 'https://127.0.0.1:9/away.git';
+  // A fixture repo the agent may write, with a rewrite rule and a remote
+  // whose second push URL is on another machine.
+  const fx = path.join(h.base, 'fx');
+  h.git(['init', '-q', fx]);
+  h.git(['-C', fx, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x']);
+  h.git(['-C', fx, 'remote', 'add', 'two', local]);
+  h.git(['-C', fx, 'remote', 'set-url', '--add', '--push', 'two', local]);
+  h.git(['-C', fx, 'remote', 'set-url', '--add', '--push', 'two', away]);
+  const rewritten = path.join(h.base, 'rewritten.git');
+  const cases = [
+    [['git', '-C', fx, 'push', '-q', local, 'HEAD:refs/heads/plain', '--force'], 0, 0],
+    [['git', '-C', fx, '-c', `url.${away}.insteadOf=${rewritten}`, 'push', rewritten, 'HEAD:refs/heads/x'], 126, 126],
+    [['git', '-C', fx, '-c', 'remote.two.pushurl=' + away, 'push', 'two', 'HEAD'], 126, 126],
+    [['git', '-C', fx, 'config', `url.${away}.insteadOf`, rewritten], 0, 0],
+    [['git', '-C', fx, 'push', rewritten, 'HEAD:refs/heads/x', '--force'], 126, 126],
+    [['git', '-C', fx, 'push', 'two', 'HEAD:refs/heads/x', '--force'], 126, 126],
+    [['git', '-C', fx, 'config', '--unset', `url.${away}.insteadOf`], 0, 0],
+    [['git', '-C', fx, 'config', `url.${away}.pushInsteadOf`, local], 0, 0],
+    [['git', '-C', fx, 'push', local, 'HEAD:refs/heads/x', '--force'], 126, 126],
+  ];
+  for (const harness of ['claude', 'codex']) {
+    for (const rung of ['hard', 'small']) {
+      try {
+        h.git(['-C', fx, 'config', '--unset-all', `url.${away}.pushInsteadOf`]);
+      } catch {
+        // Not set yet.
+      }
+      isolated(h, rung, harness);
+      spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
+      const ran = u.report().ran;
+      assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[rung === 'hard' ? 1 : 2]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+    }
+  }
 });
 
 test('a codex rework resumes in a fresh isolated home and finds its first session', { skip: NO_STUBS }, (t) => {
