@@ -1,0 +1,73 @@
+{
+  "code_head": "0e3ebfdf8f46ad96f9c80a2df80120eaac533ecf",
+  "full_suite": {
+    "command": "node --test --test-concurrency=4 test/*.test.js test/gates/*.test.js",
+    "passed": 301,
+    "failed": 0,
+    "skipped": 0,
+    "exit": 0
+  },
+  "focused_suite": {
+    "passed": 31,
+    "failed": 0,
+    "skipped": 0
+  },
+  "before": {
+    "old_board": "63cc7448f065fbc8b216a33c5ca9b9058c7ee945",
+    "failed_cases": [
+      "viewer permissions",
+      "claimant attribution",
+      "budget attention",
+      "desktop reachability",
+      "modal focus",
+      "phone gate labels"
+    ],
+    "duplicate_invoker_failed_at": "ffba40ad97eb291a2a90b2157f29b8180f3d3425"
+  },
+  "cleanup": {
+    "items": [],
+    "errors": []
+  },
+  "wheel_geometry": {
+    "3840x1080": {
+      "need": [
+        908,
+        1749,
+        841
+      ],
+      "work": [
+        908,
+        978,
+        70
+      ]
+    },
+    "1920x1080": {
+      "need": [
+        908,
+        1852,
+        944
+      ],
+      "work": [
+        908,
+        1993,
+        1085
+      ]
+    },
+    "1280x800": {
+      "need": [
+        494,
+        2129,
+        1635
+      ],
+      "work": [
+        494,
+        2015,
+        1521
+      ]
+    }
+  },
+  "themes": [
+    "light",
+    "dark"
+  ]
+}
