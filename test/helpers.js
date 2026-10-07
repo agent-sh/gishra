@@ -30,8 +30,38 @@ function git(args, cwd, env) {
   return cp.execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 
+// Reuse the clean Git repository so each fixture avoids init, add and commit processes.
+let repoSeed;
+function getRepoSeed() {
+  if (repoSeed) return repoSeed;
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-seed-')));
+  const gitconfig = path.join(base, 'gitconfig');
+  fs.writeFileSync(
+    gitconfig,
+    '[user]\n\tname = tower-crane test\n\temail = test@example.invalid\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n',
+  );
+  const env = baseEnv(base);
+  const repo = path.join(base, 'repo');
+  try {
+    fs.mkdirSync(repo);
+    git(['init', '-q', '-b', 'main'], repo, env);
+    fs.writeFileSync(path.join(repo, 'README.md'), '# test\n');
+    git(['add', '.'], repo, env);
+    git(['commit', '-q', '-m', 'init'], repo, env);
+    repoSeed = { base, repo };
+    process.once('exit', () => {
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    });
+    return repoSeed;
+  } catch (error) {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    throw error;
+  }
+}
+
 function makeRepo(t) {
   fs.mkdirSync(TMP_ROOT, { recursive: true });
+  const seed = getRepoSeed();
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-')));
   fs.writeFileSync(
     path.join(base, 'gitconfig'),
@@ -40,10 +70,8 @@ function makeRepo(t) {
   const env = baseEnv(base);
   const repo = path.join(base, 'repo');
   fs.mkdirSync(repo);
-  git(['init', '-q', '-b', 'main'], repo, env);
-  fs.writeFileSync(path.join(repo, 'README.md'), '# test\n');
-  git(['add', '.'], repo, env);
-  git(['commit', '-q', '-m', 'init'], repo, env);
+  fs.cpSync(path.join(seed.repo, '.git'), path.join(repo, '.git'), { recursive: true });
+  fs.copyFileSync(path.join(seed.repo, 'README.md'), path.join(repo, 'README.md'));
   const ctx = {
     base,
     repo,
