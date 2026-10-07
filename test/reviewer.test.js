@@ -1,6 +1,6 @@
 'use strict';
 
-const { test, describe } = require('node:test');
+const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -12,7 +12,6 @@ const prices = {
   'openai.gpt-6.1-sol': { input: 2, cache_write: 2.50, cache_read: 0.10, output: 10 },
   'claude-opus-5-5': { input: 4, cache_write: 5, cache_read: 0.20, output: 20 },
 };
-const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 function rung(h, name, model) {
   h.ok(['ladder', 'set', name, '--harness', 'opencode', '--model', model, '--clear', 'profile', '--clear', 'effort']);
@@ -72,7 +71,6 @@ function sample(h, name, input, cached, output, cacheWrite = 0) {
     '--cached', String(cached), '--cache-write', String(cacheWrite), '--output', String(output), '--rung', 'review', '--model', name]);
 }
 
-describe('reviewer integration cases', { concurrency: windowsConcurrency }, () => {
 test('review selection also uses tier and diff defaults without a price table', (t) => {
   const h = setup(t);
   h.ok(['project', 'set', '--review-policy', 'null']);
@@ -410,5 +408,4 @@ test('review uses the nearest base when only origin has it or the local base is 
   h.git(['branch', 'main', `${base}~1`]);
   const prompt = choice(h).argv.find((arg) => arg.includes('## Task'));
   assert.ok(prompt.includes(`Base: ${base}.`));
-});
 });
