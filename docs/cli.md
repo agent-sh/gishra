@@ -267,9 +267,9 @@ serve answers any request only when its `Host` is `127.0.0.1:<port>` or `localho
 {
   "harness": "pi",
   "rungs": {
-    "easy": { "harness": "", "model": "openai/gpt-5.5", "profile": "", "effort": "low", "args": "[\"--no-session\"]" }
+    "easy": { "harness": "", "model": "provider/fixture-model", "profile": "", "effort": "low", "args": "[\"--no-session\"]" }
   },
-  "base": { "harness": "codex", "rungs": { "easy": { "profile": "luna", "effort": "medium" } } }
+  "base": { "harness": "codex", "rungs": { "easy": { "profile": "fixture-light", "effort": "medium" } } }
 }
 ```
 

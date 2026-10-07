@@ -37,7 +37,7 @@ for (const harness of ['claude', 'codex', 'opencode', 'agy', 'pi']) {
     pinRung(h, 'medium', { harness, model, effort: 'high' });
     const bin = path.join(h.base, 'bin');
     fs.mkdirSync(bin);
-    fs.writeFileSync(path.join(bin, harness), '', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
     const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), USAGE_CLAIM: '1' };
     const captured = path.join(h.base, 'argv.json');
     const out = h.json(['spawn', '--task', 'T1', '--wait'], {

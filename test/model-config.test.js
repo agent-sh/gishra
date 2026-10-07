@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { ROOT, makeProjectRepo, makeTaskRepo, fixtureLadder } = require('./helpers');
+const { ROOT, makeRepo, makeProjectRepo, makeTaskRepo, fixtureLadder } = require('./helpers');
 
 // Harness file names are not model selections.
 const harnessNames = new Set(['claude-plugin', 'claude-config', 'claude-error', 'claude-global',
@@ -28,14 +28,48 @@ test('cached project and task fixtures pin their ladder and keep copies independ
   }
 });
 
+test('model swap probe validates the same open log even when its path is replaced', (t) => {
+  const h = makeRepo(t);
+  const cache = path.join(h.base, 'probe-cache');
+  const hook = path.join(h.base, 'probe-hook.cjs');
+  fs.writeFileSync(hook, `
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const cp = require('node:child_process');
+const original = cp.spawnSync;
+cp.spawnSync = function (command, args, options) {
+  if (command !== process.execPath || args[0] !== '--test') return original.call(this, command, args, options);
+  fs.writeSync(options.stdio[1], 'not ok 1 - BUILTIN matches the documented defaults and init fallback\\n# tests 1\\n# fail 1\\n');
+  const log = path.join(options.env.TOWER_CRANE_TEST_TMP, 'model-swap-probe.tap');
+  fs.renameSync(log, log + '.replaced');
+  fs.writeFileSync(log, 'not ok 1 - replaced log\\n');
+  return { status: 1 };
+};
+`);
+  const result = cp.spawnSync(process.execPath, ['--require', hook, path.join(ROOT, 'scripts', 'probe-model-swap.js')],
+    { cwd: ROOT, env: { ...h.env, TOWER_CRANE_TEST_TMP: cache }, encoding: 'utf8', timeout: 60000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Model swap probe passed/);
+  assert.equal(fs.readFileSync(path.join(cache, 'model-swap-probe.tap'), 'utf8'), 'not ok 1 - replaced log\n');
+});
+
 test('model selections live only in BUILTIN or configuration documentation', () => {
   const files = cp.execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
     { cwd: ROOT, encoding: 'utf8' }).split('\0').filter(Boolean);
   const violations = [];
   for (const file of new Set(files)) {
-    if (file.startsWith('docs/') || file === 'README.md' || file === 'CHANGELOG.md'
+    if ((file.startsWith('docs/') && file !== 'docs/cli.md') || file === 'README.md' || file === 'CHANGELOG.md'
       || file.startsWith('changelog.d/') || file === 'test/fixtures/usage/README.md') continue;
     let text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    if (file === 'docs/cli.md') {
+      // API JSON examples use fixture selections; configuration prose keeps real IDs.
+      let json = false;
+      text = text.split('\n').map(line => {
+        if (line.startsWith('```')) { json = line.trimEnd() === '```json'; return ''; }
+        return json ? line : '';
+      }).join('\n');
+    }
     if (file === 'lib/ladder.js') {
       text = text.replace(/const BUILTIN = \{[\s\S]*?\n\};/, block => block.replace(/[^\n]/g, ' '));
     }

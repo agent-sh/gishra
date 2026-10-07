@@ -31,15 +31,24 @@ try {
     `const BUILTIN = ${JSON.stringify(builtin, null, 2)};`));
   const tests = files.filter(f => /^test\/(?:gates\/)?[^/]+\.test\.js$/.test(f));
   const log = path.join(cache, 'model-swap-probe.tap');
-  const fd = fs.openSync(log, 'w');
+  const fd = fs.openSync(log, 'w+');
   let result;
+  let output;
   try {
     result = cp.spawnSync(process.execPath, ['--test', '--test-concurrency=4', '--test-reporter=tap',
       ...tests.map(f => path.join(probe, f))], {
       cwd: probe, env: { ...process.env, TOWER_CRANE_TEST_TMP: cache }, stdio: ['ignore', fd, fd], timeout: 600000,
     });
+    // Validate the same open file the runner wrote, even if its path changes.
+    const buffer = Buffer.alloc(fs.fstatSync(fd).size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const count = fs.readSync(fd, buffer, offset, buffer.length - offset, offset);
+      if (!count) break;
+      offset += count;
+    }
+    output = buffer.toString('utf8', 0, offset);
   } finally { fs.closeSync(fd); }
-  const output = fs.readFileSync(log, 'utf8');
   const failures = [...output.matchAll(/^not ok \d+ - (.*)$/gm)].map(m => m[1]);
   console.log(`Probe log: ${log}`);
   console.log(output.split('\n').filter(line => /^# (tests|pass|fail|skipped)|^not ok /.test(line)).join('\n'));
