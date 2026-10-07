@@ -127,7 +127,7 @@ The ladder says which harness, model and effort runs each kind of work. It has s
 | `args` | all | extra arguments appended verbatim to the command |
 | `command` | `command` | argv array; `{task}`, `{brief}`, `{prompt}` and `{cwd}` are substituted (`{brief}` is the brief file's path) |
 | `tools` | `claude`, `codex` | owner only: tools the role's agent file leaves out that this rung opts back in to: claude tool names (`WebFetch`), codex feature names (`multi_agent`) or `web_search` |
-| `mcp` | `claude`, `codex` | owner only: MCP servers this rung opts in to, by the name the user's harness config gives them (claude `~/.claude.json` `mcpServers`, codex `[mcp_servers.NAME]` in `config.toml`) |
+| `mcp` | `claude`, `codex` | owner only: MCP servers this rung opts in to, by the name the user's harness config gives them (claude config directory's `mcp.json`, falling back to `~/.claude.json` `mcpServers`; codex `[mcp_servers.NAME]` in `config.toml`) |
 | `supervision` | all | per-rung `{ retries, backoff_ms, max_backoff_ms, stall_ms, progress_paths }`; omitted fields use the defaults below |
 | `fallbacks` | all | owner only: ordered array of route objects to try after provider outage retries or a harness refusal; each route takes rung fields except `fallbacks` |
 | `sandbox` | `claude`, `codex` | owner only: `{ write: [paths] }` extends writable paths |
@@ -156,6 +156,8 @@ Supervision defaults are `retries: 5`, `backoff_ms: 30000`, `max_backoff_ms: 600
 Every rung must be able to run on the harness it resolves to: a `codex` rung needs a `model` or a `profile`, `claude`, `opencode`, `agy` and `pi` rungs need a `model`, and a `command` rung needs a `command`. A field the resolved harness does not use (a `profile` on pi, say) is refused, not ignored, so a switch of harness never quietly runs a model nobody chose. A ladder write is refused when it leaves a rung unable to run that could run before; `spawn` refuses a rung that cannot run, and `validate` reports every such rung. Loading checks only the shape (known rungs, harnesses and field types): a rung that falls back to the user file can break when that file changes, and the project must still load so `tower-crane ladder set` can repair it, one rung at a time.
 
 Defaults come from the user file `~/.config/tower-crane/config.json` (or the path in `TOWER_CRANE_CONFIG`), which holds `{ "harness", "ladder" }` in the same shape, else from the built-in ladder shown above. `tower-crane init` copies them into the project, and the project file wins from then on. The default harness, and each rung whole, comes from the first layer that has it: project, user file, built-in. A project that leaves a rung out follows the user file for it; `tower-crane ladder show` prints where each one comes from. `tower-crane ladder save-user` writes the project's ladder to the user file, keeping any other keys it has.
+
+The user file also accepts `"browser_kit": ["playwright"]`, a deduplicated list of MCP server names. The omitted default is `["playwright"]`; `[]` disables automatic server attachment. Only `browser-kit set --servers JSON` with explicit owner identity writes this setting. It is not copied into projects and `ladder save-user` preserves it. Every dispatch of a `design` task or a task with `needs: ["browser"]` resolves the kit from the original user's file, even inside an isolated orchestrator home, and merges its servers with explicit rung `mcp`. Claude/Codex spawns attach those named user server definitions and pre-approve their tools; kit server env and headers are excluded. Missing definitions refuse spawn. A non-empty kit on an unsupported harness is refused. Other tasks receive no automatic kit, and no task gets wider filesystem grants: installed Chrome is read-only and its test profiles use existing temp writes.
 
 `project.json` files from before the ladder carry `roles`; loading one is refused with a pointer here. Remove `roles` and set the ladder.
 
@@ -221,6 +223,7 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
       "id": "T1",
       "title": "Idempotency key on webhook retries",
       "kind": "code",
+      "needs": [],
       "acceptance": ["a retried webhook with the same key is processed once", "test proves it"],
       "depends_on": [],
       "needs_owner": null,
@@ -242,6 +245,7 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 ```
 
 - `kind`: `code`, `docs`, `research`, `design`, `ops`. With local CI configured, changing kind to a different resolved CI variant requires explicit owner identity; changes that retain the selected variant remain available to any agent.
+- `needs`: capability names, currently only `browser`; defaults to `[]` for new and legacy tasks. Set through `task add/update --needs JSON` or plan import. Duplicate names are removed. A change bumps the revision and requires rework for an accepted task. A `design` task gets browser capability regardless of its explicit list.
 - `ci_local`: optional local CI override with exactly one of `command` or `args`, and optional `timeout`, using the `ci.local.by_kind` override shape above. Only `task update ID --ci-local JSON` with explicit owner identity sets it; `--ci-local null` removes it. An accepted task needs `rework` before the override can change. Changing it does not bump the revision; receipt validation checks the current resolved variant, command and timeout.
 - `size`: `S` (under an hour), `M` (a few hours), `L` (a day). Anything larger is split; `validate` reports it.
 - `tier`: `easy`, `medium`, `hard` or `research`, the ladder rung that does the task. When `task add` or `plan import` gives none: `research` for kind `research`, else `easy` for `S`, `medium` for `M`, `hard` for `L`. It changes only through `--tier`; a later size or kind change does not move it. A task file without `tier` gets it the same way when it loads.

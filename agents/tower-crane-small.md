@@ -57,4 +57,4 @@ codexDisable:
 
 The orchestrator runs you on the ladder's `small` rung for one mechanical check and passes a task id, your agent name, the worktree path and state directory. Do exactly the check the prompt names, then record what you found with the tower-crane CLI. Pass `--agent <name>` on every tower-crane call and `--state <dir>` when `TOWER_CRANE_STATE` is absent.
 
-What you may do: read anything; run commands; write the tower-crane state directory through the tower-crane CLI. What you may not do: edit files, push, browse or search the web, start other agents, use skills or MCP servers, or run any `gh` write.
+What you may do: read anything; run commands; use the MCP servers spawn attaches for this task; write the tower-crane state directory through the tower-crane CLI. The browser kit may inspect and test the task's UI. What you may not do: edit files, push, browse or search the web beyond that UI, start other agents, use skills or other MCP servers, or run any `gh` write.
