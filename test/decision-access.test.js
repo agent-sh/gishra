@@ -13,6 +13,7 @@ function events(h) {
 test('only the owner or a named agent can answer, and the answer event records its rule', (t) => {
   const h = makeRepo(t);
   h.init();
+  h.ok(['task', 'add', '--title', 'Named answerer task', '--acceptance', 'the named answerer can unblock it']);
   h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres', '--agent', 'worker-ask']);
 
   const before = events(h);
@@ -30,12 +31,24 @@ test('only the owner or a named agent can answer, and the answer event records i
   assert.deepEqual(events(h), before, 'a worker cannot name itself');
 
   h.ok(['decision', 'delegate', 'D1', '--answerers', '["worker-allowed"]', '--agent', 'owner']);
+  for (const startedAs of ['worker-other', 'orchestrator']) {
+    const beforeSpoof = events(h);
+    const spoofed = h.run(
+      ['answer', 'D1', '--choice', 'redis', '--agent', 'worker-allowed'],
+      { env: { TOWER_CRANE_AGENT: startedAs, TOWER_CRANE_TASK: 'T1' } },
+    );
+    assert.equal(spoofed.code, 1, `${startedAs}: ${spoofed.stderr}`);
+    assert.match(spoofed.stderr, /worker-allowed/);
+    assert.deepEqual(events(h), beforeSpoof, `${startedAs} cannot impersonate the named answerer`);
+  }
   const stillDenied = h.run(['answer', 'D1', '--choice', 'redis', '--agent', 'worker-other']);
   assert.equal(stillDenied.code, 1, stillDenied.stderr);
   assert.match(stillDenied.stderr, /worker-allowed/);
   assert.match(stillDenied.stderr, /owner/);
 
-  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'worker-allowed']);
+  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'worker-allowed'], {
+    env: { TOWER_CRANE_AGENT: 'worker-allowed', TOWER_CRANE_TASK: 'T1' },
+  });
   const decision = h.readState('decisions.json').decisions[0];
   assert.deepEqual([decision.status, decision.answer, decision.answered_by, decision.answer_rule], [
     'answered', 'redis', 'worker-allowed', 'owner-named-agent',
