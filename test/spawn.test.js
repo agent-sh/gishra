@@ -63,7 +63,8 @@ test('explicit browser needs refuse only when no route can provide the kit', (t)
   const home = path.join(h.base, 'user');
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
   fs.writeFileSync(path.join(home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers: { playwright: { command: 'browser-server' } } }));
-  h.ok(['ladder', 'set', 'medium', '--fallbacks', '[{"harness":"claude","model":"fixture"}]']);
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { medium: { fallbacks: [{ harness: 'claude', model: 'fixture' }] } } }));
   const routed = h.json(['spawn', '--task', 'T1', '--dry-run'], {
     env: { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: '' },
   });
