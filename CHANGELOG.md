@@ -1,5 +1,6 @@
 # Changelog
 
+- Rung, project and fallback `env` values stay out of events, spawn receipts, the spawn job file and spawn output, which keep only variable names; the spawn monitor receives the values in its environment. A secret canary test scans every file, event, output and process listing a stub or opt-in live claude/codex run leaves, including harness crashes, fallback switches and supervisor stops.
 - Dependent tasks can dispatch on submitted dependency heads, link GitHub PR stacks, merge accepted lower tasks atomically, and refresh worktrees through gh-stack. Trusted pull_request stack metadata appears in task show and the board.
 - Host Chrome tests retain their original launch environment and flags; private cache/config/temp directories and temp-backed shared memory apply only inside an agent sandbox.
 - Browser kits omit unavailable servers and unsupported harnesses with diagnostics in spawn output and events. Design tasks still dispatch without a kit; explicit browser needs refuse only when no primary or fallback route can attach a configured server.

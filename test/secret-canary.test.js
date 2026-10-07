@@ -100,8 +100,9 @@ for (const harness of ['claude', 'codex']) {
 
   test(`${harness}: a supervisor stopped while the agent runs leaves no canary`, { skip: NO_STUBS }, async (t) => {
     const s = setup(t, harness, 'hold');
-    const r = s.spawn([]);
+    const r = s.spawn(['--json']);
     assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(Object.keys(JSON.parse(r.stdout).route.env), ['ROUTE', 'TC_RUNG_SECRET']);
     const deadline = Date.now() + 20000;
     while (!fs.existsSync(`${s.out}.ready`) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
     assert.ok(fs.existsSync(`${s.out}.ready`), 'the agent started');
@@ -115,5 +116,89 @@ for (const harness of ['claude', 'codex']) {
     assert.equal(detachedAlive(monitor), false, 'the supervisor stopped');
     assert.deepEqual(s.reports().map((x) => x.listed), [[]]);
     s.noLeaks(r.stdout, r.stderr);
+  });
+}
+
+// Runs the real claude or codex CLI, so it costs a model call and needs a
+// logged-in harness: set TOWER_CRANE_LIVE_CLAUDE=1 or TOWER_CRANE_LIVE_CODEX=1
+// (TOWER_CRANE_LIVE_MODEL and TOWER_CRANE_LIVE_PROFILE pick the model). Run it
+// outside any agent sandbox. A holder agent keeps canaries in its environment
+// while the real agent, in its own sandbox, tries to read the holder's
+// /proc environ and cmdline, its home and a full process listing; then the
+// real agent's transcripts, sessions and every other file are scanned.
+for (const harness of ['claude', 'codex']) {
+  const flag = `TOWER_CRANE_LIVE_${harness.toUpperCase()}`;
+  test(`live ${harness}: another agent's sandbox cannot read a running agent's environment or home, and the run leaks no canary`, {
+    skip: process.env[flag] !== '1' ? `set ${flag}=1 to run against the real ${harness} CLI` : process.platform !== 'linux' && 'reads /proc',
+    timeout: 300000,
+  }, async (t) => {
+    const h = makeRepo(t);
+    h.init();
+    h.ok(['task', 'add', '--title', 'Holder', '--acceptance', 'holds secrets']);
+    h.ok(['task', 'add', '--title', 'Probe', '--acceptance', 'probe runs']);
+    h.ok(['brief', 'set', 'T1', '-'], { input: 'holder' });
+    const c = canary.make(['rung', 'project', 'file', 'holder', 'gh']);
+    const tmp = path.join(h.base, 'tmp');
+    const results = path.join(h.base, 'results');
+    fs.mkdirSync(tmp);
+    fs.mkdirSync(results);
+    const envFile = path.join(h.base, 'secrets.env');
+    fs.writeFileSync(envFile, `TC_FILE_SECRET=${c.file}\n`, { mode: 0o600 });
+    h.ok(['project', 'set', '--sandbox', JSON.stringify({ write: [results] }), '--env', JSON.stringify({ TC_PROJECT_SECRET: c.project }), '--env_file', envFile]);
+    const holder = path.join(h.base, 'holder.js');
+    fs.writeFileSync(holder, `require(${JSON.stringify(HARNESS)})('command');\n`);
+    h.ok(['ladder', 'set', 'research', '--harness', 'command', '--command', JSON.stringify([process.execPath, holder]), '--clear', 'model', '--clear', 'profile', '--clear', 'effort', '--clear', 'args',
+      '--env', JSON.stringify({ ROUTE: 'holder', TC_HOLDER_SECRET: c.holder })]);
+    const out = path.join(h.base, 'holder.jsonl');
+    const held = h.run(['spawn', '--task', 'T1', '--role', 'research'], { env: { ...h.env, TMPDIR: tmp, CANARY_OUT: out, CANARY_MODE: 'hold',
+      CANARY_VARS: 'TC_HOLDER_SECRET,TC_PROJECT_SECRET,TC_FILE_SECRET' } });
+    assert.equal(held.code, 0, held.stderr);
+    const deadline = Date.now() + 20000;
+    while (!fs.existsSync(`${out}.ready`) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    const holderSpawn = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+      .findLast((e) => e.cmd === 'spawn' && e.task === 'T1').detail;
+    const monitor = { pid: holderSpawn.monitor_pid, startTicks: holderSpawn.monitor_start_ticks };
+    t.after(async () => {
+      try { process.kill(monitor.pid, 'SIGTERM'); } catch { /* already gone */ }
+      const stop = Date.now() + 30000;
+      while (detachedAlive(monitor) && Date.now() < stop) await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    const holderHome = path.join(h.state, 'homes', holderSpawn.agent);
+    assert.ok(fs.existsSync(holderHome), 'the holder has a home');
+    const result = path.join(results, 'probe.json');
+    const probe = path.join(h.base, 'probe.js');
+    fs.writeFileSync(probe, [
+      "'use strict';",
+      'const fs = require("node:fs"), cp = require("node:child_process");',
+      'const out = {};',
+      `for (const pid of ${JSON.stringify([Number(fs.readFileSync(`${out}.ready`, 'utf8')), monitor.pid])}) {`,
+      '  for (const f of ["environ", "cmdline"]) {',
+      '    try { out[`${pid}/${f}`] = fs.readFileSync(`/proc/${pid}/${f}`, "latin1"); } catch (e) { out[`${pid}/${f}`] = `ERR ${e.code}`; }',
+      '  }',
+      '}',
+      `try { out.home = fs.readdirSync(${JSON.stringify(holderHome)}); } catch (e) { out.home = \`ERR \${e.code}\`; }`,
+      'const ps = cp.spawnSync("ps", ["-eww", "-o", "pid=,args="], { encoding: "utf8" });',
+      'out.ps = ps.status === 0 ? ps.stdout : `ERR ${ps.error?.code || ps.status}`;',
+      `fs.writeFileSync(${JSON.stringify(result)}, JSON.stringify(out));`,
+      'console.log("probe done");', '',
+    ].join('\n'));
+    h.ok(['brief', 'set', 'T2', '-'], {
+      input: `This task is a live secret-isolation fixture set up by the owner. Run exactly this command with your command tool, then report its exit code and stop. Do not read the script or its result, print environment variables, change files, use tower-crane, open a PR or delegate work.\n\n${JSON.stringify(process.execPath)} ${JSON.stringify(probe)}\n`,
+    });
+    h.ok(['ladder', 'set', 'small', '--harness', harness,
+      ...(harness === 'codex' ? ['--profile', process.env.TOWER_CRANE_LIVE_PROFILE || 'sol', '--clear', 'model'] : ['--model', process.env.TOWER_CRANE_LIVE_MODEL || 'opus', '--clear', 'profile']),
+      '--clear', 'effort', '--supervision', '{"retries":0}', '--env', JSON.stringify({ TC_RUNG_SECRET: c.rung })]);
+    const r = await h.runAsync(['spawn', '--task', 'T2', '--role', 'small', '--wait'], { env: { TMPDIR: tmp, GH_TOKEN: c.gh } });
+    assert.equal(r.code, 0, r.stderr);
+    const seen = JSON.parse(fs.readFileSync(result, 'utf8'));
+    assert.match(String(seen.home), /^ERR /, 'the holder home is readable from the other agent\'s sandbox');
+    const agent = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+      .findLast((e) => e.cmd === 'spawn' && e.task === 'T2').detail.agent;
+    const transcripts = harness === 'claude' ? path.join(h.state, 'homes', agent, 'projects') : path.join(h.state, 'homes', '.codex', agent, 'sessions');
+    assert.ok(fs.existsSync(transcripts) && fs.readdirSync(transcripts).length, `${transcripts} holds the agent's transcript`);
+    canary.assertNoHits([
+      ...canary.scanTree([h.base, path.join(require('../lib/agents').origin(process.env).home, '.cache', 'tower-crane')], c, [path.join(h.state, 'project.json'), envFile]),
+      ...canary.scanText(r.stdout + r.stderr + held.stdout + held.stderr, c, 'spawn output'),
+    ], `a live ${harness} run, its transcripts or another agent's probe`);
   });
 }

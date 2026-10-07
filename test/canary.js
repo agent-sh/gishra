@@ -32,7 +32,12 @@ function scanTree(roots, canaries, allow = []) {
     }
     if (stat.isSymbolicLink()) return;
     if (stat.isDirectory()) {
-      for (const name of fs.readdirSync(file)) visit(path.join(file, name));
+      let names;
+      try { names = fs.readdirSync(file); } catch (e) {
+        if (['ENOENT', 'EACCES', 'EPERM'].includes(e.code)) return;
+        throw e;
+      }
+      for (const name of names) visit(path.join(file, name));
       return;
     }
     if (!stat.isFile() || allowed.has(path.resolve(file))) return;
