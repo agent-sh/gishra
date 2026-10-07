@@ -370,6 +370,16 @@ test('task sheets contain keyboard focus, restore the invoking link and keep mod
     await b.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await b.until(`!document.querySelector('.sheet.open')`, 'sheet close');
     assert.equal(await b.inPage(`document.activeElement === document.querySelector('.col-work [href="#T1"]') && !document.querySelector('main').inert && !document.querySelector('.topbar').inert`), true, 'focus returns to the same invoking card, even when refreshed');
+
+    h.ok(['ask', '--question', 'Another decision for Metrics?', '--option', 'yes', '--option', 'no', '--blocks', 'T4']);
+    await b.until(`document.querySelector('.col-need [data-key="D2"]')`, 'the second decision');
+    await b.inPage(`(() => { const a = document.querySelector('.col-need [data-key="D2"] [href="#T4"]'); a.focus(); a.click(); })()`);
+    await b.until(`document.querySelector('#T4').classList.contains('open')`, 'the Metrics sheet');
+    h.ok(['task', 'note', 'T4', 'receipt available', '--agent', 'reviewer']);
+    await b.until(`document.querySelector('#T4 .thread').textContent.includes('receipt available')`, 'the sheet refresh');
+    await b.inPage(`document.querySelector('#T4 [data-close]').click()`);
+    await b.until(`!document.querySelector('.sheet.open')`, 'sheet close');
+    assert.equal(await b.inPage(`document.activeElement === document.querySelector('.col-need [data-key="D2"] [href="#T4"]')`), true, 'duplicate task links in one column return to the invoking decision, not its first neighbor');
   });
 });
 

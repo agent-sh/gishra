@@ -212,7 +212,7 @@ Columns scroll on their own at widths of at least 1100 px and heights of at leas
 
 On phones, each gate uses a two-line row: name and state stay whole on the first line; the reason wraps below them. Evidence prose may wrap anywhere, but gate names and states never break into fragments.
 
-The task sheet is a modal surface when scripts run. Its background is inert, Tab stays inside, Escape closes it, and closing restores the invoking link. Switching to a dependency stays in the sheet. Live replacement reapplies modal state and restores focus within the sheet; if the invoking card was replaced, closing finds its link in the original column. Plain fragment links keep the snapshot's records reachable without scripts.
+The task sheet is a modal surface when scripts run. Its background is inert, Tab stays inside, Escape closes it, and closing restores the invoking link. Switching to a dependency stays in the sheet. Live replacement reapplies modal state and restores focus within the sheet; if the invoking card was replaced, closing finds its link in the original item and column, including when several decisions link to the same task. Plain fragment links keep the snapshot's records reachable without scripts.
 
 Budget plates use the same attention count as the Needs you heading, Board navigation, title and tab icon. A token or time budget at 90% contributes one item each. Working now takes messages only from the current claimant since that claim began; submitted cards use the submitter's context. Planning notes, owner comments and reviewer messages remain in the task conversation.
 
