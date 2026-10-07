@@ -27,6 +27,12 @@ function harnessConfig(h) {
   fs.writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), '[mcp_servers.docs]\ncommand = "docs-server"\n');
 }
 
+// The owner's personal ladder settings, such as fallback routes.
+function writeUser(h, doc) {
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  fs.writeFileSync(h.userConfig, JSON.stringify(doc));
+}
+
 function setup(t) {
   const h = makeRepo(t);
   harnessConfig(h);
@@ -182,7 +188,6 @@ test('the orchestrator opts a rung in only to MCP servers the owner already defi
   const before = h.readState('project.json');
   for (const [args, missing] of [
     [['ladder', 'set', 'easy', '--mcp', '["shell"]'], /ladder easy opts in MCP server shell, which .*config\.toml does not define/],
-    [['ladder', 'set', 'easy', '--fallbacks', '[{"harness":"claude","model":"opus","mcp":["docs"]}]'], /ladder easy opts in MCP server docs, which .*mcp\.json or .*\.claude\.json does not define/],
   ]) {
     const r = h.run(args, as('orchestrator'));
     assert.equal(r.code, 1, r.stderr);
@@ -190,11 +195,14 @@ test('the orchestrator opts a rung in only to MCP servers the owner already defi
     assert.match(r.stderr, /only MCP servers the owner's harness config already defines/);
     assert.deepEqual(h.readState('project.json'), before);
   }
-  // Moving a rung with an MCP server to a harness whose config lacks it is a new opt-in too.
+  // Moving a rung, with the owner's fallback route that follows its harness,
+  // to a harness whose config lacks the route's MCP server is a new opt-in too.
   h.ok(['ladder', 'set', 'easy', '--mcp', '["docs"]'], as('orchestrator'));
-  const moved = h.run(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'opus', '--clear', 'mcp', '--fallbacks', '[{"mcp":["docs"]}]'], as('orchestrator'));
+  writeUser(h, { ladder: { easy: { fallbacks: [{ model: 'opus', mcp: ['docs'] }] } } });
+  const moved = h.run(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'opus', '--clear', 'mcp'], as('orchestrator'));
   assert.equal(moved.code, 1, moved.stderr);
-  assert.match(moved.stderr, /MCP server docs/);
+  assert.match(moved.stderr, /ladder easy opts in MCP server docs, which .*mcp\.json or .*\.claude\.json does not define/);
+  writeUser(h, {});
   assert.equal(h.readState('decisions.json').decisions.length, 0);
   // The owner can overrule the condition.
   h.ok(['ladder', 'set', 'easy', '--mcp', '["docs","shell"]']);
@@ -210,12 +218,14 @@ test('a tool that is not a harness built-in or changes the rung sandbox is owner
   // Built-ins that keep the sandbox are the orchestrator's.
   h.ok(['ladder', 'set', 'easy', '--tools', '["web_search","multi_agent"]'], as('orchestrator'));
   h.ok(['ladder', 'set', 'review', '--tools', '["WebFetch","Agent"]'], as('orchestrator'));
+  writeUser(h, { ladder: { medium: { fallbacks: [{ model: 'opus', tools: ['Edit'] }] } } });
   let opened = 0;
   for (const [args, tools] of [
     [['ladder', 'set', 'easy', '--tools', '["web_search","computer_use"]'], { easy: { tools: ['computer_use'] } }],
     [['ladder', 'set', 'review', '--tools', '["WebFetch","Edit"]'], { review: { tools: ['Edit'] } }],
     [['ladder', 'set', 'review', '--tools', '["Bash(gh pr merge:*)"]'], { review: { tools: ['Bash(gh pr merge:*)'] } }],
-    [['ladder', 'set', 'review', '--fallbacks', '[{"harness":"codex","model":"sol","tools":["apps"]}]'], { review: { tools: ['apps'] } }],
+    // The owner's fallback route follows the primary to claude, where Edit is reach.
+    [['ladder', 'set', 'medium', '--harness', 'claude', '--model', 'opus', '--clear', 'profile'], { medium: { tools: ['Edit'] } }],
   ]) {
     const before = h.readState('project.json');
     const r = h.run(args, as('orchestrator'));
@@ -238,13 +248,18 @@ test('a tool that is not a harness built-in or changes the rung sandbox is owner
   assert.deepEqual(h.readState('project.json').ladder.review.tools, ['Edit']);
 });
 
-test('moving a sandboxed rung, a fallback route or the default harness off claude and codex is owner-required', (t) => {
+test('moving a sandboxed rung, the fallback routes that follow it or the default harness off claude and codex is owner-required', (t) => {
   const h = setup(t);
   const unconfined = (harness, args) => ({ unconfined: [{ harness, ...(args ? { args } : {}) }] });
+  // The owner's own fallback routes: one follows research's harness, one already runs on pi.
+  writeUser(h, { ladder: {
+    research: { fallbacks: [{ model: 'opus', args: ['--verbose'] }] },
+    small: { fallbacks: [{ harness: 'pi', model: 'm', args: ['--anything'] }] },
+  } });
   let opened = 0;
   for (const [args, change] of [
     [['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'anthropic/claude-x'], { ladder: { hard: unconfined('opencode') } }],
-    [['ladder', 'set', 'review', '--fallbacks', '[{"harness":"pi","model":"m","args":["--anything"]}]'], { ladder: { review: unconfined('pi', ['--anything']) } }],
+    [['ladder', 'set', 'research', '--harness', 'pi', '--model', 'm'], { ladder: { research: { unconfined: [{ harness: 'pi' }, { harness: 'pi', args: ['--verbose'] }] } } }],
     [['ladder', 'harness', 'opencode'], { harness: 'opencode', ladder: { easy: unconfined('opencode'), medium: unconfined('opencode'), review: unconfined('opencode'), small: unconfined('opencode') } }],
     [['ladder', 'set', 'orchestrator', '--harness', 'pi', '--model', 'm', '--args', '["--anything"]'], { ladder: { orchestrator: unconfined('pi', ['--anything']) } }],
   ]) {
@@ -259,6 +274,8 @@ test('moving a sandboxed rung, a fallback route or the default harness off claud
     assert.equal(worker.code, 1);
     assert.match(worker.stderr, /only the owner/);
   }
+  // A route the owner already put off claude and codex does not block tuning its rung.
+  h.ok(['ladder', 'set', 'small', '--effort', 'medium'], as('orchestrator'));
   // The orchestrator runs unsandboxed, so moving its rung without args drops nothing.
   h.ok(['ladder', 'set', 'orchestrator', '--harness', 'opencode', '--model', 'anthropic/claude-x'], as('orchestrator'));
   // Once the owner moved a rung, the orchestrator tunes it.
