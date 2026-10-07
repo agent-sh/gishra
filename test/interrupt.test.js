@@ -212,7 +212,7 @@ test('live requirements need an authorized interrupt; metadata and unchanged req
   const first = h.json(['spawn', '--task', 'T1']);
   await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not start');
   for (const fields of [['--acceptance', 'new requirement'], ['--dep', 'T2'], ['--kind', 'docs'],
-    ['--ci-local', '{"command":["node","check.js"]}']]) {
+    ['--needs', '["browser"]'], ['--ci-local', '{"command":["node","check.js"]}']]) {
     const refused = h.run(['task', 'update', 'T1', ...fields]);
     assert.equal(refused.code, 1, refused.stderr);
     assert.match(refused.stderr, /live claim.*--interrupt/);
@@ -227,6 +227,7 @@ test('live requirements need an authorized interrupt; metadata and unchanged req
   h.ok(['task', 'note', 'T1', 'a note from the worker', '--agent', first.agent]);
   h.ok(['task', 'update', 'T1', '--title', 'Renamed', '--size', 'S', '--tier', 'easy', '--interrupt']);
   h.ok(['task', 'update', 'T1', '--acceptance', 'original requirement']);
+  h.ok(['task', 'update', 'T1', '--needs', '[]', '--interrupt']);
   assert.equal(detachedAlive({ pid: first.pid }), true);
   assert.equal(h.json(['task', 'show', 'T1']).revision, 1);
   assert.equal(events(h).filter((e) => e.cmd === 'interrupt').length, 0);
@@ -242,6 +243,47 @@ test('live requirements need an authorized interrupt; metadata and unchanged req
   await until(() => !detachedAlive({ pid: first.monitor_pid }), 'requirements interrupt did not stop');
   h.json(['spawn', '--task', 'T1', '--wait']);
   assert.match(h.seen()[1].prompt, /new requirement/);
+});
+
+test('live capability changes require interrupt, unchanged needs keep the claim and resume reads current needs', async (t) => {
+  const h = setup(t);
+  const first = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not record its session');
+  assert.match(h.seen()[0].prompt, /"needs":\s*\[\]/);
+  const before = h.json(['task', 'show', 'T1']);
+  const refused = h.run(['task', 'update', 'T1', '--needs', '["browser"]']);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /live claim.*needs.*--interrupt/);
+  const unauthorized = h.run(['task', 'update', 'T1', '--needs', '["browser"]', '--interrupt', '--agent', first.agent]);
+  assert.equal(unauthorized.code, 1, unauthorized.stderr);
+  assert.match(unauthorized.stderr, /only.*owner.*orchestrator/);
+  const invalid = h.run(['task', 'update', 'T1', '--needs', '["unknown"]', '--interrupt']);
+  assert.equal(invalid.code, 2, invalid.stderr);
+  assert.deepEqual(h.json(['task', 'show', 'T1']).claim, before.claim);
+  assert.equal(events(h).filter((e) => e.cmd === 'interrupt').length, 0);
+  const changed = h.json(['task', 'update', 'T1', '--needs', '["browser"]', '--interrupt', '--agent', 'orchestrator']);
+  assert.deepEqual(changed.needs, ['browser']);
+  assert.equal(changed.revision, 2);
+  assert.equal(changed.claim, null);
+  assert.equal(changed.branch, before.branch);
+  await until(() => !detachedAlive({ pid: first.monitor_pid }), 'capability interrupt did not stop the worker');
+  h.ok(['claim', 'T1', '--agent', first.agent]);
+  const claim = h.json(['task', 'show', 'T1']).claim;
+  const unchanged = h.json(['task', 'update', 'T1', '--needs', '["browser","browser"]', '--interrupt']);
+  assert.equal(unchanged.revision, 2);
+  assert.deepEqual(unchanged.claim, claim);
+  assert.equal(events(h).filter((e) => e.cmd === 'interrupt').length, 1);
+  const refusedClear = h.run(['task', 'update', 'T1', '--needs', '[]']);
+  assert.equal(refusedClear.code, 1, refusedClear.stderr);
+  assert.match(refusedClear.stderr, /live claim.*needs.*--interrupt/);
+  const cleared = h.json(['task', 'update', 'T1', '--needs', '[]', '--interrupt']);
+  assert.deepEqual(cleared.needs, []);
+  assert.equal(cleared.revision, 3);
+  assert.equal(cleared.claim, null);
+  const next = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(next.resumed, true);
+  assert.match(h.seen()[1].prompt, /"needs":\s*\[\]/);
+  assert.equal(fs.readFileSync(path.join(first.cwd, 'unfinished.txt'), 'utf8'), 'keep this untracked work\n');
 });
 
 test('interrupt during backoff cancels the retry and releases the claim', async (t) => {
