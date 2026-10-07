@@ -157,6 +157,20 @@ if (env.HOOK_STOP_WORKTREE_ADD) {
   };
 }
 
+if (env.HOOK_REVIEW_DIFF_REPORT || env.HOOK_STOP_REVIEW_DIFF) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function reviewDiff(file, args, ...rest) {
+    const diff = file === 'git' && args.includes('diff');
+    if (diff && env.HOOK_REVIEW_DIFF_REPORT) {
+      real.appendFileSync(env.HOOK_REVIEW_DIFF_REPORT, JSON.stringify({ locked: real.existsSync(LOCK) }) + '\n');
+    }
+    const out = orig.call(this, file, args, ...rest);
+    if (diff && !args.includes('--name-only') && !args.includes('--numstat')
+      && env.HOOK_STOP_REVIEW_DIFF && first('review-diff')) stop(env.HOOK_STOP_REVIEW_DIFF);
+    return out;
+  };
+}
+
 // Make the first fetch hit a real tracking-ref lock, then release it so the
 // retry can fetch. Other modes inject Git's ref-transaction error or a
 // permanent failure; every attempt is recorded.
