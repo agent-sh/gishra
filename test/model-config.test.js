@@ -5,12 +5,28 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { ROOT } = require('./helpers');
+const { ROOT, makeProjectRepo, makeTaskRepo, fixtureLadder } = require('./helpers');
 
 // Harness file names are not model selections.
 const harnessNames = new Set(['claude-plugin', 'claude-config', 'claude-error', 'claude-global',
   'claude-only', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
 const selections = /\b(?:claude-[\w.-]+|gpt-[\w.-]+|opus|sonnet|haiku|sol|luna|astra)\b/gi;
+
+test('cached project and task fixtures pin their ladder and keep copies independent', (t) => {
+  const tasks = [{ args: ['--title', 'Cached task', '--acceptance', 'pinned model'], brief: 'cached brief\n' }];
+  for (const create of [makeProjectRepo, t => makeTaskRepo(t, tasks)]) {
+    const first = create(t);
+    const second = create(t);
+    const pinned = fixtureLadder();
+    for (const h of [first, second]) {
+      const project = h.readState('project.json');
+      assert.deepEqual({ harness: project.harness, ladder: project.ladder }, pinned);
+      assert.equal(fs.existsSync(h.userConfig), false);
+    }
+    first.ok(['ladder', 'set', 'easy', '--model', 'copy-only-model', '--clear', 'profile']);
+    assert.deepEqual(second.readState('project.json').ladder, pinned.ladder);
+  }
+});
 
 test('model selections live only in BUILTIN or configuration documentation', () => {
   const files = cp.execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],

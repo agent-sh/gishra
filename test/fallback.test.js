@@ -1,10 +1,11 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, makeProjectRepo, makeTaskRepo } = require('./helpers');
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const supervision = { retries: 2, backoff_ms: 10, max_backoff_ms: 20, stall_ms: 60000 };
@@ -24,11 +25,11 @@ async function until(fn, message) {
 
 function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false,
   rung = 'easy', webMcp, fallbackWebMcp } = {}) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Fallback routes', '--tier', rung,
-    '--kind', rung === 'research' ? 'research' : 'code', '--acceptance', 'fresh fallback session']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Complete the original task brief.\n' });
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Fallback routes', '--tier', rung,
+      '--kind', rung === 'research' ? 'research' : 'code', '--acceptance', 'fresh fallback session'],
+    brief: 'Complete the original task brief.\n',
+  }]);
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
   // A gh on PATH and no token in the environment make every route ask gh for
@@ -84,6 +85,7 @@ for (const explicit of [false, true]) {
   });
 }
 
+describe('independent fallback routes', { concurrency: windowsConcurrency }, () => {
 for (const nextHarness of ['codex', 'claude']) {
   test(`outage exhausts same-route retries before a fresh ${nextHarness} fallback and records route spend`, async (t) => {
     const h = setup(t, { nextHarness });
@@ -203,6 +205,7 @@ for (const primaryHarness of ['agy', 'claude']) {
     assert.equal(events(h).filter((e) => e.cmd === 'spend').length, spendEvents);
   });
 }
+});
 
 test('rework during a live fallback refuses a second worker until the previous attempt exits', async (t) => {
   const h = setup(t);
@@ -213,7 +216,15 @@ test('rework during a live fallback refuses a second worker until the previous a
   });
   const wake = await waiting;
   assert.equal(wake.code, 0, wake.stderr);
-  await until(() => h.attempts().length === 4, 'fallback worker did not start');
+  // The harness truncates and rewrites attempts.json between fallback routes.
+  await until(() => {
+    try {
+      return h.attempts().length === 4;
+    } catch (error) {
+      if (error instanceof SyntaxError) return false;
+      throw error;
+    }
+  }, 'fallback worker did not start');
   h.ok(['submit', 'T1', '--agent', 'worker-T1-1', '--sha', 'abcdef1']);
   h.ok(['rework', 'T1', '--reason', 'fix while worker is finishing']);
   for (const flags of [['--dry-run'], []]) {
@@ -228,6 +239,7 @@ test('rework during a live fallback refuses a second worker until the previous a
   assert.equal(preview.resumed, false);
 });
 
+describe('remaining fallback routes', { concurrency: windowsConcurrency }, () => {
 test('Codex profile and provider arguments change without carrying the old session or route flags', (t) => {
   const h = setup(t);
   h.ok(['ladder', 'set', 'easy', '--profile', 'first', '--clear', 'model',
@@ -305,8 +317,7 @@ test('agent output quoting outage and refusal does not switch routes', (t) => {
 });
 
 test('user fallback configuration validates route shapes without project flags', (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   for (const value of [{}, [null], [{ profile: 'fixture-main', fallbacks: [] }]]) {
     setFallbacks(h, value);
     assert.notEqual(h.run(['ladder', 'show']).code, 0);
@@ -431,6 +442,7 @@ test('missing expanded command fallback executables are skipped during preparati
   assert.equal(result.stderr.includes('{cwd}'), false);
   assert.deepEqual(h.attempts().map((a) => a.model), ['first', 'second']);
   assert.equal(events(h).find((e) => e.cmd === 'spawn fallback').detail.route_index, 2);
+});
 });
 
 test('a detached switch wakes a live waiter, keeps its lease, and collects route usage on exit', async (t) => {
