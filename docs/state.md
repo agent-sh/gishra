@@ -1,5 +1,25 @@
 # State
 
+Tasks may carry `stack: { parent, base, parent_sha, repo, linked, synced_base }`. `parent` is the lower task id, `base` is the PR's current target branch, `parent_sha` is the dependency head used for dispatch or the last synchronization, `repo` is the same GitHub repository as the project, and `synced_base` is the last observed main commit. `linked` records successful `gh stack link`. One unmerged dependency chain forms one stack; outstanding sibling branches are not appended to that chain.
+
+`stack_disabled: true` records an unavailable stacks capability or explicit `stack unstack`. It selects ordinary merges, which wait for lower merge evidence before retargeting an existing upper PR. An accepted dependency can still use the ordinary main-based dispatch flow when the repository cannot stack; a submitted dependency requires an available chain.
+
+A successful `stack link` clears fallback markers for its linked members and restores the stack merge gate, including its refusal of admin merges.
+
+For an unlinked dependent whose lower members all have merge evidence, linking retargets its PR to the project base, removes `stack` and `stack_disabled`, and emits `stack complete` with the former parent, new base and PR number. Its sha is unchanged. Rework notes append only to an existing brief; a brief removed during the append is treated as absent.
+
+`github_stack` holds the unmodified `pull_request.stack` object (or the payload's top-level `stack`) from a trusted payload passed to `stack webhook`, or null when the payload has no stack. The repository and PR number must match a known task. Task show and board sheets expose this metadata separately from Tower Crane's local dependency chain. Webhook metadata does not satisfy a gate, change a submitted head, accept a task or prove a merge.
+
+Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, the single `gh stack merge` invocation and the confirmations. Sync emits `stack sync` events for the affected tasks. A moved branch or sync conflict emits rework and appends its reason to the task's brief. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack unavailable` and `stack link failed` events.
+
+Sync holds the state lock only for its initial read and final compare-and-apply. Its gh commands and branch reads, fetches and pushes run unlocked. Application compares project configuration, stack membership, complete member task records and member events against the snapshot. A difference refuses application without writing sync events, briefs or task records. Writes to unrelated tasks are preserved by applying to freshly read state.
+
+Linking, completed-chain retirement and unstacking use the same snapshot, unlocked commands and compare-and-apply rule. Automatic linking runs after exit collection commits, outside that mutation. A stale link or unstack result cannot clear a new claim or replace member metadata. Remote PR changes may already have completed when application is refused; inspect them before retrying.
+
+The shared command runner rejects Git and gh calls inside state mutation transactions. Spawn prepares repository directories and credentials before its write; acceptance and review dispatch prepare local CI inputs and snapshots before their writes and reject changed inputs. View rendering starts after the mutation releases its lock and reads current state.
+
+Tests, cleanup, review diffs and local CI use the dependency branch as the base for stacked tasks. A successful sync changes that base to main when the lower task has merge evidence. Old head evidence cannot count after the worker resubmits a refreshed head. Stack merge rechecks all lower heads because GitHub's stack merge command has no head-match option; see cli.md for its limits and the ordinary admin fallback.
+
 Tower Crane keeps a project's plan and progress in plain files. People and dashboards read them; the `tower-crane` CLI and serve's owner forms write through the same locked, validated functions. An agent that needs to change state runs a command.
 
 ## Where

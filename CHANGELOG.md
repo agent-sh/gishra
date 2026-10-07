@@ -1,6 +1,7 @@
 # Changelog
 
 - Interrupt stops a worker through its supervisor, releases its claim without changing the revision, and preserves dirty work for Codex resume or fresh Claude dispatch. Live requirements edits require an authorized `--interrupt`.
+- Dependent tasks can dispatch on submitted dependency heads, link GitHub PR stacks, merge accepted lower tasks atomically, and refresh worktrees through gh-stack. Trusted pull_request stack metadata appears in task show and the board.
 - Host Chrome tests retain their original launch environment and flags; private cache/config/temp directories and temp-backed shared memory apply only inside an agent sandbox.
 - Browser kits omit unavailable servers and unsupported harnesses with diagnostics in spawn output and events. Design tasks still dispatch without a kit; explicit browser needs refuse only when no primary or fallback route can attach a configured server.
 - Spawn removes outer `NODE_TEST_*` runner variables from every agent launch, including retries and fallback routes, so agents can run nested test suites. Browser probe failures include the child receipt and agent log tails.
