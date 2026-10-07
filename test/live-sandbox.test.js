@@ -11,19 +11,58 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const cp = require('node:child_process');
+const { makeRepo, BIN, ROOT } = require('./helpers');
 
 const uid = typeof process.getuid === 'function' ? process.getuid() : null;
 const runDir = uid === null ? null : `/run/user/${uid}`;
 const skip = process.env.TOWER_CRANE_LIVE_CLAUDE !== '1' ? 'set TOWER_CRANE_LIVE_CLAUDE=1 to run against the real claude CLI'
   : !runDir || !fs.existsSync(runDir) ? `${runDir || '/run/user/<uid>'} does not exist here` : false;
 
+// The agent's commands write nothing outside the worktree, and the state
+// directory is read-only, so a probe writes its result to a directory the
+// project's sandbox extension adds.
+function results(h) {
+  const dir = path.join(h.base, 'results');
+  fs.mkdirSync(dir);
+  h.ok(['project', 'set', '--sandbox', JSON.stringify({ write: [dir] })]);
+  return dir;
+}
+
+// What the agent did, for a failure message.
+function agentLog(h) {
+  const dir = path.join(h.state, 'logs');
+  return fs.existsSync(dir) ? fs.readdirSync(dir).map((f) => `--- ${f}\n${fs.readFileSync(path.join(dir, f), 'utf8').slice(-4000)}`).join('\n') : 'no agent log';
+}
+
+const node = JSON.stringify(process.execPath);
+
+// Every live agent runs in its test's own repository, so the checkout the
+// suite runs from gains no files (a sandboxed claude leaves empty mount
+// points for protected dotfiles in its working directory).
+function untracked() {
+  const r = cp.spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--ignored=no'], { cwd: ROOT, encoding: 'utf8' });
+  return r.status === 0 ? new Set(r.stdout.split('\n').filter((l) => l.startsWith('?? '))) : null;
+}
+
+if (process.env.TOWER_CRANE_LIVE_CLAUDE === '1' || process.env.TOWER_CRANE_LIVE_CODEX === '1') {
+  let before;
+  test.before(() => {
+    before = untracked();
+  });
+  test.after(() => {
+    const after = untracked();
+    if (!before || !after) return;
+    assert.deepEqual([...after].filter((l) => !before.has(l)), [], `the live agents wrote into ${ROOT}`);
+  });
+}
+
 test('a sandboxed claude command cannot connect to a unix socket in a denied directory', { skip, timeout: 300000 }, async (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Socket probe', '--acceptance', 'no connection']);
   const sock = path.join(runDir, `tower-crane-probe-${process.pid}.sock`);
-  const probe = path.join(h.state, 'socket-probe');
+  const probe = path.join(results(h), 'socket-probe');
   let connections = 0;
   const server = net.createServer((c) => {
     connections++;
@@ -34,12 +73,61 @@ test('a sandboxed claude command cannot connect to a unix socket in a denied dir
   t.after(() => server.close());
   const script = `const n=require("net"),f=require("fs");n.connect(${JSON.stringify(sock)}).on("connect",()=>{f.writeFileSync(${JSON.stringify(probe)},"CONNECTED");process.exit(0)}).on("error",e=>{f.writeFileSync(${JSON.stringify(probe)},"ERR "+e.code);process.exit(1)})`;
   h.ok(['brief', 'set', 'T1', '-'], {
-    input: `Sandbox probe set up by the owner. Run exactly this one command with the Bash tool, then reply with its exit code. Do not use tower-crane.\n\nnode -e '${script}'\n`,
+    input: `Sandbox probe set up by the owner. Run exactly this one command with the Bash tool, then reply with its exit code. Do not use tower-crane.\n\n${node} -e '${script}'\n`,
   });
   h.ok(['ladder', 'set', 'small', '--harness', 'claude', '--model', process.env.TOWER_CRANE_LIVE_MODEL || 'opus', '--clear', 'profile', '--clear', 'effort']);
   const r = await h.runAsync(['spawn', '--role', 'small', '--task', 'T1', '--wait']);
-  assert.equal(r.code, 0, r.stderr);
-  assert.ok(fs.existsSync(probe), 'the command ran');
+  assert.equal(r.code, 0, `${r.stderr}\n${agentLog(h)}`);
+  assert.ok(fs.existsSync(probe), `the command ran\n${agentLog(h)}`);
   assert.match(fs.readFileSync(probe, 'utf8'), /^ERR /);
   assert.equal(connections, 0, 'nothing reached the socket');
+});
+
+test('in a real claude sandbox a forged state edit fails and the CLI writes through the broker', { skip: process.env.TOWER_CRANE_LIVE_CLAUDE !== '1' && 'set TOWER_CRANE_LIVE_CLAUDE=1 to run against the real claude CLI', timeout: 300000 }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Forge probe', '--acceptance', 'only the broker writes']);
+  const events = path.join(h.state, 'events.jsonl');
+  const before = fs.readFileSync(events, 'utf8');
+  const probe = path.join(results(h), 'forge-probe');
+  const forge = `const f=require("fs");try{f.appendFileSync(${JSON.stringify(events)},"{}\\n");f.writeFileSync(${JSON.stringify(probe)},"WROTE")}catch(e){f.writeFileSync(${JSON.stringify(probe)},"ERR "+e.code)}`;
+  h.ok(['brief', 'set', 'T1', '-'], {
+    input: `Sandbox probe set up by the owner. Run exactly these two commands with the Bash tool, one after the other, then reply with their exit codes.\n\n${node} -e '${forge}'\n\n${node} ${JSON.stringify(BIN)} task note T1 through-the-broker\n`,
+  });
+  h.ok(['ladder', 'set', 'small', '--harness', 'claude', '--model', process.env.TOWER_CRANE_LIVE_MODEL || 'opus', '--clear', 'profile', '--clear', 'effort']);
+  const r = await h.runAsync(['spawn', '--role', 'small', '--task', 'T1', '--wait']);
+  assert.equal(r.code, 0, `${r.stderr}\n${agentLog(h)}`);
+  assert.ok(fs.existsSync(probe), `the forge command ran\n${agentLog(h)}`);
+  assert.match(fs.readFileSync(probe, 'utf8'), /^ERR /, 'the sandbox refused the direct write');
+  assert.ok(!fs.readFileSync(events, 'utf8').slice(before.length).split('\n').includes('{}'), 'no forged line');
+  const note = h.readState('tasks.json').tasks[0].notes.find((n) => n.text === 'through-the-broker');
+  assert.equal(note?.agent, 'small-T1-1', `the broker wrote it as the spawned agent\n${agentLog(h)}`);
+});
+
+// Codex's sandbox refuses connect() on a Unix socket, so its broker listens
+// on TCP loopback. Runs the real codex CLI: set TOWER_CRANE_LIVE_CODEX=1
+// (TOWER_CRANE_LIVE_PROFILE picks the profile, sol by default).
+test('in a real codex sandbox forged state edits fail and the CLI writes through the broker over loopback', { skip: process.env.TOWER_CRANE_LIVE_CODEX !== '1' && 'set TOWER_CRANE_LIVE_CODEX=1 to run against the real codex CLI', timeout: 300000 }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Forge probe', '--acceptance', 'only the broker writes']);
+  const files = ['events.jsonl', 'tasks.json', 'project.json'].map((f) => path.join(h.state, f));
+  const probe = path.join(results(h), 'forge-probe');
+  const forge = `const f=require("fs");const out=${JSON.stringify(files)}.map(p=>{try{f.appendFileSync(p,"{}\\n");return "WROTE"}catch(e){return "ERR "+e.code}});f.writeFileSync(${JSON.stringify(probe)},JSON.stringify(out))`;
+  h.ok(['brief', 'set', 'T1', '-'], {
+    input: `Sandbox probe set up by the owner. Run exactly these two commands with your command tool, one after the other, then reply with their exit codes and stop.\n\n${node} -e '${forge}'\n\n${node} ${JSON.stringify(BIN)} task note T1 through-the-broker\n`,
+  });
+  h.ok(['ladder', 'set', 'small', '--harness', 'codex', '--profile', process.env.TOWER_CRANE_LIVE_PROFILE || 'sol', '--clear', 'model', '--clear', 'effort']);
+  const r = await h.runAsync(['spawn', '--role', 'small', '--task', 'T1', '--wait']);
+  assert.equal(r.code, 0, `${r.stderr}\n${agentLog(h)}`);
+  assert.ok(fs.existsSync(probe), `the forge command ran\n${agentLog(h)}`);
+  const out = JSON.parse(fs.readFileSync(probe, 'utf8'));
+  for (const [i, f] of files.entries()) {
+    assert.match(out[i], /^ERR /, `the sandbox refused writing ${path.basename(f)}`);
+    assert.ok(!fs.readFileSync(f, 'utf8').split('\n').includes('{}'), `no forged line in ${path.basename(f)}`);
+  }
+  const note = h.readState('tasks.json').tasks[0].notes.find((n) => n.text === 'through-the-broker');
+  assert.equal(note?.agent, 'small-T1-1', `the broker wrote it as the spawned agent\n${agentLog(h)}`);
+  const event = fs.readFileSync(files[0], 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((e) => e.cmd === 'task note');
+  assert.deepEqual([event?.agent, event?.via], ['small-T1-1', 'broker']);
 });
