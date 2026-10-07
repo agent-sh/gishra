@@ -72,6 +72,7 @@ const SETTINGS = {
   'merge-keep-branch': str('JSON', 'true keeps merged task branches for retained worktrees; false or null restores deletion'),
   'merge-admin': str('JSON', 'owner-required: true uses gh --admin for solely owned repos; false or null disables it'),
   'review-policy': str('JSON', 'operational (orchestrator or owner): review diff limits and canonical model prices; null clears the policy'),
+  'research-min-sources': int('N', 'owner-required: minimum distinct cited pages for research (default 10)'),
 };
 
 const TASK_FIELDS = {
@@ -99,6 +100,7 @@ const RUNG_FLAGS = {
   supervision: str('JSON', 'retry, backoff, stall and progress path settings as a JSON object'),
   tools: str('JSON', 'claude or codex: tools the agent file denies that this rung opts back in to (claude tool names, codex features), as a JSON array; operational for harness built-ins that keep the rung sandbox, other tools owner-required'),
   mcp: str('JSON', 'claude or codex: MCP servers from your harness config this rung opts in to, by name, as a JSON array; the orchestrator names only servers the owner already defines'),
+  'web-mcp': str('JSON', 'owner-required: research Claude web MCP {name, command, args}, without secrets'),
   clear: many('FIELD', 'remove a field from the rung (a cleared harness follows the default)'),
 };
 
@@ -106,7 +108,7 @@ const run = (mod, fn) => (ctx) => require(mod)[fn](ctx);
 const gate = (name) => (ctx) => require('../lib/check').runGate(ctx, name);
 
 const COMMANDS = [
-  { section: 'Run', name: 'accept', pos: ['ID'], usage: 'ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]', summary: 'run missing software gates, dispatch review when green, accept when all gates pass', flags: { cmd: str('CMD', 'must match the pinned gates.tests_cmd'), 'proof-cmd': str('CMD', 'must match pinned gates.tests_proof_cmd'), waive: many('TYPE', 'waive tests, clean, review or ci: review is operational (orchestrator or owner), the rest owner-required'), reason: str('R', 'why the waived gate does not apply') }, run: T.accept },
+  { section: 'Run', name: 'accept', pos: ['ID'], usage: 'ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]', summary: 'run missing software gates, dispatch review when green, accept when all gates pass', flags: { cmd: str('CMD', 'must match the pinned gates.tests_cmd'), 'proof-cmd': str('CMD', 'must match pinned gates.tests_proof_cmd'), waive: many('TYPE', 'waive tests, clean, sources, review or ci: review is operational (orchestrator or owner), the rest owner-required'), reason: str('R', 'why the waived gate does not apply') }, run: T.accept },
 
   { section: 'Decisions', name: 'answer', pos: ['DID'], usage: 'DID --choice C [--note T]', summary: "record the owner's answer", flags: { choice: str('C', 'the chosen option'), note: str('T', 'context') }, required: ['choice'], run: D.answer },
 
@@ -124,6 +126,8 @@ const COMMANDS = [
 
   { section: 'Gates', name: 'check clean', pos: ['ID'], usage: 'ID [--cmd CMD]', flags: { cmd: str('CMD', 'must match pinned gates.clean_cmd; omit to use it') }, summary: 'cleanup tool on the task branch against base reports no HIGH finding; records clean', run: gate('clean') },
 
+  { section: 'Gates', name: 'check sources', pos: ['ID'], usage: 'ID', summary: 'fetch distinct cited pages and verify every quoted claim in research/ID.json at submitted sha; records sources', run: gate('sources') },
+
   { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID [--cmd CMD] [--proof-cmd CMD]', summary: 'check tests under the project and task kind mode; records tests', flags: { cmd: str('CMD', 'must match pinned gates.tests_cmd; omit to use it'), 'proof-cmd': str('CMD', 'must match pinned gates.tests_proof_cmd for changed test paths') }, run: gate('tests') },
 
   { section: 'Run', name: 'claim', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'take a ready task for --agent', flags: { lease: int('MIN', 'lease length (default limits.lease_minutes)') }, run: T.claim },
@@ -132,7 +136,7 @@ const COMMANDS = [
 
   { section: 'Decisions', name: 'decisions', usage: '[--open]', summary: 'list decisions', flags: { open: bool('only open ones') }, run: D.list },
 
-  { section: 'Run', name: 'evidence', pos: ['ID'], usage: 'ID --type T (--ok | --fail) [--sha S] [--summary T] [--ref URL]', summary: 'record review or note evidence; review needs --sha, note defaults to the submitted sha', flags: { type: str('T', 'review or note; tests, clean, ci and merge require gate commands'), ok: bool('it passed'), fail: bool('it failed'), sha: str('S', 'commit the evidence is about; required for review'), summary: str('T', 'one line'), ref: str('URL', 'link to the run, review or log') }, required: ['type'], run: T.evidence },
+  { section: 'Run', name: 'evidence', pos: ['ID'], usage: 'ID --type T (--ok | --fail) [--sha S] [--summary T] [--ref URL]', summary: 'record review or note evidence; review needs --sha, note defaults to the submitted sha', flags: { type: str('T', 'review or note; tests, clean, sources, ci and merge require gate commands'), ok: bool('it passed'), fail: bool('it failed'), sha: str('S', 'commit the evidence is about; required for review'), summary: str('T', 'one line'), ref: str('URL', 'link to the run, review or log') }, required: ['type'], run: T.evidence },
 
   { section: 'Run', name: 'hook', pos: ['ACTION'], usage: 'ACTION --binding FILE [--payload JSON|-]', summary: 'deliver harness messages and record activity under the home identity', flags: { binding: str('FILE', 'protected hook binding in the agent home'), payload: str('JSON|-', 'harness event data (- reads stdin)') }, required: ['binding'], run: run('../lib/harness-hooks', 'hook') },
 
@@ -142,7 +146,7 @@ const COMMANDS = [
 
   { section: 'Plan', name: 'ladder save-user', summary: "write this project's ladder to the user file, the default for new projects", run: P.ladderSaveUser },
 
-  { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
+  { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--tools JSON] [--mcp JSON] [--web-mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
 
   { section: 'Plan', name: 'ladder show', summary: 'print each rung as it resolves, and where it comes from (project, user file or built-in)', run: P.ladderShow },
 
@@ -154,7 +158,7 @@ const COMMANDS = [
 
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', run: T.planImport },
 
-  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-cmd CMD] [--clean-cmd CMD] [--tests-proof-cmd CMD] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-capped-review JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
+  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-cmd CMD] [--clean-cmd CMD] [--tests-proof-cmd CMD] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-capped-review JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--research-min-sources N] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
 
   { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', run: P.projectShow },
 
