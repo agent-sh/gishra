@@ -107,6 +107,38 @@ test('detached spawn links the PR after its worker submits and exits', async (t)
   assert.deepEqual(f.read().order, [11, 12]);
 });
 
+test('an unlinked dependent targets main and merges normally when its lower PR merges before submission', (t) => {
+  const f = setup(t);
+  const wt = f.h.json(['worktree', 'T2']);
+  f.h.ok(['claim', 'T2', '--agent', 'worker-T2']);
+  fs.writeFileSync(path.join(wt.path, 'T2.txt'), 'T2\n');
+  f.h.git(['add', 'T2.txt'], wt.path);
+  f.h.git(['commit', '-qm', 'upper work'], wt.path);
+  f.h.git(['push', 'origin', wt.branch], wt.path);
+  const sha = f.h.git(['rev-parse', 'HEAD'], wt.path);
+  f.write((d) => {
+    d.prs[12] = { number: 12, state: 'OPEN', headRefOid: sha, headRefName: wt.branch,
+      baseRefName: f.lower.branch, isCrossRepository: false, autoMergeRequest: null };
+  });
+  f.accept('T1');
+  f.h.ok(['merge', 'T1']);
+  assert.equal(f.h.git(['ls-remote', '--heads', 'origin', f.lower.branch]), '');
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack.linked, false);
+  f.h.ok(['submit', 'T2', '--sha', sha, '--branch', wt.branch, '--pr', '12', '--agent', 'worker-T2']);
+  f.h.ok(['stack', 'link', 'T2']);
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(f.read().prs[12].baseRefName, 'main');
+  assert.equal(task.stack, undefined);
+  assert.equal(task.sha, sha);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), sha);
+  f.accept('T2');
+  f.h.ok(['merge', 'T2']);
+  const evidence = f.h.json(['task', 'show', 'T2']).evidence.findLast((e) => e.type === 'merge');
+  assert.equal(evidence.ok, true);
+  assert.ok(evidence.commands.some((c) => c.args[0] === 'pr' && c.args[1] === 'merge' && c.args.includes('--match-head-commit')));
+  assert.equal(f.read().calls.some((c) => c.args[0] === 'stack' && ['link', 'sync', 'merge'].includes(c.args[1])), false);
+});
+
 test('stack merge rechecks every accepted head and records evidence for all merged tasks', (t) => {
   const f = setup(t);
   upper(f);
@@ -182,6 +214,21 @@ test('lower merge refreshes upper worktrees with gh stack sync and conflicts sen
   assert.equal(task.status, 'rework');
   assert.match(task.notes.at(-1).text, /all branches restored/);
   assert.match(f.h.ok(['brief', 'get', 'T2']), /Rework notes/);
+});
+
+test('sync rework preserves a brief deletion that races its append', (t) => {
+  const f = setup(t);
+  upper(f);
+  f.write((d) => { d.conflict = true; });
+  const brief = path.join(f.h.state, 'briefs', 'T2.md');
+  const race = path.join(__dirname, 'fixtures', 'stack-brief-race.js');
+  const r = f.h.run(['stack', 'sync', 'T2'], { env: {
+    TEST_REMOVE_BRIEF: brief,
+    NODE_OPTIONS: `${f.h.env.NODE_OPTIONS} --require=${JSON.stringify(race)}`,
+  } });
+  assert.equal(r.code, 1);
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'rework');
+  assert.equal(fs.existsSync(brief), false, 'a removed brief must not be recreated by appending rework notes');
 });
 
 test('main movement refreshes an idle stack and changed heads require fresh submissions', (t) => {

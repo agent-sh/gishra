@@ -65,6 +65,8 @@ The dispatch supervisor links submitted PRs with `gh stack link <lower-pr> <uppe
 
 When stacks become available again, a successful `stack link ID` clears ordinary-merge fallback markers for that chain and restores the stack merge guard.
 
+If every lower task merges before an unlinked dependent submits its PR, `stack link` retargets that PR to the project base and clears its local stack. The submitted head is preserved and the ordinary merge gate applies. Supervisors perform the same transition when observing a submission.
+
 | Command | Does |
 |---|---|
 | `stack link ID` | link a submitted task's dependency chain on GitHub, bottom to top |

@@ -38,6 +38,7 @@ cp.spawnSync = function stackGh(command, args, opts) {
     pr.state = 'MERGED';
     pr.mergeCommit = { oid: pr.headRefOid };
     git(['push', 'origin', `${pr.headRefName}:main`]);
+    if (args.includes('--delete-branch')) git(['push', 'origin', `:${pr.headRefName}`]);
     return finish();
   }
   if (args[0] !== 'stack') throw new Error(`unexpected gh: ${args}`);

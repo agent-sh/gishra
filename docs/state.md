@@ -6,6 +6,8 @@ Tasks may carry `stack: { parent, base, parent_sha, repo, linked, synced_base }`
 
 A successful `stack link` clears fallback markers for its linked members and restores the stack merge gate, including its refusal of admin merges.
 
+For an unlinked dependent whose lower members all have merge evidence, linking retargets its PR to the project base, removes `stack` and `stack_disabled`, and emits `stack complete` with the former parent, new base and PR number. Its sha is unchanged. Rework notes append only to an existing brief; a brief removed during the append is treated as absent.
+
 `github_stack` holds the unmodified `pull_request.stack` object (or the payload's top-level `stack`) from a trusted payload passed to `stack webhook`, or null when the payload has no stack. The repository and PR number must match a known task. Task show and board sheets expose this metadata separately from Tower Crane's local dependency chain. Webhook metadata does not satisfy a gate, change a submitted head, accept a task or prove a merge.
 
 Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, the single `gh stack merge` invocation and the confirmations. Sync emits `stack sync` events for the affected tasks. A moved branch or sync conflict emits rework and appends its reason to the task's brief. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack unavailable` and `stack link failed` events.
