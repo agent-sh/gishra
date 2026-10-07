@@ -43,6 +43,19 @@ test('an expired lease frees the task for another agent', (t) => {
   assert.match(late.stderr, /only the claimant \(w-2\)/);
 });
 
+test('claiming a task again as its current holder renews the lease', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'A', '--acceptance', 'a']);
+  h.ok(['claim', 'T1', '--agent', 'w-1', '--lease', '1']);
+  const before = h.readState('tasks.json').tasks[0].claim;
+
+  h.ok(['claim', 'T1', '--agent', 'w-1', '--lease', '5']);
+  const after = h.readState('tasks.json').tasks[0].claim;
+  assert.deepEqual([after.agent, after.since, after.from], [before.agent, before.since, before.from]);
+  assert.ok(Date.parse(after.until) > Date.parse(before.until), 'a repeat claim extends the lease');
+});
+
 test('the workers limit caps tasks in progress', (t) => {
   const h = makeRepo(t);
   h.init(['--workers', '1']);

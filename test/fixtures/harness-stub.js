@@ -77,9 +77,10 @@ module.exports = function stub(harness) {
     const sessions = path.join(dir, 'sessions');
     report.resumed = args.includes('resume');
     if (!report.resumed) {
+      const id = 'stub-thread';
       fs.mkdirSync(sessions, { recursive: true });
-      fs.writeFileSync(path.join(sessions, `rollout-${process.env.TOWER_CRANE_AGENT}.jsonl`), '{}\n');
-      process.stdout.write(`${JSON.stringify({ type: 'thread.started', thread_id: 'stub-thread' })}\n`);
+      fs.writeFileSync(path.join(sessions, `rollout-${process.env.TOWER_CRANE_AGENT}-${id}.jsonl`), '{}\n');
+      process.stdout.write(`${JSON.stringify({ type: 'thread.started', thread_id: id })}\n`);
     }
     report.sessions = fs.existsSync(sessions) ? fs.readdirSync(sessions) : [];
   }
