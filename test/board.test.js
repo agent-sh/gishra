@@ -238,3 +238,153 @@ test('in a browser, a change elsewhere updates the board in place and waits whil
     assert.equal(await b.inPage('window.firstLoad === true'), true, 'still the same page');
   });
 });
+
+test('a viewer cannot edit tiers or the ladder from a sheet, Settings or a forged POST', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  populate(h);
+  await withServers(async (servers) => {
+    const url = await startServe(servers, h, 'viewer');
+    const page = await (await fetch(url)).text();
+    const settings = await (await fetch(`${url}settings`)).text();
+    assert.doesNotMatch(page, /<form data-api=/, 'viewer sheets and queue are read-only');
+    assert.doesNotMatch(settings, /<form|<input|<select|Save ladder|Save tiers/, 'viewer Settings shows values without edit controls');
+    assert.match(settings, /Read-only/);
+    const before = log(h);
+    const tasks = h.readState('tasks.json');
+    const project = h.readState('project.json');
+    const token = tokenOf(page);
+    for (const [api, body] of [
+      ['tiers', { tiers: { T1: 'hard' }, base: { T1: 'medium' } }],
+      ['ladder', { harness: 'claude', base: { harness: 'codex' } }],
+    ]) {
+      const r = await post(`${url}api/${api}`, token, body);
+      assert.equal(r.status, 403, `${api} requires the owner even with this server's token`);
+      assert.match((await r.json()).error, /owner/);
+    }
+    assert.deepEqual(h.readState('tasks.json'), tasks);
+    assert.deepEqual(h.readState('project.json'), project);
+    assert.deepEqual(log(h), before, 'refusals append no events');
+  });
+});
+
+test('Working now uses only the current claimant and claim, then the submitter context', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  populate(h);
+  const card = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article class="card[^"]*" data-key="T1"[\s\S]*?<\/article>/)[0];
+  h.ok(['task', 'note', 'T1', 'orchestrator planning note', '--agent', 'orchestrator']);
+  assert.match(card(), /tests green, waiting on CI/);
+  assert.doesNotMatch(card(), /orchestrator planning note/);
+  h.ok(['release', 'T1', '--reason', 'handoff', '--agent', 'w-1']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  assert.doesNotMatch(card(), /tests green, waiting on CI|orchestrator planning note/, 'a renewed claim by the same worker does not reuse its older message');
+  h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'new claim work', '--agent', 'w-1']);
+  h.ok(['task', 'note', 'T1', 'reviewer context', '--agent', 'reviewer']);
+  assert.match(card(), /new claim work/);
+  assert.doesNotMatch(card(), /reviewer context/);
+  h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--summary', 'retry verified', '--agent', 'w-1']);
+  h.ok(['task', 'note', 'T1', 'review in progress', '--agent', 'reviewer']);
+  assert.match(card(), /retry verified/);
+  assert.doesNotMatch(card(), /review in progress/);
+});
+
+test('budget-only attention agrees across the queue, navigation, title and icon, including live changes', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Usage', '--acceptance', 'usage is reported']);
+  h.ok(['project', 'set', '--budget-tokens', '100', '--budget-hours', '1']);
+  await withServers(async (servers) => {
+    const url = await startServe(servers, h, 'viewer');
+    const b = await openBrowser(t);
+    await b.goto(`${url}#board`);
+    await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+    const originalIcon = await b.inPage(`document.querySelector('link[rel="icon"]').href`);
+    h.ok(['spend', 'T1', '--tokens', '95', '--minutes', '57', '--agent', 'w-1']);
+    await b.until(`document.querySelector('.col-need').textContent.includes('Tokens at 95%')`, 'budget alerts');
+    const counts = await b.inPage(`[document.querySelector('#h-need .n').textContent, document.querySelector('.views a[data-view="board"] .n').textContent, document.title.split(' ')[0], JSON.parse(document.getElementById('boot').textContent).attention]`);
+    assert.deepEqual(counts.slice(0, 3), ['2', '2', '(2)']);
+    assert.notEqual(await b.inPage(`document.querySelector('link[rel="icon"]').href`), originalIcon);
+    const snapshot = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
+    assert.match(snapshot, /<title>\(2\)/);
+    assert.match(snapshot, /"attention":2/);
+    assert.match(snapshot, /aria-label="2 need you">2/);
+  });
+});
+
+test('desktop columns fit their tracks, reach the last items and keep their scroll on live updates', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init(['--workers', '12']);
+  populate(h);
+  for (let i = 0; i < 8; i++) {
+    h.ok(['ask', '--question', `Owner decision ${i}`, '--option', 'yes', '--option', 'no']);
+    const id = h.ok(['task', 'add', '--title', `Worker task ${i}`, '--acceptance', 'verified']).match(/T\d+/)[0];
+    h.ok(['claim', id, '--agent', `worker-${i}`]);
+    h.ok(['msg', '--task', id, '--to', 'orchestrator', 'checking the retry contract and integration paths', '--agent', `worker-${i}`]);
+  }
+  await withServers(async (servers) => {
+    const url = await startServe(servers, h, 'viewer');
+    const b = await openBrowser(t);
+    for (const [width, height] of [[3840, 1080], [1920, 1080], [1280, 800]]) {
+      await b.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await b.goto(`${url}#board`);
+      await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+      const metrics = await b.inPage(`['need','work'].map((name) => { const c = document.querySelector('[data-region="' + name + '"]'); c.scrollTop = c.scrollHeight; const last = c.querySelector(name === 'need' ? 'article:last-child' : '.card:last-child'); return [c.clientHeight, c.scrollHeight, c.scrollTop, c.getBoundingClientRect().bottom <= innerHeight, last.getBoundingClientRect().bottom <= c.getBoundingClientRect().bottom + 1]; })`);
+      for (const [client, scroll, top, fits, reachable] of metrics) {
+        assert.ok(fits && client < height, `column fits at ${width}`);
+        assert.ok(scroll > client && top > 0 && reachable, `the last item is reachable at ${width}`);
+      }
+      const expected = await b.inPage(`['need','work'].map((name) => { const c = document.querySelector('[data-region="' + name + '"]'); c.scrollTop = 160; return c.scrollTop; })`);
+      h.ok(['task', 'note', 'T2', `update at ${width}`, '--agent', 'orchestrator']);
+      await b.until(`document.querySelector('.col-since').textContent.includes('update at ${width}')`, 'the live update');
+      assert.deepEqual(await b.inPage(`['need','work'].map((name) => document.querySelector('[data-region="' + name + '"]').scrollTop)`), expected, `column roots retain their scroll at ${width}`);
+    }
+  });
+});
+
+test('task sheets contain keyboard focus, restore the invoking link and keep modal state through refresh', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  populate(h);
+  await withServers(async (servers) => {
+    const url = await startServe(servers, h, 'viewer');
+    const b = await openBrowser(t);
+    await b.goto(`${url}#board`);
+    await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+    // Use the link in Working now, not the first T1 link in another column.
+    await b.inPage(`(() => { const a = document.querySelector('.col-work [href="#T1"]'); a.focus(); a.click(); })()`);
+    await b.until(`document.querySelector('#T1').classList.contains('open')`, 'the sheet');
+    assert.equal(await b.inPage(`document.querySelector('#T1 .panel').getAttribute('aria-modal')`), 'true');
+    assert.equal(await b.inPage(`document.querySelector('main').inert && document.querySelector('.topbar').inert`), true);
+    const tab = async (shift = false) => {
+      await b.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: shift ? 8 : 0 });
+      await b.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers: shift ? 8 : 0 });
+    };
+    for (let i = 0; i < 12; i++) {
+      await tab(i % 2 === 0);
+      assert.equal(await b.inPage(`document.querySelector('#T1 .panel').contains(document.activeElement)`), true, 'Tab stays in the sheet');
+    }
+    h.ok(['msg', '--task', 'T1', '--to', 'orchestrator', 'modal refresh', '--agent', 'w-1']);
+    await b.until(`document.querySelector('#T1 .thread').textContent.includes('modal refresh')`, 'the sheet refresh');
+    assert.equal(await b.inPage(`document.querySelector('main').inert && document.querySelector('.topbar').inert && document.querySelector('#T1 .panel').contains(document.activeElement)`), true);
+    await b.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await b.until(`!document.querySelector('.sheet.open')`, 'sheet close');
+    assert.equal(await b.inPage(`document.activeElement === document.querySelector('.col-work [href="#T1"]') && !document.querySelector('main').inert && !document.querySelector('.topbar').inert`), true, 'focus returns to the same invoking card, even when refreshed');
+  });
+});
+
+test('phone gates keep whole names and states in both themes without horizontal overflow', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  populate(h);
+  h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'w-1']);
+  const b = await openBrowser(t);
+  await b.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: false });
+  for (const theme of ['light', 'dark']) {
+    await b.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+    await b.goto(`${pathToFileURL(path.join(h.state, 'sketch.html')).href}#T1`);
+    const gates = await b.inPage(`(() => { const table = document.querySelector('#T1 .gates-tbl'); return { fits: table.getBoundingClientRect().right <= innerWidth && table.scrollWidth <= table.clientWidth, cells: [...table.querySelectorAll('th, td:nth-child(2)')].map((c) => { const range = document.createRange(); range.selectNodeContents(c.querySelector('.pip') || c); return [c.textContent, range.getClientRects().length]; }) }; })()`);
+    assert.equal(gates.fits, true, `gates fit in ${theme}`);
+    for (const [label, lines] of gates.cells) assert.equal(lines, 1, `${label} stays whole in ${theme}`);
+  }
+});

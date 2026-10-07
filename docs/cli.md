@@ -99,7 +99,7 @@ The engine watches the state directory with `fs.watch`. A one-second internal st
 | `/api/decisions/D1/answer` | `{"choice":"option","note":"context"}` (note optional) | `answer D1 --choice C --agent owner` |
 | `/api/tasks/T1/rework` | `{"reason":"what to fix"}` | `rework T1 --reason R --agent owner` |
 
-A task sheet's tier control posts to `/api/tiers` (below), as Settings does, for any serve identity. The board has no route that accepts, merges, waives, claims, releases, submits, records evidence or edits the plan: those stay CLI commands, and the board shows the command where it would help, such as `accept T1 --waive review --reason R --agent owner` on a submitted task's sheet.
+A task sheet's tier control posts to `/api/tiers` (below), as Settings does. Both `/api/tiers` and `/api/ladder` require the same explicit owner identity as the other board writes. Other serve identities see the ladder and tiers as read-only values. The board has no route that accepts, merges, waives, claims, releases, submits, records evidence or edits the plan: those stay CLI commands, and the board shows the command where it would help, such as `accept T1 --waive review --reason R --agent owner` on a submitted task's sheet.
 
 Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the page's `tower-crane-token` meta value as `x-tower-crane-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
 
@@ -117,9 +117,11 @@ The token protects against foreign web origins. Local processes can read it from
 
 The board is one HTML document with four views (Board, Plan, History, Spend) and a sheet per task, linked as `#board`, `#plan`, `#history`, `#spend` and `#T7`; docs/design.md is its design. `sketch.html` loads nothing from the network: no fonts, scripts, styles or images outside the file, and its inline script makes no request. Every view and task sheet opens by its link with scripts disabled. Links in evidence (`--ref`) open only when clicked. The snapshot has no token and no forms; where serve would offer a write, it shows the CLI command. The script adds local times, keyboard keys (`b`, `p`, `h`, `s`, Escape), copy buttons and a digest of what changed since the browser last showed the board, kept in the browser's local storage and never in the state directory. The snapshot embeds the newest 400 events for History.
 
-On the served board, a state change replaces the parts of the page that changed, without a reload, and marks the items that changed. A part holding a form with focus or typed text is not replaced; the page says updates are waiting and applies them once the form is sent or cleared. The page title counts the items that need the owner.
+On the served board, a state change replaces the parts of the page that changed, without a reload, and marks the items that changed. Each column and task sheet keeps its scroll position. A part holding a form with focus or typed text is not replaced; the page says updates are waiting and applies them once the form is sent or cleared. The Needs you heading, Board navigation, page title and icon share an attention count, including token and agent-time budgets at 90% or more. Working now shows the current claimant's message from the current claim, or the submitter's context for submitted work. Other authors' notes remain in the conversation.
 
-The Settings view (`/settings`) edits the default harness, every rung and each task's tier. While a form has unsaved edits, a change on disk shows a notice instead of reloading the page. A form is read-only while its save is in flight, with its Save button showing `Saving...`. Saving a form reloads the page only when the other form has nothing unsaved; otherwise the saved form shows the server's state in place and the other keeps its edits. A save sends the values its edit was based on, so one made against a rung, default harness or tier that changed since the page loaded is refused, and the page says to reload.
+With scripts enabled, a task sheet contains keyboard focus and makes the background inert. Tab cycles within it, Escape closes it, and focus returns to the invoking link, including after a live update. Without scripts, the snapshot still opens every task record by its plain fragment link.
+
+The Settings view (`/settings`) edits the default harness, every rung and each task's tier when serve runs as the explicit owner. Other identities get a read-only Settings view with no edit controls. While a form has unsaved edits, a change on disk shows a notice instead of reloading the page. A form is read-only while its save is in flight, with its Save button showing `Saving...`. Saving a form reloads the page only when the other form has nothing unsaved; otherwise the saved form shows the server's state in place and the other keeps its edits. A save sends the values its edit was based on, so one made against a rung, default harness or tier that changed since the page loaded is refused, and the page says to reload.
 
 ### serve endpoints
 
@@ -128,8 +130,8 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 | `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request; carries the run's token, and the owner forms when serve runs as the owner |
 | `GET /settings` | the Settings view; carries the run's token in `<meta name="tower-crane-token">` |
 | `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
-| `POST /api/ladder` | change the default harness and rungs, as `ladder harness` and `ladder set` do |
-| `POST /api/tiers` | change task tiers, as `task update --tier` does |
+| `POST /api/ladder` | owner only: change the default harness and rungs, as `ladder harness` and `ladder set` do |
+| `POST /api/tiers` | owner only: change task tiers, as `task update --tier` does |
 
 Every POST needs:
 
