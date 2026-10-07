@@ -30,7 +30,11 @@ cp.spawnSync=(cmd,args,opts)=>{
   for(const dir of String(env.PATH||env.Path||'').split(path.delimiter)){
     for(const ext of ['.exe','.cmd','.bat']){
       const file=path.join(dir,cmd+ext);
-      if(fs.existsSync(file))return run(file,args,{...opts,shell:ext!=='.exe'});
+      if(!fs.existsSync(file))continue;
+      if(ext==='.exe')return run(file,args,opts);
+      const quoted=[file,...args].map(arg=>'"'+String(arg).replace(/"/g,'""')+'"').join(' ');
+      return run(env.ComSpec||env.COMSPEC||'cmd.exe',['/d','/s','/c','"'+quoted+'"'],
+        {...opts,windowsVerbatimArguments:true});
     }
   }
   return run(cmd,args,opts);
