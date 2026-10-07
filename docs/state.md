@@ -415,6 +415,8 @@ A decision blocks only the tasks it lists. Everything else keeps running. `statu
 
 Answer rules are `owner`, `owner-named-agent` and `owner-technical-delegation`. The `answer` event records the actor in `agent` and `detail.answered_by`, and the rule in `detail.answer_rule`. Refused answers write no event. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
 
+The orchestrator's technical rule takes precedence over `answerers`, including for a generated identity with a recorded orchestrator role. Listing that identity cannot authorize a nontechnical answer or one without project delegation. Sandboxed workers can answer through their broker after owner delegation; successful brokered answer events retain the worker identity and carry `via: broker`.
+
 ## events.jsonl
 
 The append-only log is the event source of truth. One JSON object per line: `{ "id", "type", "to", "at", "agent", "cmd", "task", "detail" }`, plus `"via": "broker"` on an event the state broker wrote for a sandboxed agent (provenance, not proof). Every append occurs under the state lock after validation and state writes. Refused commands append nothing. Each new event has a unique `E<uuid>` id. `cmd` preserves the command name (`task add`, `claim`, `spawn`, `check tests` and so on); `tower-crane spawn` counts its earlier `spawn` events to number agents. Older audit lines without ids remain readable; `wait` exposes their byte offsets for resuming.

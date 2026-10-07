@@ -102,14 +102,22 @@ test('technical delegation recognizes generated orchestrators by their recorded 
   assert.equal(events(h).findLast((event) => event.cmd === 'spawn'
     && event.detail.agent === spawned.orchestrator).detail.role, 'orchestrator');
   h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres']);
+  h.ok(['decision', 'delegate', 'D1', '--answerers', JSON.stringify([spawned.orchestrator]), '--agent', 'owner']);
+  const beforeNamed = events(h);
+  const namedOnly = h.run(['answer', 'D1', '--choice', 'redis', '--agent', spawned.orchestrator]);
+  assert.equal(namedOnly.code, 1, namedOnly.stderr);
+  assert.match(namedOnly.stderr, /only the owner with explicit identity can answer D1/);
+  assert.deepEqual(events(h), beforeNamed, 'naming an orchestrator alone cannot authorize an answer');
   h.ok(['decision', 'delegate', 'D1', '--technical', 'true', '--agent', 'owner']);
 
   const noPolicy = h.run(['answer', 'D1', '--choice', 'redis', '--agent', spawned.orchestrator]);
   assert.equal(noPolicy.code, 1, noPolicy.stderr);
+  assert.match(noPolicy.stderr, /only the owner with explicit identity can answer D1/);
   h.ok(['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}', '--agent', 'owner']);
   h.ok(['decision', 'delegate', 'D1', '--technical', 'false', '--agent', 'owner']);
   const unmarked = h.run(['answer', 'D1', '--choice', 'redis', '--agent', spawned.orchestrator]);
   assert.equal(unmarked.code, 1, unmarked.stderr);
+  assert.match(unmarked.stderr, /only the owner with explicit identity can answer D1/);
 
   h.ok(['decision', 'delegate', 'D1', '--technical', 'true', '--agent', 'owner']);
   const before = events(h);
