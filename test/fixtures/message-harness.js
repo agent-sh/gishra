@@ -19,6 +19,21 @@ async function main() {
   const event = (value) => console.log(JSON.stringify(value));
   const task = JSON.parse(cp.execFileSync(process.execPath, [BIN, 'task', 'show', 'T1', '--json', '--agent', process.env.TOWER_CRANE_AGENT]));
   if (!task.claim) cli('claim', 'T1');
+  let plugin;
+  const probe = process.env.MESSAGE_OPENCODE_PROBE;
+  if (harness === 'opencode') {
+    out.promptCalls = [];
+    const url = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT).plugin[0];
+    plugin = await (await import(url)).TowerCrane({ client: { session: { promptAsync: async (p) => {
+      out.promptCalls.push(p);
+      if (out.promptCalls.length === 1 && probe === 'reject') throw new Error('prompt rejected');
+      if (out.promptCalls.length === 1 && probe === 'error') return { error: { message: 'prompt rejected' } };
+      out.blocked = true;
+      out.turns.push(p.body);
+      return { data: {} };
+    } } } });
+    await plugin['chat.message']({ sessionID: 'parent' }, { parts: [] });
+  }
   event({ type: 'thread.started', thread_id: 'message-session' });
   if (process.env.MESSAGE_RESUME === '1' || process.env.MESSAGE_RETRY === '1' && Number(process.env.TOWER_CRANE_RETRY) > 0) {
     fs.writeFileSync(process.env.MESSAGE_OUT, JSON.stringify(out));
@@ -72,20 +87,35 @@ async function main() {
     await handlers.agent_end({ messages: [{ role: 'assistant', content: [{ type: 'text', text: 'last report from pi' }] }] });
     event({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'last report from pi' }] } });
   } else if (harness === 'opencode') {
-    const url = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT).plugin[0];
-    const plugin = await (await import(url)).TowerCrane({ client: { session: { promptAsync: async (p) => {
-      out.blocked = true;
-      out.turns.push(p.body);
-    } } } });
+    const idle = (sessionID) => plugin.event({ event: { type: 'session.idle', properties: { sessionID } } });
+    const receipts = () => fs.readFileSync(path.join(process.env.TOWER_CRANE_STATE, 'events.jsonl'), 'utf8')
+      .trim().split('\n').map(JSON.parse).filter((e) => e.cmd === 'hook inbox').flatMap((e) => e.detail.messages).length;
+    if (probe) {
+      if (probe === 'sessions') {
+        await idle('unrelated');
+        await idle('child');
+        await plugin['chat.message']({ sessionID: 'child' }, { parts: [] });
+        await plugin['tool.execute.after']({ sessionID: 'child', tool: 'bash' }, { output: 'child result' });
+        await idle('child');
+        out.unrelatedCalls = out.promptCalls.length;
+        out.unrelatedReceipts = receipts();
+      } else {
+        try { await idle('parent'); } catch { /* The following idle must retry delivery. */ }
+        out.failedReceipts = receipts();
+      }
+      await idle('parent');
+      fs.writeFileSync(process.env.MESSAGE_OUT, JSON.stringify(out));
+      return;
+    }
     const output = { output: 'tool result' };
-    await plugin['tool.execute.after']({ tool: 'bash' }, output);
+    await plugin['tool.execute.after']({ sessionID: 'parent', tool: 'bash' }, output);
     out.turns.push(output);
     fs.writeFileSync(process.env.MESSAGE_READY + '.stop', '');
     while (!fs.existsSync(process.env.MESSAGE_READY + '.stop.go')) {
       if (Date.now() >= deadline) throw new Error('stop test never released harness');
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    await plugin.event({ event: { type: 'session.idle', properties: { sessionID: 'stub' } } });
+    await idle('parent');
     event({ type: 'text', part: { text: 'last report from opencode' } });
   } else {
     event({ type: 'item.completed', item: { type: 'command_execution', command: 'build' } });

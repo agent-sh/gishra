@@ -88,9 +88,9 @@ for (const route of ['claude', 'codex', 'codex-notify', 'pi', 'opencode', 'agy',
     }
     assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
     const bridge = cp.spawnSync(process.execPath, [
-      path.join(__dirname, '..', 'lib', 'hook-bridge.js'), binding, 'codex',
+      path.join(__dirname, '..', 'lib', 'hook-bridge.js'), 'codex',
       JSON.stringify({ agent: 'owner', task: 'T999', 'last-assistant-message': 'bound notification' }),
-    ], { env: { ...h.env, TOWER_CRANE_AGENT: 'owner', TOWER_CRANE_STATE: h.base, TOWER_CRANE_TASK: 'T999' }, encoding: 'utf8' });
+    ], { env: { ...h.env, TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_STATE: h.state, TOWER_CRANE_HOOK: binding }, encoding: 'utf8' });
     assert.equal(bridge.status, 0, bridge.stderr);
     const notification = events(h).findLast((e) => e.cmd === 'hook report');
     assert.equal(notification.agent, 'worker-T1-1');
@@ -135,6 +135,64 @@ test('successful push and PR creation publish events, and submitted stops retain
   assert.match(reports[0].detail.text, /after submit/);
   assert.match(reports[0].detail.text, /last report from command/);
 });
+
+test('the bridge refuses path-selected bindings and another dispatch identity', async (t) => {
+  const { h, ready } = setup(t, 'command');
+  const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json']);
+  await until(ready);
+  fs.writeFileSync(ready + '.go', '');
+  assert.equal((await run).code, 0);
+  const bridge = path.join(__dirname, '..', 'lib', 'hook-bridge.js');
+  const binding = path.join(h.state, 'homes', 'worker-T1-1', 'hook.json');
+  const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const env = { ...h.env, TOWER_CRANE_AGENT: 'reviewer-T1-1', TOWER_CRANE_STATE: h.state, TOWER_CRANE_HOOK: binding };
+  for (const args of [
+    [bridge, binding, 'codex', JSON.stringify({ 'last-assistant-message': 'forged report' })],
+    ['-e', `require(${JSON.stringify(bridge)}).call(${JSON.stringify(binding)}, 'tool', { tool: 'forged' })`],
+    [bridge, 'codex', JSON.stringify({ 'last-assistant-message': 'forged report' })],
+  ]) {
+    const result = cp.spawnSync(process.execPath, args, { env, encoding: 'utf8' });
+    assert.notEqual(result.status, 0, 'another dispatch must not use the worker binding');
+    assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+  }
+  // A binding located in the caller's own home must still match the caller.
+  const own = JSON.parse(fs.readFileSync(binding));
+  fs.writeFileSync(binding, JSON.stringify({ ...own, agent: 'reviewer-T1-1' }));
+  const mismatch = cp.spawnSync(process.execPath, [bridge, 'codex', '{}'], {
+    env: { ...env, TOWER_CRANE_AGENT: 'worker-T1-1' }, encoding: 'utf8',
+  });
+  assert.notEqual(mismatch.status, 0);
+  assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+});
+
+for (const probe of ['sessions', 'reject', 'error']) {
+  test(`OpenCode ${probe}: idle delivers only to the dispatch session and retains failed prompts`, async (t) => {
+    const { h, ready, out } = setup(t, 'opencode');
+    const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
+      env: { MESSAGE_OPENCODE_PROBE: probe },
+    });
+    await until(ready);
+    h.ok(['msg', '--to', 'worker-T1-1', 'pending parent message', '--agent', 'orchestrator']);
+    fs.writeFileSync(ready + '.go', '');
+    const result = await run;
+    assert.equal(result.code, 0, result.stderr);
+    const seen = JSON.parse(fs.readFileSync(out));
+    if (probe === 'sessions') {
+      assert.equal(seen.unrelatedCalls, 0);
+      assert.equal(seen.unrelatedReceipts, 0);
+      assert.equal(seen.promptCalls.length, 1);
+    } else {
+      assert.equal(seen.failedReceipts, 0, 'failed prompt must leave the inbox unread');
+      assert.equal(seen.promptCalls.length, 2, 'the next idle retries the pending context');
+      assert.deepEqual(seen.promptCalls[0], seen.promptCalls[1]);
+    }
+    for (const prompt of seen.promptCalls) {
+      assert.equal(prompt.path.id, 'parent');
+      assert.match(JSON.stringify(prompt.body), /pending parent message/);
+    }
+    assert.equal(events(h).filter((e) => e.cmd === 'hook inbox').flatMap((e) => e.detail.messages).length, 1);
+  });
+}
 
 test('transient resumes inject queued messages without a worker checking its inbox', async (t) => {
   const { h, ready, out } = setup(t, 'command');
