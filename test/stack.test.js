@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { worker, setup, upper, resubmit } = require('./stack-fixture');
+const { BIN } = require('./helpers');
 
 test('submitted dependencies dispatch from the exact dependency head and spawn links PRs bottom to top', (t) => {
   const f = setup(t);
@@ -161,6 +162,84 @@ test('same repo and one dependency chain are required for early dispatch', (t) =
   f.h.ok(['task', 'update', 'T5', '--dep', 'T1', '--dep', 'T4']);
   assert.equal(f.h.run(['claim', 'T5']).code, 1);
   assert.match(f.h.run(['worktree', 'T5']).stderr, /one available stack chain/);
+});
+
+test('spawn refuses with claim readiness when a submitted dependency returns to in progress', (t) => {
+  const f = setup(t);
+  worker(f);
+  f.h.json(['worktree', 'T2']);
+  f.h.ok(['rework', 'T1', '--reason', 'the lower task needs another change']);
+  f.h.ok(['claim', 'T1', '--agent', 'worker-T1']);
+
+  const claim = f.h.run(['claim', 'T2', '--agent', 'claim-probe']);
+  assert.equal(claim.code, 1);
+  assert.match(claim.stderr, /T2 is blocked: depends on T1 \(in_progress\)/);
+
+  const spawn = f.h.run(['spawn', '--task', 'T2', '--wait']);
+  assert.equal(spawn.code, 1);
+  assert.ok(spawn.stderr.includes(claim.stderr.trim().replace(/^tower-crane: /, '')), spawn.stderr);
+  const events = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(events.some((event) => event.cmd === 'spawn' && event.task === 'T2'), false);
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'todo');
+});
+
+test('spawn repairs stale linked state from GitHub before checking a rework claim', (t) => {
+  const f = setup(t);
+  upper(f);
+  f.h.ok(['rework', 'T2', '--reason', 'revise the stacked change']);
+  const state = f.h.readState('tasks.json');
+  const upperTask = state.tasks.find((item) => item.id === 'T2');
+  upperTask.stack.linked = false;
+  upperTask.stack_disabled = true;
+  f.h.writeState('tasks.json', state);
+
+  const script = path.join(f.h.base, 'claim.js');
+  fs.writeFileSync(script, `const cp = require('node:child_process');
+const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'claim', process.env.TOWER_CRANE_TASK], { encoding: 'utf8' });
+process.stdout.write(r.stdout || '');
+process.stderr.write(r.stderr || '');
+process.exit(r.status === null ? 1 : r.status);
+`);
+  f.h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, script]),
+    '--clear', 'model', '--clear', 'profile', '--clear', 'effort']);
+
+  const spawned = f.h.run(['spawn', '--task', 'T2', '--wait']);
+  assert.equal(spawned.code, 0, spawned.stderr);
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(task.status, 'in_progress');
+  assert.equal(task.stack.linked, true);
+  assert.equal(task.stack_disabled, undefined);
+  assert.ok(f.read().calls.some((call) => call.args[0] === 'api' && call.args[1] === 'repos/acme/app/stacks'));
+});
+
+test('transient stack API failures and ordinary 404s do not disable stacks', (t) => {
+  const failures = [
+    { status: 1, stderr: 'HTTP 503: Service Unavailable' },
+    { status: 1, stderr: 'HTTP 503: gh stack extension temporarily unavailable' },
+    { status: 1, stderr: 'HTTP 404: Not Found' },
+    { status: null, error: { code: 'ENETUNREACH', message: 'network is unreachable' } },
+    { status: null, error: { code: 'ENOENT', message: 'spawnSync gh ENOENT' } },
+  ];
+  for (const failure of failures) {
+    const f = setup(t);
+    f.accept('T1');
+    f.write((d) => { d.apiFailure = failure; });
+
+    const result = f.h.run(['worktree', 'T2']);
+    assert.equal(result.code, 1, JSON.stringify(failure));
+    assert.match(result.stderr, /stack availability check failed/, JSON.stringify(failure));
+    assert.equal(f.h.json(['task', 'show', 'T2']).stack_disabled, undefined, JSON.stringify(failure));
+  }
+});
+
+test('GitHub saying stacked pull requests are not enabled still permits accepted fallback', (t) => {
+  const f = setup(t);
+  f.accept('T1');
+  f.write((d) => { d.apiFailure = { status: 1, stderr: 'HTTP 404: Stacked pull requests are not enabled' }; });
+
+  const wt = f.h.json(['worktree', 'T2']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), f.h.git(['rev-parse', 'main']));
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack_disabled, true);
 });
 
 test('pull_request webhook stack object appears in task show and the board', (t) => {

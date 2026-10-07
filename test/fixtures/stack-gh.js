@@ -42,6 +42,12 @@ cp.spawnSync = function stackGh(command, args, opts) {
     return String(r.stdout).trim();
   };
   if (args[0] === 'api') {
+    if (data.apiFailure) {
+      const failure = data.apiFailure;
+      const result = finish(failure.stdout || '', failure.status === undefined ? 1 : failure.status, failure.stderr || '');
+      if (failure.error) result.error = failure.error;
+      return result;
+    }
     if (data.unavailable) return finish('', 9, 'Stacked pull requests are not enabled');
     if (args[1].includes('/stacks')) return finish(data.linked ? [{ id: 5, pull_requests: data.order.map((number) => ({ number })) }] : []);
     return finish({ name: 'build', app: 'ci', status: 'completed', conclusion: 'success', runs: 1 });
