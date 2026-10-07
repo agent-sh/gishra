@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, makeProjectRepo, makeTaskRepo } = require('./helpers');
-const windowsConcurrency = process.platform === 'win32' ? 3 : false;
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const supervision = { retries: 2, backoff_ms: 10, max_backoff_ms: 20, stall_ms: 60000 };

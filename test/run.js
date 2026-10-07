@@ -12,6 +12,7 @@ const concurrency = process.platform === 'win32'
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
 // Four Windows file workers leave CPU for test children that poll timers.
 args.push(`--test-concurrency=${concurrency}`);
+if (process.env.TC_TEST_SHARD) args.push(`--test-shard=${process.env.TC_TEST_SHARD}`);
 const testFiles = [
   ...fs.readdirSync(__dirname).filter((file) => file.endsWith('.test.js')).map((file) => `test/${file}`),
   ...fs.readdirSync(path.join(__dirname, 'gates')).filter((file) => file.endsWith('.test.js')).map((file) => `test/gates/${file}`),
@@ -21,10 +22,11 @@ const windowsSlowFiles = [
   'test/supervision.test.js',
   'test/local-ci.test.js',
   'test/spawn-resume.test.js',
+  'test/sources.test.js',
   'test/fallback.test.js',
   'test/gates.test.js',
-  'test/spawn.test.js',
   'test/worktree.test.js',
+  'test/spawn.test.js',
   'test/evidence.test.js',
   'test/worker-slots.test.js',
   'test/usage.test.js',

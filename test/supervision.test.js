@@ -9,7 +9,7 @@ const http = require('node:http');
 const { makeRepo, makeTaskRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
-const windowsConcurrency = process.platform === 'win32' ? 3 : false;
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
@@ -385,6 +385,7 @@ test('submitted-task reviewers resume transient exits and show their phase', (t)
   assert.match(h.ok(['status']), /T1 waiting/);
   assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /reviewer-T1-1/);
 });
+});
 
 test('a state-lock timeout preserves the pending retry without spending another attempt', async (t) => {
   const h = setup(t, { config: { retries: 1, backoff_ms: 5000, max_backoff_ms: 5000 } });
@@ -405,6 +406,7 @@ test('a state-lock timeout preserves the pending retry without spending another 
   assert.equal(h.readAttempts()[1].retry, '1');
 });
 
+describe('remaining supervision settings', { concurrency: windowsConcurrency }, () => {
 test('rung supervision settings validate and clear through the CLI', (t) => {
   const h = setup(t);
   for (const config of [{ retries: -1 }, { backoff_ms: 0 }, { max_backoff_ms: 1 }, { progress_paths: ['../escape'] }, { typo: 1 }]) {
