@@ -223,7 +223,6 @@ test('detached supervision renews a short lease during backoff and does not allo
   assert.equal(log(h).filter((e) => e.cmd === 'claim').length, 1);
 });
 
-describe('independent running-work cases', { concurrency: windowsConcurrency }, () => {
 test('later spawns preserve retrying homes through backoff, retries and queued hook writes', async (t) => {
   const h = makeRepo(t);
   h.init();
@@ -279,7 +278,6 @@ if (task === 'T1' && retry === 0) {
   assert.equal(audit.findLast((e) => e.cmd === 'hook stop')?.detail.report, `last report from ${started.agent}`);
   assert.match(audit.find((e) => e.cmd === 'msg' && e.detail.to === 'orchestrator')?.detail.text || '', /without submit/);
 });
-});
 
 test('a running process keeps its lease without claimant writes', async (t) => {
   const h = setup(t, { failures: 0, hold: 1800 });
@@ -300,7 +298,6 @@ test('a running process keeps its lease without claimant writes', async (t) => {
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'worker did not finish');
 });
 
-describe('remaining supervision cases', { concurrency: windowsConcurrency }, () => {
 test('release during backoff fences the old supervisor from a replacement claim', async (t) => {
   const h = setup(t, { failures: 9, config: { backoff_ms: 1400, max_backoff_ms: 1400 } });
   const spawned = h.json(['spawn', '--task', 'T1']);
@@ -315,6 +312,7 @@ test('release during backoff fences the old supervisor from a replacement claim'
   assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
 });
 
+describe('remaining supervision cases', { concurrency: windowsConcurrency }, () => {
 test('an expired previous claim does not stop supervision before a slow replacement claims', (t) => {
   const h = setup(t, { claimDelay: 350 });
   h.ok(['claim', 'T1', '--agent', 'previous-worker', '--lease', '1']);

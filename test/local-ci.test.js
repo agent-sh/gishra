@@ -1,13 +1,12 @@
 'use strict';
 
-const { test, describe } = require('node:test');
+const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { makeRepo } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
-const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 function fixture(t, script) {
   const h = makeRepo(t);
@@ -86,7 +85,6 @@ function originFixture(h) {
   h.git(['clone', '-q', h.origin, h.upstream]);
 }
 
-describe('local CI integration cases', { concurrency: windowsConcurrency }, () => {
 test('local CI runs argv on the merged tree and records audited evidence without hosted CI', (t) => {
   const h = fixture(t);
   const e = h.json(['check', 'ci', 'T1', '--agent', 'checker']);
@@ -547,5 +545,4 @@ test('project settings validate local argv and timeout, preserve CI siblings and
   const cleared = h.json(['project', 'set', '--ci-local', 'null']);
   assert.deepEqual(cleared, original);
   assert.match(h.ok(['project', 'set', '--help']), /--ci-local JSON/);
-});
 });

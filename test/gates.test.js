@@ -1,6 +1,6 @@
 'use strict';
 
-const { test, describe } = require('node:test');
+const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -8,7 +8,6 @@ const cp = require('node:child_process');
 const { makeRepo, ROOT, real } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const { shellQuote } = require('../lib/gates/common');
-const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 // Gate internals live in lib/gates/ and ship separately, so these tests run a
 // copy of the CLI whose lib/gates/ holds only what each test puts there.
@@ -147,7 +146,6 @@ function submitTestsFixture(h, sha, keep) {
   h.env.TOWER_CRANE_TMP = path.join(h.base, 'gate-tmp');
 }
 
-describe('gate integration cases', { concurrency: windowsConcurrency }, () => {
 for (const [ecosystem, manifests] of BUILD_MANIFEST_FIXTURES) {
   test(`check tests keeps ${ecosystem} build files and fails on the reverted code`, (t) => {
     const h = makeRepo(t);
@@ -597,5 +595,4 @@ test('merge checks the gates as they stand, not only the accepted status', (t) =
   const merged = cli.run(['merge', 'T1'], { GATE_OUT: out, GATE_OK: '1' });
   assert.equal(merged.code, 0, merged.stderr);
   assert.ok(fs.existsSync(out), 'with the gates passing again, the merge gate runs');
-});
 });

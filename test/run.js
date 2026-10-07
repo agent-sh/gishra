@@ -5,7 +5,7 @@ const os = require('node:os');
 
 const args = ['--test'];
 const concurrency = process.platform === 'win32'
-  ? 4
+  ? 6
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
 // Bound Windows file workers while slow suites parallelize independent cases internally.
 args.push(`--test-concurrency=${concurrency}`);
