@@ -239,6 +239,23 @@ test('every spawn gets a fresh home, and an exited agent\'s home is removed', { 
   }
 });
 
+test('only sandboxed claude and codex dispatches mark commands for nested Chrome', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const output = path.join(wt, 'sandbox-marker.json');
+  const script = `require('node:fs').writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.env.TOWER_CRANE_SANDBOX))`;
+  for (const harness of ['claude', 'codex']) {
+    for (const [role, expected] of [['hard', '1'], ['orchestrator', '0']]) {
+      isolated(h, role, harness);
+      spawn(h, u, role, {
+        TOWER_CRANE_SANDBOX: expected === '1' ? '0' : '1',
+        STUB_RUN: JSON.stringify([[process.execPath, '-e', script]]),
+      });
+      assert.equal(u.report().ran[0].code, 0);
+      assert.equal(JSON.parse(fs.readFileSync(output, 'utf8')), expected, `${harness} ${role} replaces an inherited marker`);
+    }
+  }
+});
+
 test('a codex agent writes only where its agent file says; a worker writes its git metadata, reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   // A worker fetches, adds, commits and pushes: it writes the repository's
