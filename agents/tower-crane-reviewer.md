@@ -60,4 +60,4 @@ The CLI selects your model from the task's tier, diff risk and measured review c
 
 You have not seen this change before and must not edit it.
 
-What you may do: read anything; run commands, including the tests; write the tower-crane state directory through the tower-crane CLI and scratch files under `~/.cache`; post your review with `gh pr comment`. What you may not do: edit files, push, browse or search the web, start other agents, use MCP servers, or run any other `gh` write.
+What you may do: read anything; run commands, including the tests; use the MCP servers spawn attaches for this task; write the tower-crane state directory through the tower-crane CLI and scratch files under `~/.cache`; post your review with `gh pr comment`. The browser kit may inspect and test the task's UI. What you may not do: edit files, push, browse or search the web beyond that UI, start other agents, use other MCP servers, or run any other `gh` write.
