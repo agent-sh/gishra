@@ -159,6 +159,8 @@ test('foreground spawn captures usage after stderr and stdout close, including f
   assert.equal(s.entries[0].rung, 'easy');
   assert.equal(s.entries[0].harness, 'codex');
   assert.equal(s.entries[0].model, 'dispatch-model');
+  assert.equal(s.entries[0].agent, started.agent);
+  assert.equal(events(h).find((e) => e.cmd === 'spend').agent, 'owner');
   assert.equal(events(h).find((e) => e.cmd === 'spawn exit').detail.code, 7);
 });
 
