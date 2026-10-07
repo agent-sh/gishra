@@ -31,10 +31,14 @@ const SETTINGS = {
   'budget-hours': num('H', 'hours budget'),
   'budget-tokens': int('N', 'token budget'),
   standards: str('S', '"default" or a path to a standards Markdown file'),
-  'tests-paths': str('JSON', 'non-empty array of test path globs; null restores default layouts'),
-  'tests-keep': str('JSON', 'extra build file globs to keep at submitted sha; [] or null restores defaults'),
+  'tests-paths': str('JSON', 'owner only: non-empty array of test path globs; null restores default layouts'),
+  'tests-keep': str('JSON', 'owner only: extra build file globs to keep at submitted sha; [] or null restores defaults'),
+  'tests-mode': str('MODE', 'owner only: prove, run-only or none; null restores prove'),
+  'tests-by-kind': str('JSON', 'owner only: task kind to tests mode overrides; null clears overrides'),
+  'tests-expensive': str('JSON', 'owner only: true runs the full suite once with scoped proof; false or null restores normal proof'),
   'ci-ignore-apps': str('JSON', 'array of GitHub app slugs to skip; [] or null clears the list'),
   'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds}; null restores hosted CI'),
+  'review-policy': str('JSON', 'owner-only review diff limits and canonical model prices; null clears the policy'),
 };
 
 const TASK_FIELDS = {
@@ -66,7 +70,7 @@ const gate = (name) => (ctx) => require('../lib/check').runGate(ctx, name);
 
 const COMMANDS = [
   { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], run: P.init },
-  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--ci-ignore-apps JSON] [--ci-local JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
+  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-local JSON] [--review-policy JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
   { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', run: P.projectShow },
   { section: 'Plan', name: 'ladder show', summary: 'print each rung as it resolves, and where it comes from (project, user file or built-in)', run: P.ladderShow },
   { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--tools JSON] [--mcp JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
@@ -78,9 +82,9 @@ const COMMANDS = [
   { section: 'Plan', name: 'task show', pos: ['ID'], usage: 'ID', summary: 'show one task with its gates, evidence and notes', run: T.taskShow },
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, run: T.taskList },
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', run: T.planImport },
-  { section: 'Plan', name: 'brief set', pos: ['ID', '[-]'], usage: 'ID (--file F | -)', summary: "write the task's brief", flags: { file: str('F', 'read the brief from F') }, run: T.briefSet },
-  { section: 'Plan', name: 'brief get', pos: ['ID'], usage: 'ID', summary: "print the task's brief", run: T.briefGet },
-  { section: 'Plan', name: 'validate', summary: 'report cycles, unknown dependencies, tasks without acceptance, unsplit L tasks, oversize budgets and rungs that cannot run (exit 1 if any); warn when review runs the same model as a tier in use', run: T.validate },
+  { section: 'Plan', name: 'brief set', pos: ['ID', '[-]'], usage: 'ID (--file F | -)', summary: "write the task's brief; warn when reviewer text has no worker section", flags: { file: str('F', 'read the brief from F') }, run: T.briefSet },
+  { section: 'Plan', name: 'brief get', pos: ['ID'], usage: 'ID [--role worker|reviewer]', summary: "print the full or role-filtered task brief", flags: { role: str('ROLE', 'select worker or reviewer text; otherwise infer from the agent name') }, run: T.briefGet },
+  { section: 'Plan', name: 'validate', summary: 'report plan and ladder errors (exit 1 if any); warn when an open task has no runnable reviewer', run: T.validate },
 
   { section: 'Run', name: 'ready', usage: '[--all]', summary: 'ready tasks, those that unblock the most first; --all adds blocked ones with the reason', flags: { all: bool('also list blocked tasks and why') }, run: T.ready },
   { section: 'Run', name: 'claim', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'take a ready task for --agent', flags: { lease: int('MIN', 'lease length (default limits.lease_minutes)') }, run: T.claim },
@@ -88,13 +92,14 @@ const COMMANDS = [
   { section: 'Run', name: 'release', pos: ['ID'], usage: 'ID --reason R', summary: 'give a claimed task back; it returns to todo or rework', flags: { reason: str('R', 'why') }, required: ['reason'], run: T.release },
   { section: 'Run', name: 'submit', pos: ['ID'], usage: 'ID --sha S [--branch B] [--pr N] [--summary T]', summary: 'mark submitted as the claimant or replace a submitted head as its submitter', flags: { sha: str('S', 'commit to review'), branch: str('B', 'branch holding it'), pr: int('N', 'pull request number'), summary: str('T', 'what changed') }, required: ['sha'], run: T.submit },
   { section: 'Run', name: 'evidence', pos: ['ID'], usage: 'ID --type T (--ok | --fail) [--sha S] [--summary T] [--ref URL]', summary: 'record review or note evidence; review needs --sha, note defaults to the submitted sha', flags: { type: str('T', 'review or note; tests, clean, ci and merge require gate commands'), ok: bool('it passed'), fail: bool('it failed'), sha: str('S', 'commit the evidence is about; required for review'), summary: str('T', 'one line'), ref: str('URL', 'link to the run, review or log') }, required: ['type'], run: T.evidence },
-  { section: 'Run', name: 'accept', pos: ['ID'], usage: 'ID [--waive TYPE --reason R]', summary: 'accept if the gates pass (see docs/state.md)', flags: { waive: many('TYPE', 'owner only: waive tests, clean, review or ci'), reason: str('R', 'why the waived gate does not apply') }, run: T.accept },
+  { section: 'Run', name: 'accept', pos: ['ID'], usage: 'ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]', summary: 'run missing software gates, dispatch review when green, accept when all gates pass', flags: { cmd: str('CMD', 'test command for a missing tests gate'), 'proof-cmd': str('CMD', 'expensive prove: scoped test command with {tests}'), waive: many('TYPE', 'owner only: waive tests, clean, review or ci'), reason: str('R', 'why the waived gate does not apply') }, run: T.accept },
   { section: 'Run', name: 'rework', pos: ['ID'], usage: 'ID --reason R', summary: "send back; the reason goes into the brief's rework notes", flags: { reason: str('R', 'what to fix') }, required: ['reason'], run: T.rework },
-  { section: 'Run', name: 'spend', pos: ['ID'], usage: 'ID [--minutes N] [--tokens N] [--input N] [--cached N] [--output N] [--rung R] [--harness H] [--model M] [--from-spawn AGENT]', summary: 'record usage or collect an exited spawn once', flags: {
+  { section: 'Run', name: 'spend', pos: ['ID'], usage: 'ID [--minutes N] [--tokens N] [--input N] [--cached N] [--cache-write N] [--output N] [--rung R] [--harness H] [--model M] [--from-spawn AGENT]', summary: 'record usage or collect an exited spawn once', flags: {
     minutes: int('N', 'minutes spent'), tokens: int('N', 'total tokens, including cached input'),
     input: int('N', 'input tokens, including cached input'), cached: int('N', 'cache read tokens (subset of input)'),
     output: int('N', 'output tokens, including reasoning'), rung: str('R', 'ladder rung for native usage'),
     harness: str('H', 'actual harness (default: rung harness)'), model: str('M', 'actual model (default: rung model)'),
+    'cache-write': int('N', 'cache write input tokens, included in --input and separate from --cached'),
     'from-spawn': str('AGENT', 'collect an exited spawn from its captured log and session, once'),
   }, run: T.spend },
   { section: 'Run', name: 'owner-done', pos: ['ID'], usage: 'ID [--note T]', summary: 'the owner did what needs_owner asked; clears it', flags: { note: str('T', 'what was done') }, run: T.ownerDone },
@@ -113,7 +118,7 @@ const COMMANDS = [
   { section: 'Agents and worktrees', name: 'worktree', pos: ['ID...'], usage: 'ID [ID ...]', summary: 'prepare task worktrees serially from one fetched base before dispatch', run: run('../lib/worktree', 'worktree') },
   { section: 'Agents and worktrees', name: 'spawn', usage: '--task ID [--role RUNG] [--dry-run] [--wait]', summary: "start a rung's harness in the task's worktree (the task's tier unless --role names a rung); prints the pid, or the command with --dry-run", flags: { task: str('ID', 'task id'), role: str('RUNG', "ladder rung, such as review (default: the task's tier)"), 'dry-run': bool('print the command instead of running it'), wait: bool('run in the foreground and exit with its code') }, required: ['task'], run: run('../lib/spawn', 'spawn') },
 
-  { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID --cmd CMD', summary: 'tests pass at the submitted sha and fail with the non-test changes reverted; records tests', flags: { cmd: str('CMD', 'test command') }, required: ['cmd'], run: gate('tests') },
+  { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID [--cmd CMD] [--proof-cmd CMD]', summary: 'check tests under the project and task kind mode; records tests', flags: { cmd: str('CMD', 'test command; required for prove and run-only, skipped for none'), 'proof-cmd': str('CMD', 'expensive prove: scoped test command with {tests} for changed test paths') }, run: gate('tests') },
   { section: 'Gates', name: 'check clean', pos: ['ID'], usage: 'ID', summary: 'cleanup tool on the task branch against base reports no HIGH finding; records clean', run: gate('clean') },
   { section: 'Gates', name: 'check ci', pos: ['ID'], usage: 'ID', summary: 'configured local CI on the merged tree, or GitHub checks on the submitted sha; records ci', run: gate('ci') },
   { section: 'Gates', name: 'merge', pos: ['ID'], usage: 'ID', summary: "merge an accepted task's PR with --match-head-commit if its gates still pass; records merge", run: gate('merge') },

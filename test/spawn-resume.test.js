@@ -41,6 +41,7 @@ if (enabled === 'true') {
       : { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10 } }));
   }
 }
+if (process.env.RESUME_EXIT_DELAY) setTimeout(() => {}, Number(process.env.RESUME_EXIT_DELAY));
 `);
   h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
     '--command', JSON.stringify([process.execPath, script, BIN, seen, '{session}', '{prompt}', format, String(session)])]);
@@ -121,12 +122,15 @@ for (const format of ['codex', 'claude']) {
 
 test('a detached command harness records its session and resumes with a separate attempt log', async (t) => {
   const { h } = setup(t);
-  const first = h.json(['spawn', '--task', 'T1']);
+  const first = h.json(['spawn', '--task', 'T1'], { env: { RESUME_EXIT_DELAY: '2000' } });
   const deadline = Date.now() + 10000;
   while (!events(h).some((e) => e.cmd === 'spawn session')) {
     if (Date.now() > deadline) throw new Error('session was not recorded');
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  const exit = h.json(['wait', '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '10']);
+  assert.equal(exit.detail.agent, first.agent);
+  assert.equal(exit.detail.pid, first.pid);
   sendBack(h);
   const next = h.json(['spawn', '--task', 'T1', '--wait']);
   assert.equal(next.agent, first.agent);
@@ -252,6 +256,13 @@ for (const harness of ['codex', 'claude']) {
     assert.equal(next.agent, harness === 'codex' ? 'worker-T1-1' : 'worker-T1-2');
     const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
     assert.equal(input.prior, harness === 'codex' ? 'worker-session-1' : '');
+    if (harness === 'codex') {
+      assert.ok(!input.prompt.includes('## Role instructions: tower-crane-work'));
+      assert.ok(!input.prompt.includes('# Tower Crane: work one task'));
+    } else {
+      assert.ok(input.prompt.startsWith('## Role instructions: tower-crane-work'));
+      assert.ok(input.prompt.includes('# Tower Crane: work one task'));
+    }
     assert.match(input.prompt, /Add the worktree guard/);
     assert.match(input.prompt, /Missing worktree validation/);
     assert.match(input.prompt, /review-receipt/);

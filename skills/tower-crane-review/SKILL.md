@@ -10,8 +10,8 @@ You did not write this change and have not seen it being written. Keep it that w
 
 Arguments: `$ARGUMENTS`. Use `TOWER_CRANE_TASK` and `TOWER_CRANE_AGENT` when set; otherwise use the task id and agent name passed by the orchestrator. Pass `--agent <name>` on every tower-crane call. If `TOWER_CRANE_STATE` is absent, also pass `--state <dir>` with the supplied state directory.
 
-1. `tower-crane task show <id> --agent <name>`: kind, acceptance, submitted sha and PR, and evidence. `tower-crane brief get <id> --agent <name>` for the intent. Code requires tests and clean gates; other kinds require independent review only (`docs/state.md`). Every task with a PR needs CI before merge.
-2. Read the diff: `git diff $(git merge-base <base> <sha>) <sha>` and the PR body. Read surrounding code where the diff depends on it.
+1. Use the supplied task, acceptance, submitted sha, PR and software gate results. Read the named review context file when the prompt references one. If dispatched without that packet, `tower-crane task show <id> --agent <name>` gets the task and evidence. Code requires tests and clean gates; every task with a PR needs CI before review dispatch (`docs/state.md`).
+2. Read the supplied diff, the brief's `## Reviewer` section and the PR body. Without a supplied packet, get the review instructions with `tower-crane brief get <id> --agent <name>` and use `git diff $(git merge-base <base> <sha>) <sha>`. Read surrounding code where the diff depends on it; if worktree HEAD differs from the submitted sha, use `git show <sha>:<path>`. Use the recorded gate results; do not re-run the suite unless a focused probe is needed to check a specific concern.
 3. Check, in this order:
    - each acceptance item is met; code changes have a test shown failing before and passing after, and other work has the verification its brief requires;
    - claims in the PR body, docs, comments and changelog are true of the code (current models most often leave stale or overstated text, not broken syntax);

@@ -247,6 +247,244 @@ test('check tests still rejects a failing head when only tests and build files c
   assert.match(r.stdout + r.stderr, /at [a-f0-9]+: exit 1/);
 });
 
+for (const [name, settings, runs] of [
+  ['default prove', [], 2],
+  ['project run-only', ['--tests-mode', 'run-only'], 1],
+  ['kind run-only overrides project none', ['--tests-mode', 'none', '--tests-by-kind', '{"code":"run-only"}'], 1],
+  ['kind prove overrides project run-only', ['--tests-mode', 'run-only', '--tests-by-kind', '{"code":"prove"}'], 2],
+  ['expensive prove', ['--tests-expensive', 'true'], 1],
+  ['non-expensive prove', ['--tests-expensive', 'false'], 2],
+  ['expensive kind prove', ['--tests-mode', 'none', '--tests-by-kind', '{"code":"prove"}', '--tests-expensive', 'true'], 1],
+  ['project none', ['--tests-mode', 'none'], 0],
+  ['kind none overrides project prove', ['--tests-by-kind', '{"code":"none"}', '--tests-expensive', 'true'], 0],
+]) {
+  test(`check tests runs the suite ${runs} times for ${name}`, (t) => {
+    const h = makeRepo(t);
+    const sha = manifestTask(h, { base: {
+      'count-runs.js': "require('node:fs').appendFileSync(process.argv[2], 'run\\n');\nprocess.argv.length = 2;\nrequire('./verify-build.js');\n",
+    }, submitted: {} });
+    submitTestsFixture(h, sha);
+    if (settings.length) h.ok(['project', 'set', ...settings]);
+    const marker = path.join(h.base, 'suite-runs');
+    const cmd = `${shellQuote(process.execPath)} count-runs.js ${shellQuote(marker)}`;
+    const scoped = `${shellQuote(process.execPath)} {tests}`;
+    const expensive = settings.includes('true') && runs === 1;
+    const evidence = h.json(['check', 'tests', 'T1', '--cmd', cmd, ...(expensive ? ['--proof-cmd', scoped] : []), '--agent', 'checker']);
+    assert.equal(evidence.ok, true, evidence.summary);
+    assert.equal(evidence.sha, sha);
+    assert.equal(fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim().split('\n').length : 0, runs);
+    assert.equal(evidence.commands.filter((c) => c.command === cmd).length, runs);
+    assert.ok(evidence.commands.length > 0, 'even none mode verifies the submitted commit');
+    const shown = h.json(['task', 'show', 'T1']);
+    assert.equal(shown.gates.gates.find((g) => g.type === 'tests').ok, true, 'audited tests evidence counts for acceptance');
+    if (runs === 0) {
+      assert.match(evidence.summary, /mode none/);
+      assert.ok(!fs.existsSync(h.env.TOWER_CRANE_TMP));
+    } else {
+      assert.deepEqual(fs.readdirSync(h.env.TOWER_CRANE_TMP), []);
+    }
+    if (expensive) {
+      assert.match(evidence.summary, /scoped proof/);
+      assert.equal(evidence.tests_mode, 'prove');
+      assert.equal(evidence.commands.filter((c) => c.command === `${shellQuote(process.execPath)} ${shellQuote('test/value.test.js')}`).length, 2);
+    }
+    assert.equal(h.git(['worktree', 'list', '--porcelain']).split('\n').filter((l) => l.startsWith('worktree ')).length, 1);
+  });
+}
+
+test('run-only accepts Rust inline tests in source files without a changed test path', (t) => {
+  const h = makeRepo(t);
+  writeFiles(h.repo, {
+    'src/lib.rs': 'pub fn value() -> i32 { 0 }\n',
+    'check-inline.js': "require('node:assert/strict').match(require('node:fs').readFileSync('src/lib.rs', 'utf8'), /value\\(\\) -> i32 \\{ 1 \\}/);\n",
+  });
+  h.git(['add', '-A']);
+  h.git(['commit', '-qm', 'inline fixture base']);
+  h.git(['switch', '-qc', 'fixture-change']);
+  writeFiles(h.repo, {
+    'src/lib.rs': 'pub fn value() -> i32 { 1 }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn returns_one() { assert_eq!(super::value(), 1); }\n}\n',
+  });
+  h.git(['add', '-A']);
+  h.git(['commit', '-qm', 'inline fixture change']);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.git(['switch', '-q', 'main']);
+  submitTestsFixture(h, sha);
+  const cmd = `${shellQuote(process.execPath)} check-inline.js`;
+  const prove = h.run(['check', 'tests', 'T1', '--cmd', cmd]);
+  assert.equal(prove.code, 1);
+  assert.match(prove.stdout, /no test covers this change/);
+  h.ok(['project', 'set', '--tests-mode', 'run-only']);
+  const evidence = h.json(['check', 'tests', 'T1', '--cmd', cmd]);
+  assert.match(evidence.summary, /mode run-only/);
+  assert.equal(evidence.commands.filter((c) => c.command === cmd).length, 1);
+  assert.deepEqual(fs.readdirSync(h.env.TOWER_CRANE_TMP), []);
+});
+
+test('run-only still fails when the suite fails at the submitted head', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {
+    'test/value.test.js': "require('node:assert/strict').equal(require('../value'), 2);\n",
+  } });
+  submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-mode', 'run-only']);
+  const cmd = `${shellQuote(process.execPath)} verify-build.js`;
+  const result = h.run(['check', 'tests', 'T1', '--cmd', cmd, '--json']);
+  assert.equal(result.code, 1, result.stderr);
+  const evidence = JSON.parse(result.stdout);
+  assert.equal(evidence.ok, false);
+  assert.match(evidence.summary, /at [a-f0-9]+: exit 1/);
+  assert.equal(evidence.commands.filter((c) => c.command === cmd).length, 1);
+  assert.deepEqual(fs.readdirSync(h.env.TOWER_CRANE_TMP), []);
+});
+
+test('none mode for docs and ops needs no command but still verifies the submitted sha', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {} });
+  submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-by-kind', '{"docs":"none","ops":"none"}']);
+  for (const kind of ['docs', 'ops']) {
+    h.ok(['task', 'update', 'T1', '--kind', kind]);
+    const evidence = h.json(['check', 'tests', 'T1']);
+    assert.match(evidence.summary, new RegExp(`mode none.*tests.by_kind.${kind}`));
+    assert.equal(evidence.commands.some((c) => c.command !== 'git'), false);
+  }
+  h.ok(['submit', 'T1', '--sha', '0123456789abcdef0123456789abcdef01234567', '--agent', 'w-1']);
+  const missing = h.run(['check', 'tests', 'T1']);
+  assert.equal(missing.code, 1);
+  assert.match(missing.stdout, /is not in/);
+});
+
+test('prove and run-only require a command, and malformed policy fails before running it', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {} });
+  submitTestsFixture(h, sha);
+  for (const mode of ['prove', 'run-only']) {
+    h.ok(['project', 'set', '--tests-mode', mode]);
+    const missing = h.run(['check', 'tests', 'T1']);
+    assert.equal(missing.code, 1);
+    assert.match(missing.stdout, /no test command given/);
+  }
+  const project = h.readState('project.json');
+  for (const [key, value] of [['mode', 'skip'], ['by_kind', { docs: null }], ['by_kind', { tooling: 'none' }], ['expensive', 'true']]) {
+    h.writeState('project.json', { ...project, tests: { mode: 'none', [key]: value } });
+    const bad = h.run(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`, '--json']);
+    assert.equal(bad.code, 1, bad.stderr);
+    const evidence = JSON.parse(bad.stdout);
+    assert.ok(evidence.summary.includes(`project.json tests.${key}`), evidence.summary);
+    assert.deepEqual(evidence.commands, []);
+  }
+  assert.ok(!fs.existsSync(h.env.TOWER_CRANE_TMP));
+});
+
+test('tests evidence stores its mode in the audit event and stops counting when the policy changes', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {} });
+  submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-mode', 'none']);
+  const skipped = h.json(['check', 'tests', 'T1']);
+  assert.equal(skipped.tests_mode, 'none');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(events.at(-1).detail.tests_mode, 'none');
+  const testsGate = () => h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'tests');
+  assert.equal(testsGate().ok, true);
+  h.ok(['project', 'set', '--tests-by-kind', '{"code":"prove"}']);
+  assert.equal(testsGate().ok, false);
+  assert.match(testsGate().reason, /mode.*none.*prove/);
+  const refused = h.run(['accept', 'T1']);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /tests:.*mode none.*prove/);
+  const proof = h.json(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`]);
+  assert.equal(proof.tests_mode, 'prove');
+  assert.equal(testsGate().ok, true);
+  h.ok(['project', 'set', '--tests-by-kind', '{"code":"run-only"}']);
+  assert.equal(testsGate().ok, false);
+  const run = h.json(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`]);
+  assert.equal(run.tests_mode, 'run-only');
+  assert.equal(testsGate().ok, true);
+  const tasks = h.readState('tasks.json');
+  tasks.tasks[0].evidence.at(-1).tests_mode = 'none';
+  h.writeState('tasks.json', tasks);
+  assert.equal(testsGate().ok, false, 'a mode edited without its matching audit event is untrusted');
+  delete tasks.tasks[0].evidence.at(-1).tests_mode;
+  h.writeState('tasks.json', tasks);
+  const audit = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  delete audit.findLast((e) => e.cmd === 'check tests').detail.tests_mode;
+  fs.writeFileSync(path.join(h.state, 'events.jsonl'), audit.map(JSON.stringify).join('\n') + '\n');
+  assert.equal(testsGate().ok, false);
+  assert.match(testsGate().reason, /mode unrecorded/);
+});
+
+test('acceptance and merge refuse a mode change after an audited tests pass', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const sha = gateFixture(h);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'w-1']);
+  h.ok(['project', 'set', '--tests-mode', 'none']);
+  h.ok(['check', 'tests', 'T1', '--agent', 'checker']);
+  gateEvidence(h, 'clean', 'checker');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
+  h.ok(['project', 'set', '--tests-mode', 'prove']);
+  const accept = h.run(['accept', 'T1']);
+  assert.equal(accept.code, 1);
+  assert.match(accept.stderr, /tests:.*mode none.*prove/);
+  h.ok(['project', 'set', '--tests-mode', 'none']);
+  h.ok(['accept', 'T1']);
+  h.ok(['project', 'set', '--tests-mode', 'prove']);
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates);
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+  const out = path.join(h.base, 'gate.json');
+  const merge = cli.run(['merge', 'T1'], { GATE_OUT: out, GATE_OK: '1' });
+  assert.equal(merge.code, 1);
+  assert.match(merge.stderr, /its gates no longer pass: tests:.*mode none.*prove/);
+  assert.ok(!fs.existsSync(out), 'the merge gate did not run');
+});
+
+test('expensive prove requires a scoped command before running the full suite', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {} });
+  submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-expensive', 'true']);
+  for (const extra of [[], ['--proof-cmd', 'node test/value.test.js']]) {
+    const r = h.run(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`, ...extra, '--json']);
+    assert.equal(r.code, 1, r.stderr);
+    const evidence = JSON.parse(r.stdout);
+    assert.match(evidence.summary, /--proof-cmd.*\{tests\}/);
+    assert.equal(evidence.commands.some((c) => c.command.includes('verify-build')), false);
+  }
+});
+
+test('expensive prove rejects a scoped command that fails at head or passes after reverting', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {} });
+  submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-expensive', 'true']);
+  for (const [cmd, message] of [
+    [`${shellQuote(process.execPath)} -e "process.exit(1)" {tests}`, /scoped proof.*at.*exit 1/],
+    [`${shellQuote(process.execPath)} -e "process.exit(0)" {tests}`, /tests pass without the change/],
+  ]) {
+    const r = h.run(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`, '--proof-cmd', cmd, '--json']);
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(JSON.parse(r.stdout).summary, message);
+  }
+  assert.deepEqual(fs.readdirSync(h.env.TOWER_CRANE_TMP), []);
+});
+
+test('scoped proof receives only changed test paths and quotes spaces', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, {
+    base: { 'proof.js': "require('node:assert/strict').deepEqual(process.argv.slice(2), ['test/new value.test.js', 'test/value.test.js']);\nfor (const file of process.argv.slice(2)) require('./' + file);\n" },
+    submitted: { 'test/new value.test.js': "require('node:assert/strict').equal(require('../value'), 1);\n" },
+  });
+  submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-expensive', 'true']);
+  const evidence = h.json(['check', 'tests', 'T1', '--cmd', `${shellQuote(process.execPath)} verify-build.js`, '--proof-cmd', `${shellQuote(process.execPath)} proof.js {tests}`]);
+  assert.match(evidence.summary, /kept a scoped proof/);
+  assert.equal(evidence.commands.filter((c) => c.command.includes('proof.js')).length, 2);
+});
+
 test('gate commands exit 1 when the gate module is not installed', (t) => {
   const h = makeRepo(t);
   submittedTask(h);
@@ -256,7 +494,7 @@ test('gate commands exit 1 when the gate module is not installed', (t) => {
     assert.equal(r.code, 1, args.join(' '));
     assert.match(r.stderr, /gate not installed/);
   }
-  assert.equal(cli.run(['check', 'tests', 'T1']).code, 2, '--cmd is required');
+  assert.equal(cli.run(['check', 'tests', 'T1']).code, 1, 'missing modules fail before policy checks');
   assert.equal(h.readState('tasks.json').tasks[0].evidence.length, 0);
 });
 

@@ -56,9 +56,11 @@ test('the latest evidence at the submitted sha decides, and other shas do not co
   doc.tasks[0].evidence.at(-1).sha = 'fffffff';
   h.writeState('tasks.json', doc);
   const r = h.run(['accept', 'T1']);
-  assert.equal(r.code, 1);
-  assert.ok(r.stderr.includes(`ci: no ci evidence at ${h.sha.slice(0, 7)}`));
-  ev(h, 'ci', 'ci');
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(h.readState('tasks.json').tasks[0].evidence.at(-1).type, 'ci', 'accept runs missing CI at the current sha');
+  h.ok(['rework', 'T1', '--reason', 'check failure precedence']);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  h.ok(['submit', 'T1', '--sha', h.sha, '--agent', 'w-1']);
   ev(h, 'tests', 'w-1', false);
   const failed = h.run(['accept', 'T1']);
   assert.equal(failed.code, 1);
@@ -130,16 +132,13 @@ test('other kinds need only a review from another agent', (t) => {
   h.ok(['accept', 'T1']);
 });
 
-test('a task of any kind with a PR needs ci ok at the submitted sha', (t) => {
+test('accept runs missing CI for a non-code task with a PR', (t) => {
   const h = makeRepo(t);
   h.init();
   submitted(h, ['--pr', '7'], 'docs');
   ev(h, 'review', 'r-1');
-  const r = h.run(['accept', 'T1']);
-  assert.equal(r.code, 1);
-  assert.ok(r.stderr.includes(`ci: no ci evidence at ${h.sha.slice(0, 7)}`));
-  ev(h, 'ci', 'ci');
   h.ok(['accept', 'T1']);
+  assert.equal(h.readState('tasks.json').tasks[0].evidence.at(-1).type, 'ci');
 });
 
 test('only the owner can waive a gate, and a refused accept records no waiver', (t) => {
@@ -152,9 +151,9 @@ test('only the owner can waive a gate, and a refused accept records no waiver', 
   assert.match(notOwner.stderr, /only the owner can waive/);
   assert.equal(h.run(['accept', 'T1', '--waive', 'tests', '--agent', 'owner']).code, 2, '--reason is required');
 
-  const partial = h.run(['accept', 'T1', '--waive', 'tests', '--reason', 'no test harness yet']);
+  const partial = h.run(['accept', 'T1', '--waive', 'tests', '--reason', 'no test harness yet'], { env: { FIXTURE_GATE_OK: '0' } });
   assert.equal(partial.code, 1);
-  assert.match(partial.stderr, /clean: no clean evidence/);
+  assert.match(partial.stderr, /clean: latest clean .* failed/);
   assert.equal(h.readState('tasks.json').tasks[0].evidence.filter((e) => e.waived).length, 0);
 
   h.ok(['accept', 'T1', '--waive', 'tests', '--waive', 'clean', '--reason', 'generated code']);

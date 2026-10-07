@@ -8,6 +8,7 @@ const cp = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { makeRepo, BIN } = require('./helpers');
 const { CHROME, openBrowser } = require('./browser');
+const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 // A project with something in every column: a decision, an owner task, a
 // claimed task with a message, a submitted task, and work ready and blocked.
@@ -87,6 +88,37 @@ test('the board escapes every text the state holds', (t) => {
   assert.match(page, /Pick &lt;script&gt;alert\(1\)&lt;\/script&gt;\?/);
   assert.match(page, /look &lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(page, /href="https:\/\/example\.com\/x&quot;onmouseover=&quot;alert\(1\)"/);
+});
+
+test('accepted task gate pips and ledger stop counting tests after the owner changes mode', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const sha = gateFixture(h);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  h.ok(['project', 'set', '--tests-mode', 'run-only']);
+  gateEvidence(h, 'tests', 'checker');
+  gateEvidence(h, 'clean', 'checker');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  h.ok(['accept', 'T1']);
+  const sheet = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article id="T1"[\s\S]*?<\/article>/)[0];
+  assert.match(sheet(), /class="pip pass">tests<\/span>/);
+  assert.doesNotMatch(sheet(), /does not count:/);
+
+  h.ok(['project', 'set', '--tests-mode', 'prove']);
+  const shown = h.json(['task', 'show', 'T1']);
+  assert.equal(shown.status, 'accepted');
+  assert.equal(shown.gates.gates.find((g) => g.type === 'tests').ok, false);
+  const stale = sheet();
+  assert.match(stale, /class="pip missing">tests<\/span>/);
+  assert.doesNotMatch(stale, /class="pip pass">tests<\/span>/);
+  assert.match(stale, /class="nocount">\(does not count: tests evidence mode run-only no longer matches prove/);
+
+  gateEvidence(h, 'tests', 'checker');
+  const checked = sheet();
+  assert.match(checked, /class="pip pass">tests<\/span>/);
+  assert.equal((checked.match(/does not count: tests evidence mode run-only/g) || []).length, 1, 'older mode stays uncounted after a new matching pass');
 });
 
 test('the snapshot opens offline in a browser, with and without scripts, and requests nothing but itself', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
@@ -250,6 +282,7 @@ test('a viewer cannot edit tiers or the ladder from a sheet, Settings or a forge
     assert.doesNotMatch(page, /<form data-api=/, 'viewer sheets and queue are read-only');
     assert.doesNotMatch(settings, /<form|<input|<select|Save ladder|Save tiers/, 'viewer Settings shows values without edit controls');
     assert.match(settings, /Read-only/);
+    assert.match(settings, /<code>tower-crane serve --agent owner<\/code>/, 'Settings names the explicit owner command');
     const before = log(h);
     const tasks = h.readState('tasks.json');
     const project = h.readState('project.json');
@@ -289,6 +322,26 @@ test('Working now uses only the current claimant and claim, then the submitter c
   assert.doesNotMatch(card(), /review in progress/);
 });
 
+test('budget plates show minutes and leave the Budget label to the group heading', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Usage', '--acceptance', 'usage is reported']);
+  h.ok(['project', 'set', '--budget-tokens', '100', '--budget-hours', '1']);
+  h.ok(['spend', 'T1', '--tokens', '95', '--minutes', '57', '--agent', 'w-1']);
+  const page = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
+  const plates = page().match(/<article class="plate signal" data-key="budget-[\s\S]*?<\/article>/g);
+  assert.equal(plates.length, 2);
+  assert.match(page(), /<h3 class="grouph">Budget<\/h3>/);
+  assert.match(plates[0], /<p class="q">Tokens at 95%<\/p>/);
+  assert.match(plates[0], /95 used of 100/);
+  assert.match(plates[1], /<p class="q">Agent time at 95%<\/p>/);
+  assert.match(plates[1], /57 min used of 1 h/);
+  for (const plate of plates) assert.doesNotMatch(plate, /class="kind">Budget|of the budget/);
+  h.ok(['project', 'set', '--budget-hours', '2']);
+  h.ok(['spend', 'T1', '--minutes', '57', '--agent', 'w-1']);
+  assert.match(page(), /1 h 54 min used of 2 h/);
+});
+
 test('budget-only attention agrees across the queue, navigation, title and icon, including live changes', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
   const h = makeRepo(t);
   h.init();
@@ -312,7 +365,7 @@ test('budget-only attention agrees across the queue, navigation, title and icon,
   });
 });
 
-test('desktop columns fit their tracks, reach the last items and keep their scroll on live updates', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+test('desktop columns keep headings visible, reach the last items and keep their scroll on live updates', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
   const h = makeRepo(t);
   h.init(['--workers', '12']);
   populate(h);
@@ -333,6 +386,22 @@ test('desktop columns fit their tracks, reach the last items and keep their scro
       for (const [client, scroll, top, fits, reachable] of metrics) {
         assert.ok(fits && client < height, `column fits at ${width}`);
         assert.ok(scroll > client && top > 0 && reachable, `the last item is reachable at ${width}`);
+      }
+      for (const theme of ['light', 'dark']) {
+        await b.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+        const headings = await b.inPage(`['need','work','next','since'].map((name) => {
+          const c = document.querySelector('[data-region="' + name + '"]');
+          c.scrollTop = c.scrollHeight;
+          const head = c.querySelector(':scope > .colh, :scope > .since-head');
+          const rect = head.getBoundingClientRect();
+          const column = c.getBoundingClientRect();
+          const hit = document.elementFromPoint(rect.left + 10, rect.top + 5);
+          return [name, getComputedStyle(head).position, Math.abs(rect.top - column.top) < 1, rect.bottom <= column.bottom, head.contains(hit)];
+        })`);
+        for (const [name, position, top, fits, visible] of headings) {
+          assert.equal(position, 'sticky', `${name} heading sticks at ${width} in ${theme}`);
+          assert.ok(top && fits && visible, `${name} heading stays visible at the queue end at ${width} in ${theme}`);
+        }
       }
       const expected = await b.inPage(`['need','work'].map((name) => { const c = document.querySelector('[data-region="' + name + '"]'); c.scrollTop = 160; return c.scrollTop; })`);
       h.ok(['task', 'note', 'T2', `update at ${width}`, '--agent', 'orchestrator']);
