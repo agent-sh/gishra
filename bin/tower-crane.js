@@ -371,9 +371,23 @@ async function main(argv) {
   }
 }
 
+// A queued no-op write completes after prior bytes, so natural exit waits for healthy output.
+function flushStream(stream) {
+  if (stream.destroyed) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      stream.removeListener('close', done);
+      resolve();
+    };
+    stream.once('close', done);
+    stream.write('', done);
+  });
+}
+
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
+    return Promise.all([flushStream(process.stdout), flushStream(process.stderr)]);
   });
 }
 

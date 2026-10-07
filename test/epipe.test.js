@@ -24,6 +24,15 @@ function waitForExit(child, timeoutMs = 10000) {
   });
 }
 
+async function waitForImportedTitle(h, title) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    if (h.readState('tasks.json').tasks.some((task) => task.title === title)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail('the plan import did not finish its state write');
+}
+
 test('a closed stdout pipe exits quietly after completing the state write', async (t) => {
   const h = makeRepo(t);
   h.init();
@@ -82,15 +91,20 @@ test('a closed stderr pipe does not truncate large stdout output', async (t) => 
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const exited = waitForExit(child);
+  child.once('spawn', () => child.stderr.destroy());
+  child.stdin.end(JSON.stringify([{ title, acceptance: ['ready'] }]));
+  await waitForImportedTitle(h, title);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const exitedBeforeDrain = child.exitCode !== null;
+
   let stdout = '';
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => { stdout += chunk; });
-  child.once('spawn', () => child.stderr.destroy());
-  child.stdin.end(JSON.stringify([{ title, acceptance: ['ready'] }]));
 
   const result = await exited;
   assert.equal(result.signal, null);
   assert.equal(result.code, 0);
+  assert.equal(exitedBeforeDrain, false, 'healthy stdout backpressure keeps the CLI alive until drained');
   assert.ok(stdout.length > title.length, 'large JSON output drained from the healthy stream');
   assert.equal(JSON.parse(stdout).added[0].title, title);
 });
