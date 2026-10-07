@@ -2,13 +2,14 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { readText, escapeTableCell } = require('./text');
 
 const ROOT = path.join(__dirname, '..');
 const TABLES = ['Plan', 'Stack', 'Run', 'Decisions', 'Views', 'Agents and worktrees', 'Gates'];
 
 function generate(root = ROOT) {
   const { COMMANDS } = require(path.join(root, 'bin', 'tower-crane.js'));
-  const source = fs.readFileSync(path.join(root, 'bin', 'tower-crane.js'), 'utf8').replace(/\r\n/g, '\n');
+  const source = readText(path.join(root, 'bin', 'tower-crane.js'));
   const body = source.match(/const COMMANDS = \[\n([\s\S]*?)\n\];/);
   if (!body) throw new Error('COMMANDS table is missing');
   const lines = body[1].split('\n').filter((line) => line.trim());
@@ -23,9 +24,8 @@ function generate(root = ROOT) {
   if (COMMANDS.some((c) => !TABLES.includes(c.section) || !c.summary || /[\r\n]/.test(c.summary + (c.usage || '')))) {
     throw new Error('every command needs a known section and a single-line usage and summary');
   }
-  const escape = (text) => text.replace(/\|/g, '\\|');
   const docPath = path.join(root, 'docs', 'cli.md');
-  const original = fs.readFileSync(docPath, 'utf8').replace(/\r\n/g, '\n');
+  const original = readText(docPath);
   let generated = original;
   for (const section of TABLES) {
     const start = `<!-- commands:${section}:start -->`;
@@ -38,7 +38,7 @@ function generate(root = ROOT) {
     if (to < from) throw new Error(`invalid ${section} command block`);
     const commands = COMMANDS.filter((c) => section === 'Stack' ? c.name.startsWith('stack ')
       : c.section === section && !c.name.startsWith('stack '));
-    const rows = commands.map((c) => `| \`${escape(c.name + (c.usage ? ` ${c.usage}` : ''))}\` | ${escape(c.summary)} |`);
+    const rows = commands.map((c) => `| \`${escapeTableCell(c.name + (c.usage ? ` ${c.usage}` : ''))}\` | ${escapeTableCell(c.summary)} |`);
     generated = generated.slice(0, from) + '\n| Command | Does |\n|---|---|\n' + rows.join('\n') + '\n' + generated.slice(to);
   }
   return { docPath, original, generated };

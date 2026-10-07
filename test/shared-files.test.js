@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const { makeRepo, ROOT } = require('./helpers');
+const { readText, escapeTableCell } = require('../scripts/text');
 
 function fixture(t) {
   const h = makeRepo(t);
@@ -21,7 +22,7 @@ function fixture(t) {
     { cwd: h.repo, env: h.env, encoding: 'utf8', timeout: 30000 });
   const check = () => script('check-shared-files.js', ['--base', base]);
   const write = (name, text) => fs.writeFileSync(path.join(h.repo, name), text);
-  const read = (name) => fs.readFileSync(path.join(h.repo, name), 'utf8');
+  const read = (name) => readText(path.join(h.repo, name));
   const change = () => {
     write('changelog.d/T999.md', '- A separate task change.\n');
   };
@@ -40,7 +41,7 @@ test('generated command rows match real CLI help, preserve details and reject dr
     assert.equal(help.status, 0, help.stderr);
     const usage = command.name + (command.usage ? ` ${command.usage}` : '');
     assert.ok(help.stdout.startsWith(`usage: tower-crane ${usage}\n`));
-    assert.ok(docs.includes(`| \`${usage.replace(/\|/g, '\\|')}\` | ${command.summary.replace(/\|/g, '\\|')} |`));
+    assert.ok(docs.includes(`| \`${escapeTableCell(usage)}\` | ${escapeTableCell(command.summary)} |`));
   }
   f.write('docs/cli.md', docs.replace('| append a note |', '| stale summary |'));
   const drift = f.check();
@@ -121,7 +122,7 @@ test('release assembly is deterministic and leaves the archive and fragments unc
   const archive = f.read('CHANGELOG.md');
   const release = f.script('changelog.js');
   assert.equal(release.status, 0, release.stderr);
-  const entries = fs.readdirSync(path.join(f.h.repo, 'changelog.d')).filter((name) => name !== 'README.md').sort();
+  const entries = ['T999.md', ...fs.readdirSync(path.join(f.h.repo, 'changelog.d')).filter((name) => !['README.md', 'T999.md'].includes(name)).sort()];
   const expected = '# Changelog\n\n' + [
     ...entries.map((name) => f.read(`changelog.d/${name}`).trim()),
     archive.slice('# Changelog\n'.length).trim(),
@@ -129,15 +130,76 @@ test('release assembly is deterministic and leaves the archive and fragments unc
   assert.equal(release.stdout, expected);
   assert.equal(f.script('changelog.js').stdout, expected);
   assert.equal(f.read('CHANGELOG.md'), archive);
-  assert.deepEqual(fs.readdirSync(path.join(f.h.repo, 'changelog.d')).filter((name) => name !== 'README.md').sort(), entries);
+  assert.deepEqual(fs.readdirSync(path.join(f.h.repo, 'changelog.d')).filter((name) => name !== 'README.md').sort(), [...entries].sort());
   assert.equal(f.check().status, 0);
 });
 
-test('this repository keeps generated rows and worker fragment instructions current', () => {
+test('this repository keeps generated rows and its fragment instructions local', () => {
   const r = cp.spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'check-shared-files.js')],
     { cwd: ROOT, encoding: 'utf8', env: { ...process.env, TOWER_CRANE_CHANGE_BASE: '' }, timeout: 30000 });
   assert.equal(r.status, 0, r.stderr);
   const skill = fs.readFileSync(path.join(ROOT, 'skills', 'tower-crane-work', 'SKILL.md'), 'utf8');
-  assert.match(skill, /add `changelog\.d\/<task-or-pr>\.md`/);
-  assert.match(skill, /leave `CHANGELOG\.md` and existing fragments unchanged/);
+  assert.match(skill, /update the changelog the repository's way/);
+  assert.doesNotMatch(skill, /changelog\.d|COMMANDS|check:shared|docs:generate/);
+  const rules = readText(path.join(ROOT, 'AGENTS.md'));
+  assert.match(rules, /Add `changelog\.d\/<task-or-pr>\.md`/);
+  assert.match(rules, /leave `CHANGELOG\.md` and existing fragments unchanged/);
+  assert.match(rules, /npm run check:shared -- --base origin\/BASE/);
+});
+
+test('CRLF source, docs, fragments and archive use the same canonical text in real commands', (t) => {
+  const f = fixture(t);
+  f.change();
+  const docs = f.read('docs/cli.md');
+  const archive = f.read('CHANGELOG.md');
+  const files = ['bin/tower-crane.js', 'docs/cli.md', 'changelog.d/T999.md', 'CHANGELOG.md'];
+  for (const file of files) f.write(file, f.read(file).replace(/\n/g, '\r\n'));
+  f.write('changelog.d/T999.md', '- A separate task change.\r\nContinuation\ron its own line.\r\n');
+  const before = files.map((file) => fs.readFileSync(path.join(f.h.repo, file)));
+  assert.equal(f.script('cli-docs.js', ['--check']).status, 0);
+  assert.equal(f.script('check-shared-files.js').status, 0);
+  const release = f.script('changelog.js');
+  assert.equal(release.status, 0, release.stderr);
+  assert.ok(!release.stdout.includes('\r'));
+  assert.ok(release.stdout.includes(archive.slice('# Changelog\n'.length).trim()));
+  assert.ok(release.stdout.includes('- A separate task change.'));
+  for (let i = 0; i < files.length; i++) {
+    assert.deepEqual(fs.readFileSync(path.join(f.h.repo, files[i])), before[i], 'checks and assembly leave raw CRLF files unchanged');
+  }
+  assert.equal(f.script('cli-docs.js').status, 0);
+  assert.equal(fs.readFileSync(path.join(f.h.repo, 'docs/cli.md'), 'utf8'), docs, 'generation writes canonical LF output');
+});
+
+test('generated table cells escape every backslash and pipe in one pass', (t) => {
+  const f = fixture(t);
+  const summary = String.raw`paths C:\one\|two|three`;
+  f.write('bin/tower-crane.js', f.read('bin/tower-crane.js').replace("'append a note'", JSON.stringify(summary)));
+  assert.equal(f.script('cli-docs.js').status, 0);
+  assert.ok(f.read('docs/cli.md').includes(String.raw`| paths C:\\one\\\|two\|three |`));
+  assert.equal(f.script('cli-docs.js', ['--check']).status, 0);
+});
+
+test('release fragments follow landing history rather than task or PR filename order', (t) => {
+  const f = fixture(t);
+  f.h.git(['rm', 'changelog.d/T86.md']);
+  f.h.git(['commit', '-qm', 'prepare release history']);
+  const oldest = ['T9.md', 'T86.md', 'T100.md', '123.md'];
+  for (const name of oldest) {
+    f.write(`changelog.d/${name}`, `- Landed ${name}.\n`);
+    f.h.git(['add', `changelog.d/${name}`]);
+    f.h.git(['commit', '-qm', `land ${name}`]);
+  }
+  f.h.git(['checkout', '-qb', 'earlier-fragment']);
+  f.write('changelog.d/T7.md', '- Landed T7.md.\n');
+  f.h.git(['add', 'changelog.d/T7.md']);
+  f.h.git(['commit', '-qm', 'author T7 before T2']);
+  f.h.git(['checkout', 'main']);
+  f.write('changelog.d/T2.md', '- Landed T2.md.\n');
+  f.h.git(['add', 'changelog.d/T2.md']);
+  f.h.git(['commit', '-qm', 'land T2 before T7']);
+  f.h.git(['merge', '--no-ff', '-m', 'land T7 after T2', 'earlier-fragment']);
+  const release = f.script('changelog.js');
+  assert.equal(release.status, 0, release.stderr);
+  const bullets = release.stdout.split('\n').filter((line) => line.startsWith('- Landed '));
+  assert.deepEqual(bullets, ['T7.md', 'T2.md', ...oldest.reverse()].map((name) => `- Landed ${name}.`));
 });

@@ -4,10 +4,11 @@ const cp = require('node:child_process');
 const path = require('node:path');
 const { check } = require('./cli-docs');
 const { fragments } = require('./changelog');
+const { normalizeText } = require('./text');
 
 function checkChanges(root, base) {
   const git = (args) => cp.execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 30000 });
-  const sha = git(['rev-parse', '--verify', `${base}^{commit}`]).trim();
+  const sha = normalizeText(git(['rev-parse', '--verify', `${base}^{commit}`])).trim();
   const fields = git(['diff', '--name-status', '--no-renames', '-z', sha, '--']).split('\0');
   fields.pop();
   for (const file of git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) {
@@ -17,7 +18,7 @@ function checkChanges(root, base) {
   let changed = 0;
   for (let i = 0; i < fields.length; i += 2) {
     const status = fields[i];
-    const file = fields[i + 1];
+    const file = fields[i + 1].replace(/\\/g, '/');
     changed++;
     if (file === 'CHANGELOG.md') throw new Error('do not edit CHANGELOG.md; add changelog.d/<task-or-pr>.md');
     if (file.startsWith('changelog.d/') && file !== 'changelog.d/README.md') {
