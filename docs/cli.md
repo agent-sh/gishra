@@ -25,7 +25,7 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | `task show ID`, `task list [--status S]` | read; `S` is a status, `ready` or `blocked` |
 | `plan import FILE` | add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `size`, `tier`, `depends_on`, `needs_owner`. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file |
 | `brief set ID (--file F \| -)`, `brief get ID [--role worker|reviewer]` | write or read the task's brief; `brief get` filters for the caller's worker or reviewer role, and `brief set` warns about a reviewer section without a worker section |
-| `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It also reports every ladder rung that cannot run, and warns per open task when no eligible reviewer uses a different model from its builder |
+| `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It also reports every ladder rung that cannot run, and warns per open task when no reviewer rung can run |
 
 `project set --tests-paths '["src/test/**","**/*Test.java"]'` replaces `tests.paths` with a non-empty JSON array of non-blank strings. `--tests-paths null` removes the field and restores the default test layouts; `[]` is invalid.
 
@@ -43,17 +43,19 @@ All list settings trim leading and trailing whitespace from each entry. Setting 
 
 `project set --ci-local '{"command":["python3","tools/check.py"],"timeout":120}'` configures local CI. `command` is a nonempty argv array with a nonblank executable and string arguments, passed verbatim without a shell. Empty arguments are allowed; NUL bytes are refused. `timeout` is required, in positive seconds, within Node's timer range of 2147483647 milliseconds. There is no default timeout. `--ci-local null` removes local CI and restores hosted checks. Other `ci` fields are preserved. `init` accepts the same setting; `project show` prints `ci.local: hosted` when it is absent.
 
-`project set --review-policy JSON` replaces `review` with optional diff limits, risk paths and prices. For example:
+`project set --review-policy JSON --agent owner` replaces `review` with optional diff limits, risk paths and prices. Only an explicitly identified owner can set this policy or its prices. For example:
 
 ```sh
-tower-crane project set --review-policy '{"small_lines":100,"small_files":5,"risk_paths":["auth/**"],"prices":{"luna":{"input":0.10,"cache_write":0.125,"cache_read":0.01,"output":0.50},"sol":{"input":2,"cache_write":2.50,"cache_read":0.10,"output":10},"opus":{"input":4,"cache_write":5,"cache_read":0.20,"output":20}}}'
+tower-crane project set --review-policy '{"small_lines":100,"small_files":5,"risk_paths":["auth/**"],"prices":{"openai.gpt-6-luna":{"input":0.10,"cache_write":0.125,"cache_read":0.01,"output":0.50},"openai.gpt-6.1-sol":{"input":2,"cache_write":2.50,"cache_read":0.10,"output":10},"claude-opus-5-5":{"input":4,"cache_write":5,"cache_read":0.20,"output":20}}}' --agent owner
 ```
 
-Rates are dollars per million tokens; use the actual configured model names and provider rates. The example uses Bedrock global rates with five-minute cache writes. Selection starts at the task tier, raises easy to medium for diffs over 100 lines or 5 files by default, and raises to hard for matching risk globs or binary changes. It excludes the builder model, then promotes to a stronger rung when T31's recorded review spend has a median priced cost no higher. Each failed independent review at the current head climbs one tier. The `review` rung is the fallback, and must also differ from the builder. Missing complete usage prevents cost promotion. `--review-policy null` restores diff defaults without prices. See state.md for the pricing limits of older inclusive telemetry.
+Rates are dollars per million tokens; use the actual provider model IDs and rates. Profile aliases `sol`, `luna` and `opus` normalize to `openai.gpt-6.1-sol`, `openai.gpt-6-luna` and `claude-opus-5-5`. The example uses Bedrock global rates with five-minute cache writes. Selection starts at the task tier, raises easy to medium for diffs over 100 lines or 5 files by default, and raises to hard for matching risk globs or binary changes. It promotes to a stronger tier when T31's recorded review spend has a median priced cost no higher. Each failed independent review at the current head climbs one tier. The `review` rung is the fallback when no tier rung can run. The reviewer may use the builder's model because its context is clean. Missing complete usage prevents cost promotion. `--review-policy null` restores diff defaults without prices. See state.md for the pricing limits of older inclusive telemetry.
 
 Briefs can use `## Shared`, `## Worker` and `## Reviewer` level-two headings. Matching is case-insensitive, and headings inside fenced code blocks are ordinary text. Content before the first role heading is shared; each section runs to the next role heading. `## Rework notes` also starts a shared section, so corrections appended by `rework` stay visible to role-filtered brief readers. `brief get ID` infers worker or reviewer from the `--agent` or `TOWER_CRANE_AGENT` name. Use `--role worker` or `--role reviewer` to select explicitly. Owner and orchestrator identities see the full brief by default.
 
-These options also work with `init`. Omitted options leave their fields unchanged. Removing a field keeps other settings in its object section and removes the section itself only when empty. Invalid JSON, a value other than an array or `null`, or a blank or non-string array entry exits 2 and writes no state or event, including when combined with valid settings.
+`init --review-policy JSON` accepts the same owner-only setting.
+
+The list settings also work with `init`. Omitted options leave their fields unchanged. Removing a field keeps other settings in its object section and removes the section itself only when empty. Invalid JSON, a value other than an array or `null`, or a blank or non-string array entry exits 2 and writes no state or event, including when combined with valid settings.
 
 ## Run
 

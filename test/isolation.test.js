@@ -334,7 +334,7 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
   for (const harness of ['claude', 'codex']) {
     fs.rmSync(fixture, { recursive: true, force: true });
     fs.rmSync(`${fixture}.git`, { recursive: true, force: true });
-    isolated(h, 'review', harness);
+    isolated(h, 'medium', harness);
     const dry = h.json(['spawn', '--role', 'review', '--task', 'T1', '--dry-run'], { env: u.env });
     assert.ok(!JSON.stringify(dry).includes('stub-gh-token'), 'the token is not in the command or its shown env');
     spawn(h, u, 'review', { STUB_RUN: JSON.stringify(run) });
@@ -350,7 +350,7 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
 test('a gh token in the spawning environment passes through, and the keyring is asked only without one', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   for (const harness of ['claude', 'codex']) {
-    isolated(h, 'review', harness);
+    isolated(h, 'medium', harness);
     spawn(h, u, 'review');
     assert.equal(u.report().ghToken, 'stub-gh-token', `${harness}: the keyring's token`);
     spawn(h, u, 'review', { GH_TOKEN: 'spawner-token' });

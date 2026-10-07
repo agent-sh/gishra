@@ -9,7 +9,7 @@ Every task has a tier, and the ladder in `project.json` says which harness, mode
 | `medium` | `M` tasks by default | a strong coding model |
 | `hard` | `L` tasks by default: cross-cutting or risky changes | the strongest coding model |
 | `research` | tasks of kind `research` by default: open questions, measurements | the strongest model at high effort |
-| `review` | fallback for clean-context review | used when no eligible tier supplies a different model from the builder |
+| `review` | fallback for clean-context review | used when no tier rung at the needed level can run |
 | `small` | mechanical checks, such as confirming lines the cleanup tool flagged | a small fast model |
 
 `task add` and `plan import` pick a tier from kind and size (`research` for kind `research`, else `S` easy, `M` medium, `L` hard); `--tier` overrides it, and only `--tier` changes it later.
@@ -30,7 +30,7 @@ A rung is `{ "harness", "model", "profile", "provider", "effort", "args", "comma
 A rung on claude or codex always runs through `tower-crane spawn`, including when the orchestrator runs on that harness: only a spawned agent gets its own environment ([Agent files and homes](#agent-files-and-homes)). A native subagent runs inside the orchestrator's session and shares its memory files, settings, hooks and MCP servers; no harness lets it have its own. A rung on opencode, agy or pi, which spawn does not isolate yet, may run as a native subagent when its harness is the orchestrator's.
 
 - **Native** (opencode, agy and pi rungs only). Choose a unique name per attempt, claim workers with that name and a lease sized to the task, and pass the name, task, absolute worktree and state paths, skill path and brief. Every tower-crane call passes `--agent <name>` and, without `TOWER_CRANE_STATE`, `--state <dir>`. Workers use absolute paths under their worktree.
-- **Spawned.** `tower-crane spawn --task <id>` runs the rung of the task's tier; `tower-crane spawn --role review --task <id>` selects an independent reviewer from tier, diff risk and measured median review cost, with the review rung as fallback. Review dispatch requires passing software gates. Do not pre-claim. It starts the selected CLI in the task's worktree with `TOWER_CRANE_STATE`, `TOWER_CRANE_TASK` and `TOWER_CRANE_AGENT` set; a worker claims with that generated identity (`worker-T1-1`, `reviewer-T1-1`). pi loads the matching skill with `--skill`, codex finds it linked in its home, and claude gets its path in the home's instructions. Workers receive the brief. Reviewers receive the submitted diff, acceptance and gate results and use those results unless a focused probe is needed.
+- **Spawned.** `tower-crane spawn --task <id>` runs the rung of the task's tier; `tower-crane spawn --role review --task <id>` selects a reviewer rung by task tier, diff risk and measured median review cost, with the review rung as fallback. Review dispatch requires passing software gates. Do not pre-claim. It starts the selected CLI in the task's worktree with `TOWER_CRANE_STATE`, `TOWER_CRANE_TASK` and `TOWER_CRANE_AGENT` set; a worker claims with that generated identity (`worker-T1-1`, `reviewer-T1-1`). pi loads the matching skill with `--skill`, codex finds it linked in its home, and claude gets its path in the home's instructions. Workers receive the brief. Reviewers receive the submitted diff, acceptance, gate results and only the brief's `## Reviewer` section, and use those results unless a focused probe is needed.
 - **Custom command.** A rung with `"harness": "command"` and a `command` array runs any CLI; `{prompt}`, `{brief}`, `{task}` and `{cwd}` are substituted.
 
 `tower-crane spawn --dry-run` prints the command without running it.
@@ -93,6 +93,8 @@ First-turn input tokens (input plus cache read and write) for a one-line prompt,
 
 About 3.5k of claude's after is the sandbox's own instructions (8.3k for the worker without it). The prompt after includes tower-crane's task block, about 250 tokens the before prompt did not have.
 
-## Independence
+## Review selection
 
-`tower-crane accept` refuses review evidence recorded by the agent that submitted the task. Review dispatch also excludes the builder's model, even across harnesses; Claude short aliases and their full family names count as the same model. `tower-crane validate` warns only when an open task has no eligible independent model. `project set --review-policy JSON` configures diff limits, risk globs and per-model input, cache-write, cache-read and output prices. Recorded T31 review spend supplies the median cost; a stronger eligible rung replaces the starting choice when its median is no higher. Unknown usage leaves the complexity choice intact.
+`tower-crane accept` refuses review evidence recorded by the agent that submitted the task. Review dispatch gives the reviewer a clean context, so its model may match the builder. Selection starts at the task tier, raises for a broad or risky diff, and promotes to a stronger tier when T31 review spend shows its median cost is no higher. Unknown usage leaves the complexity choice intact. The `review` rung is used when no tier rung at the needed level can run. `tower-crane validate` warns only when no reviewer rung can run.
+
+Only an explicitly identified owner can set `project set --review-policy JSON`. Its prices use canonical model identities shared by rungs and spend entries: `sol` resolves to `openai.gpt-6.1-sol`, `luna` to `openai.gpt-6-luna`, and `opus` to `claude-opus-5-5`.

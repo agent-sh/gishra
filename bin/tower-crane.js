@@ -38,7 +38,7 @@ const SETTINGS = {
   'tests-expensive': str('JSON', 'owner only: true runs the full suite once with scoped proof; false or null restores normal proof'),
   'ci-ignore-apps': str('JSON', 'array of GitHub app slugs to skip; [] or null clears the list'),
   'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds}; null restores hosted CI'),
-  'review-policy': str('JSON', 'review diff limits, risk_paths and per-model prices; null restores the fallback rung'),
+  'review-policy': str('JSON', 'owner-only review diff limits and canonical model prices; null clears the policy'),
 };
 
 const TASK_FIELDS = {
@@ -83,7 +83,7 @@ const COMMANDS = [
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', run: T.planImport },
   { section: 'Plan', name: 'brief set', pos: ['ID', '[-]'], usage: 'ID (--file F | -)', summary: "write the task's brief; warn when reviewer text has no worker section", flags: { file: str('F', 'read the brief from F') }, run: T.briefSet },
   { section: 'Plan', name: 'brief get', pos: ['ID'], usage: 'ID [--role worker|reviewer]', summary: "print the full or role-filtered task brief", flags: { role: str('ROLE', 'select worker or reviewer text; otherwise infer from the agent name') }, run: T.briefGet },
-  { section: 'Plan', name: 'validate', summary: 'report plan and ladder errors (exit 1 if any); warn when an open task has no independent review model', run: T.validate },
+  { section: 'Plan', name: 'validate', summary: 'report plan and ladder errors (exit 1 if any); warn when an open task has no runnable reviewer', run: T.validate },
 
   { section: 'Run', name: 'ready', usage: '[--all]', summary: 'ready tasks, those that unblock the most first; --all adds blocked ones with the reason', flags: { all: bool('also list blocked tasks and why') }, run: T.ready },
   { section: 'Run', name: 'claim', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'take a ready task for --agent', flags: { lease: int('MIN', 'lease length (default limits.lease_minutes)') }, run: T.claim },

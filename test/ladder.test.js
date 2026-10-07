@@ -254,7 +254,7 @@ test('tasks take a tier from kind and size unless one is given', (t) => {
   assert.deepEqual([old.tier, old.role], ['hard', undefined]);
 });
 
-test('validate allows per-task review choices and warns only when no independent model is available', (t) => {
+test('validate does not warn when review uses the task tier model', (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'x', '--acceptance', 'a', '--size', 'S']);
@@ -268,10 +268,10 @@ test('validate allows per-task review choices and warns only when no independent
   h.ok(['ladder', 'set', 'review', '--harness', 'claude', '--model', 'opus', '--clear', 'profile']);
   assert.deepEqual(h.json(['validate']).warnings, []);
   h.ok(['task', 'update', 'T1', '--tier', 'hard']);
-  assert.match(h.ok(['validate']), /warning: T1: review needs a different model/, 'hard and research share opus and the fallback also uses opus');
+  assert.deepEqual(h.json(['validate']).warnings, [], 'a clean-context reviewer may use the builder model');
 });
 
-test('on codex an explicit model, not the profile, decides whether review shares a tier model', (t) => {
+test('validate allows identical Codex profile and explicit model identities', (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'x', '--acceptance', 'a', '--size', 'S']);
@@ -279,11 +279,11 @@ test('on codex an explicit model, not the profile, decides whether review shares
   h.ok(['ladder', 'set', 'easy', '--model', 'same-model', '--profile', 'author-profile']);
   h.ok(['ladder', 'set', 'review', '--model', 'same-model', '--profile', 'review-profile']);
   for (const tier of ['medium', 'hard', 'research']) h.ok(['ladder', 'set', tier, '--model', 'same-model', '--clear', 'profile']);
-  assert.deepEqual(h.json(['validate']).warnings.map((w) => w.kind), ['review-same-model']);
+  assert.deepEqual(h.json(['validate']).warnings, []);
   h.ok(['ladder', 'set', 'review', '--model', 'other-model']);
   assert.deepEqual(h.json(['validate']).warnings, [], 'different explicit models differ whatever the profiles');
   h.ok(['ladder', 'set', 'easy', '--clear', 'model']);
   h.ok(['ladder', 'set', 'review', '--clear', 'model', '--profile', 'author-profile']);
   for (const tier of ['medium', 'hard', 'research']) h.ok(['ladder', 'set', tier, '--harness', 'codex', '--profile', 'author-profile', '--clear', 'model']);
-  assert.deepEqual(h.json(['validate']).warnings.map((w) => w.kind), ['review-same-model'], 'without a model the profile names it');
+  assert.deepEqual(h.json(['validate']).warnings, [], 'shared profiles are allowed');
 });

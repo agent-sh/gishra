@@ -57,7 +57,7 @@ codexDisable:
 
 # tower-crane-reviewer
 
-The CLI selects your model from the task's tier, builder, diff and measured review cost, with the `review` rung as fallback. Software gates have passed before dispatch. It passes a task id, your agent name, the worktree path and state directory. Load the `tower-crane-review` skill with `<task id> --agent <name>` and follow it. Without the Skill tool, read its supplied absolute path. Pass `--agent <name>` on every tower-crane call and `--state <dir>` when `TOWER_CRANE_STATE` is absent.
+The CLI selects your model from the task's tier, diff risk and measured review cost, with the `review` rung as fallback. Your context is clean, so your model may match the builder's. Software gates have passed before dispatch. It passes a task id, your agent name, the worktree path and state directory. Load the `tower-crane-review` skill with `<task id> --agent <name>` and follow it. Without the Skill tool, read its supplied absolute path. Pass `--agent <name>` on every tower-crane call and `--state <dir>` when `TOWER_CRANE_STATE` is absent.
 
 You have not seen this change before and must not edit it.
 

@@ -4,30 +4,50 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, BIN } = require('./helpers');
+const { makeRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 const prices = {
-  luna: { input: 0.10, cache_write: 0.125, cache_read: 0.01, output: 0.50 },
-  sol: { input: 2, cache_write: 2.50, cache_read: 0.10, output: 10 },
-  opus: { input: 4, cache_write: 5, cache_read: 0.20, output: 20 },
+  'openai.gpt-6-luna': { input: 0.10, cache_write: 0.125, cache_read: 0.01, output: 0.50 },
+  'openai.gpt-6.1-sol': { input: 2, cache_write: 2.50, cache_read: 0.10, output: 10 },
+  'claude-opus-5-5': { input: 4, cache_write: 5, cache_read: 0.20, output: 20 },
 };
 
 function rung(h, name, model) {
   h.ok(['ladder', 'set', name, '--harness', 'opencode', '--model', model, '--clear', 'profile', '--clear', 'effort']);
 }
 
-function setup(t, tier = 'easy', builder = 'other') {
+function setup(t, tier = 'easy', builder = 'other', profile) {
   const h = makeRepo(t);
   h.init();
   h.sha = gateFixture(h);
   h.ok(['project', 'set', '--repo', 'acme/demo']);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'value becomes one', '--tier', tier]);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'BUILDER-HISTORY that the reviewer does not need\n' });
-  h.ok(['claim', 'T1', '--agent', 'builder']);
-  h.ok(['spend', 'T1', '--agent', 'builder', '--tokens', '10', '--input', '10', '--output', '0', '--rung', tier, '--model', builder]);
-  h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha, '--branch', 'fixture-change']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'BUILDER-HISTORY that the reviewer does not need\n\n## Reviewer\nREVIEWER-ONLY instruction\n\n## Worker\nWORKER-HISTORY that the reviewer does not need\n' });
+  if (profile) {
+    const bin = path.join(h.base, 'bin');
+    const codexHome = path.join(h.base, 'codex');
+    fs.mkdirSync(bin);
+    fs.mkdirSync(codexHome);
+    fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'codex.exe' : 'codex'), '', { mode: 0o755 });
+    // An isolated caller's default must not rename another rung's known profile.
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model = "caller-model"\n');
+    h.reviewEnv = { CODEX_HOME: codexHome, PATH: bin + path.delimiter + h.env.PATH, USAGE_CLAIM: '1' };
+    h.ok(['ladder', 'set', tier, '--harness', 'codex', '--profile', profile, '--clear', 'model', '--clear', 'effort']);
+    h.builder = h.json(['spawn', '--task', 'T1', '--wait'], {
+      env: h.reviewEnv,
+      hooks: { HOOK_USAGE_HARNESS: 'codex', HOOK_USAGE_FILE: path.join(__dirname, 'fixtures', 'usage', 'codex-stream.jsonl') },
+    }).agent;
+  } else {
+    h.builder = 'builder';
+    h.ok(['claim', 'T1', '--agent', h.builder]);
+  }
+  h.ok(['spend', 'T1', '--agent', h.builder, '--tokens', '10', '--input', '10', '--output', '0', '--rung', tier, '--model', builder]);
+  h.ok(['submit', 'T1', '--agent', h.builder, '--sha', h.sha, '--branch', 'fixture-change']);
   for (const [name, model] of [['easy', 'luna'], ['medium', 'sol'], ['hard', 'opus'], ['research', 'opus'], ['review', 'fallback']]) rung(h, name, model);
+  if (profile) for (const [name, value] of [['easy', 'luna'], ['medium', 'sol']]) {
+    h.ok(['ladder', 'set', name, '--harness', 'codex', '--profile', value, '--clear', 'model', '--clear', 'effort']);
+  }
   h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices, small_lines: 100, small_files: 5, risk_paths: ['auth/**'] })]);
   return h;
 }
@@ -37,12 +57,13 @@ function ready(h) {
   gateEvidence(h, 'clean', 'gates');
 }
 
-function choice(h) {
-  return h.json(['spawn', '--task', 'T1', '--role', 'review', '--dry-run']);
+function choice(h, env) {
+  return h.json(['spawn', '--task', 'T1', '--role', 'review', '--dry-run'], { env: { ...h.reviewEnv, ...env } });
 }
 
 function model(out) {
-  return out.argv[out.argv.indexOf('-m') + 1];
+  const flag = out.argv.includes('-m') ? '-m' : out.argv.includes('-p') ? '-p' : '--model';
+  return out.argv[out.argv.indexOf(flag) + 1];
 }
 
 function sample(h, name, input, cached, output, cacheWrite = 0) {
@@ -71,25 +92,33 @@ test('review choice follows tier, diff limits and configured risk paths', (t) =>
   }
 });
 
-test('review model always differs from the actual builder, including across harnesses', (t) => {
-  const h = setup(t, 'easy', 'luna');
-  ready(h);
-  assert.equal(model(choice(h)), 'sol');
-  h.ok(['ladder', 'set', 'medium', '--model', 'luna']);
-  assert.equal(model(choice(h)), 'opus');
-  h.ok(['ladder', 'set', 'hard', '--model', 'luna']);
-  h.ok(['ladder', 'set', 'research', '--model', 'luna']);
-  assert.equal(model(choice(h)), 'fallback');
-  h.ok(['ladder', 'set', 'review', '--model', 'luna']);
-  const refused = h.run(['spawn', '--task', 'T1', '--role', 'review', '--dry-run']);
-  assert.equal(refused.code, 1);
-  assert.match(refused.stderr, /different model/);
+test('top-tier Claude builders can receive review on the same model', (t) => {
+  for (const tier of ['hard', 'research']) {
+    const h = setup(t, tier, 'claude-opus-5-5');
+    ready(h);
+    assert.equal(model(choice(h)), 'opus', tier);
+  }
 });
 
-test('a Claude alias cannot select the builder through a full model name', (t) => {
-  const h = setup(t, 'hard', 'anthropic/claude-opus-5-5');
-  ready(h);
-  assert.equal(model(choice(h)), 'fallback');
+test('Codex profile builders share canonical identity with provider spend and prices', (t) => {
+  for (const [tier, profile, provider, promotedTier, promotedModel, promotedProvider] of [
+    ['easy', 'luna', 'openai.gpt-6-luna', 'medium', 'sol', 'openai.gpt-6.1-sol'],
+    ['medium', 'sol', 'openai.gpt-6.1-sol', 'hard', 'opus', 'claude-opus-5-5'],
+  ]) {
+    const h = setup(t, tier, provider, profile);
+    // A later self-reported model and ladder edit cannot rename the builder route.
+    h.ok(['spend', 'T1', '--agent', h.builder, '--tokens', '1', '--rung', tier, '--model', 'wrong-model']);
+    ready(h);
+    assert.deepEqual([choice(h).review_rung, model(choice(h))], [tier, profile]);
+    sample(h, provider, 1000000, 0, 0);
+    sample(h, promotedProvider, 0, 0, 1);
+    const out = choice(h);
+    assert.deepEqual([out.review_rung, model(out)], [promotedTier, promotedModel]);
+    const prompt = out.argv.find((arg) => arg.includes('## Task'));
+    assert.ok(prompt.includes(`builder model ${provider}`), prompt);
+    h.ok(['ladder', 'set', tier, '--harness', 'opencode', '--model', 'changed-model', '--clear', 'profile']);
+    assert.ok(choice(h).argv.some((arg) => arg.includes(`builder model ${provider}`)));
+  }
 });
 
 test('a stronger model wins only when its median priced review cost is no higher', (t) => {
@@ -126,7 +155,7 @@ test('review history from other tasks and cached tokens determines cost', (t) =>
   assert.equal(model(choice(h)), 'opus', 'cached token prices, rather than input-only prices, decide');
 });
 
-test('review escalation climbs one rung and stays independent of the builder', (t) => {
+test('review escalation climbs one tier after failed reviews', (t) => {
   const h = setup(t);
   ready(h);
   assert.equal(model(choice(h)), 'luna');
@@ -136,21 +165,17 @@ test('review escalation climbs one rung and stays independent of the builder', (
   assert.equal(model(choice(h)), 'opus');
 });
 
-test('escalation starts above the actual dispatched reviewer when builder exclusion skipped a tier', (t) => {
+test('escalation starts above the actual dispatched reviewer rung', (t) => {
   const h = setup(t);
   ready(h);
-  const easy = [process.execPath, '-e', 'console.log("builder model")'];
-  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify(easy)]);
-  h.ok(['spend', 'T1', '--agent', 'builder', '--tokens', '0', '--rung', 'easy',
-    '--model', `command ${JSON.stringify(easy)}`]);
   const script = `const cp = require('node:child_process');
 const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--fail', '--sha', ${JSON.stringify(h.sha)}], {env: process.env});
 process.exit(r.status ?? 1);`;
-  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'model',
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
     '--command', JSON.stringify([process.execPath, '-e', script])]);
   const dispatched = h.json(['spawn', '--task', 'T1', '--role', 'review', '--wait']);
-  assert.equal(dispatched.review_rung, 'medium');
-  assert.equal(choice(h).review_rung, 'hard');
+  assert.equal(dispatched.review_rung, 'easy');
+  assert.equal(choice(h).review_rung, 'medium');
 });
 
 test('direct review dispatch refuses missing and failed gates and supplies lean context after they pass', (t) => {
@@ -169,7 +194,9 @@ test('direct review dispatch refuses missing and failed gates and supplies lean 
   assert.match(prompt, /Gate results/);
   assert.match(prompt, /fail without/);
   assert.match(prompt, /probe/);
+  assert.match(prompt, /## Reviewer\nREVIEWER-ONLY instruction/);
   assert.ok(!prompt.includes('BUILDER-HISTORY'));
+  assert.ok(!prompt.includes('WORKER-HISTORY'));
   assert.equal(out.rung, 'review');
 });
 
@@ -179,7 +206,11 @@ fs.writeFileSync(process.argv[1], process.argv[2]);
 const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', ${JSON.stringify(h.sha)}, '--summary', 'reviewed'], {env: process.env});
 process.exit(r.status ?? 1);`;
   h.ok(['project', 'set', '--review-policy', 'null']);
-  for (const name of ['easy', 'medium', 'hard', 'research']) h.ok(['ladder', 'set', name, '--model', 'other']);
+  const command = [process.execPath, '-e', script, out, '{prompt}'];
+  for (const name of ['easy', 'medium', 'hard', 'research']) {
+    h.ok(['ladder', 'set', name, '--harness', 'command', '--clear', 'model', '--clear', 'profile',
+      '--clear', 'provider', '--clear', 'effort', '--command', JSON.stringify(command)]);
+  }
   h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
 }
 
@@ -218,8 +249,7 @@ test('a failed automatic gate never starts a reviewer', (t) => {
 test('accept reuses an active review and direct dispatch refuses a duplicate', (t) => {
   const h = setup(t);
   ready(h);
-  for (const name of ['easy', 'medium', 'hard', 'research']) h.ok(['ladder', 'set', name, '--model', 'other']);
-  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model',
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
     '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)'])]);
   const first = h.json(['accept', 'T1']);
   const second = h.json(['accept', 'T1']);
@@ -245,15 +275,66 @@ test('large review diffs use a context file and a short argv', (t) => {
   assert.ok(preview.argv.join(' ').length < 16000);
   h.json(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
   assert.match(fs.readFileSync(out, 'utf8'), /reviews/);
-  assert.match(fs.readFileSync(packet, 'utf8'), /diff --git a\/large.md b\/large.md/);
+  const fullPacket = fs.readFileSync(packet, 'utf8');
+  assert.match(fullPacket, /diff --git a\/large.md b\/large.md/);
+  assert.match(fullPacket, /## Reviewer\nREVIEWER-ONLY instruction/);
+  assert.ok(!fullPacket.includes('WORKER-HISTORY'));
 });
 
 test('review policy validates price and diff settings through the CLI', (t) => {
   const h = makeRepo(t);
   h.init();
-  for (const bad of [{ prices: { sol: { input: -1 } } }, { small_lines: -1 }, { risk_paths: [3] }, { surprise: true }]) {
+  for (const bad of [{ prices: { 'openai.gpt-6.1-sol': { input: -1 } } },
+    { prices: { sol: prices['openai.gpt-6.1-sol'], 'openai.gpt-6.1-sol': prices['openai.gpt-6.1-sol'] } },
+    { small_lines: -1 }, { risk_paths: [3] }, { surprise: true }]) {
     assert.equal(h.run(['project', 'set', '--review-policy', JSON.stringify(bad)]).code, 2);
   }
-  h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices })]);
+  h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { sol: prices['openai.gpt-6.1-sol'] } })]);
+  assert.deepEqual(h.json(['project', 'show']).review.prices, { 'openai.gpt-6.1-sol': prices['openai.gpt-6.1-sol'] });
+  for (const [alias, provider] of [['sol', 'openai.gpt-6.1-sol'], ['luna', 'openai.gpt-6-luna'], ['opus', 'claude-opus-5-5']]) {
+    const task = h.json(['task', 'add', '--title', alias, '--acceptance', 'usage']);
+    const out = h.json(['spend', task.id, '--tokens', '1', '--model', alias]);
+    assert.equal(out.spend.entries[0].model, provider);
+  }
+});
+
+test('review policy and prices require an explicit owner identity', (t) => {
+  const h = makeRepo(t);
+  const policy = JSON.stringify({ prices });
+  const init = h.run(['init', '--name', 'demo', '--goal', 'prove the engine', '--review-policy', policy, '--agent', 'worker']);
+  assert.equal(init.code, 1);
+  assert.match(init.stderr, /only the owner with an explicit identity/);
+  assert.ok(!fs.existsSync(h.state), 'a refused init writes no state');
+
+  h.init();
+  const before = h.readState('project.json');
+  const denied = h.run(['project', 'set', '--review-policy', policy, '--agent', 'worker']);
+  assert.equal(denied.code, 1);
+  assert.match(denied.stderr, /only the owner with an explicit identity/);
+  assert.deepEqual(h.readState('project.json'), before);
+  assert.equal(h.run(['project', 'set', '--review-policy', 'null', '--agent', 'worker']).code, 1);
+  h.ok(['project', 'set', '--review-policy', policy, '--agent', 'owner']);
   assert.deepEqual(h.json(['project', 'show']).review.prices, prices);
+});
+
+test('terminal owner fallback cannot change review policy', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const env = { ...h.env };
+  delete env.TOWER_CRANE_AGENT;
+  const result = runPty(['project', 'set', '--review-policy', 'null'], { cwd: h.repo, env });
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /only the owner with an explicit identity/);
+});
+
+test('review uses the nearest base when only origin has it or the local base is stale', (t) => {
+  const h = setup(t);
+  ready(h);
+  const base = h.git(['rev-parse', 'main']);
+  h.git(['update-ref', 'refs/remotes/origin/main', base]);
+  h.git(['branch', '-D', 'main']);
+  assert.match(choice(h).argv.find((arg) => arg.includes('## Task')), /diff --git/);
+  h.git(['branch', 'main', `${base}~1`]);
+  const prompt = choice(h).argv.find((arg) => arg.includes('## Task'));
+  assert.ok(prompt.includes(`Base: ${base}.`));
 });

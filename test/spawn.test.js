@@ -233,8 +233,8 @@ const r = cp.spawnSync(process.execPath, [process.argv[1], 'evidence', 'T1', '--
 fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('TOWER_CRANE_')), code: r.status, stderr: r.stderr }));
 process.exit(r.status === null ? 1 : r.status);
 `;
-  commandRung(h, 'review', [process.execPath, '-e', script, BIN, out]);
   reviewable(h);
+  commandRung(h, 'medium', [process.execPath, '-e', script, BIN, out]);
   const r = h.run(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
   assert.equal(r.code, 2, r.stderr);
   const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
@@ -266,8 +266,8 @@ const r = runPty(['owner-done', 'T2', '--state', state], { cwd: process.cwd(), e
 fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('TOWER_CRANE_')), ...r }));
 process.exit(r.code === null ? 99 : r.code);
 `;
-  commandRung(h, 'review', [process.execPath, '-e', script, require.resolve('./helpers'), out]);
   reviewable(h);
+  commandRung(h, 'medium', [process.execPath, '-e', script, require.resolve('./helpers'), out]);
   const r = h.run(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
   assert.equal(r.code, 1, r.stderr);
   const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
@@ -445,8 +445,8 @@ test('spawn in the background detaches, logs output and numbers agents', async (
   assert.match(fs.readFileSync(started.log, 'utf8'), /hello from small-T1-1/);
   assert.equal(h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run']).agent, 'small-T1-2');
 
-  commandRung(h, 'review', ['tower-crane-no-such-program']);
   reviewable(h);
+  commandRung(h, 'medium', ['tower-crane-no-such-program']);
   const missing = h.run(['spawn', '--role', 'review', '--task', 'T1']);
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /could not start tower-crane-no-such-program/);
