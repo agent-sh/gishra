@@ -126,10 +126,10 @@ A marker's holder and modification time are read through one opened file descrip
   "harness": "codex",
   "ladder": {
     "orchestrator": { "harness": "claude", "model": "opus", "effort": "high" },
-    "easy":         { "profile": "luna", "effort": "medium" },
+    "easy":         { "profile": "luna", "effort": "max" },
     "medium":       { "profile": "sol", "effort": "high" },
-    "hard":         { "harness": "claude", "model": "opus", "effort": "high" },
-    "research":     { "harness": "claude", "model": "opus", "effort": "max" },
+    "hard":         { "harness": "claude", "model": "opus", "effort": "medium" },
+    "research":     { "harness": "claude", "model": "opus", "effort": "high" },
     "review":       { "profile": "sol", "effort": "high" },
     "small":        { "profile": "luna", "effort": "low" }
   },

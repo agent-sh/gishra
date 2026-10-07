@@ -8,10 +8,10 @@ const { makeRepo } = require('./helpers');
 
 const BUILTIN = {
   orchestrator: { harness: 'claude', model: 'opus', effort: 'high' },
-  easy: { profile: 'luna', effort: 'medium' },
+  easy: { profile: 'luna', effort: 'max' },
   medium: { profile: 'sol', effort: 'high' },
-  hard: { harness: 'claude', model: 'opus', effort: 'high' },
-  research: { harness: 'claude', model: 'opus', effort: 'max' },
+  hard: { harness: 'claude', model: 'opus', effort: 'medium' },
+  research: { harness: 'claude', model: 'opus', effort: 'high' },
   review: { profile: 'sol', effort: 'high' },
   small: { profile: 'luna', effort: 'low' },
 };
@@ -34,8 +34,15 @@ test('init copies the built-in ladder, and a rung the project leaves out falls b
   assert.equal(show.harness_from, 'project');
   assert.equal(show.user_file, h.userConfig);
   assert.equal(show.user_file_exists, false);
-  assert.deepEqual(show.ladder.easy, { profile: 'luna', effort: 'medium', harness: 'codex', harness_from: 'default', from: 'project' });
-  assert.deepEqual(show.ladder.hard, { harness: 'claude', model: 'opus', effort: 'high', harness_from: 'rung', from: 'project' });
+  assert.deepEqual(show.ladder.easy, { profile: 'luna', effort: 'max', harness: 'codex', harness_from: 'default', from: 'project' });
+  assert.deepEqual(show.ladder.medium, { profile: 'sol', effort: 'high', harness: 'codex', harness_from: 'default', from: 'project' });
+  assert.deepEqual(show.ladder.hard, { harness: 'claude', model: 'opus', effort: 'medium', harness_from: 'rung', from: 'project' });
+  assert.deepEqual(show.ladder.research, { harness: 'claude', model: 'opus', effort: 'high', harness_from: 'rung', from: 'project' });
+  const printed = h.ok(['ladder', 'show']);
+  assert.match(printed, /^ {2}easy +codex \(default\) +profile luna, effort max +from project$/m);
+  assert.match(printed, /^ {2}medium +codex \(default\) +profile sol, effort high +from project$/m);
+  assert.match(printed, /^ {2}hard +claude +model opus, effort medium +from project$/m);
+  assert.match(printed, /^ {2}research +claude +model opus, effort high +from project$/m);
 
   delete p.ladder.easy;
   delete p.harness;
@@ -43,7 +50,7 @@ test('init copies the built-in ladder, and a rung the project leaves out falls b
   const back = h.json(['ladder', 'show']);
   assert.deepEqual([back.harness, back.harness_from], ['codex', 'built-in']);
   assert.deepEqual([back.ladder.easy.profile, back.ladder.easy.from], ['luna', 'built-in']);
-  assert.match(h.ok(['ladder', 'show']), /^ {2}easy +codex \(default\) +profile luna, effort medium +from built-in$/m);
+  assert.match(h.ok(['ladder', 'show']), /^ {2}easy +codex \(default\) +profile luna, effort max +from built-in$/m);
 });
 
 test('the user file supplies the defaults a new project copies, and the project file then wins', (t) => {
@@ -78,7 +85,7 @@ test('ladder save-user makes the project ladder the default for new projects', (
   assert.equal(out.file, h.userConfig);
   const saved = JSON.parse(fs.readFileSync(h.userConfig, 'utf8'));
   assert.equal(saved.harness, 'codex');
-  assert.deepEqual(saved.ladder.hard, { harness: 'claude', model: 'fable', effort: 'high' });
+  assert.deepEqual(saved.ladder.hard, { harness: 'claude', model: 'fable', effort: 'medium' });
   assert.deepEqual(saved.ladder.easy, BUILTIN.easy);
   assert.equal(events(h).filter((e) => e.cmd === 'ladder save-user').length, 1);
 
@@ -159,13 +166,13 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
 
   const easy = spawn('T1');
   assert.deepEqual([easy.rung, easy.agent], ['easy', 'worker-T1-1']);
-  assert.deepEqual(flags(easy.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-easy', '--thinking', 'medium', ...piExtension(easy.agent)]);
+  assert.deepEqual(flags(easy.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-easy', '--thinking', 'max', ...piExtension(easy.agent)]);
   const medium = spawn('T2');
   assert.deepEqual(flags(medium.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-medium', '--thinking', 'high', ...piExtension(medium.agent)]);
   const hard = spawn('T3');
   const research = spawn('T4');
-  assert.deepEqual(flags(hard.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'high', '--output-format', 'json']);
-  assert.deepEqual(flags(research.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'max', '--output-format', 'json']);
+  assert.deepEqual(flags(hard.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'medium', '--output-format', 'json']);
+  assert.deepEqual(flags(research.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'high', '--output-format', 'json']);
   assert.equal(hard.argv[hard.argv.indexOf('--session-id') + 1], hard.session_id);
   assert.equal(research.argv[research.argv.indexOf('--session-id') + 1], research.session_id);
   const review = spawn('T2', 'review');
@@ -173,7 +180,7 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   assert.deepEqual(flags(review.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-review', '--thinking', 'high', ...piExtension(review.agent)]);
 
   h.ok(['ladder', 'harness', 'codex']);
-  assert.deepEqual(flags(spawn('T1').argv).slice(0, 7), ['codex', 'exec', '--json', '-m', 'm-easy', '-c', 'model_reasoning_effort=medium']);
+  assert.deepEqual(flags(spawn('T1').argv).slice(0, 7), ['codex', 'exec', '--json', '-m', 'm-easy', '-c', 'model_reasoning_effort=max']);
   assert.deepEqual(flags(spawn('T3').argv).slice(0, 1), ['claude']);
   const harnessEvents = events(h).filter((e) => e.cmd === 'ladder harness').map((e) => e.detail.harness);
   assert.deepEqual(harnessEvents, ['pi', 'codex']);
@@ -259,14 +266,14 @@ test('a ladder write is evented and re-renders the sketch with the ladder and ea
   h.ok(['task', 'add', '--title', 'Small fix', '--acceptance', 'a', '--size', 'S']);
   h.ok(['ladder', 'set', 'easy', '--model', 'gpt-x', '--clear', 'profile', '--agent', 'orchestrator']);
   const ev = events(h).find((e) => e.cmd === 'ladder set');
-  assert.deepEqual([ev.agent, ev.detail], ['orchestrator', { rung: 'easy', model: 'gpt-x', effort: 'medium', authority: 'orchestrator' }]);
-  assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'medium' });
+  assert.deepEqual([ev.agent, ev.detail], ['orchestrator', { rung: 'easy', model: 'gpt-x', effort: 'max', authority: 'orchestrator' }]);
+  assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'max' });
   const html = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
-  assert.match(html, /<tr data-rung="easy"><th scope="row">easy<\/th><td>codex \(default\)<\/td><td>gpt-x<\/td><td>medium<\/td>/);
-  assert.match(html, /<tr data-rung="research"><th scope="row">research<\/th><td>claude<\/td><td>opus<\/td><td>max<\/td>/);
+  assert.match(html, /<tr data-rung="easy"><th scope="row">easy<\/th><td>codex \(default\)<\/td><td>gpt-x<\/td><td>max<\/td>/);
+  assert.match(html, /<tr data-rung="research"><th scope="row">research<\/th><td>claude<\/td><td>opus<\/td><td>high<\/td>/);
   assert.match(html, /<a href="#T1" class="node s-ready"[^>]*aria-label="T1 Small fix, ready, tier easy"/, 'the graph shows the task tier');
   const md = fs.readFileSync(path.join(h.state, 'sketch.md'), 'utf8');
-  assert.match(md, /^\| easy \| codex \(default\) \| gpt-x \| medium \|$/m);
+  assert.match(md, /^\| easy \| codex \(default\) \| gpt-x \| max \|$/m);
   assert.match(md, /^\| T1 \| Small fix \| code \| S \| easy \| 0 \|$/m, 'the ready table shows the tier');
 });
 
