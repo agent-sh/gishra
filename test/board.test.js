@@ -332,6 +332,43 @@ test('live CLI writes keep Plan, its task sheet, scroll and the focused control 
   });
 });
 
+test('live CLI writes keep Settings and Spend focus and table scroll at 390px', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const b = await openBrowser(t);
+  await b.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+  for (const [view, agent] of [['settings', 'owner'], ['settings', 'viewer'], ['spend', 'viewer']]) {
+    await t.test(`${view} as ${agent}`, async (t) => {
+      const h = makeRepo(t);
+      h.init();
+      h.ok(['task', 'add', '--title', 'A task with usage and a long title to make its table scroll horizontally', '--acceptance', 'verified']);
+      h.ok(['spend', 'T1', '--tokens', '200', '--minutes', '12', '--rung', 'easy', '--model', 'provider/a-model-with-a-long-name-for-the-model-usage-table']);
+      await withServers(async (servers) => {
+        const url = await startServe(servers, h, agent);
+        const page = view === 'settings' ? `${url}settings` : `${url}#spend`;
+        await b.goto(page);
+        await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+        const selector = JSON.stringify(view === 'settings' ? 'main .panel' : '#spend .tbl-wrap');
+        const focused = JSON.stringify(view === 'spend' ? '#spend [href="#T1"]' : agent === 'owner' ? 'tr[data-rung="easy"] input[name="model"]' : '.views a[data-view="settings"]');
+        const position = `({ page: [scrollX, scrollY], main: [document.querySelector('main').scrollLeft, document.querySelector('main').scrollTop], navigation: [document.querySelector('.views').scrollLeft, document.querySelector('.views').scrollTop], tables: [...document.querySelectorAll(${selector})].map((el) => [el.scrollLeft, el.scrollTop]) })`;
+        await b.inPage(`(() => {
+          window.firstLoad = true;
+          document.querySelector(${focused}).focus({ preventScroll: true });
+          [...document.querySelectorAll(${selector})].forEach((el, i) => { el.scrollLeft = 100 + i * 25; });
+          document.querySelector('.views').scrollLeft = 40;
+          window.scrollTo(0, 200);
+        })()`);
+        const before = await b.inPage(position);
+        assert.ok(before.tables.some(([x]) => x > 0), 'a table is scrolled horizontally');
+        if (view === 'spend') assert.ok(new Set(before.tables.filter(([x]) => x > 0).map(([x]) => x)).size > 1, 'separate tables have distinct horizontal positions');
+        const update = `${view} stays put as ${agent}`;
+        h.ok(['task', 'note', 'T1', update]);
+        await b.until(view === 'settings' ? `window.firstLoad !== true && document.readyState === 'complete' && document.querySelector('.conn').dataset.conn === 'live'` : `document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live update');
+        assert.equal(await b.inPage('location.href'), page, 'the current route stays');
+        assert.deepEqual(await b.inPage(`[document.activeElement === document.querySelector(${focused}), ${position}]`), [true, before], 'focus and all scroll offsets stay on the same controls and containers');
+      });
+    });
+  }
+});
+
 test('live updates match task sheet buttons by form and fall back when the focused action is removed', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
   const b = await openBrowser(t);
   for (const action of ['comments', 'owner-done']) {
