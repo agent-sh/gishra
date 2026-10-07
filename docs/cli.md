@@ -6,6 +6,8 @@ Agent identity comes from `--agent NAME`, then `TOWER_CRANE_AGENT`. With neither
 
 `accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's live or unverified claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `TOWER_CRANE_AGENT=owner`. The terminal fallback never grants these owner powers. Any agent may release a spawned claim verified exited under the lock. An agent requests other owner action with `tower-crane ask` or a task note.
 
+In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), commands that only read run as usual, and every other command on the spawn's state directory is sent to the [state broker](ladder.md#state-broker), which runs it as the spawned agent if its role allows it on its own task, and prints its output and exits with its code. A refused command exits 1 and writes nothing.
+
 Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. `render` takes the lock too. A refused command writes nothing.
 
 ## Plan

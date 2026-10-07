@@ -45,7 +45,6 @@ ghWrite:
 worktree: write
 sandbox: true
 writeOutside:
-  - state
   - git
   - cache
 codexDisable:

@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, BIN } = require('./helpers');
 
 const uid = typeof process.getuid === 'function' ? process.getuid() : null;
 const runDir = uid === null ? null : `/run/user/${uid}`;
@@ -42,4 +42,24 @@ test('a sandboxed claude command cannot connect to a unix socket in a denied dir
   assert.ok(fs.existsSync(probe), 'the command ran');
   assert.match(fs.readFileSync(probe, 'utf8'), /^ERR /);
   assert.equal(connections, 0, 'nothing reached the socket');
+});
+
+test('in a real claude sandbox a forged state edit fails and the CLI writes through the broker', { skip: process.env.TOWER_CRANE_LIVE_CLAUDE !== '1' && 'set TOWER_CRANE_LIVE_CLAUDE=1 to run against the real claude CLI', timeout: 300000 }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Forge probe', '--acceptance', 'only the broker writes']);
+  const events = path.join(h.state, 'events.jsonl');
+  const before = fs.readFileSync(events, 'utf8');
+  const probe = path.join(h.base, 'forge-probe');
+  const forge = `const f=require("fs");try{f.appendFileSync(${JSON.stringify(events)},"{}\\n");f.writeFileSync(${JSON.stringify(probe)},"WROTE")}catch(e){f.writeFileSync(${JSON.stringify(probe)},"ERR "+e.code)}`;
+  h.ok(['brief', 'set', 'T1', '-'], {
+    input: `Sandbox probe set up by the owner. Run exactly these two commands with the Bash tool, one after the other, then reply with their exit codes.\n\nnode -e '${forge}'\n\nnode ${BIN} task note T1 through-the-broker\n`,
+  });
+  h.ok(['ladder', 'set', 'small', '--harness', 'claude', '--model', process.env.TOWER_CRANE_LIVE_MODEL || 'opus', '--clear', 'profile', '--clear', 'effort']);
+  const r = await h.runAsync(['spawn', '--role', 'small', '--task', 'T1', '--wait']);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(fs.readFileSync(probe, 'utf8'), /^ERR /, 'the sandbox refused the direct write');
+  assert.ok(!fs.readFileSync(events, 'utf8').slice(before.length).split('\n').includes('{}'), 'no forged line');
+  const note = h.readState('tasks.json').tasks[0].notes.find((n) => n.text === 'through-the-broker');
+  assert.equal(note?.agent, 'small-T1-1', 'the broker wrote it as the spawned agent');
 });

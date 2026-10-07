@@ -171,12 +171,15 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   assert.equal(seen.args[seen.args.indexOf('--tools') + 1], 'Bash,Read,Grep,Glob');
   assert.equal(seen.home, path.join(home, 'home'), 'HOME is the agent\'s own');
   // Bash is approved only because it runs in claude's sandbox, which stops
-  // the agent when it cannot start; the small role writes the state only.
+  // the agent when it cannot start; the small role writes nothing outside,
+  // and its state changes go through the state broker.
   const box = seen.settings.sandbox;
   assert.equal(seen.args[seen.args.indexOf('--allowedTools') + 1], 'Bash,Read,Grep,Glob');
   assert.deepEqual([box.enabled, box.failIfUnavailable, box.allowUnsandboxedCommands, box.network.allowAllUnixSockets], [true, true, false, true]);
-  assert.deepEqual(box.filesystem.allowWrite, [h.state]);
-  assert.deepEqual(box.filesystem.denyWrite, [path.join(h.state, 'homes'), wt]);
+  assert.deepEqual(box.filesystem.allowWrite, []);
+  assert.deepEqual(box.filesystem.denyWrite, [h.state, wt], 'the state is read-only');
+  assert.ok(box.filesystem.denyRead.includes(path.join(h.state, 'homes')), 'no agent reads another agent\'s home');
+  assert.deepEqual(box.filesystem.allowRead, [home], 'but it reads its own');
   for (const p of ['/var/run/docker.sock', '/run/docker.sock', path.join(u.home, '.ssh'), path.join(u.home, '.aws')]) assert.ok(box.filesystem.denyRead.includes(p), p);
   assert.match(fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8'), /^\.claude\/\.cc-writes\/$/m, 'the sandbox marker is never committed');
   assert.equal(fs.readFileSync(path.join(h.state, 'homes', '.gitignore'), 'utf8'), '*\n');
@@ -241,14 +244,16 @@ test('a codex agent writes only where its agent file says; a worker writes its g
   const own = fs.realpathSync(h.git(['rev-parse', '--path-format=absolute', '--git-dir'], wt));
   for (const [rung, worktree] of [['hard', 'write'], ['review', 'read'], ['small', 'read']]) {
     isolated(h, rung, 'codex');
-    spawn(h, u, rung);
+    const home = path.join(h.state, 'homes', spawn(h, u, rung).agent);
     const { config } = u.report();
     const rules = config.permissions['tower-crane'].filesystem;
     for (const d of [common, own]) assert.equal(rules[d], worktree === 'write' ? 'write' : undefined, `${rung}: ${d}`);
     assert.deepEqual(rules[':workspace_roots'], { '.': worktree }, rung);
     assert.equal(rules[':root'], 'read', rung);
-    assert.equal(rules[h.state], 'write', `${rung}: state through the CLI`);
-    assert.equal(rules[path.join(h.state, 'homes')], 'read', `${rung}: agent homes are not writable`);
+    assert.equal(rules[h.state], 'read', `${rung}: the state is read-only; the broker writes it`);
+    assert.equal(rules[path.join(h.state, 'homes')], 'none', `${rung}: no agent reads another agent's home`);
+    assert.equal(rules[home], 'read', `${rung}: its own home is readable`);
+    assert.equal(rules[path.join(home, 'home')], 'write', `${rung}: its HOME is writable`);
     assert.equal(config.permissions['tower-crane'].network.enabled, true);
   }
   for (const [rung, writes] of [['hard', true], ['small', false]]) {
@@ -376,11 +381,69 @@ test('an isolated reviewer posts through gh, records evidence in a symlinked sta
     spawn(h, u, 'review', { STUB_RUN: JSON.stringify(run) });
     const seen = u.report();
     assert.deepEqual(seen.ran.map((r) => r.code), run.map(() => 0), `${harness}: ${JSON.stringify(seen.ran.map((r) => r.stderr))}`);
-    if (harness === 'claude') assert.ok(seen.settings.sandbox.filesystem.allowWrite.includes(real), 'claude may write the real state dir');
-    else assert.equal(seen.config.permissions['tower-crane'].filesystem[real], 'write', 'codex may write the real state dir');
+    if (harness === 'claude') assert.ok(seen.settings.sandbox.filesystem.denyWrite.includes(real), 'claude reads the real state dir only');
+    else assert.equal(seen.config.permissions['tower-crane'].filesystem[real], 'read', 'codex reads the real state dir only');
   }
-  assert.equal(h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'review').length, 2);
+  const reviews = h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'review');
+  assert.deepEqual(reviews.map((e) => [e.agent, e.via]), [['reviewer-T1-1', 'broker'], ['reviewer-T1-2', 'broker']], 'the broker recorded each as the reviewer it started');
   for (const f of walk(realState)) assert.ok(!fs.readFileSync(f, 'utf8').includes('stub-gh-token'), `${f} holds the gh token`);
+});
+
+test('a sandboxed agent changes the state only through its spawn\'s broker: as itself, on its own task, with its role\'s commands', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  h.ok(['task', 'add', '--title', 'Other', '--acceptance', 'untouched']);
+  const tests = h.readState('project.json').tests;
+  const fixture = path.join(h.base, 'fixture-state');
+  const cli = (...args) => [process.execPath, BIN, ...args];
+  // Reaches the broker named in broker.json, but with a token of its own.
+  const forged = `const f=require("fs"),n=require("net");const b=JSON.parse(f.readFileSync(process.env.TOWER_CRANE_BROKER,"utf8"));const s=n.connect(b.socket,()=>s.write(JSON.stringify({token:"0".repeat(64),argv:["task","note","T1","forged"]})+"\\n"));let o="";s.on("data",d=>o+=d).on("end",()=>{process.stderr.write(o);process.exit(JSON.parse(o).code)})`;
+  const cases = [
+    [cli('task', 'note', 'T1', 'through the broker'), 0],
+    [cli('task', 'note', 'T1', 'as the owner', '--agent', 'owner'), 1],
+    [cli('task', 'note', 'T2', 'another task'), 1],
+    [cli('task', 'add', '--title', 'X', '--acceptance', 'Y'), 1],
+    [cli('project', 'set', '--tests-mode', 'none', '--agent', 'owner'), 1],
+    [cli('evidence', 'T1', '--type', 'note', '--ok'), 1],
+    [cli('task', 'show', 'T1'), 0],
+    [[process.execPath, '-e', forged], 1],
+    // A test fixture's own state is not the broker's; it runs in the agent.
+    [cli('init', '--name', 'fixture', '--goal', 'own state', '--state', fixture, '--agent', 'owner'), 0],
+  ];
+  const noted = [];
+  for (const [n, harness] of ['claude', 'codex'].entries()) {
+    isolated(h, 'small', harness);
+    // The skills name the agent on every call, as itself.
+    const named = [cli('task', 'note', 'T1', 'named', '--agent', `small-T1-${n + 1}`), 0];
+    const agent = spawn(h, u, 'small', { STUB_RUN: JSON.stringify([...cases, named].map((c) => c[0])) }).agent;
+    noted.push(agent);
+    const ran = u.report().ran;
+    assert.deepEqual(ran.map((r) => r.code), [...cases, named].map((c) => c[1]), `${harness}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+    assert.match(ran[1].stderr, /cannot act as owner/);
+    assert.match(ran[2].stderr, /works on T1 only, not T2/);
+    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, not task add/);
+    assert.match(ran[7].stderr, /without its token/);
+    assert.ok(fs.existsSync(path.join(fixture, 'project.json')), `${harness}: the fixture got its own state`);
+    assert.ok(!fs.existsSync(path.join(h.state, 'homes', agent, 'broker.json')), `${harness}: the broker closes with its agent`);
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+  isolated(h, 'hard', 'claude');
+  const worker = spawn(h, u, 'hard', { STUB_RUN: JSON.stringify([cli('claim', 'T1'), cli('evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1')]) }).agent;
+  assert.deepEqual(u.report().ran.map((r) => r.code), [0, 1], JSON.stringify(u.report().ran.map((r) => r.stderr)));
+  const [t1, t2] = h.readState('tasks.json').tasks;
+  assert.equal(t1.claim.agent, worker, 'the worker claimed as itself');
+  assert.deepEqual(t1.notes.map((n) => [n.agent, n.text]), noted.flatMap((a) => [[a, 'through the broker'], [a, 'named']]));
+  assert.deepEqual(t1.evidence, []);
+  assert.deepEqual(t2.notes, []);
+  assert.deepEqual(h.readState('project.json').tests, tests);
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(events.filter((e) => e.via).map((e) => [e.cmd, e.agent, e.task]),
+    [...noted.flatMap((a) => [['task note', a, 'T1'], ['task note', a, 'T1']]), ['claim', worker, 'T1']], 'only brokered changes, each as its agent');
+});
+
+test('a sandboxed role cannot write the state directory itself', () => {
+  const text = fs.readFileSync(A.file('worker'), 'utf8').replace(/^writeOutside:\n/m, 'writeOutside:\n  - state\n');
+  assert.throws(() => A.parse(text, 'worker.md'), /state needs sandbox: false/);
+  for (const job of ['worker', 'reviewer', 'small']) assert.ok(!A.load(job).writeOutside.includes('state'), job);
 });
 
 test('a gh token in the spawning environment passes through, and the keyring is asked only without one', { skip: NO_STUBS }, (t) => {
