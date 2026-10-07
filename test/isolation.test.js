@@ -196,11 +196,14 @@ test('a sandboxed claude removes its ignored cwd placeholders after exit', { ski
   fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
   const gitignoreFile = path.join(h.repo, '.gitignore');
   const gitignore = fs.existsSync(gitignoreFile) ? fs.readFileSync(gitignoreFile, 'utf8') : null;
-  const globalIgnore = path.join(h.base, 'global-ignore');
+  const globalIgnore = path.join(u.home, '.config', 'git', 'ignore');
+  fs.mkdirSync(path.dirname(globalIgnore), { recursive: true });
   fs.writeFileSync(globalIgnore, 'globally-ignored/\n');
-  h.git(['config', '--global', 'core.excludesFile', globalIgnore]);
   fs.mkdirSync(path.join(wt, 'globally-ignored'));
   fs.writeFileSync(path.join(wt, 'globally-ignored', 'file.txt'), "ignored by the user's global excludes\n");
+  const status = (cwd) => cp.execFileSync('git', ['status', '--short', '--untracked-files=all'], {
+    cwd, env: u.env, encoding: 'utf8',
+  }).trim();
 
   const started = spawn(h, u, 'small', {
     STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(CLAUDE_SANDBOX_PLACEHOLDERS),
@@ -210,7 +213,7 @@ test('a sandboxed claude removes its ignored cwd placeholders after exit', { ski
   for (const relative of CLAUDE_SANDBOX_PLACEHOLDERS) {
     assert.equal(fs.existsSync(path.join(wt, relative)), false, `${relative} is removed after exit`);
   }
-  assert.equal(h.git(['status', '--short', '--untracked-files=all'], started.cwd), '', 'the worktree stays clean after exit');
+  assert.equal(status(started.cwd), '', 'the worktree stays clean after exit');
 
   const excludes = fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8').split(/\r?\n/);
   for (const pattern of ClaudeSandboxPlaceholders.IGNORE_PATTERNS) {
@@ -224,7 +227,7 @@ test('a sandboxed claude removes its ignored cwd placeholders after exit', { ski
     fs.writeFileSync(path.join(cwd, '.bashrc'), 'a real shell config\n');
     fs.mkdirSync(path.join(cwd, '.claude', 'agents'), { recursive: true });
     fs.writeFileSync(path.join(cwd, '.claude', 'agents', 'x.md'), 'a real project agent\n');
-    assert.equal(h.git(['status', '--short', '--untracked-files=all'], cwd), '?? .bashrc\n?? .claude/agents/x.md');
+    assert.equal(status(cwd), '?? .bashrc\n?? .claude/agents/x.md');
   }
 });
 
