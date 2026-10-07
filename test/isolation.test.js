@@ -492,6 +492,10 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
   const tests = h.readState('project.json').tests;
   const fixture = path.join(h.base, 'fixture-state');
   const cli = (...args) => [process.execPath, BIN, ...args];
+  const envOwner = [
+    process.execPath, '-e',
+    `const cp=require("node:child_process");const r=cp.spawnSync(process.execPath,${JSON.stringify([BIN, 'task', 'note', 'T1', 'as env owner'])},{env:{...process.env,TOWER_CRANE_AGENT:'owner'},encoding:'utf8'});process.stderr.write(r.stderr||'');process.exit(r.status??1);`,
+  ];
   // Reaches the broker named in broker.json, but with a token of its own.
   const forged = `const f=require("fs"),n=require("net");const b=JSON.parse(f.readFileSync(process.env.TOWER_CRANE_BROKER,"utf8"));const s=n.connect(b.socket||{host:b.host,port:b.port},()=>s.write(JSON.stringify({token:"0".repeat(64),argv:["task","note","T1","forged"]})+"\\n"));let o="";s.on("data",d=>o+=d).on("end",()=>{process.stderr.write(o);process.exit(JSON.parse(o).code)})`;
   const cases = [
@@ -504,12 +508,13 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     [cli('task', 'show', 'T1'), 0],
     [[process.execPath, '-e', forged], 1],
     // A test fixture's own state is not the broker's; it runs in the agent.
-    [cli('init', '--name', 'fixture', '--goal', 'own state', '--state', fixture, '--agent', 'owner'), 0],
+    [cli('init', '--name', 'fixture', '--goal', 'own state', '--state', fixture), 0],
     [[process.execPath, '-e', 'process.stderr.write(require("fs").readFileSync(process.env.TOWER_CRANE_BROKER, "utf8"))'], 0],
     // Harness hooks write through the broker too, their payload from stdin,
     // with the agent's own binding and no other.
     [[process.execPath, '-e', `require("child_process").execFileSync(process.execPath, [${JSON.stringify(BIN)}, "hook", "report", "--binding", require("path").join(process.env.TOWER_CRANE_STATE, "homes", process.env.TOWER_CRANE_AGENT, "hook.json"), "--payload", "-"], { input: JSON.stringify({ report: "hooked" }), stdio: ["pipe", "ignore", "inherit"] })`], 0],
     [cli('hook', 'report', '--binding', path.join(h.state, 'homes', 'worker-T1-1', 'hook.json'), '--payload', '{"report":"as another"}'), 1],
+    [envOwner, 1],
   ];
   const noted = [];
   for (const [n, harness] of ['claude', 'codex'].entries()) {
@@ -520,11 +525,12 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     noted.push(agent);
     const ran = u.report().ran;
     assert.deepEqual(ran.map((r) => r.code), [...cases, named].map((c) => c[1]), `${harness}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
-    assert.match(ran[1].stderr, /cannot act as owner/);
+    assert.match(ran[1].stderr, /owner acts from an interactive terminal/);
     assert.match(ran[2].stderr, /works on T1 only, not T2/);
     assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, hook, not task add/);
     assert.match(ran[11].stderr, /uses its own hook binding only/);
     assert.match(ran[7].stderr, /without its token/);
+    assert.match(ran[12].stderr, /owner acts from an interactive terminal/);
     // Codex's sandbox refuses connecting to a Unix socket; claude's has no
     // host loopback.
     const address = JSON.parse(ran[9].stderr);
