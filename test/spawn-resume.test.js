@@ -9,23 +9,16 @@ const Sessions = require('../lib/spawn-session');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 
-test('isolated session lookup checks Codex rollouts and Claude config sessions', (t) => {
+test('isolated Codex session lookup matches the recorded rollout id', (t) => {
   const h = makeRepo(t);
   const codexHome = path.join(h.base, 'homes', '.codex');
-  const claudeHome = path.join(h.base, 'homes', 'claude-worker');
   const codexSession = path.join(codexHome, 'sessions', '2026', '10', '07', 'rollout-test-codex-session.jsonl');
-  const claudeSession = path.join(claudeHome, 'projects', 'repo', 'claude-session.jsonl');
   fs.mkdirSync(path.dirname(codexSession), { recursive: true });
-  fs.mkdirSync(path.dirname(claudeSession), { recursive: true });
   fs.writeFileSync(codexSession, '{}\n');
-  fs.writeFileSync(claudeSession, '{}\n');
 
-  assert.equal(Sessions.missingIsolatedSession('codex-session', 'codex', { usageRoot: codexHome }), null);
-  assert.equal(Sessions.missingIsolatedSession('other-session', 'codex', { usageRoot: codexHome }),
+  assert.equal(Sessions.missingCodexSession('codex-session', { usageRoot: codexHome }), null);
+  assert.equal(Sessions.missingCodexSession('other-session', { usageRoot: codexHome }),
     'recorded codex session has no rollout file in the isolated sessions directory');
-  assert.equal(Sessions.missingIsolatedSession('claude-session', 'claude', { env: { CLAUDE_CONFIG_DIR: claudeHome } }), null);
-  assert.equal(Sessions.missingIsolatedSession('other-session', 'claude', { env: { CLAUDE_CONFIG_DIR: claudeHome } }),
-    'recorded claude session has no session file in the isolated config directory');
 });
 
 function setup(t, format = 'codex', session = true) {
