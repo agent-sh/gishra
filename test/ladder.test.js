@@ -209,7 +209,12 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   fs.mkdirSync(empty);
   const spawn = (id, role) => h.json(['spawn', '--task', id, ...(role ? ['--role', role] : []), '--dry-run'], { env: { TOWER_CRANE_PLUGIN_ROOT: empty } });
   const flags = (argv) => argv.filter((a) => !a.includes('## Task'));
-  const piExtension = (agent) => ['--extension', path.join(h.state, 'homes', agent, 'hook.mjs')];
+  const piExtension = (agent) => [
+    '--no-approve', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files',
+    '--tools', agent.startsWith('worker') ? 'bash,read,edit,write,grep,find' : 'bash,read,grep,find',
+    '--append-system-prompt', path.join(h.state, 'homes', agent, 'AGENTS.md'),
+    '--extension', path.join(h.state, 'homes', agent, 'hook.mjs'),
+  ];
 
   h.ok(['ladder', 'harness', 'pi']);
   const show = h.json(['ladder', 'show']);
