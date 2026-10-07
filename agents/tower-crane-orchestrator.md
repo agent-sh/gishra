@@ -28,6 +28,7 @@ skills:
 web: true
 gitPush: branch
 ghWrite:
+  - stack
   - pr create
   - pr edit
   - pr comment

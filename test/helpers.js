@@ -44,6 +44,21 @@ function makeRepo(t) {
   fs.writeFileSync(path.join(repo, 'README.md'), '# test\n');
   git(['add', '.'], repo, env);
   git(['commit', '-q', '-m', 'init'], repo, env);
+  return context(t, base);
+}
+
+// A test context over a copy of another context's directory, for files that
+// build one fixture and give each test its own copy instead of rebuilding it.
+// Git and state paths still name the source; the caller repairs them.
+function copyRepo(t, source) {
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-')));
+  fs.cpSync(source, base, { recursive: true });
+  return context(t, base);
+}
+
+function context(t, base) {
+  const env = baseEnv(base);
+  const repo = path.join(base, 'repo');
   const ctx = {
     base,
     repo,
@@ -160,4 +175,4 @@ async function stopDetached(children) {
   }
 }
 
-module.exports = { makeRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
+module.exports = { makeRepo, copyRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
