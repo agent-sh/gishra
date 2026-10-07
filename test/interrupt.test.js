@@ -159,9 +159,11 @@ test('an interrupted supervisor holds its worker slot until the process group st
   const refused = h.run(['claim', 'T2', '--agent', 'replacement']);
   assert.equal(refused.code, 1, refused.stderr);
   assert.match(refused.stderr, /workers limit/);
-  assert.equal(h.run(['claim', 'T1', '--agent', first.agent]).code, 1);
+  const hidden = { hooks: { HOOK_HIDDEN_PIDS: JSON.stringify([first.pid, first.monitor_pid]) } };
+  assert.equal(h.run(['claim', 'T2', '--agent', 'replacement'], hidden).code, 1);
+  assert.equal(h.run(['claim', 'T1', '--agent', first.agent], hidden).code, 1);
   for (const flags of [[], ['--dry-run']]) {
-    const refusedSpawn = h.run(['spawn', '--task', 'T1', ...flags]);
+    const refusedSpawn = h.run(['spawn', '--task', 'T1', ...flags], hidden);
     assert.equal(refusedSpawn.code, 1, refusedSpawn.stderr);
     assert.match(refusedSpawn.stderr, /still stopping/);
   }

@@ -52,7 +52,7 @@ const SETTINGS = {
   goal: str('G', 'one-line goal'),
   repo: str('O/R', 'GitHub repository (default: from the origin remote)'),
   base: str('B', 'base branch for task branches (default: the current branch)'),
-  workers: int('N', 'tasks in progress at once, counting live leases and interrupted supervisors still stopping (default 6)'),
+  workers: int('N', 'worker slots held by live leases, unclaimed spawns or interrupted supervisors still stopping (default 6)'),
   'lease-minutes': int('MIN', 'default claim lease (default 60)'),
   'budget-hours': num('H', 'hours budget'),
   'budget-tokens': int('N', 'token budget'),
