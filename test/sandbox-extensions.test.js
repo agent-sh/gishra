@@ -37,7 +37,7 @@ function noFileSecrets(dir) {
 
 test('project and rung spawn settings require explicit owner identity, including unchanged and cleared fields', (t) => {
   const h = setup(t);
-  const changes = [['--sandbox', '{"write":["~/.cargo"]}'], ['--env', '{"CARGO_HOME":"/toolchain"}'], ['--env_file', '/private.env']];
+  const changes = [['--sandbox', '{"write":["~/.cargo"]}'], ['--env', '{"CARGO_HOME":"/toolchain"}'], ['--env_file', '/private.env'], ['--scope', '{"CPUQuota":"200%","MemoryMax":"8G"}']];
   for (const flags of changes) {
     const before = fs.readFileSync(path.join(h.state, 'project.json'), 'utf8');
     const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
@@ -66,6 +66,8 @@ test('spawn settings reject invalid shapes and reserved identities without parti
     ['--sandbox', '{"write":"~/.cargo"}'], ['--sandbox', '{"user_bus":1}'], ['--sandbox', '{"other":true}'],
     ['--env', '{"CARGO_HOME":1}'], ['--env', '{"HOME":"/tmp"}'], ['--env', '{"TOWER_CRANE_AGENT":"owner"}'],
     ['--env_file', ''], ['--env', '{"BAD-NAME":"value"}'], ['--sandbox', '{"write":[""]}'],
+    ['--sandbox', '{"user_bus":true}'], ['--scope', '[]'], ['--scope', '{"CPUQuota":200}'],
+    ['--scope', '{"--bad":"value"}'], ['--scope', '{"MemoryMax":""}'], ['--scope', '{"MemoryMax":"8G\\n"}'],
   ]) {
     const before = fs.readFileSync(path.join(h.state, 'project.json'), 'utf8');
     assert.equal(h.run(['project', 'set', '--name', 'changed', ...flags]).code, 2, flags.join(' '));
@@ -148,44 +150,87 @@ for (const harness of ['codex', 'claude']) {
   });
 }
 
-test('session bus opt-in gives both harnesses the runtime path and environment; a rung can disable it', { skip: NO_STUBS || (process.platform !== 'linux' && 'Linux user session') }, (t) => {
+test('host scopes wrap both harnesses and retries, preserve private env and allow rung overrides', { skip: NO_STUBS || (process.platform !== 'linux' && 'Linux systemd scopes') }, (t) => {
   const h = setup(t);
-  const runtime = path.join(h.base, 'runtime');
-  fs.mkdirSync(runtime);
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
-  const out = path.join(h.base, 'bus.json');
-  const env = { ...h.env, CODEX_HOME: '', CLAUDE_CONFIG_DIR: '', PATH: `${bin}${path.delimiter}${process.env.PATH}`, XDG_RUNTIME_DIR: runtime,
-    DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(runtime, 'bus')}` };
+  const out = path.join(h.base, 'scope.jsonl');
+  const wrapped = path.join(h.base, 'wrapper.jsonl');
+  const file = path.join(h.base, 'private.env');
+  fs.writeFileSync(file, `${SECRET_KEY}='${SECRET}'\n`);
+  fs.writeFileSync(path.join(bin, 'systemd-run'), `#!${process.execPath}
+const fs = require('node:fs'), cp = require('node:child_process');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(wrapped)}, JSON.stringify(args) + '\\n');
+const sep = args.indexOf('--');
+if (sep < 0) throw new Error('missing command separator');
+const r = cp.spawnSync(args[sep + 1], args.slice(sep + 2), {stdio: 'inherit'});
+process.exit(r.status ?? 1);
+`, { mode: 0o755 });
+  const env = { ...h.env, CODEX_HOME: '', CLAUDE_CONFIG_DIR: '', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   for (const harness of ['codex', 'claude']) {
     fs.writeFileSync(path.join(bin, harness), `#!${process.execPath}
-const fs = require('node:fs'), path = require('node:path');
-const dir = process.env.CODEX_HOME || process.env.CLAUDE_CONFIG_DIR;
-fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify({
-  runtime: process.env.XDG_RUNTIME_DIR, bus: process.env.DBUS_SESSION_BUS_ADDRESS,
-  config: fs.readFileSync(path.join(dir, process.env.CODEX_HOME ? 'config.toml' : 'settings.json'), 'utf8')
-}));
+const fs = require('node:fs');
+if (process.env[${JSON.stringify(SECRET_KEY)}] !== ${JSON.stringify(SECRET)}) throw new Error('private env missing');
+fs.appendFileSync(${JSON.stringify(out)}, JSON.stringify({
+  scoped: process.env.TOWER_CRANE_SCOPED || null, retry: process.env.TOWER_CRANE_RETRY
+}) + '\\n');
+${harness === 'codex' ? 'console.log(JSON.stringify({type: "thread.started", thread_id: "scope-test-session"}));' : ''}
+process.exit(process.env.TOWER_CRANE_RETRY === '0' ? 75 : 0);
 `, { mode: 0o755 });
     h.ok(['ladder', 'set', 'medium', '--harness', harness,
-      ...(harness === 'codex' ? ['--profile', 'sol', '--clear', 'model'] : ['--model', 'opus', '--clear', 'profile'])]);
-    h.ok(['project', 'set', '--sandbox', '{"user_bus":true}']);
+      ...(harness === 'codex' ? ['--profile', 'sol', '--clear', 'model'] : ['--model', 'opus', '--clear', 'profile']),
+      '--supervision', '{"retries":1,"backoff_ms":1}']);
+    h.ok(['project', 'set', '--scope', '{"CPUQuota":"200%","MemoryMax":"8G"}', '--env_file', file]);
+    const dry = h.json(['spawn', '--task', 'T1', '--dry-run'], { env });
+    assert.deepEqual(dry.argv.slice(0, 9), ['systemd-run', '--user', '--scope', '--quiet', '-p', 'CPUQuota=200%', '-p', 'MemoryMax=8G', '--']);
+    assert.ok(!JSON.stringify(dry).includes(SECRET_KEY) && !JSON.stringify(dry).includes(SECRET));
     h.ok(['spawn', '--task', 'T1', '--wait'], { env });
-    const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
-    assert.equal(seen.runtime, runtime);
-    assert.equal(seen.bus, env.DBUS_SESSION_BUS_ADDRESS);
-    if (harness === 'codex') assert.equal(TOML.parse(seen.config).permissions['tower-crane'].filesystem[runtime], 'write');
-    else {
-      const box = JSON.parse(seen.config).sandbox.filesystem;
-      assert.ok(box.allowWrite.includes(runtime));
-      assert.ok(!box.denyRead.includes(runtime) && !box.denyRead.includes(`/run/user/${process.getuid()}`));
-    }
-    h.ok(['ladder', 'set', 'medium', '--sandbox', '{"user_bus":false,"write":[]}']);
+    let attempts = fs.readFileSync(out, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(attempts.slice(-2), [{ scoped: '1', retry: '0' }, { scoped: '1', retry: '1' }]);
+    let wrappers = fs.readFileSync(wrapped, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(wrappers.slice(-2).map((a) => a.slice(0, 8)), Array(2).fill(dry.argv.slice(1, 9)));
+    h.ok(['ladder', 'set', 'medium', '--scope', '{"MemoryMax":"4G"}']);
+    const overridden = h.json(['spawn', '--task', 'T1', '--dry-run'], { env });
+    assert.deepEqual(overridden.argv.slice(0, 7), ['systemd-run', '--user', '--scope', '--quiet', '-p', 'MemoryMax=4G', '--']);
     h.ok(['spawn', '--task', 'T1', '--wait'], { env });
-    const off = JSON.parse(fs.readFileSync(out, 'utf8'));
-    if (harness === 'codex') assert.equal(TOML.parse(off.config).permissions['tower-crane'].filesystem[runtime], undefined);
-    else assert.ok(JSON.parse(off.config).sandbox.filesystem.denyRead.includes(runtime));
-    h.ok(['ladder', 'set', 'medium', '--clear', 'sandbox']);
+    wrappers = fs.readFileSync(wrapped, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(wrappers.at(-1).slice(0, 6), overridden.argv.slice(1, 7));
+    h.ok(['ladder', 'set', 'medium', '--scope', '{}']);
+    const wrapperCount = wrappers.length;
+    h.ok(['spawn', '--task', 'T1', '--wait'], { env });
+    attempts = fs.readFileSync(out, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(attempts.slice(-2), [{ scoped: null, retry: '0' }, { scoped: null, retry: '1' }]);
+    assert.equal(fs.readFileSync(wrapped, 'utf8').trim().split('\n').length, wrapperCount);
+    h.ok(['ladder', 'set', 'medium', '--clear', 'scope']);
+    assert.deepEqual(h.json(['spawn', '--task', 'T1', '--dry-run'], { env }).argv.slice(0, 9), dry.argv.slice(0, 9));
+    noFileSecrets(h.state);
   }
+});
+
+test('configured scopes refuse unavailable systemd-run before creating a worktree', (t) => {
+  const h = setup(t);
+  const bin = path.join(h.base, 'bin');
+  fs.mkdirSync(bin);
+  const missing = path.join(h.base, 'missing-systemd.js');
+  fs.writeFileSync(missing, `
+const fs = require('node:fs'), path = require('node:path');
+const stat = fs.statSync;
+fs.statSync = function(file, ...args) {
+  if (path.basename(String(file)) === 'systemd-run') throw Object.assign(new Error('not found'), {code: 'ENOENT'});
+  return stat.call(this, file, ...args);
+};
+`);
+  const harness = path.join(bin, 'agent');
+  fs.writeFileSync(harness, `#!${process.execPath}\nprocess.exit(0);\n`, { mode: 0o755 });
+  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, harness]), '--clear', 'profile']);
+  h.ok(['project', 'set', '--scope', '{"CPUQuota":"200%"}']);
+  const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const result = h.run(['spawn', '--task', 'T1', '--wait'], { env: { NODE_OPTIONS: `--require ${JSON.stringify(missing)}` } });
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /scope requires.*systemd-run|scope requires Linux/);
+  assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+  assert.equal(h.json(['task', 'show', 'T1']).branch, null);
 });
 
 test('invalid or unreadable env files fail without echoing their contents', { skip: NO_STUBS }, (t) => {
@@ -204,7 +249,7 @@ test('invalid or unreadable env files fail without echoing their contents', { sk
   }
 });
 
-test('real Codex worker writes the toolchain lock, receives a private env file, serves loopback and starts a user scope', {
+test('real Codex worker writes the toolchain lock, receives a private env file, serves loopback and inherits scope limits', {
   skip: process.env.TOWER_CRANE_LIVE_CODEX !== '1' && 'set TOWER_CRANE_LIVE_CODEX=1 to run a real Codex worker',
   timeout: 240000,
 }, async (t) => {
@@ -229,10 +274,10 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
   const script = path.join(h.base, 'cargo-probe.js');
   const privateTmp = path.join(h.base, 'agent-tmp');
   fs.mkdirSync(privateTmp, { mode: 0o700 });
-  const userBus = process.platform === 'linux' && fs.existsSync(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`);
+  assert.equal(process.platform, 'linux', 'live scope verification requires Linux');
   fs.writeFileSync(script, [
     "'use strict';",
-    'const fs = require("node:fs"), path = require("node:path"), net = require("node:net"), cp = require("node:child_process");',
+    'const fs = require("node:fs"), path = require("node:path"), net = require("node:net");',
     `if (process.env[${JSON.stringify(SECRET_KEY)}] !== ${JSON.stringify(SECRET)}) throw new Error("private environment missing");`,
     `if (process.env.CARGO_HOME !== ${JSON.stringify(cargo)} || process.env.RUSTUP_HOME !== ${JSON.stringify(rustup)}) throw new Error("toolchain homes missing");`,
     'if (fs.readFileSync(path.join(process.env.RUSTUP_HOME, "toolchain"), "utf8") !== "toolchain") throw new Error("toolchain missing");',
@@ -241,10 +286,20 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
     'try { fs.writeFileSync(path.join(process.env.RUSTUP_HOME, "unconfigured-write"), "unexpected"); }',
     'catch (e) { if (!["EACCES", "EPERM", "EROFS"].includes(e.code)) throw e; denied = true; }',
     'if (!denied) throw new Error("sandbox permitted an unconfigured toolchain write");',
-    `if (${userBus}) {`,
-    '  const r = cp.spawnSync("systemd-run", ["--user", "--scope", "--quiet", process.execPath, "-e", "process.exit(0)"], {encoding: "utf8", timeout: 10000});',
-    '  if (r.status !== 0) throw new Error("user scope failed: " + r.stderr);',
+    'if (process.env.TOWER_CRANE_SCOPED !== "1") throw new Error("scope marker missing");',
+    'const cgroup = fs.readFileSync("/proc/self/cgroup", "utf8").split("\\n").find(s => s.startsWith("0::"));',
+    'if (!cgroup) throw new Error("unified cgroup missing");',
+    'let dir = path.join("/sys/fs/cgroup", cgroup.slice(3));',
+    'let limited = false;',
+    'while (dir.startsWith("/sys/fs/cgroup/")) {',
+    '  const cpu = path.join(dir, "cpu.max"), memory = path.join(dir, "memory.max");',
+    '  if (fs.existsSync(cpu) && fs.existsSync(memory)) {',
+    '    const [quota, period] = fs.readFileSync(cpu, "utf8").trim().split(/\\s+/);',
+    '    if (Number(quota) / Number(period) === 2 && fs.readFileSync(memory, "utf8").trim() === "8589934592") { limited = true; break; }',
+    '  }',
+    '  dir = path.dirname(dir);',
     '}',
+    'if (!limited) throw new Error("agent did not inherit CPUQuota=200% and MemoryMax=8G");',
     'const server = net.createServer(c => c.end("loopback"));',
     'const deadline = setTimeout(() => { console.error("loopback timeout"); process.exit(1); }, 10000);',
     'server.on("error", e => { throw e; });',
@@ -255,12 +310,12 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
     '  client.on("data", d => { text += d; });',
     '  client.on("end", () => {',
     '    if (text !== "loopback") throw new Error("loopback response failed");',
-    `    fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify({toolchain: true, privateEnv: true, loopback: true, userScope: ${userBus}}));`,
+    `    fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify({toolchain: true, privateEnv: true, loopback: true, scoped: true}));`,
     '    clearTimeout(deadline); server.close(); console.log("sandbox probe passed");',
     '  });',
     '});', '',
   ].join('\n'));
-  h.ok(['project', 'set', '--sandbox', JSON.stringify({ write: [cargo], user_bus: userBus }),
+  h.ok(['project', 'set', '--sandbox', JSON.stringify({ write: [cargo] }), '--scope', '{"CPUQuota":"200%","MemoryMax":"8G"}',
     '--env', JSON.stringify({ CARGO_HOME: cargo, RUSTUP_HOME: rustup }), '--env_file', file]);
   h.ok(['ladder', 'set', 'medium', '--harness', 'codex', '--profile', process.env.TOWER_CRANE_LIVE_PROFILE || 'sol',
     '--clear', 'model', '--clear', 'effort', '--supervision', '{"retries":0}']);
@@ -272,7 +327,7 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
   const result = await h.runAsync(['spawn', '--task', 'T1', '--wait'], { env: { TMPDIR: privateTmp } });
   assert.equal(result.code, 0, result.stderr);
   assert.equal(fs.existsSync(out), true, result.stdout);
-  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { toolchain: true, privateEnv: true, loopback: true, userScope: userBus });
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { toolchain: true, privateEnv: true, loopback: true, scoped: true });
   assert.equal(fs.existsSync(path.join(cargo, '.package-cache')), true);
   noFileSecrets(h.state);
   assert.ok(!result.stdout.includes(SECRET_KEY) && !result.stderr.includes(SECRET));
