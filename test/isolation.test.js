@@ -155,7 +155,8 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   const seen = u.report();
   assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'user memory stays out');
   assert.match(seen.memory.join('\n'), /^# tower-crane-small/m, 'the role instructions load instead');
-  assert.deepEqual(seen.hooks, [], 'no user, project or local hooks');
+  assert.deepEqual(Object.keys(seen.settings.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
+  assert.ok(!JSON.stringify(seen.hooks).includes('planted'), 'no user, project or local hooks');
   assert.deepEqual(seen.mcp, {}, 'no MCP server');
   assert.deepEqual(seen.rules, [], 'no approved-command rules');
   assert.deepEqual(seen.settings.env, { CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: 'us-east-1' }, 'provider settings only, never a credential');
@@ -178,8 +179,9 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   assert.deepEqual([box.enabled, box.failIfUnavailable, box.allowUnsandboxedCommands, box.network.allowAllUnixSockets], [true, true, false, true]);
   assert.deepEqual(box.filesystem.allowWrite, []);
   assert.deepEqual(box.filesystem.denyWrite, [h.state, wt], 'the state is read-only');
+  assert.ok(box.filesystem.denyRead.includes(path.join(h.state, 'homes')), 'other agent homes are hidden, including future spawns');
   assert.ok(box.filesystem.denyRead.includes(path.join(h.state, 'brokers')), 'no agent reads another agent\'s broker token');
-  assert.deepEqual(box.filesystem.allowRead, [path.join(h.state, 'brokers', started.agent)], 'but it reads its own');
+  assert.deepEqual(box.filesystem.allowRead, [home, path.join(h.state, 'brokers', started.agent)], 'only this dispatch home and its own broker directory are readable');
   for (const p of ['/var/run/docker.sock', '/run/docker.sock', path.join(u.home, '.ssh'), path.join(u.home, '.aws')]) assert.ok(box.filesystem.denyRead.includes(p), p);
   assert.match(fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8'), /^\.claude\/\.cc-writes\/$/m, 'the sandbox marker is never committed');
   assert.equal(fs.readFileSync(path.join(h.state, 'homes', '.gitignore'), 'utf8'), '*\n');
@@ -202,7 +204,10 @@ test('a spawned codex agent loads none of the user memory, instructions, MCP ser
   assert.equal(seen.env, `AWS_BEARER_TOKEN_BEDROCK=${SECRET}-ENV\n`, '.env reaches the agent');
   assert.equal(seen.config.model_provider, 'p', 'the provider is kept');
   assert.deepEqual(seen.config.model_providers, { p: { name: 'P', env_key: 'P_KEY' }, q: { name: 'Q', env_key: 'Q_KEY', wire_api: 'responses' } }, 'providers in any layout, without credentials');
-  for (const k of ['approval_policy', 'notify', 'model_instructions_file']) assert.equal(seen.config[k], undefined, `${k} is the user's, not the role's`);
+  for (const k of ['approval_policy', 'model_instructions_file']) assert.equal(seen.config[k], undefined, `${k} is the user's, not the role's`);
+  assert.ok(seen.config.notify.includes(path.join(ROOT, 'lib', 'hook-bridge.js')));
+  assert.ok(!seen.config.notify.includes('planted-notify'));
+  assert.deepEqual(Object.keys(seen.config.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
   const home = path.join(h.state, 'homes', started.agent);
   for (const f of ['auth.json', '.env']) assert.ok(fs.lstatSync(path.join(home, f)).isSymbolicLink(), `${f} is linked`);
   assert.equal(fs.readFileSync(path.join(home, 'sol.config.toml'), 'utf8'), 'model = "s"\n\n[model_providers.r]\nname = "R"\n', 'the profile without its tokens or instructions');
@@ -244,15 +249,22 @@ test('a codex agent writes only where its agent file says; a worker writes its g
   const own = fs.realpathSync(h.git(['rev-parse', '--path-format=absolute', '--git-dir'], wt));
   for (const [rung, worktree] of [['hard', 'write'], ['review', 'read'], ['small', 'read']]) {
     isolated(h, rung, 'codex');
-    const home = path.join(h.state, 'homes', spawn(h, u, rung).agent);
+    const started = spawn(h, u, rung);
+    const home = path.join(h.state, 'homes', started.agent);
     const { config } = u.report();
     const rules = config.permissions['tower-crane'].filesystem;
     for (const d of [common, own]) assert.equal(rules[d], worktree === 'write' ? 'write' : undefined, `${rung}: ${d}`);
     assert.deepEqual(rules[':workspace_roots'], { '.': worktree }, rung);
     assert.equal(rules[':root'], 'read', rung);
     assert.equal(rules[h.state], 'read', `${rung}: the state is read-only; the broker writes it`);
+    assert.equal(rules[path.join(h.state, 'homes')], 'none', `${rung}: other agent homes are hidden, including future spawns`);
+    assert.equal(rules[home], 'read', `${rung}: its generated home remains readable`);
+    const sessionRoot = path.join(h.state, 'homes', '.codex', started.agent);
+    assert.equal(rules[sessionRoot], 'write', `${rung}: only its persisted sessions are writable`);
+    assert.equal(started.codex_home, sessionRoot);
+    assert.equal(fs.readlinkSync(path.join(h.state, 'homes', started.agent, 'sessions')), path.join(sessionRoot, 'sessions'));
     assert.equal(rules[path.join(h.state, 'brokers')], 'none', `${rung}: no agent reads another agent's broker token`);
-    assert.equal(rules[path.join(h.state, 'brokers', path.basename(home))], 'write', `${rung}: its own broker directory is visible`);
+    assert.equal(rules[path.join(h.state, 'brokers', started.agent)], 'write', `${rung}: its own broker directory is visible`);
     assert.equal(rules[path.join(home, 'home')], 'write', `${rung}: its HOME is writable`);
     // Codex mounts every readable path, then hides each 'none' directory,
     // then mounts the writable paths: a path under a hidden directory is
@@ -262,7 +274,7 @@ test('a codex agent writes only where its agent file says; a worker writes its g
       const hidden = named.filter((k) => rules[k] === 'none');
       return hidden.every((d) => named.some((k) => rules[k] === 'write' && k.startsWith(d + path.sep)));
     };
-    for (const p of [path.join(home, 'bin', 'git'), path.join(home, 'home'), path.join(h.state, 'brokers', path.basename(home), 'broker.json')]) {
+    for (const p of [path.join(home, 'home'), path.join(h.state, 'brokers', started.agent, 'broker.json')]) {
       assert.ok(visible(p), `${rung}: the agent's commands see ${p}`);
     }
     assert.ok(!visible(path.join(h.state, 'brokers', 'worker-T9-1', 'broker.json')), `${rung}: another agent's token is hidden`);
@@ -421,6 +433,10 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     // A test fixture's own state is not the broker's; it runs in the agent.
     [cli('init', '--name', 'fixture', '--goal', 'own state', '--state', fixture, '--agent', 'owner'), 0],
     [[process.execPath, '-e', 'process.stderr.write(require("fs").readFileSync(process.env.TOWER_CRANE_BROKER, "utf8"))'], 0],
+    // Harness hooks write through the broker too, their payload from stdin,
+    // with the agent's own binding and no other.
+    [[process.execPath, '-e', `require("child_process").execFileSync(process.execPath, [${JSON.stringify(BIN)}, "hook", "report", "--binding", require("path").join(process.env.TOWER_CRANE_STATE, "homes", process.env.TOWER_CRANE_AGENT, "hook.json"), "--payload", "-"], { input: JSON.stringify({ report: "hooked" }), stdio: ["pipe", "ignore", "inherit"] })`], 0],
+    [cli('hook', 'report', '--binding', path.join(h.state, 'homes', 'worker-T1-1', 'hook.json'), '--payload', '{"report":"as another"}'), 1],
   ];
   const noted = [];
   for (const [n, harness] of ['claude', 'codex'].entries()) {
@@ -433,7 +449,8 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     assert.deepEqual(ran.map((r) => r.code), [...cases, named].map((c) => c[1]), `${harness}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
     assert.match(ran[1].stderr, /cannot act as owner/);
     assert.match(ran[2].stderr, /works on T1 only, not T2/);
-    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, not task add/);
+    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, hook, not task add/);
+    assert.match(ran[11].stderr, /uses its own hook binding only/);
     assert.match(ran[7].stderr, /without its token/);
     // Codex's sandbox refuses connecting to a Unix socket; claude's has no
     // host loopback.
@@ -455,7 +472,8 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
   assert.deepEqual(h.readState('project.json').tests, tests);
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.deepEqual(events.filter((e) => e.via).map((e) => [e.cmd, e.agent, e.task]),
-    [...noted.flatMap((a) => [['task note', a, 'T1'], ['task note', a, 'T1']]), ['claim', worker, 'T1']], 'only brokered changes, each as its agent');
+    [...noted.flatMap((a) => [['task note', a, 'T1'], ['hook report', a, 'T1'], ['task note', a, 'T1']]), ['claim', worker, 'T1']], 'only brokered changes, each as its agent');
+  assert.deepEqual(events.filter((e) => e.cmd === 'hook report').map((e) => e.detail.report), noted.map(() => 'hooked'), 'the hook payload came through stdin');
 });
 
 test('a brokered check tests still running when its agent exits is killed with its test run, and spawn --wait returns', { skip: NO_STUBS, timeout: 120000 }, async (t) => {
@@ -571,7 +589,7 @@ test('a codex rework resumes in a fresh isolated home and finds its first sessio
   const seen = u.report();
   assert.ok(seen.resumed, 'codex runs exec resume');
   assert.equal(seen.home, path.join(home, 'home'), 'the resume runs in the agent\'s isolated home');
-  assert.deepEqual(seen.sessions, [`rollout-${first.agent}.jsonl`], 'the first session is there');
+  assert.deepEqual(seen.sessions, [`rollout-${first.agent}-stub-thread.jsonl`], 'the first session is there');
   assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'the home was rebuilt');
 });
 
