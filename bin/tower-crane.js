@@ -20,7 +20,7 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
-const { TowerCraneError, usage } = require('../lib/util');
+const { TowerCraneError, usage, refuse } = require('../lib/util');
 const S = require('../lib/state');
 const P = require('../lib/project');
 const T = require('../lib/tasks');
@@ -41,7 +41,7 @@ const SPAWN_SETTINGS = {
 
 const GLOBAL = {
   state: str('DIR', 'state directory (default: TOWER_CRANE_STATE, then .tower-crane/ in the main checkout)'),
-  agent: str('NAME', 'who is acting (default: TOWER_CRANE_AGENT; owner only on an interactive terminal outside a task)'),
+  agent: str('NAME', 'who is acting (default: TOWER_CRANE_AGENT; task processes cannot use owner; fallback needs an interactive terminal outside a task)'),
   json: bool('machine output on stdout'),
   help: bool('show help'),
 };
@@ -78,6 +78,7 @@ const TASK_FIELDS = {
   title: str('T', 'what the task is'),
   acceptance: many('A', 'how to tell it is done; repeat for more lines'),
   kind: str('K', 'code, docs, research, design or ops (default code)'),
+  needs: str('JSON', 'task capabilities as a JSON array: ["browser"]; [] clears'),
   size: str('S', 'S (under an hour), M (a few hours) or L (a day); default M'),
   dep: many('ID', 'a task this one depends on; repeat for more'),
   lock: many('NAME', 'exclusive resource name; repeat for several'),
@@ -113,8 +114,10 @@ const COMMANDS = [
   { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--fallbacks JSON] [--tools JSON] [--mcp JSON] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
   { section: 'Plan', name: 'ladder harness', pos: ['HARNESS'], usage: 'HARNESS', summary: 'set the default harness every rung without its own runs on', run: P.ladderHarness },
   { section: 'Plan', name: 'ladder save-user', summary: "write this project's ladder to the user file, the default for new projects", run: P.ladderSaveUser },
-  { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
-  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--lock NAME]... [--environment LABEL] [--size S] [--kind K] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--status cancelled]', summary: "change a task; acceptance or dependency changes bump its revision (--dep '' clears dependencies); an accepted task's acceptance, dependencies, kind and local CI override wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), lock: many('NAME', "replaces all locks; '' clears them; changes require no live lease or reservation"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request is operational (orchestrator or owner)"), 'ci-local': str('JSON', 'operational (orchestrator or owner): local CI override with command or args and optional timeout; null restores kind or default policy'), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
+  { section: 'Plan', name: 'browser-kit show', summary: 'show the user browser kit MCP server list (default playwright)', run: run('../lib/browser-kit', 'show') },
+  { section: 'Plan', name: 'browser-kit set', usage: '--servers JSON', summary: 'owner-required: save the browser kit server list in the user configuration', flags: { servers: str('JSON', 'MCP server names; [] disables the kit') }, required: ['servers'], run: run('../lib/browser-kit', 'set') },
+  { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], run: T.taskAdd },
+  { section: 'Plan', name: 'task update', pos: ['ID'], usage: 'ID [--title T] [--acceptance A]... [--dep ID]... [--lock NAME]... [--environment LABEL] [--size S] [--kind K] [--needs JSON] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--status cancelled]', summary: "change a task; acceptance, dependency or capability changes bump its revision (--dep '' clears dependencies); an accepted task's material settings wait for rework", flags: { ...TASK_FIELDS, acceptance: many('A', 'replaces all acceptance lines'), dep: many('ID', "replaces all dependencies; '' clears them"), lock: many('NAME', "replaces all locks; '' clears them; changes require no live lease or reservation"), 'needs-owner': str('REASON', "what the owner has to do; '' clears it; clearing or replacing an existing request is operational (orchestrator or owner)"), 'ci-local': str('JSON', 'operational (orchestrator or owner): local CI override with command or args and optional timeout; null restores kind or default policy'), status: str('cancelled', 'cancel the task') }, run: T.taskUpdate },
   { section: 'Plan', name: 'task note', pos: ['ID', 'TEXT...'], usage: 'ID TEXT', summary: 'append a note', run: T.taskNote },
   { section: 'Plan', name: 'task show', pos: ['ID'], usage: 'ID', summary: 'show one task with its gates, evidence and notes', run: T.taskShow },
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, run: T.taskList },
@@ -355,8 +358,21 @@ async function main(argv) {
     for (const r of cmd.required || []) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: tower-crane ${cmd.name} ${cmd.usage}`);
     }
+    let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
+    // Terminal fallback identifies ordinary actions; owner powers need a named identity.
+    const agentExplicit = agent !== undefined;
+    if (agent === undefined) {
+      if (process.stdin.isTTY && process.stdout.isTTY && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
+      else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
+    }
+    if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
+    const identity = agent.trim();
+    if (identity === 'owner' && process.env.TOWER_CRANE_TASK !== undefined) {
+      throw refuse('owner acts from an interactive terminal; task processes cannot use owner identity');
+    }
     const locate = () => S.locateStateDir(globals.state, process.env, process.cwd());
-    // A sandboxed agent cannot write the state; its spawn's broker does.
+    // Check the resolved identity before forwarding; the broker separately
+    // verifies requests against the identity it spawned.
     if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {
       const input = argv.includes('-') ? require('node:fs').readFileSync(0, 'utf8') : undefined;
       const res = await require('../lib/broker').forward(process.env.TOWER_CRANE_BROKER, argv, locate(), input);
@@ -366,18 +382,10 @@ async function main(argv) {
         return res.code;
       }
     }
-    let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
-    // Terminal fallback identifies ordinary actions; owner powers need a named identity.
-    const agentExplicit = agent !== undefined;
-    if (agent === undefined) {
-      if (process.stdin.isTTY && process.stdout.isTTY && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
-      else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
-    }
-    if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     const ctx = {
       cwd: process.cwd(),
       env: process.env,
-      agent: agent.trim(),
+      agent: identity,
       agentExplicit,
       json: !!globals.json,
       flags: own,

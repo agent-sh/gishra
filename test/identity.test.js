@@ -108,6 +108,17 @@ test('agents cannot clear or replace an existing owner request through task upda
   assert.equal(h.readState('tasks.json').tasks[1].needs_owner, 'approve funding');
 });
 
+test('task add trims needs_owner so an agent can restate it', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Owner request', '--acceptance', 'approved', '--needs-owner', ' approve access ']);
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
+  h.ok(['task', 'update', 'T1', '--needs-owner', ' approve access ', '--agent', 'reviewer']);
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
+  h.ok(['task', 'add', '--title', 'Blank owner request', '--acceptance', 'approved', '--needs-owner', ' \t ']);
+  assert.equal(h.readState('tasks.json').tasks[1].needs_owner, null);
+});
+
 test('terminal task update needs explicit owner to clear or replace owner work', { skip: !PTY_AVAILABLE }, (t) => {
   for (const identity of ['flag', 'env']) {
     const h = setup(t);
@@ -202,14 +213,28 @@ test('terminal fallback cannot set tests policy on init or project set', { skip:
   }
 });
 
-test('--agent owner recovers missing identity and overrides the environment', (t) => {
+test('--agent owner is refused when TOWER_CRANE_TASK is set', (t) => {
   const h = setup(t);
-  assert.equal(h.run(['owner-done', 'T1'], { env: noAgent }).code, 2);
-  const task = h.json(['owner-done', 'T1', '--agent', 'owner'], { env: { ...noAgent, TOWER_CRANE_TASK: 'T1' } });
-  assert.equal(task.needs_owner, null);
-  assert.equal(task.notes[0].agent, 'owner');
-  h.ok(['task', 'note', 'T1', 'explicit owner', '--agent', 'owner'], { env: { TOWER_CRANE_AGENT: 'reviewer' } });
-  assert.equal(h.readState('tasks.json').tasks[0].notes[1].agent, 'owner');
+  const before = events(h);
+  const r = h.run(['owner-done', 'T1', '--agent', 'owner'], {
+    env: { TOWER_CRANE_AGENT: 'reviewer', TOWER_CRANE_TASK: 'T1' },
+  });
+  assert.equal(r.code, 1, r.stderr);
+  assert.match(r.stderr, /owner acts from an interactive terminal/);
+  assert.equal(events(h), before);
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
+});
+
+test('TOWER_CRANE_AGENT=owner is refused when TOWER_CRANE_TASK is set', (t) => {
+  const h = setup(t);
+  const before = events(h);
+  const r = h.run(['owner-done', 'T1'], {
+    env: { TOWER_CRANE_AGENT: 'owner', TOWER_CRANE_TASK: 'T1' },
+  });
+  assert.equal(r.code, 1, r.stderr);
+  assert.match(r.stderr, /owner acts from an interactive terminal/);
+  assert.equal(events(h), before);
+  assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
 });
 
 test('TOWER_CRANE_AGENT supplies the recorded identity when --agent is absent', (t) => {
