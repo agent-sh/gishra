@@ -417,7 +417,7 @@ A decision blocks only the tasks it lists. Everything else keeps running. `statu
 
 Answer rules are `owner`, `owner-named-agent` and `owner-technical-delegation`. The `answer` event records the actor in `agent` and `detail.answered_by`, and the rule in `detail.answer_rule`. Refused answers write no event. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
 
-The orchestrator's technical rule takes precedence over `answerers`, including for a generated identity with a recorded orchestrator role. Listing that identity cannot authorize a nontechnical answer or one without project delegation. Sandboxed workers can answer through their broker after owner delegation; successful brokered answer events retain the worker identity and carry `via: broker`.
+The orchestrator's technical rule takes precedence over `answerers`, including for a generated identity with a recorded orchestrator role. Listing that identity cannot authorize a nontechnical answer or one without project delegation. Sandboxed agents can answer through their broker after owner delegation; successful brokered answer events retain the bound identity and carry `via: broker`.
 
 ## events.jsonl
 

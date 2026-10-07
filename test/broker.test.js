@@ -57,14 +57,14 @@ test('the broker rejects an identity that differs from its spawn', () => {
   }
 });
 
-test('a sandboxed worker answers through the CLI and broker only after owner delegation', async (t) => {
+for (const role of ['worker', 'reviewer', 'small']) test(`a sandboxed ${role} answers through the CLI and broker only after owner delegation`, async (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Choose a store', '--acceptance', 'answer is authorized']);
   h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--blocks', 'T1']);
   const job = {
-    state: h.state, task: 'T1', agent: 'worker-T1-1', role: 'worker', harness: 'codex',
-    cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T1-1', B.FILE),
+    state: h.state, task: 'T1', agent: `${role}-T1-1`, role, harness: 'codex',
+    cwd: h.repo, broker: path.join(h.base, 'brokers', `${role}-T1-1`, B.FILE),
   };
   const broker = await B.start(job);
   t.after(() => broker.close());

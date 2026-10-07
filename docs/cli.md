@@ -166,7 +166,7 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 Technical delegation recognizes the literal `orchestrator` identity and generated agents whose latest `spawn` event records `role: orchestrator`. A name starting with `orchestrator-` alone grants no permission. The owner answers directly with `answer DID --choice C --agent owner` or through the local board; an agent recording a chat answer uses its own identity after the owner records delegation.
 
-An orchestrator still requires both technical settings when listed in `answerers`; naming it cannot grant the general agent rule. A sandboxed worker sends `answer` through its state broker under the bound worker identity, and the same decision authorization check permits or refuses it.
+An orchestrator still requires both technical settings when listed in `answerers`; naming it cannot grant the general agent rule. A sandboxed agent sends `answer` through its state broker under the bound identity, and the same decision authorization check permits or refuses it.
 
 ## Event wakeups
 
