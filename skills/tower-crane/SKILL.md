@@ -8,15 +8,17 @@ argument-hint: "<issue URL | #N | goal text | plan.json> | status | decisions"
 
 Arguments: `$ARGUMENTS`. If `tower-crane` is not on PATH, say how to install it (`npm i -g @agentsys/tower-crane`) and stop.
 
-Use `TOWER_CRANE_AGENT` or `orchestrator` as your identity; pass `--agent <name>` on every tower-crane call unless a step names another actor.
+Use `TOWER_CRANE_AGENT` or `orchestrator` as your identity; pass `--agent <name>` on every tower-crane call. Commands below with `--agent owner` are for the owner to run.
 
 - `status`: run `tower-crane status` and `tower-crane decisions --open`, show them and name `sketch.html` in the state directory, then stop.
-- `decisions`: run `tower-crane decisions --open`, show options and recommendations, record any owner answer with `tower-crane answer <id> --choice "<option>"`, then stop.
+- `decisions`: run `tower-crane decisions --open`, show options and recommendations, and follow the owner-answer procedure below for any answer, then stop.
 - Otherwise, follow the orchestrator procedure below.
 
 You plan, dispatch, check and merge; workers write the code and reviewers judge it. Keep your context to the plan and briefs.
 
 All state goes through the `tower-crane` CLI (`tower-crane --help`). Never edit `.tower-crane/` files by hand. The standards to follow are in `standards/default.md` of this plugin unless `project.json` names another profile; read it once at the start.
+
+For an owner answer, have the owner run `tower-crane answer <id> --choice "<option>" --agent owner` or answer through the local board. To record a chat answer under your own identity, first have the owner run `tower-crane decision delegate <id> --answerers '["<name>"]' --agent owner` with your actual agent name. For technical decisions, the owner may instead enable `tower-crane project set --decision-delegation '{"orchestrator_technical":true}' --agent owner` and mark each decision with `tower-crane decision delegate <id> --technical true --agent owner`. After verifying the recorded delegation, run `tower-crane answer <id> --choice "<option>" --agent <name>` under your own identity.
 
 ## 1. Intake
 
@@ -50,7 +52,7 @@ Act on events until every task is accepted or cancelled, or the only open work i
 - **Merge.** With review ok, `tower-crane accept ID` must pass, then `tower-crane merge ID` for a PR. CI must be green at the submitted head for every PR, regardless of kind. If CI evidence needs refreshing, run `tower-crane check ci ID` and use the gate runner above while it is unfinished. Fix any refusal's cause.
 - **Rework.** Review or CI findings go back with `tower-crane rework ID --reason "<findings>"` and the brief updated with what the next attempt must change. When the same area fails review twice, stop patching it: send it back with a simpler design, removing the mechanism if the task can live without it. Each patch on a fragile design opens the next finding.
 - **Carry results forward.** After an accept, update the briefs of tasks that depend on it with what they now need to know (an interface, a decision, a path). Keep them short.
-- **Decisions and messages.** Handle `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done` and `released` events when the wait completes. Read the affected task or decision once and update its brief when needed. Other changes also wake you; use their command and task to update the plan once. When something needs the owner, `tower-crane ask --question ... --option ... --recommend ... --why ... --blocks ID` and keep the rest moving. Record an answer the owner gives in chat with `tower-crane answer`.
+- **Decisions and messages.** Handle `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done` and `released` events when the wait completes. Read the affected task or decision once and update its brief when needed. Other changes also wake you; use their command and task to update the plan once. When something needs the owner, `tower-crane ask --question ... --option ... --recommend ... --why ... --blocks ID` and keep the rest moving. Follow the owner-answer procedure above before recording an answer the owner gives in chat.
 - **Native usage.** On each native worker or reviewer completion, record its reported usage once: `tower-crane spend ID --tokens N --input I --cached C --output O --rung R --harness H --model M --agent <native-name>`. Omit unavailable components; input includes cached tokens. Pass the rung, harness and model used for that dispatch even if the ladder changed. Native Agent-tool usage cannot be recovered from a spawned CLI log. If the tool gives no counters, record that limitation with `tower-crane task note`. Spawned CLI agents are counted automatically on exit; do not add their tokens again.
 - **Spend.** Read `tower-crane status` when an event changes the plan. A task that runs past twice its size gets split or re-planned. Record minutes with `tower-crane spend`. Status shows spawns without usage; retry `tower-crane spend ID --from-spawn <spawn-name>` when captured telemetry is available.
 - **Deadlines.** `wait --timeout` exits 2 with `{"type":"timeout","offset":N}`. Save that cursor before handling the deadline. Choose the deadline from a real task, lease or owner deadline. A timeout is a deadline to handle, not a reason to repeatedly query status. Omit `--timeout` when there is no deadline. The CLI owns filesystem watching and process detection; the agent waits for command completion.

@@ -125,6 +125,8 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 `decision delegate DID --answerers '["worker-1"]'` replaces the decision's named answerers; `[]` clears them. `--technical true` marks it technical and `false` removes that mark. Both settings require explicit owner identity. `project set --decision-delegation '{"orchestrator_technical":true}' --agent owner` enables orchestrator answers for decisions the owner marked technical; it does not allow the orchestrator to answer other decisions. `null` clears the project rule. The answer event records the actor and its rule: `owner`, `owner-named-agent` or `owner-technical-delegation`.
 
+Technical delegation recognizes the literal `orchestrator` identity and generated agents whose latest `spawn` event records `role: orchestrator`. A name starting with `orchestrator-` alone grants no permission. The owner answers directly with `answer DID --choice C --agent owner` or through the local board; an agent recording a chat answer uses its own identity after the owner records delegation.
+
 ## Event wakeups
 
 `tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.

@@ -85,3 +85,50 @@ test('the owner can always answer explicitly, and technical classification alone
   const decision = h.readState('decisions.json').decisions[0];
   assert.deepEqual([decision.answered_by, decision.answer_rule], ['owner', 'owner']);
 });
+
+test('technical delegation recognizes generated orchestrators by their recorded spawn role', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Answer a technical decision', '--acceptance', 'answer is authorized']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
+  const spawned = {};
+  for (const rung of ['easy', 'orchestrator']) {
+    h.ok(['ladder', 'set', rung, '--harness', 'command',
+      '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)']),
+      ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
+    spawned[rung] = h.json(['spawn', '--task', 'T1', '--role', rung, '--wait']).agent;
+  }
+  assert.match(spawned.orchestrator, /^orchestrator-T1-\d+$/);
+  assert.equal(events(h).findLast((event) => event.cmd === 'spawn'
+    && event.detail.agent === spawned.orchestrator).detail.role, 'orchestrator');
+  h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres']);
+  h.ok(['decision', 'delegate', 'D1', '--technical', 'true', '--agent', 'owner']);
+
+  const noPolicy = h.run(['answer', 'D1', '--choice', 'redis', '--agent', spawned.orchestrator]);
+  assert.equal(noPolicy.code, 1, noPolicy.stderr);
+  h.ok(['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}', '--agent', 'owner']);
+  h.ok(['decision', 'delegate', 'D1', '--technical', 'false', '--agent', 'owner']);
+  const unmarked = h.run(['answer', 'D1', '--choice', 'redis', '--agent', spawned.orchestrator]);
+  assert.equal(unmarked.code, 1, unmarked.stderr);
+
+  h.ok(['decision', 'delegate', 'D1', '--technical', 'true', '--agent', 'owner']);
+  const before = events(h);
+  for (const agent of [spawned.easy, 'orchestrator-T1-999']) {
+    const denied = h.run(['answer', 'D1', '--choice', 'redis', '--agent', agent]);
+    assert.equal(denied.code, 1, denied.stderr);
+    assert.match(denied.stderr, /owner/);
+    assert.match(denied.stderr, /orchestrator under technical delegation/);
+  }
+  assert.deepEqual(events(h), before, 'refused answers write no events');
+
+  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', spawned.orchestrator]);
+  const decision = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([decision.answered_by, decision.answer_rule], [
+    spawned.orchestrator, 'owner-technical-delegation',
+  ]);
+  const answerEvent = events(h).findLast((event) => event.cmd === 'answer');
+  assert.deepEqual(
+    [answerEvent.agent, answerEvent.detail.answered_by, answerEvent.detail.answer_rule],
+    [spawned.orchestrator, spawned.orchestrator, 'owner-technical-delegation'],
+  );
+});
