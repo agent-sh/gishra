@@ -35,7 +35,8 @@ const [bin, out, prior, prompt, format, enabled, assigned] = process.argv.slice(
 const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { stdio: 'pipe' });
 const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
 fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.TOWER_CRANE_AGENT, claim: task.claim }));
-cli('claim', 'T1');
+// The launcher restores resumed claims after its startup receipt.
+if (!prior && (!task.claim || task.claim.agent === process.env.TOWER_CRANE_AGENT)) cli('claim', 'T1');
 if (enabled === 'true') {
   const record = format === 'codex'
     ? { type: 'thread.started', thread_id: prior || 'worker-session-1' }
@@ -357,6 +358,35 @@ test('a missing isolated codex rollout falls back to a fresh worker and records 
   assert.match(input.prompt, /Add the worktree guard/);
   assert.match(input.prompt, /Missing worktree validation/);
   assert.equal(first.agent, 'worker-T1-1');
+});
+
+test('a pre-launch fallback failure restores the old claim and permits retry', (t) => {
+  const { h, script, seen } = setup(t, 'codex');
+  nativeHarness(h, script, seen, 'codex');
+  const first = h.json(['spawn', '--task', 'T1', '--wait']);
+  sendBack(h);
+  h.ok(['claim', 'T1', '--agent', first.agent]);
+  const before = h.json(['task', 'show', 'T1']).claim;
+  fs.unlinkSync(path.join(h.state, 'homes', '.codex', 'sessions', 'rollout-test-worker-session-1.jsonl'));
+
+  const occupiedLog = path.join(h.state, 'logs', 'T1-worker-T1-2.log');
+  fs.writeFileSync(occupiedLog, 'preserve this log\n');
+  const failed = h.run(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(failed.code, 1);
+  assert.match(failed.stderr, /EEXIST: log already exists/);
+  assert.deepEqual(h.json(['task', 'show', 'T1']).claim, before);
+  const afterFailure = events(h);
+  const rollback = afterFailure.findLast((e) => e.cmd === 'claim' && e.task === 'T1' && e.detail.rollback);
+  assert.deepEqual([rollback.detail.holder, rollback.detail.restored_from], [first.agent, 'worker-T1-2']);
+  assert.ok(!afterFailure.some((e) => e.cmd === 'spawn' && e.task === 'T1' && e.detail.agent === 'worker-T1-2'));
+  assert.equal(fs.readFileSync(occupiedLog, 'utf8'), 'preserve this log\n');
+
+  fs.unlinkSync(occupiedLog);
+  const retry = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(retry.agent, 'worker-T1-2');
+  assert.equal(retry.resumed, false);
+  assert.equal(h.json(['task', 'show', 'T1']).claim.agent, retry.agent);
+  assert.equal(JSON.parse(fs.readFileSync(seen, 'utf8')).claim.agent, retry.agent);
 });
 
 test('a still-running worker cannot be resumed', async (t) => {
