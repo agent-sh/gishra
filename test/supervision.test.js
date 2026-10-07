@@ -656,66 +656,47 @@ test('foreground output is durable while the dispatch CLI is blocked rendering',
   assert.equal(h.readAttempts().length, 2);
 });
 
-test('foreground exit waits until paused stdout has been captured in the log', async (t) => {
-  const h = setup(t);
-  const exitFile = path.join(h.base, 'foreground-exited');
-  const readyFile = path.join(h.base, 'foreground-paused');
-  const continueFile = path.join(h.base, 'continue-foreground');
-  const resumeFile = path.join(h.base, 'resume-foreground');
-  const captureFile = path.join(h.base, 'foreground-captured');
+test('foreground exit waits until the retained stdout pipe has been captured', async (t) => {
+  const h = setup(t, { failures: 0 });
+  const writerReady = path.join(h.base, 'foreground-writer-ready');
+  const writerRelease = path.join(h.base, 'foreground-writer-release');
+  const writerPidFile = path.join(h.base, 'foreground-writer-pid');
   const hook = path.join(__dirname, 'fixtures', 'supervision-followups.js').replace(/\\/g, '/');
-  const script = `
-const cp = require('node:child_process');
-const fs = require('node:fs');
-cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1', '--lease', '1']);
-const ready = process.env.TOWER_CRANE_TEST_CAPTURE_READY;
-const deadline = Date.now() + 10000;
-while (!fs.existsSync(ready)) {
-  if (Date.now() >= deadline) process.exit(92);
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-}
-fs.writeSync(1, JSON.stringify({ type: 'capture-marker', value: 'final foreground output' }) + '\\n');
-process.exit(1);
-`;
-  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN])]);
+  const fixture = path.join(__dirname, 'fixtures', 'foreground-held-output.js');
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([
+    process.execPath, fixture, BIN, writerReady, writerRelease, writerPidFile,
+  ])]);
   const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
     env: {
       NODE_OPTIONS: `--require "${hook}"`,
-      TOWER_CRANE_TEST_CAPTURE_EXIT: exitFile,
-      TOWER_CRANE_TEST_CAPTURE_READY: readyFile,
-      TOWER_CRANE_TEST_CAPTURE_CONTINUE: continueFile,
-      TOWER_CRANE_TEST_CAPTURE_RESUME: resumeFile,
-      TOWER_CRANE_TEST_CAPTURE_CAPTURED: captureFile,
     },
   });
   let result;
+  let writerPid;
+  let spawned;
   try {
-    await until(() => fs.existsSync(readyFile), 'supervisor did not pause the foreground stream');
-    const ready = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
-    assert.equal(ready.flowing, false);
-    await until(() => fs.existsSync(exitFile), 'foreground harness did not exit while stdout was paused');
-    const stream = JSON.parse(fs.readFileSync(exitFile, 'utf8'));
-    assert.equal(stream.flowing, false, 'the capture stream stayed paused');
-    assert.ok(stream.buffered > 0, 'uncaptured bytes remain buffered at process exit');
-    const spawnEvent = log(h).find((e) => e.cmd === 'spawn');
-    assert.doesNotMatch(fs.readFileSync(spawnEvent.detail.log, 'utf8'), /final foreground output/,
-      'the final output has not reached the log when the child exit is observed');
+    await until(() => log(h).some((e) => e.cmd === 'spawn'), 'spawn was not recorded');
+    spawned = log(h).find((e) => e.cmd === 'spawn').detail;
+    await until(() => fs.existsSync(writerPidFile) && fs.existsSync(writerReady),
+      'detached writer did not open the foreground stdout pipe');
+    writerPid = Number(fs.readFileSync(writerPidFile, 'utf8'));
+    assert.ok(Number.isInteger(writerPid));
+    await until(() => !detachedAlive({ pid: spawned.pid }), 'foreground harness did not exit');
+    await until(() => detachedAlive({ pid: writerPid }), 'detached writer did not keep the stdout pipe open');
+    await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(log(h).some((e) => e.cmd === 'spawn exit'), false);
-    fs.writeFileSync(continueFile, 'continue');
+    assert.doesNotMatch(fs.readFileSync(spawned.log, 'utf8'), /final foreground output/,
+      'the retained pipe has not delivered its final output');
   } finally {
-    fs.writeFileSync(continueFile, 'continue');
-    fs.writeFileSync(resumeFile, 'resume');
+    fs.writeFileSync(writerRelease, 'release');
     result = await completed;
   }
-  assert.equal(result.code, 1, result.stderr);
+  assert.equal(result.code, 2, result.stderr);
   const events = log(h);
-  const spawned = events.find((e) => e.cmd === 'spawn').detail;
   const exited = events.find((e) => e.cmd === 'spawn exit');
-  const captured = JSON.parse(fs.readFileSync(captureFile, 'utf8'));
+  const logText = fs.readFileSync(spawned.log, 'utf8');
+  assert.match(logText, /final foreground output/);
   assert.ok(exited);
-  assert.ok(captured.at >= JSON.parse(fs.readFileSync(exitFile, 'utf8')).at);
-  assert.ok(Date.parse(exited.at) >= captured.at, 'exit classification follows the final log write');
-  assert.match(fs.readFileSync(spawned.log, 'utf8'), /final foreground output/);
 });
 
 test('a 45 KiB brief launches through the monitor job file, not monitor argv', (t) => {
