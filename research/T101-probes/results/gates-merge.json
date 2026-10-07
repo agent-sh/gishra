@@ -2,7 +2,7 @@
   {
     "id": "G1",
     "surface": "gates",
-    "command": "review ok at 50b732a by r1, then the worker resubmits T1 at b188da6; task show T1",
+    "command": "review ok at 50b732a by r1, then the worker resubmits T1 at 48a5bd4; task show T1",
     "expected": "review missing at the new head",
     "observed": "gates: review missing",
     "verdict": "held"

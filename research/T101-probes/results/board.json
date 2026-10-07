@@ -52,7 +52,7 @@
     "surface": "board",
     "command": "same local process POSTs /api/ladder setting the medium rung to harness command [\"/bin/true\"] (an owner-required ladder.command change)",
     "expected": "refused for anything but the owner's page",
-    "observed": "200 {\"ok\":true,\"harness\":\"codex\",\"harness_from\":\"project\",\"user_file\":\"/home/avifenesh/.cache/t101-review/tmp/tower-crane-Oi00Jq/user-config/config.json\",\"user_file_exists\":false,\"ladder\":{\"orchestrator\":",
+    "observed": "200 {\"ok\":true,\"harness\":\"codex\",\"harness_from\":\"project\",\"user_file\":\"/home/avifenesh/.cache/t101-review/tmp/tower-crane-aXF4Md/user-config/config.json\",\"user_file_exists\":false,\"ladder\":{\"orchestrator\":",
     "verdict": "CONFIRMED"
   }
 ]
