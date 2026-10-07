@@ -162,6 +162,8 @@ test('sources gate follows the research role when kind changes without moving th
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
   h.ok(['task', 'update', 'T1', '--tier', 'research']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find(g => g.type === 'sources').ok, false);
+  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
 });
 
 for (const [name, mutate, pattern] of [

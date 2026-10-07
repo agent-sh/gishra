@@ -255,7 +255,7 @@ The CLI refuses manual software verdicts, and software receipts require matching
 
 `project.research` is optional and accepts only `min_sources`, a positive integer; it defaults to 10. The explicit owner sets it with `project set --research-min-sources N` (also accepted by `init`). Changing the minimum invalidates sources evidence recorded under a different minimum.
 
-Tasks on the `research` tier require sources evidence. Kind `research` selects this tier by default. Changing only the kind preserves the existing tier and its role; an ordinary worker does not gain a sources requirement or web permissions from a kind label change. Code tasks on the research tier require sources in addition to their code gates.
+Tasks of kind `research` on the `research` tier require sources evidence. Kind `research` selects this tier by default. Changing only the kind preserves the existing tier and its role; an ordinary worker does not gain a sources requirement or web permissions from a kind label change. Code tasks may use the research tier for model selection and retain their code gates.
 
 A research deliverable is committed at `research/<task id>.json`:
 
@@ -293,15 +293,15 @@ Any agent recovers a verified exited task with `release ID --reason R`. The dete
 `tower-crane accept` refuses unless the task's current revision has, at the submitted `sha`:
 
 - `code` tasks: `tests` ok, `clean` ok, and `review` ok from an agent other than the one that submitted
-- any task on the `research` tier: `sources` ok as well as its kind gates
-- other kinds: `review` ok from another agent
+- `research` tasks on the `research` tier: `sources` ok and `review` ok from another agent
+- other tasks: `review` ok from another agent
 - any task with a PR, whatever its kind: `ci` ok as well
 
 Tests modes change how `check tests` produces evidence, not which gates acceptance requires. A code task in mode `none` still needs audited tests evidence for its submitted sha, plus cleanup and independent review.
 
 Successful tests evidence counts only when its audited `tests_mode` matches the mode currently resolved for the project and task kind. A mode change, a missing mode on older evidence or a malformed current policy needs a new tests check. The audit event must contain the same mode as the evidence; changing the mode in tasks.json alone cannot retarget evidence. Owner waivers still apply. Task views, board gate pips and evidence ledger (including accepted tasks), acceptance and merge use this same rule.
 
-Before acceptance, `accept ID --cmd "<scoped tests>"` runs unattempted software gates in order: tests and clean for code, sources for the research tier, then CI for every task with a PR. Pass `--cmd` when tests are missing in prove or run-only mode; without it the missing tests gate blocks. None mode records its audited tests result without a command. Expensive prove also accepts `--proof-cmd` with the `{tests}` placeholder. Eligible successful receipts are reused. Failed, stale local-CI or unaudited attempted receipts require an explicit `check` rerun. Results are recorded even if a later gate refuses acceptance. A head, revision or status change during a gate refuses the attempt. Review dispatch is guarded again under the state lock.
+Before acceptance, `accept ID --cmd "<scoped tests>"` runs unattempted software gates in order: tests and clean for code, sources for research kind on the research tier, then CI for every task with a PR. Pass `--cmd` when tests are missing in prove or run-only mode; without it the missing tests gate blocks. None mode records its audited tests result without a command. Expensive prove also accepts `--proof-cmd` with the `{tests}` placeholder. Eligible successful receipts are reused. Failed, stale local-CI or unaudited attempted receipts require an explicit `check` rerun. Results are recorded even if a later gate refuses acceptance. A head, revision or status change during a gate refuses the attempt. Review dispatch is guarded again under the state lock.
 
 When software gates pass and no review has been attempted at the current head and revision, `accept` dispatches a reviewer and exits 0 with `review_pending: true` and its agent name in JSON; the task stays submitted. A repeated accept reuses a live review dispatch. Call accept again after review evidence arrives. Failed reviews require rework or an explicit stronger review dispatch. `spawn --role review` also refuses until all software gates pass; `--dry-run` checks them for a submitted task. For an unsubmitted task a dry run previews the fallback command only, and cannot dispatch a review.
 
