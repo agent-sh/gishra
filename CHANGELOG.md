@@ -1,5 +1,7 @@
 # Changelog
 
+- Design tasks and tasks declaring `needs: ["browser"]` receive the user's named browser MCP kit on every Claude/Codex rung, with approved tools and no copied server env or headers. `browser-kit show/set` manages the user server list, defaulting to playwright.
+- Board browser tests run Chrome under the worker's outer sandbox with temp-backed shared memory and a private temp profile, and report startup errors instead of discarding Chrome's stderr. An opt-in real-worker probe checks MCP navigation, a PNG screenshot and a board browser test on both harnesses.
 - Worker spawns reserve a worker slot until the worker claims, its attempt ends or one lease passes; dispatch, claim and expired-lease renewal count leases and reservations from the event log alike, so a full limit refuses dispatch before launch.
 - Rungs configure ordered provider fallback routes after bounded outage retries or a structured harness policy refusal. Route switches start fresh sessions, wake the orchestrator, and keep usage attributed to the route that ran.
 - Rework waits for a live fallback worker to exit before another dispatch. Fresh same-route retries retain separate usage receipts so every invocation contributes to spend.

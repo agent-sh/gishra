@@ -56,3 +56,23 @@ test('accepted tasks require rework before their browser capability can change',
   assert.equal(unchanged.status, 'accepted');
   assert.deepEqual(unchanged.needs, []);
 });
+
+test('a brokered worker can read the browser kit but cannot change the user setting', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const B = require('../lib/broker');
+  const binding = path.join(h.base, B.FILE);
+  const broker = await B.start({ state: h.state, task: 'T1', agent: 'worker-T1-1', role: 'worker', cwd: h.repo, broker: binding });
+  try {
+    const env = { TOWER_CRANE_BROKER: binding, TOWER_CRANE_AGENT: 'worker-T1-1' };
+    const shown = await h.runAsync(['browser-kit', 'show', '--json'], { env });
+    assert.equal(shown.code, 0, shown.stderr);
+    assert.deepEqual(JSON.parse(shown.stdout).servers, ['playwright']);
+    const changed = await h.runAsync(['browser-kit', 'set', '--servers', '["other"]', '--agent', 'owner'], { env });
+    assert.notEqual(changed.code, 0);
+    assert.match(changed.stderr, /not browser-kit set/);
+    assert.equal(fs.existsSync(h.userConfig), false);
+  } finally {
+    await broker.close();
+  }
+});
