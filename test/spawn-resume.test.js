@@ -244,7 +244,13 @@ test('resume preserves an existing claim and refuses another claimant', (t) => {
     const result = h.run(['spawn', '--task', 'T1', '--wait']);
     assert.equal(result.code, agent === 'worker-T1-1' ? 0 : 1, result.stderr);
     if (result.code) assert.match(result.stderr, /cannot resume .* while claimed by replacement-worker/);
-    assert.deepEqual(h.json(['task', 'show', 'T1']).claim, before);
+    const after = h.json(['task', 'show', 'T1']).claim;
+    if (agent === 'worker-T1-1') {
+      assert.deepEqual([after.agent, after.since, after.from], [before.agent, before.since, before.from]);
+      assert.ok(Date.parse(after.until) > Date.parse(before.until), 'the resumed worker\'s startup claim renews its lease');
+    } else {
+      assert.deepEqual(after, before);
+    }
   }
 });
 
