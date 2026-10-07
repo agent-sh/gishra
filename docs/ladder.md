@@ -110,10 +110,10 @@ Measured on 2026-10-08 with `test/opencode.test.js` and its stub harness, three 
 
 | Startup context | Median bytes | Min | Max | Approximate tokens (bytes / 4) |
 |---|---:|---:|---:|---:|
-| Inherited config | 27,327 | 27,289 | 27,327 | 6,832 |
+| Inherited config | 27,329 | 27,291 | 27,329 | 6,833 |
 | Isolated config | 7,725 | 7,725 | 7,725 | 1,932 |
 
-The stub counts the task prompt, generated role body, auto-loaded instruction text, visible skill metadata and canned MCP tool descriptions. The fixture plants an 8 KB memory, user/project/directory MCP definitions with 4 KB descriptions, a user plugin, a skill and an approved-command rules file. The median falls by 19,602 bytes (71.7%). House rules remain path-based read requests and are read later; their contents are excluded from startup unless automatically loaded. Default harness system text and built-in tool schemas are excluded in both runs. These are reproducible fixture bytes, not billed tokens or a live-provider measurement. Run `TOWER_CRANE_TEST_TMP=~/.cache/tower-crane-tests node --test test/opencode.test.js` to reproduce; stub launches are skipped on Windows, while dry-run permission and argument checks run there.
+The stub counts the task prompt, generated role body, auto-loaded instruction text, visible skill metadata and canned MCP tool descriptions. The fixture plants an 8 KB memory, user/project/directory MCP definitions with 4 KB descriptions, a user plugin, a skill and an approved-command rules file. The median falls by 19,604 bytes (71.7%). House rules remain path-based read requests and are read later; their contents are excluded from startup unless automatically loaded. Default harness system text and built-in tool schemas are excluded in both runs. These are reproducible fixture bytes, not billed tokens or a live-provider measurement. Run `TOWER_CRANE_TEST_TMP=~/.cache/tower-crane-tests node --test test/opencode.test.js` to reproduce; stub launches are skipped on Windows, while dry-run permission and argument checks run there.
 
 ## State broker
 
