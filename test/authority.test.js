@@ -54,6 +54,68 @@ const OPERATIONAL = [
   ['owner-done', 'T1'],
 ];
 
+test('research web MCP changes use owner-required authority and deduplicate escalation', (t) => {
+  const h = setup(t);
+  const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
+  const args = ['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server)];
+  const before = h.readState('project.json');
+  for (let i = 0; i < 2; i++) {
+    const r = h.run(args, as('orchestrator'));
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /ladder\.web_mcp is owner-required; opened D1/);
+    assert.deepEqual(h.readState('project.json'), before);
+    assert.equal(h.readState('decisions.json').decisions.length, 1);
+  }
+  const d = h.readState('decisions.json').decisions[0];
+  assert.deepEqual(d.escalation, {
+    settings: ['ladder.web_mcp'], change: { ladder: { research: { web_mcp: server } } },
+  });
+  for (const agent of ['worker-T1-1', 'reviewer-T1-1']) {
+    const r = h.run(args, as(agent));
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /only the owner/);
+    assert.deepEqual(h.readState('project.json'), before);
+    assert.equal(h.readState('decisions.json').decisions.length, 1);
+  }
+  h.ok(args);
+  assert.deepEqual(h.readState('project.json').ladder.research.web_mcp, server);
+  const clear = h.run(['ladder', 'set', 'research', '--clear', 'web_mcp'], as('orchestrator'));
+  assert.equal(clear.code, 1, clear.stderr);
+  assert.match(clear.stderr, /ladder\.web_mcp is owner-required; opened D2/);
+  assert.deepEqual(h.readState('project.json').ladder.research.web_mcp, server);
+  assert.deepEqual(h.readState('decisions.json').decisions[1].escalation.change,
+    { ladder: { research: { web_mcp: null } } });
+  h.ok(['ladder', 'set', 'research', '--clear', 'web_mcp']);
+  assert.equal(h.readState('project.json').ladder.research.web_mcp, undefined);
+});
+
+test('research source policy and waivers retain owner-required authority', (t) => {
+  const h = setup(t);
+  for (const [args, key] of [
+    [['project', 'set', '--research-min-sources', '4'], 'research.min_sources'],
+    [['accept', 'T1', '--waive', 'sources', '--reason', 'owner exception'], 'waive.sources'],
+  ]) {
+    const before = { project: h.readState('project.json'), tasks: h.readState('tasks.json') };
+    const r = h.run(args, as('orchestrator'));
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /owner-required; opened D/);
+    assert.deepEqual(h.readState('decisions.json').decisions.at(-1).escalation.settings, [key]);
+    assert.deepEqual({ project: h.readState('project.json'), tasks: h.readState('tasks.json') }, before);
+    assert.equal(h.run(args, as('worker-T1-1')).code, 1);
+  }
+  h.ok(['project', 'set', '--research-min-sources', '4']);
+  assert.equal(h.readState('project.json').research.min_sources, 4);
+});
+
+test('research defaults and operational model tuning need no new authority grant', (t) => {
+  const h = makeRepo(t);
+  h.env.TOWER_CRANE_AGENT = 'orchestrator';
+  h.init();
+  h.ok(['ladder', 'set', 'research', '--model', 'tuned', '--effort', 'high']);
+  assert.equal(h.readState('project.json').ladder.research.model, 'tuned');
+  assert.equal(h.readState('decisions.json').decisions.length, 0);
+});
+
 test('the orchestrator changes operational settings under its own identity; a worker is sent to the orchestrator', (t) => {
   const h = setup(t);
   for (const args of OPERATIONAL) {
