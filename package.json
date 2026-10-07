@@ -8,5 +8,5 @@
   "bin": { "tower-crane": "bin/tower-crane.js" },
   "engines": { "node": ">=24" },
   "files": ["bin/", "lib/", "skills/", "agents/", "standards/", "docs/", ".claude-plugin/", "components.json"],
-  "scripts": { "test": "node --test test/*.test.js test/gates/*.test.js" }
+  "scripts": { "test": "node test/run.js" }
 }
