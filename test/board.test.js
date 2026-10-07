@@ -10,6 +10,7 @@ const { makeRepo, BIN } = require('./helpers');
 const { CHROME, openBrowser } = require('./browser');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const { preserve } = require('../lib/board/identity');
+const { POSITION } = require('../lib/board/position');
 
 // A project with something in every column: a decision, an owner task, a
 // claimed task with a message, a submitted task, and work ready and blocked.
@@ -554,6 +555,66 @@ test('every view keeps disclosures, event identity, focus and scroll through liv
       }
     }
   });
+});
+
+test('Spend keeps focus when a task drops into its closed more-tasks disclosure', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const b = await openBrowser(t);
+  for (const width of [1280, 390]) {
+    await t.test(`${width}px`, async (t) => {
+      const h = makeRepo(t);
+      h.init();
+      for (let i = 1; i <= 21; i++) {
+        h.ok(['task', 'add', '--title', `Task ${i}`, '--acceptance', 'verified']);
+        h.ok(['spend', `T${i}`, '--tokens', String(22 - i), '--rung', 'easy']);
+      }
+      await withServers(async (servers) => {
+        const url = await startServe(servers, h, 'viewer');
+        await b.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: false });
+        await b.goto(`${url}#spend`);
+        await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+        await b.inPage(`document.querySelector('#spend a[href="#T20"]').focus({ preventScroll: true })`);
+        assert.deepEqual(await b.inPage(`[document.activeElement.getAttribute('href'), !!document.activeElement.closest('details'), document.querySelector('#spend details').open]`), ['#T20', false, false], 'T20 starts focused in a visible row with more tasks closed');
+        h.ok(['spend', 'T21', '--tokens', '1000', '--rung', 'easy']);
+        await b.restored(`document.querySelector('#spend details a[href="#T20"]')`, 'T20 to drop below the cutoff');
+        assert.deepEqual(await b.inPage(`[location.hash, document.activeElement.getAttribute('href'), document.querySelector('#spend details').open]`), ['#spend', '#T20', true], 'restoration reveals the surviving focused task');
+        h.ok(['task', 'note', 'T20', `focus stays reachable at ${width}`]);
+        await b.restored(`document.querySelector('#T20 .thread').textContent.includes('focus stays reachable at ${width}')`, 'the following live update');
+        assert.deepEqual(await b.inPage(`[document.activeElement.getAttribute('href'), document.querySelector('#spend details').open]`), ['#T20', true], 'the opened disclosure remains preserved on the next update');
+      });
+    });
+  }
+});
+
+test('shared restoration reveals nested disclosures and falls back to a visible ancestor control', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const b = await openBrowser(t);
+  await b.goto('about:blank');
+  const markup = preserve('<main id="ancestor" tabindex="-1"><div id="nearest" tabindex="-1"><button id="focused">Focus</button></div><details id="outer"><summary>Outer</summary><details id="inner"><summary>Inner</summary></details></details></main><h2 id="fallback" tabindex="-1">Fallback</h2>');
+  for (const change of ['nested', 'disabled', 'hidden', 'hidden-parent', 'fallback']) {
+    await b.inPage(`(() => {
+      document.body.innerHTML = ${JSON.stringify(markup)};
+      window.position = ${POSITION};
+      document.getElementById('focused').focus();
+      window.saved = position.capture(document);
+      const control = document.getElementById('focused');
+      if (${JSON.stringify(change)} === 'nested') document.getElementById('inner').appendChild(control);
+      if (${JSON.stringify(change)} === 'disabled') control.disabled = true;
+      if (${JSON.stringify(change)} === 'hidden') control.hidden = true;
+      if (${JSON.stringify(change)} === 'hidden-parent') document.getElementById('nearest').style.visibility = 'hidden';
+      if (${JSON.stringify(change)} === 'fallback') {
+        control.hidden = true;
+        document.getElementById('nearest').removeAttribute('tabindex');
+        document.getElementById('ancestor').removeAttribute('tabindex');
+      }
+      position.restore(document, saved, document.getElementById('fallback'));
+    })()`);
+    if (change === 'nested') {
+      assert.deepEqual(await b.inPage(`[document.activeElement.id, document.getElementById('outer').open, document.getElementById('inner').open, saved.disclosures[position.key(document.getElementById('outer'))], saved.disclosures[position.key(document.getElementById('inner'))]]`), ['focused', true, true, true, true], 'all containing disclosures open in the DOM and snapshot');
+      await b.inPage('position.restore(document, saved)');
+      assert.deepEqual(await b.inPage(`[document.activeElement.id, document.getElementById('outer').open, document.getElementById('inner').open]`), ['focused', true, true], 'reusing the snapshot keeps the focused contents reachable');
+    } else {
+      assert.equal(await b.inPage('document.activeElement.id'), change === 'fallback' ? 'fallback' : change === 'hidden-parent' ? 'ancestor' : 'nearest', `${change} falls back to the closest visible control or explicit fallback`);
+    }
+  }
 });
 
 test('live updates match task sheet buttons by form and fall back when the focused action is removed', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
