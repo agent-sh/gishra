@@ -64,7 +64,7 @@ The list settings also work with `init`. Omitted options leave their fields unch
 | Command | Does |
 |---|---|
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason |
-| `claim ID [--lease MIN]` | take a ready task for `--agent`; refused if not ready, already claimed, or the workers limit is reached (tasks in progress with a live lease) |
+| `claim ID [--lease MIN]` | take a ready task for `--agent`; repeating it as the live claimant renews the lease. Refused if another agent holds it, the task is not ready, or the workers limit is reached |
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes a worker slot again, so its renewal is refused when the workers limit is reached |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or an explicit owner; any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters |

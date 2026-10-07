@@ -32,11 +32,10 @@ function setup(t, format = 'codex', session = true) {
 const fs = require('node:fs');
 const cp = require('node:child_process');
 const [bin, out, prior, prompt, format, enabled, assigned] = process.argv.slice(2);
-fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.TOWER_CRANE_AGENT }));
 const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { stdio: 'pipe' });
 const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
-// The launcher restores a resumed session's claim after its startup receipt.
-if (!prior && !task.claim) cli('claim', 'T1');
+fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.TOWER_CRANE_AGENT, claim: task.claim }));
+cli('claim', 'T1');
 if (enabled === 'true') {
   const record = format === 'codex'
     ? { type: 'thread.started', thread_id: prior || 'worker-session-1' }
@@ -244,7 +243,13 @@ test('resume preserves an existing claim and refuses another claimant', (t) => {
     const result = h.run(['spawn', '--task', 'T1', '--wait']);
     assert.equal(result.code, agent === 'worker-T1-1' ? 0 : 1, result.stderr);
     if (result.code) assert.match(result.stderr, /cannot resume .* while claimed by replacement-worker/);
-    assert.deepEqual(h.json(['task', 'show', 'T1']).claim, before);
+    const after = h.json(['task', 'show', 'T1']).claim;
+    if (agent === 'worker-T1-1') {
+      assert.deepEqual([after.agent, after.since, after.from], [before.agent, before.since, before.from]);
+      assert.ok(Date.parse(after.until) > Date.parse(before.until), 'the resumed worker\'s startup claim renews its lease');
+    } else {
+      assert.deepEqual(after, before);
+    }
   }
 });
 
@@ -341,11 +346,14 @@ test('a missing isolated codex rollout falls back to a fresh worker and records 
   const claim = log.findLast((e) => e.cmd === 'claim' && e.task === 'T1' && e.detail.holder === next.agent);
   assert.equal(claim.detail.took_over_from, first.agent);
   assert.ok(log.indexOf(claim) < log.indexOf(spawn), 'the fresh spawn takes ownership before its spawn event');
+  assert.ok(log.some((e) => e.cmd === 'claim' && e.task === 'T1' && e.agent === next.agent && e.detail.renewed),
+    'the fresh worker can repeat its startup claim after the transfer commits');
   const held = h.json(['task', 'show', 'T1']).claim;
   assert.equal(held.agent, next.agent);
   assert.equal(held.from, 'rework');
   const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
   assert.equal(input.prior, '');
+  assert.equal(input.claim.agent, next.agent, 'the committed transfer is visible when the child starts');
   assert.match(input.prompt, /Add the worktree guard/);
   assert.match(input.prompt, /Missing worktree validation/);
   assert.equal(first.agent, 'worker-T1-1');
