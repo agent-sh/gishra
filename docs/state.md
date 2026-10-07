@@ -120,7 +120,21 @@ docs/cli.md lists the command each harness gets.
 
 No `tower-crane project set` flag sets `ci.capped_review` yet; it is project.json configuration.
 
-`tests` is optional too. `tower-crane check tests` keeps a task's changed tests and reverts other changed non-test files to show the tests fail without the code change. Changed declarative manifests and lockfiles stay at the submitted sha so the reverted tree can still build. Only non-test paths can be kept as build files, and the summary names each one. If only tests and kept build files changed, the gate passes once the command passes at the submitted sha, names both sets and skips the revert run because nothing can be reverted.
+`tests` is optional too. `tests.mode` selects how `tower-crane check tests` verifies the submitted commit:
+
+| Mode | Behavior |
+|---|---|
+| `prove` (default) | The command must pass at the submitted sha. Code tasks must add or change a test file. Keep changed tests and build files, revert other changed files to the merge base, and require the command to fail. If only tests and kept build files changed, or a non-code task changed no tests, pass after the head run. |
+| `run-only` | The command must pass once at the submitted sha. No changed test path or merge base is required, and no file is reverted. This handles Rust inline `#[cfg(test)]` modules in source files that also contain production code. |
+| `none` | Skip the suite, even if `--cmd` is supplied. Verify that the submitted sha resolves to a commit, then record ok evidence naming the policy. No test command or temporary worktree is needed. |
+
+`tests.by_kind` overrides the project mode for a task kind (`code`, `docs`, `research`, `design`, `ops`). Missing kinds inherit `tests.mode`, which defaults to `prove`. For example, `{ "tests": { "mode": "run-only", "by_kind": { "docs": "none", "ops": "none" } } }` checks code once and skips the suite for docs and tooling tasks classified as `ops`. These are project settings, not per-invocation bypass flags.
+
+`tests.expensive: true` caps an effective `prove` mode at `run-only`, including a kind override that asks for `prove`. The long suite then runs once per gate, at the submitted sha; it provides no revert proof. An effective `none` still skips the suite. False, null or an absent field leaves normal mode behavior.
+
+Set these fields with `tower-crane project set --tests-mode run-only --tests-by-kind '{"docs":"none","ops":"none"}' --tests-expensive true`. `--tests-mode null` restores the project default; `--tests-by-kind '{}'` or `--tests-by-kind null` clears kind overrides; `--tests-expensive false` or `--tests-expensive null` removes the single-run cap. A kind map replaces the whole map and accepts only known kinds with one of the three modes. The expensive flag accepts JSON true, false or null. Malformed mode settings fail the gate before a suite runs.
+
+The `prove` mode keeps changed declarative manifests and lockfiles at the submitted sha so the reverted tree can still build. Only non-test paths can be kept as build files, and the summary names each one. Test paths and keep globs are used only by `prove`; `run-only` runs the submitted tree intact.
 
 The default keep set matches these basenames in any directory, without case sensitivity:
 
@@ -137,7 +151,7 @@ No general code suffix or arbitrary `*.lock` suffix is kept. Executable build fi
 
 By default a file is a test when it sits under a `test/`, `tests/`, `spec/`, `specs/` or `__tests__/` directory in any case (`Tests/`, `Test/`), under a directory named like `MyApp.Tests`, `MyApp.UnitTests` or `integration_test`, or a CamelCase one like `AppTests` or `androidTest`, or when its name looks like `foo.test.js`, `foo_test.go`, `foo_spec.rb`, `foo.spec.ts`, `test_foo.py`, `FooTest.java`, `FooTests.swift`, `FooSpec.scala`, `FooIT.java` or `TestFoo.java`. CamelCase forms need their capital, so `latest.js` and `contest.py` stay code. `tests.paths`, for example `{ "tests": { "paths": ["src/test/**", "**/*Test.java"] } }`, replaces those defaults with the project's own globs over repository paths: `*` and `?` stay within one directory, `**/` spans any number of directories, `{a,b}` matches either, a trailing `/` takes everything beneath, and matching is case-sensitive. Set it with `tower-crane project set --tests-paths '["src/test/**","**/*Test.java"]'`. It must be a non-empty array of non-blank strings; the CLI trims leading and trailing whitespace before storing them. `--tests-paths null` removes `tests.paths` and restores the default layouts; `[]` is invalid.
 
-The list flags also work with `init`. Omitting a flag leaves its field unchanged. Setting a list replaces a non-object `tests` or `ci` section, and clearing removes that malformed section. Object sections keep their other settings; clearing removes the section when it becomes empty. `project set` and `project show` text output print these lists, showing `default layouts` when `tests.paths` is absent and `[]` when no extra build files or CI apps are configured. Invalid input exits 2 without writing state or events, even when passed alongside valid settings.
+The list and tests policy flags also work with `init`. Omitting a flag leaves its field unchanged. Setting a field replaces a non-object `tests` or `ci` section, and clearing removes that malformed section. Object sections keep their other settings; clearing removes the section when it becomes empty. `project set` and `project show` text output print the policy and lists, showing `prove`, `{}` and `false` for absent mode, kind overrides and expensive settings, `default layouts` when `tests.paths` is absent and `[]` when no extra build files or CI apps are configured. Invalid input exits 2 without writing state or events, even when passed alongside valid settings.
 
 ## tasks.json
 
@@ -186,7 +200,7 @@ The list flags also work with `init`. Omitting a flag leaves its field unchanged
 
 The CLI never writes a dependency on a task that does not exist, a dependency cycle, or a task without acceptance. `validate` still checks files edited by hand.
 
-Software evidence also has `source` (`check tests`, `check clean`, `check ci` or `merge`) and `commands`, an array of `{ "command", "args", "cwd", "status", "signal" }` receipts. `command` is the executable name or shell command line, `args` holds its arguments, `cwd` is its working directory, and `status` and `signal` report how it ended (null when unavailable). All commands the gate ran are recorded, including failed commands and GitHub queries. A gate refused before running a process records an empty array; an ok entry needs at least one command to count. Gate evidence and its event carry the same receipts and revision.
+Software evidence also has `source` (`check tests`, `check clean`, `check ci` or `merge`) and `commands`, an array of `{ "command", "args", "cwd", "status", "signal" }` receipts. `command` is the executable name or shell command line, `args` holds its arguments, `cwd` is its working directory, and `status` and `signal` report how it ended (null when unavailable). All commands the gate ran are recorded, including failed commands and GitHub queries. A gate refused before running a process records an empty array; an ok entry needs at least one command to count. In tests mode `none`, the receipt is the Git command resolving the submitted sha; it does not claim that a suite ran. Gate evidence and its event carry the same receipts and revision.
 
 `tower-crane evidence` writes only `review` and `note`. Software types are refused for any agent, whether `--ok` or `--fail`; run their gate commands instead. State version 1 and older evidence remain readable. Software entries without the matching gate source and audit event do not satisfy acceptance, so their gates must run again.
 
@@ -217,6 +231,8 @@ Any agent recovers a verified exited task with `release ID --reason R`. The dete
 - `code` tasks: `tests` ok, `clean` ok, and `review` ok from an agent other than the one that submitted
 - other kinds: `review` ok from another agent
 - any task with a PR, whatever its kind: `ci` ok as well
+
+Tests modes change how `check tests` produces evidence, not which gates acceptance requires. A code task in mode `none` still needs audited tests evidence for its submitted sha, plus cleanup and independent review.
 
 A gate passes when the latest eligible evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `tests`, `clean` and `ci`, evidence needs the matching gate `source` and an events.jsonl entry with `cmd === source`, the same task id and agent, and matching `type`, `source`, exact evidence `sha`, `ok`, `revision` and `commands` in `detail`. An ok entry also needs a non-empty commands list. Manual, forged and older unmarked entries are ignored, including later entries that would otherwise override a genuine pass or failure. For `review`, entries by the submitter are ignored. A waiver counts only when its agent is `owner`, for both review and software gates.
 

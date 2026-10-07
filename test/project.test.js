@@ -89,6 +89,9 @@ test('project set and init help document the JSON settings and clearing value', 
     const help = h.ok([...command, '--help']);
     assert.match(help, /--tests-paths JSON.*null/);
     assert.match(help, /--tests-keep JSON.*null/);
+    assert.match(help, /--tests-mode MODE.*prove, run-only or none.*null/);
+    assert.match(help, /--tests-by-kind JSON.*null/);
+    assert.match(help, /--tests-expensive JSON.*null/);
     assert.match(help, /--ci-ignore-apps JSON.*null/);
   }
 });
@@ -163,3 +166,52 @@ test('project set and show text print configured lists and their defaults alongs
   const cleared = h.ok(['project', 'set', '--tests-paths', 'null', '--ci-ignore-apps', 'null']);
   assert.equal(cleared, defaults);
 });
+
+test('test modes, kind overrides and expensive suites can be set, replaced and cleared', (t) => {
+  const h = makeRepo(t);
+  h.init(['--tests-mode', 'run-only', '--tests-by-kind', '{"docs":"none","ops":"none"}', '--tests-expensive', 'true', '--tests-keep', '["Makefile"]']);
+  assert.deepEqual(h.json(['project', 'show']).tests, {
+    mode: 'run-only', by_kind: { docs: 'none', ops: 'none' }, expensive: true, keep: ['Makefile'],
+  });
+  const text = h.ok(['project', 'show']);
+  assert.match(text, /tests\.mode: run-only/);
+  assert.match(text, /tests\.by_kind: \{"docs":"none","ops":"none"\}/);
+  assert.match(text, /tests\.expensive: true/);
+  const set = h.json(['project', 'set', '--tests-mode', 'prove', '--tests-by-kind', '{"code":"run-only"}', '--tests-expensive', 'false']);
+  assert.deepEqual(set.tests, { mode: 'prove', by_kind: { code: 'run-only' }, expensive: false, keep: ['Makefile'] });
+  assert.deepEqual(h.readState('project.json'), set);
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(events.at(-1).detail, {
+    'tests-mode': 'prove', 'tests-by-kind': '{"code":"run-only"}', 'tests-expensive': 'false',
+  });
+  assert.deepEqual(h.json(['project', 'set', '--tests-by-kind', '{}']).tests.by_kind, {});
+  assert.deepEqual(h.json(['project', 'set', '--tests-mode', 'null', '--tests-by-kind', 'null', '--tests-expensive', 'null']).tests, { keep: ['Makefile'] });
+  h.ok(['project', 'set', '--tests-keep', 'null']);
+  assert.match(h.ok(['project', 'show']), /tests\.mode: prove/);
+  assert.match(h.ok(['project', 'show']), /tests\.expensive: false/);
+  assert.ok(!Object.hasOwn(h.json(['project', 'show']), 'tests'));
+});
+
+for (const [flag, invalid] of [
+  ['--tests-mode', ['skip', '', 'true', 'PROVE']],
+  ['--tests-by-kind', ['[', '[]', '"none"', '{"tooling":"none"}', '{"code":null}', '{"docs":"skip"}', '{"__proto__":"none"}']],
+  ['--tests-expensive', ['1', '"true"', '{}', 'yes']],
+]) {
+  test(`${flag} rejects invalid input without writing state or events`, (t) => {
+    const h = makeRepo(t);
+    const bad = h.run(['init', '--name', 'demo', '--goal', 'test modes', flag, invalid[0]]);
+    assert.equal(bad.code, 2, bad.stderr);
+    assert.ok(bad.stderr.includes(flag), bad.stderr);
+    assert.ok(!fs.existsSync(path.join(h.state, 'project.json')));
+    h.init();
+    const files = ['project.json', 'events.jsonl', 'sketch.md', 'sketch.html'];
+    const snapshot = () => files.map((f) => fs.readFileSync(path.join(h.state, f), 'utf8'));
+    const before = snapshot();
+    for (const value of invalid) {
+      const r = h.run(['project', 'set', '--name', 'must not persist', flag, value]);
+      assert.equal(r.code, 2, `${value}: ${r.stderr}`);
+      assert.ok(r.stderr.includes(flag), r.stderr);
+      assert.deepEqual(snapshot(), before);
+    }
+  });
+}

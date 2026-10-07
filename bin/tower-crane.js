@@ -33,6 +33,9 @@ const SETTINGS = {
   standards: str('S', '"default" or a path to a standards Markdown file'),
   'tests-paths': str('JSON', 'non-empty array of test path globs; null restores default layouts'),
   'tests-keep': str('JSON', 'extra build file globs to keep at submitted sha; [] or null restores defaults'),
+  'tests-mode': str('MODE', 'prove, run-only or none; null restores prove'),
+  'tests-by-kind': str('JSON', 'task kind to tests mode overrides; null clears overrides'),
+  'tests-expensive': str('JSON', 'true runs the suite once at head; false or null restores normal mode'),
   'ci-ignore-apps': str('JSON', 'array of GitHub app slugs to skip; [] or null clears the list'),
   'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds}; null restores hosted CI'),
 };
@@ -65,7 +68,7 @@ const gate = (name) => (ctx) => require('../lib/check').runGate(ctx, name);
 
 const COMMANDS = [
   { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], run: P.init },
-  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--ci-ignore-apps JSON] [--ci-local JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
+  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-local JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, run: P.projectSet },
   { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', run: P.projectShow },
   { section: 'Plan', name: 'ladder show', summary: 'print each rung as it resolves, and where it comes from (project, user file or built-in)', run: P.ladderShow },
   { section: 'Plan', name: 'ladder set', pos: ['RUNG'], usage: 'RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--tools JSON] [--mcp JSON] [--clear FIELD]...', summary: 'change fields of one rung: orchestrator, easy, medium, hard, research, review or small', flags: RUNG_FLAGS, run: P.ladderSet },
@@ -112,7 +115,7 @@ const COMMANDS = [
   { section: 'Agents and worktrees', name: 'worktree', pos: ['ID...'], usage: 'ID [ID ...]', summary: 'prepare task worktrees serially from one fetched base before dispatch', run: run('../lib/worktree', 'worktree') },
   { section: 'Agents and worktrees', name: 'spawn', usage: '--task ID [--role RUNG] [--dry-run] [--wait]', summary: "start a rung's harness in the task's worktree (the task's tier unless --role names a rung); prints the pid, or the command with --dry-run", flags: { task: str('ID', 'task id'), role: str('RUNG', "ladder rung, such as review (default: the task's tier)"), 'dry-run': bool('print the command instead of running it'), wait: bool('run in the foreground and exit with its code') }, required: ['task'], run: run('../lib/spawn', 'spawn') },
 
-  { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID --cmd CMD', summary: 'tests pass at the submitted sha and fail with the non-test changes reverted; records tests', flags: { cmd: str('CMD', 'test command') }, required: ['cmd'], run: gate('tests') },
+  { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID [--cmd CMD]', summary: 'check tests under the project and task kind mode; records tests', flags: { cmd: str('CMD', 'test command; required for prove and run-only, skipped for none') }, run: gate('tests') },
   { section: 'Gates', name: 'check clean', pos: ['ID'], usage: 'ID', summary: 'cleanup tool on the task branch against base reports no HIGH finding; records clean', run: gate('clean') },
   { section: 'Gates', name: 'check ci', pos: ['ID'], usage: 'ID', summary: 'configured local CI on the merged tree, or GitHub checks on the submitted sha; records ci', run: gate('ci') },
   { section: 'Gates', name: 'merge', pos: ['ID'], usage: 'ID', summary: "merge an accepted task's PR with --match-head-commit if its gates still pass; records merge", run: gate('merge') },
