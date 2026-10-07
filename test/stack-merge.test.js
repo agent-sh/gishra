@@ -128,6 +128,36 @@ test('exit 9 from stack merge leaves a stack another worker claimed meanwhile', 
   assert.equal(f.h.json(['task', 'show', 'T1']).stack_disabled, undefined);
 });
 
+test('a bottom PR with a stale local link to its dependent merges through gh stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  const state = f.h.readState('tasks.json');
+  state.tasks.find((item) => item.id === 'T2').stack.linked = false;
+  f.h.writeState('tasks.json', state);
+  f.write((d) => { d.refuseStackedPrMerge = true; });
+
+  const r = f.h.run(['merge', 'T1']);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.equal(f.read().prs[11].state, 'MERGED');
+  assert.ok(f.read().calls.some((c) => c.args[0] === 'stack' && c.args[1] === 'merge' && c.args[2] === '11'));
+});
+
+test('after a lower stack merge, a dependent whose head GitHub moved takes the new head and needs its gates again', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  const wt = f.upper.wt;
+  f.h.git(['commit', '--allow-empty', '-qm', 'T2 rebased onto main'], wt.path);
+  f.h.git(['push', 'origin', wt.branch], wt.path);
+  const rebased = f.h.git(['rev-parse', 'HEAD'], wt.path);
+  f.write((d) => { d.rebased = { 12: rebased }; });
+
+  const r = f.h.run(['merge', 'T1']);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(task.sha, rebased);
+  assert.equal(task.status, 'submitted');
+});
+
 test('three dependent PRs form one stack and all accepted lower tasks get merge evidence', (t) => {
   const f = stacked(t);
   f.add('third', 'T2');

@@ -62,6 +62,9 @@ cp.spawnSync = function stackGh(command, args, opts) {
     return finish();
   }
   if (args[0] === 'pr' && args[1] === 'merge') {
+    if (data.refuseStackedPrMerge && data.order.includes(Number(args[2]))) {
+      return finish('', 1, 'Pull request is stacked; it must be merged using the asynchronous merge REST API');
+    }
     const pr = data.prs[args[2]];
     pr.state = 'MERGED';
     pr.mergeCommit = { oid: pr.headRefOid };
@@ -95,6 +98,10 @@ cp.spawnSync = function stackGh(command, args, opts) {
     for (const n of data.order.slice(0, end + 1)) {
       data.prs[n].state = 'MERGED';
       data.prs[n].mergeCommit = { oid: data.prs[n].headRefOid };
+    }
+    // GitHub rebases the PRs above the merged ones onto the new base.
+    for (const n of data.order.slice(end + 1)) {
+      if (data.rebased?.[n]) data.prs[n].headRefOid = data.rebased[n];
     }
     git(['push', 'origin', `${data.prs[args[2]].headRefName}:main`]);
     return finish();

@@ -212,6 +212,39 @@ process.exit(r.status === null ? 1 : r.status);
   assert.ok(f.read().calls.some((call) => call.args[0] === 'api' && call.args[1] === 'repos/acme/app/stacks'));
 });
 
+test('an outage leaves a dependent without a stack record unflagged, and recovery claims it once GitHub confirms its dependency', (t) => {
+  const f = setup(t);
+  upper(f);
+  f.add('third', 'T2');
+  f.write((d) => { d.unavailable = true; });
+
+  const outage = f.h.run(['claim', 'T3', '--agent', 'claim-probe']);
+  assert.equal(outage.code, 1);
+  assert.match(outage.stderr, /T3 is blocked: depends on T2 \(submitted\)/);
+  assert.equal(f.h.json(['task', 'show', 'T3']).stack_disabled, undefined);
+
+  f.write((d) => { delete d.unavailable; });
+  const claim = f.h.run(['claim', 'T3', '--agent', 'claim-probe']);
+  assert.equal(claim.code, 0, claim.stderr);
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack_disabled, undefined);
+});
+
+test('reconciling a longer chain keeps the link GitHub confirms for its lower members', (t) => {
+  const f = setup(t);
+  upper(f);
+  f.add('third', 'T2');
+  const wt = f.h.json(['worktree', 'T3']);
+  f.submit('T3', 13, wt);
+  f.h.ok(['stack', 'link', 'T3']);
+  f.h.ok(['rework', 'T3', '--reason', 'revise the top change']);
+  // GitHub's stack holds T1 and T2 but not T3.
+  f.write((d) => { d.order = [11, 12]; });
+
+  f.h.run(['claim', 'T3', '--agent', 'claim-probe']);
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack.linked, true);
+  assert.equal(f.h.json(['task', 'show', 'T3']).stack.linked, false);
+});
+
 test('transient stack API failures and ordinary 404s do not disable stacks', (t) => {
   const failures = [
     { status: 1, stderr: 'HTTP 503: Service Unavailable' },
