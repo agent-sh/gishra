@@ -15,7 +15,7 @@ const lines = (items) => items.map((i) => JSON.stringify(i)).join('\n') + (items
 
 function github({ runs = [], suites = [], head = SHA, apiError = null } = {}) {
   return fakeExec((args) => {
-    if (args[0] === 'pr' && args[1] === 'view') return result(JSON.stringify({ headRefOid: head }));
+    if (args[0] === 'pr' && args[1] === 'view') return result(JSON.stringify({ headRefOid: head, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }));
     if (args[0] !== 'api') return null;
     assert.ok(args.includes('--paginate'), 'every page must be read');
     if (apiError) return result('', 1, apiError);
@@ -124,7 +124,7 @@ test('the PR head moved off the submitted sha: not ok', async () => {
   const r = await gate.run(ctx(gh, { pr: 42 }));
   assert.equal(r.ok, false);
   assert.match(r.summary, /PR head moved: PR #42 head is bbbbbbbbbb/);
-  assert.deepEqual(gh.calls[0], ['gh', 'pr', 'view', '42', '-R', REPO, '--json', 'headRefOid']);
+  assert.deepEqual(gh.calls[0], ['gh', 'pr', 'view', '42', '-R', REPO, '--json', 'headRefOid,mergeable,mergeStateStatus']);
 });
 
 test('the PR head is the submitted sha: CI decides', async () => {
