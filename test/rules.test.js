@@ -201,6 +201,27 @@ test('claude imports rule paths with spaces and follows quoted and escaped neste
   for (const text of ['GLOBAL-SPACES', 'QUOTED-SPACES', 'ESCAPED-SPACES']) assert.ok(report().memory.join('\n').includes(text), text);
 });
 
+test('claude imports tab-bearing rule paths and its receipt matches the loaded memory', { skip: NO_STUBS || process.platform === 'win32' }, (t) => {
+  const { h, home, env, report } = setup(t);
+  const dir = path.join(home, 'claude\tconfig');
+  fs.mkdirSync(dir);
+  const global = path.join(dir, 'CLAUDE.md');
+  const nested = path.join(dir, 'nested\trules.md');
+  const shared = path.join(home, '.config', 'agents', 'tab\tshared.md');
+  fs.writeFileSync(global, '@"nested\trules.md"\n@"~/.config/agents/tab\tshared.md"\nGLOBAL-TABS\n');
+  fs.writeFileSync(nested, 'NESTED-TABS\n');
+  fs.writeFileSync(shared, 'SHARED-TABS\n');
+  rung(h, 'claude');
+  h.json(['spawn', '--role', 'small', '--task', 'T1', '--wait'], { env: { ...env, CLAUDE_CONFIG_DIR: dir } });
+  const receipt = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).find((e) => e.cmd === 'startup').detail;
+  const seen = report();
+  for (const file of [global, nested, shared]) {
+    assert.ok(receipt.rules.some((f) => f.path === file && f.loaded === 'harness'), file);
+    assert.ok(seen.prompt.includes(`- ${file} (${file === global ? 'global' : 'import'}, loaded in your context)`), file);
+  }
+  for (const text of ['GLOBAL-TABS', 'NESTED-TABS', 'SHARED-TABS']) assert.ok(seen.memory.join('\n').includes(text), text);
+});
+
 test('claude receipts account for the generated home import when applying the five-hop limit', { skip: NO_STUBS }, (t) => {
   const { h, env, report } = setup(t);
   fs.writeFileSync(path.join(h.repo, 'CLAUDE.md'), '@docs/depth1.md\n');
