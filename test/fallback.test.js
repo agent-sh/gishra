@@ -213,7 +213,15 @@ test('rework during a live fallback refuses a second worker until the previous a
   });
   const wake = await waiting;
   assert.equal(wake.code, 0, wake.stderr);
-  await until(() => h.attempts().length === 4, 'fallback worker did not start');
+  // The fixture rewrites the attempts file in place, so a poll can read it while it is empty.
+  const attemptCount = () => {
+    try {
+      return h.attempts().length;
+    } catch {
+      return -1;
+    }
+  };
+  await until(() => attemptCount() === 4, 'fallback worker did not start');
   h.ok(['submit', 'T1', '--agent', 'worker-T1-1', '--sha', 'abcdef1']);
   h.ok(['rework', 'T1', '--reason', 'fix while worker is finishing']);
   for (const flags of [['--dry-run'], []]) {

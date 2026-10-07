@@ -15,6 +15,8 @@ function cliCopy(h) {
   const dir = path.join(h.base, 'cli');
   const gatesDir = path.join(ROOT, 'lib', 'gates');
   fs.cpSync(path.join(ROOT, 'bin'), path.join(dir, 'bin'), { recursive: true });
+  // The board view reads the package bin name from package.json when it renders the sketch.
+  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(dir, 'package.json'));
   fs.cpSync(path.join(ROOT, 'lib'), path.join(dir, 'lib'), {
     recursive: true,
     filter: (src) => src !== gatesDir && !src.startsWith(gatesDir + path.sep),
@@ -424,8 +426,8 @@ test('failed test diagnostics redact process, project, rung and env_file secrets
   const literals = [canaries.project, canaries.projectFile, canaries.rung, canaries.rungFile, ...commonTokens];
   const testFile = `const test = require('node:test');
 const assert = require('node:assert/strict');
-const report = [process.env.T83_PROCESS_CANARY, ${literals.map((value) => JSON.stringify(value)).join(', ')}].join(' ');
-test('failure ' + process.env.T83_PROCESS_CANARY, () => {
+const report = [process.env.T83_PROCESS_TOKEN, ${literals.map((value) => JSON.stringify(value)).join(', ')}].join(' ');
+test('failure ' + process.env.T83_PROCESS_TOKEN, () => {
   console.log(report);
   assert.fail('fixture failure');
 });
@@ -442,14 +444,14 @@ test('failure ' + process.env.T83_PROCESS_CANARY, () => {
   const cmd = `${shellQuote(process.execPath)} --test --test-reporter=tap test/failure.test.js`;
   h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
   const result = h.run(['check', 'tests', 'T1', '--agent', 'checker', '--json'], {
-    env: { T83_PROCESS_CANARY: canaries.process },
+    env: { T83_PROCESS_TOKEN: canaries.process },
   });
   assert.equal(result.code, 1, result.stderr + result.stdout);
 
   const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
-  assert.ok(evidence.test_failure.names.some((name) => name.includes('[redacted:T83_PROCESS_CANARY]')));
-  assert.ok(evidence.test_failure.output_tail.includes('[redacted:T83_PROCESS_CANARY]'));
-  assert.ok(evidence.summary.includes('[redacted:T83_PROCESS_CANARY]'));
+  assert.ok(evidence.test_failure.names.some((name) => name.includes('[redacted:T83_PROCESS_TOKEN]')));
+  assert.ok(evidence.test_failure.output_tail.includes('[redacted:T83_PROCESS_TOKEN]'));
+  assert.ok(evidence.summary.includes('[redacted:T83_PROCESS_TOKEN]'));
   assert.match(evidence.test_failure.output_tail, /\[redacted:T83_PROJECT_CANARY\]/);
   assert.match(evidence.test_failure.output_tail, /\[redacted:T83_PROJECT_FILE_CANARY\]/);
   assert.match(evidence.test_failure.output_tail, /\[redacted:T83_RUNG_CANARY\]/);
