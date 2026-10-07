@@ -1,6 +1,6 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -9,6 +9,7 @@ const http = require('node:http');
 const { makeRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
@@ -69,6 +70,7 @@ ${waitForFinish ? `const timer = setInterval(() => {
   return h;
 }
 
+describe('independent retry cases', { concurrency: windowsConcurrency }, () => {
 for (const attempt of bedrockOutage.attempts) {
   for (const type of ['error', 'turn.failed']) {
     test(`recorded Bedrock attempt ${attempt.attempt} ${type} reruns with the session and claim kept`, (t) => {
@@ -195,6 +197,7 @@ test('repeated transient exits render the blocked phase before foreground spend'
   assert.equal(h.json(['task', 'show', 'T1']).claim, null);
   assert.equal(h.json(['task', 'show', 'T1']).status, 'todo');
 });
+});
 
 test('detached supervision renews a short lease during backoff and does not allow premature recovery', async (t) => {
   const h = setup(t, { config: { backoff_ms: 1400, max_backoff_ms: 1400 } });
@@ -294,6 +297,7 @@ test('a running process keeps its lease without claimant writes', async (t) => {
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'worker did not finish');
 });
 
+describe('remaining supervision cases', { concurrency: windowsConcurrency }, () => {
 test('release during backoff fences the old supervisor from a replacement claim', async (t) => {
   const h = setup(t, { failures: 9, config: { backoff_ms: 1400, max_backoff_ms: 1400 } });
   const spawned = h.json(['spawn', '--task', 'T1']);
@@ -539,6 +543,7 @@ process.exit(1);
     assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
   });
 }
+});
 
 test('quiet supervision samples state and progress paths on a seconds-scale interval', async (t) => {
   const h = setup(t, { failures: 0, hold: 3600, config: { progress_paths: ['progress.txt'] } });
@@ -556,6 +561,7 @@ test('quiet supervision samples state and progress paths on a seconds-scale inte
   for (let i = 1; i < walks.length; i++) assert.ok(walks[i].at - walks[i - 1].at >= 900, JSON.stringify(walks));
 });
 
+describe('supervision completion cases', { concurrency: windowsConcurrency }, () => {
 test('Windows natural exits do not send taskkill to an exited or reused pid', (t) => {
   const h = setup(t, { failures: 0 });
   const audit = path.join(h.base, 'taskkill.jsonl');
@@ -748,4 +754,5 @@ test('rework cannot resume a session while its transient rerun is still alive', 
   assert.equal(result.code, 1, result.stderr);
   assert.match(result.stderr, /previous worker.*still running/);
   await until(() => !detachedAlive({ pid: spawned.monitor_pid }), 'previous supervisor did not finish');
+});
 });

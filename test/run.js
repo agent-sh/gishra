@@ -6,9 +6,9 @@ const { createRepoSeed, cleanupRepoSeed } = require('./repo-seed');
 
 const args = ['--test'];
 const concurrency = process.platform === 'win32'
-  ? 6
+  ? 4
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
-// Windows CI is process-bound, so run independent files in a larger pool.
+// Four Windows file workers leave CPU for test children that poll timers.
 args.push(`--test-concurrency=${concurrency}`);
 args.push('test/*.test.js', 'test/gates/*.test.js');
 
