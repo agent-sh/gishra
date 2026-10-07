@@ -239,6 +239,44 @@ test('the snapshot opens offline in a browser, with and without scripts, and req
   assert.deepEqual(urls.filter((u) => !u.startsWith(file.split('#')[0]) && !u.startsWith('data:')), [], 'nothing but the file itself and data: icons');
 });
 
+test('in a browser, JS displays only the routed view by nav and direct hash at desktop and mobile sizes', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const file = pathToFileURL(path.join(h.state, 'sketch.html')).href;
+  const b = await openBrowser(t);
+  const views = ['board', 'plan', 'history', 'spend'];
+  const displayedViews = () => b.inPage(`[...document.querySelectorAll('.view')].filter((el) => getComputedStyle(el).display !== 'none').map((el) => el.id)`);
+  const assertView = async (view, route, width) => {
+    assert.deepEqual(await displayedViews(), [view], `${view} via ${route} at ${width}px`);
+  };
+  const assertViewWithoutTarget = async (view, route, width) => {
+    // Keep the JS route while clearing :target to exercise the fallback's no-target case.
+    await b.inPage(`location.hash = ''`);
+    await b.until(`location.hash === '' && document.documentElement.dataset.view === ${JSON.stringify(view)}`, `${view} to stay routed after clearing the fragment`);
+    const state = await b.inPage(`[location.hash, document.querySelector('.view:target')?.id || null, document.documentElement.dataset.view]`);
+    assert.deepEqual(state, ['', null, view], `${view} keeps its JS route after clearing the fragment`);
+    await assertView(view, `${route} without :target`, width);
+  };
+
+  for (const [width, height] of [[1280, 800], [390, 844]]) {
+    await b.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    for (const view of views) {
+      await b.goto(`${file}#${view}`);
+      await b.until(`document.documentElement.classList.contains('js') && document.documentElement.dataset.view === ${JSON.stringify(view)}`, `${view} to load with JS`);
+      await assertView(view, 'direct hash', width);
+      await assertViewWithoutTarget(view, 'direct hash', width);
+    }
+
+    // Start on Spend, so every nav click changes the selected route.
+    for (const view of views) {
+      await b.inPage(`document.querySelector('.views a[data-view="${view}"]').click()`);
+      await b.until(`document.documentElement.dataset.view === ${JSON.stringify(view)}`, `${view} via nav`);
+      await assertView(view, 'nav', width);
+      await assertViewWithoutTarget(view, 'nav', width);
+    }
+  }
+});
+
 test('serve sends a submitted or accepted task back for rework only as the owner, through the CLI rework', async (t) => {
   const h = makeRepo(t);
   h.init();
