@@ -163,7 +163,9 @@ test('expensive proof uses an owner-pinned template and rejects caller-selected 
   const audit = events(h);
   const entry = tasks.tasks[0].evidence.at(-1);
   const detail = audit.at(-1).detail;
-  const proof = entry.commands.find((c) => c.command === 'node test/value.test.js' && c.status !== 0);
+  const proofCommand = entry.gate_policy.tests_proof_cmd.replaceAll('{tests}', entry.receipt.proof_tests.map(shellQuote).join(' '));
+  const proof = entry.commands.find((c) => c.command === proofCommand && c.status !== 0);
+  assert.ok(proof, 'the scoped failing proof has a recorded command');
   // The full suite receipt remains valid while the failing proof is substituted.
   const index = entry.commands.indexOf(proof);
   entry.commands[index].command = detail.commands[index].command = 'node -e "process.exit(1)"';
@@ -174,6 +176,35 @@ test('expensive proof uses an owner-pinned template and rejects caller-selected 
   h.ok(['project', 'set', '--tests-proof-cmd', 'node --trace-warnings {tests}']);
   assert.equal(shown(h, 'tests').ok, false);
 });
+
+for (const type of ['tests', 'clean']) {
+  test(`individual ${type} receipts stay visibly stale after a command change and a fresh pass`, (t) => {
+    const { h, sha } = fixture(t);
+    pin(h);
+    h.ok(['check', 'tests', 'T1']);
+    h.ok(['check', 'clean', 'T1']);
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+    h.ok(['accept', 'T1']);
+    const entries = () => h.ok(['task', 'show', 'T1']).split('\n').filter((line) => line.startsWith(`  - ${type} ok at`));
+    const sheet = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article id="T1"[\s\S]*?<\/article>/)[0];
+    assert.equal(entries().length, 1);
+    assert.doesNotMatch(entries()[0], /does not count/);
+
+    const previous = h.readState('project.json').gates[`${type}_cmd`];
+    const next = type === 'tests' ? 'node --trace-warnings test/value.test.js' : `${previous} --fixture`;
+    h.ok(['project', 'set', `--${type}-cmd`, next]);
+    assert.match(entries()[0], /does not count/);
+    assert.match(sheet(), new RegExp(`class="nocount">\\(does not count: ${type} evidence command policy`));
+    assert.match(sheet(), new RegExp(`class="pip missing">${type}</span>`));
+
+    h.ok(['check', type, 'T1'], { env: { TOWER_CRANE_CLEAN_CMD: '' } });
+    assert.equal(entries().length, 2);
+    assert.match(entries()[0], /does not count/);
+    assert.doesNotMatch(entries()[1], /does not count/);
+    assert.equal((sheet().match(new RegExp(`does not count: ${type} evidence command policy`, 'g')) || []).length, 1);
+    assert.match(sheet(), new RegExp(`class="pip pass">${type}</span>`));
+  });
+}
 
 test('changing only an evidence policy cannot reuse an audited pass for the new pin', (t) => {
   const { h } = fixture(t);
