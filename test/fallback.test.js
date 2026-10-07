@@ -24,7 +24,7 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Complete the original task brief.\n' });
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
-  for (const harness of ['codex', 'claude']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
+  for (const harness of ['codex', 'claude', 'agy']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
   const routes = [{ harness: nextHarness, model: 'second', env: { ROUTE_ENV: 'fallback' } }];
   if (chain) routes.push({ harness: 'claude', model: 'third' });
   h.ok(['ladder', 'set', 'easy', '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
@@ -95,6 +95,58 @@ test('Claude policy refusal starts a fresh Codex route', (t) => {
   assert.notEqual(h.attempts()[1].session, h.attempts()[0].session);
 });
 
+for (const primaryHarness of ['agy', 'claude']) {
+  test(`fresh ${primaryHarness} outage retries record each invocation without counting usage twice`, (t) => {
+    const h = setup(t, { primaryHarness });
+    assert.equal(h.spawn().code, 0);
+    const attempts = h.attempts();
+    assert.deepEqual(attempts.map((a) => a.model), ['first', 'first', 'first', 'second']);
+    assert.deepEqual(attempts.map((a) => a.retry), ['0', '1', '2', '0']);
+    assert.equal(new Set(attempts.map((a) => a.session)).size, 4);
+    assert.ok(attempts.every((a) => !a.args.includes('resume')));
+    const task = h.json(['task', 'show', 'T1']);
+    const tokens = primaryHarness === 'agy' ? 12257 : 24;
+    assert.deepEqual(task.spend.entries.map((e) => [e.model, e.harness, e.tokens]),
+      [['first', primaryHarness, tokens], ['first', primaryHarness, tokens],
+        ['first', primaryHarness, tokens], ['second', 'codex', 13]]);
+    assert.equal(task.spend.tokens, tokens * 3 + 13);
+    if (primaryHarness === 'agy') {
+      assert.equal(task.spend.input, 30010);
+      assert.equal(task.spend.cached, 6002);
+      assert.equal(task.spend.output, 6774);
+    }
+    const spendEvents = events(h).filter((e) => e.cmd === 'spend').length;
+    h.ok(['spend', 'T1', '--from-spawn', 'worker-T1-1']);
+    h.ok(['spend', 'T1', '--from-spawn', 'worker-T1-1']);
+    assert.deepEqual(h.json(['task', 'show', 'T1']).spend, task.spend);
+    assert.equal(events(h).filter((e) => e.cmd === 'spend').length, spendEvents);
+  });
+}
+
+test('rework during a live fallback refuses a second worker until the previous attempt exits', async (t) => {
+  const h = setup(t);
+  const cursor = events(h).at(-1).id;
+  const waiting = h.runAsync(['wait', '--after', cursor, '--types', 'spawn-fallback', '--timeout', '10']);
+  h.json(['spawn', '--task', 'T1'], {
+    env: { ...h.spawnEnv, TOWER_CRANE_TEST_FALLBACK_HOLD: '4000' },
+  });
+  const wake = await waiting;
+  assert.equal(wake.code, 0, wake.stderr);
+  await until(() => h.attempts().length === 4, 'fallback worker did not start');
+  h.ok(['submit', 'T1', '--agent', 'worker-T1-1', '--sha', 'abcdef1']);
+  h.ok(['rework', 'T1', '--reason', 'fix while worker is finishing']);
+  for (const flags of [['--dry-run'], []]) {
+    const result = h.run(['spawn', '--task', 'T1', ...flags], { env: h.spawnEnv });
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /previous worker worker-T1-1 is still running or its exit is unverified/);
+  }
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn').length, 1);
+  assert.equal(h.attempts().length, 4);
+  await until(() => events(h).some((e) => e.cmd === 'spawn exit'), 'fallback worker did not exit');
+  const preview = h.json(['spawn', '--task', 'T1', '--dry-run'], { env: h.spawnEnv });
+  assert.equal(preview.resumed, false);
+});
+
 test('Codex profile and provider arguments change without carrying the old session or route flags', (t) => {
   const h = setup(t);
   h.ok(['ladder', 'set', 'easy', '--profile', 'first', '--clear', 'model',
@@ -128,8 +180,7 @@ test('an outage before session creation reruns fresh within the same budget befo
   assert.deepEqual(h.attempts().map((a) => a.model), ['first', 'first', 'first', 'second']);
   assert.ok(h.attempts().every((a) => !a.args.includes('resume')));
   const task = h.json(['task', 'show', 'T1']);
-  assert.equal(task.spend.entries[0].tokens, null);
-  assert.equal(task.spend.entries[1].tokens, 13);
+  assert.deepEqual(task.spend.entries.map((e) => e.tokens), [null, null, null, 13]);
   const receipts = events(h).filter((e) => e.cmd === 'spawn session');
   assert.equal(receipts.length, 1);
   assert.equal(receipts[0].detail.route_index, 1);

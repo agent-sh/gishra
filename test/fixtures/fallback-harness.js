@@ -7,7 +7,7 @@ const path = require('node:path');
 if (path.resolve(process.argv[1] || '') !== __filename) {
   const spawn = cp.spawn;
   cp.spawn = function offlineHarness(file, args, options) {
-    if (['codex', 'claude'].includes(file) && process.env.TOWER_CRANE_TEST_FALLBACK_FILE) {
+    if (['codex', 'claude', 'agy'].includes(file) && process.env.TOWER_CRANE_TEST_FALLBACK_FILE) {
       return spawn.call(this, process.execPath, [__filename, file, ...args], options);
     }
     return spawn.call(this, file, args, options);
@@ -16,7 +16,13 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   const harness = process.argv[2];
   const args = process.argv.slice(3);
   const file = process.env.TOWER_CRANE_TEST_FALLBACK_FILE;
-  const attempts = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
+  let attempts;
+  try {
+    attempts = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    attempts = [];
+  }
   const modelFlag = args.includes('-m') ? '-m' : harness === 'codex' ? '-p' : '--model';
   const model = args[args.indexOf(modelFlag) + 1];
   const cli = (argv) => cp.execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'bin', 'tower-crane.js'), ...argv], { encoding: 'utf8' });
@@ -33,6 +39,9 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
       const turns = Number(process.env.TOWER_CRANE_RETRY) + 1;
       console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10 * turns, cached_input_tokens: 2 * turns, output_tokens: 3 * turns } }));
     }
+  } else if (harness === 'agy') {
+    console.log(JSON.stringify({ model, usage: { total_tokens: 12257, input_tokens: 10000,
+      cache_read_tokens: 2000, output_tokens: 2257 } }));
   } else {
     console.log(JSON.stringify({ type: 'result', is_error: false, model,
       usage: { input_tokens: 20, output_tokens: 4 } }));
@@ -46,6 +55,7 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
     }
     const type = process.env.TOWER_CRANE_TEST_FALLBACK_REASON;
     const message = 'rate limit exceeded: The service is temporarily unavailable.';
+    if (harness === 'agy') console.error('HTTP 503 service unavailable');
     console.log(JSON.stringify(type === 'quoted'
       ? { type: 'item.completed', item: { type: 'agent_message', text: message + ' Request refused by policy' } }
       : ['signal', 'permanent'].includes(type) ? { type: 'error', message: 'invalid configuration' }
