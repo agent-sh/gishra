@@ -85,6 +85,24 @@ for (const nextHarness of ['codex', 'claude']) {
   });
 }
 
+test('a browser-capable route can fall back to an unsupported harness without blocking dispatch', (t) => {
+  const h = setup(t, { primaryHarness: 'claude', nextHarness: 'agy' });
+  h.ok(['task', 'update', 'T1', '--kind', 'design', '--needs', '["browser"]']);
+  const home = path.join(h.base, 'browser-user');
+  const claude = path.join(home, '.claude');
+  fs.mkdirSync(claude, { recursive: true });
+  fs.writeFileSync(path.join(claude, 'mcp.json'), JSON.stringify({ mcpServers: { playwright: { command: 'browser-server' } } }));
+  Object.assign(h.spawnEnv, { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claude, CODEX_HOME: path.join(home, '.codex') });
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.attempts().map((a) => a.harness), ['claude', 'claude', 'claude', 'agy']);
+  assert.match(result.stderr, /browser kit.*agy.*without it/);
+  const fallback = events(h).find((e) => e.cmd === 'spawn fallback');
+  assert.deepEqual(fallback.detail.browser_kit.attached, []);
+  assert.deepEqual(fallback.detail.browser_kit.omitted, ['playwright']);
+  assert.match(fallback.detail.browser_kit.warning, /agy.*without it/);
+});
+
 test('policy refusal on a successful exit advances the ordered routes without outage retries', (t) => {
   const h = setup(t, { reason: 'refusal', chain: true });
   const result = h.spawn();

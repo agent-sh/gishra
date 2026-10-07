@@ -28,6 +28,63 @@ function setRung(h, rung, flags) {
 
 const commandRung = (h, rung, argv) => setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(argv)]);
 
+test('design tasks dispatch without a kit on unsupported worker, review and small harnesses and report the omission', (t) => {
+  const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--kind', 'design']);
+  for (const harness of ['pi', 'opencode', 'command']) {
+    for (const role of ['medium', 'review', 'small']) {
+      setRung(h, role, harness === 'command'
+        ? ['--harness', harness, '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]
+        : ['--harness', harness, '--model', 'fixture']);
+      const seen = dry(h, role);
+      assert.deepEqual(seen.home.mcp, []);
+      assert.deepEqual(seen.browser_kit.omitted, ['playwright']);
+      assert.match(seen.browser_kit.warning, /browser kit.*without it/);
+      assert.match(h.ok(['spawn', '--role', role, '--task', 'T1', '--dry-run']), /browser kit.*without it/);
+    }
+  }
+  const started = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(started.code, 0);
+  assert.match(started.browser_kit.warning, /command.*without it/);
+  const recorded = h.readState('tasks.json');
+  assert.equal(recorded.tasks[0].kind, 'design');
+  const event = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).find((e) => e.cmd === 'spawn');
+  assert.deepEqual(event.detail.browser_kit, started.browser_kit);
+});
+
+test('explicit browser needs refuse only when no route can provide the kit', (t) => {
+  const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
+  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)']);
+  const missing = h.run(['spawn', '--task', 'T1', '--dry-run']);
+  assert.notEqual(missing.code, 0);
+  assert.match(missing.stderr, /browser/);
+  assert.equal(fs.existsSync(path.join(h.base, 'repo-worktrees')), false);
+  const home = path.join(h.base, 'user');
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers: { playwright: { command: 'browser-server' } } }));
+  h.ok(['ladder', 'set', 'medium', '--fallbacks', '[{"harness":"claude","model":"fixture"}]']);
+  const routed = h.json(['spawn', '--task', 'T1', '--dry-run'], {
+    env: { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: '' },
+  });
+  assert.match(routed.browser_kit.warning, /command.*without it/);
+});
+
+test('design tasks with an unconfigured kit still dispatch on supported harnesses', (t) => {
+  const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--kind', 'design']);
+  const home = path.join(h.base, 'unconfigured-user');
+  fs.mkdirSync(home);
+  for (const harness of ['claude', 'codex']) {
+    setRung(h, 'medium', ['--harness', harness, '--model', 'fixture']);
+    const seen = h.json(['spawn', '--task', 'T1', '--dry-run'], {
+      env: { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex') },
+    });
+    assert.deepEqual(seen.home.mcp, []);
+    assert.match(seen.browser_kit.warning, /playwright.*without it/);
+  }
+});
+
 function writeSkill(plugin, name, body) {
   const file = path.join(plugin, 'skills', name, 'SKILL.md');
   fs.mkdirSync(path.dirname(file), { recursive: true });

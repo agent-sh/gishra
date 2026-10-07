@@ -44,22 +44,28 @@ async function until(fn, what, ms = 15000) {
 async function openBrowser(t) {
   const profile = fs.mkdtempSync(path.join(process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), 'tower-crane-chrome-'));
   const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
+  const sandboxed = process.env.TOWER_CRANE_SANDBOX === '1';
   // Chrome's user/SUID sandbox cannot nest in the harness's outer sandbox.
   // Temp-backed shared memory avoids granting writes to the host's /dev/shm.
-  if (process.env.TOWER_CRANE_SANDBOX === '1') args.push('--no-sandbox', '--disable-dev-shm-usage');
-  const config = path.join(profile, 'config');
-  const cache = path.join(profile, 'cache');
-  const tmp = path.join(profile, 'tmp');
-  for (const dir of [config, cache, tmp]) fs.mkdirSync(dir);
-  // Crashpad and first-run caches must not write under the agent's HOME.
-  const env = {
-    ...process.env, HOME: profile, USERPROFILE: profile,
-    XDG_CONFIG_HOME: config, XDG_CACHE_HOME: cache, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
-  };
-  const proc = cp.spawn(CHROME, [...args, 'about:blank'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  let env;
+  if (sandboxed) {
+    args.push('--no-sandbox', '--disable-dev-shm-usage');
+    const config = path.join(profile, 'config');
+    const cache = path.join(profile, 'cache');
+    const tmp = path.join(profile, 'tmp');
+    for (const dir of [config, cache, tmp]) fs.mkdirSync(dir);
+    // Crashpad and first-run caches must not write under the agent's HOME.
+    env = {
+      ...process.env, HOME: profile, USERPROFILE: profile,
+      XDG_CONFIG_HOME: config, XDG_CACHE_HOME: cache, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
+    };
+  } else if (process.getuid && process.getuid() === 0) args.push('--no-sandbox');
+  const proc = cp.spawn(CHROME, [...args, 'about:blank'], {
+    ...(env ? { env } : {}), stdio: sandboxed ? ['ignore', 'ignore', 'pipe'] : 'ignore',
+  });
   let stderr = '';
   let failure = null;
-  proc.stderr.on('data', (data) => { stderr = (stderr + data).slice(-16384); });
+  proc.stderr?.on('data', (data) => { stderr = (stderr + data).slice(-16384); });
   proc.on('error', (error) => { failure = error.message; });
   const closed = new Promise((resolve) => proc.on('close', (code, signal) => {
     failure ||= signal ? `signal ${signal}` : `exit code ${code}`;

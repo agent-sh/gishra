@@ -36,7 +36,7 @@ test('a missing browser reports its spawn error and cleans up its profile', (t) 
 });
 
 for (const sandbox of ['0', '1']) {
-  test(`Chrome startup in sandbox=${sandbox} keeps its files in the temp profile and reports an early exit`, {
+  test(`Chrome startup in sandbox=${sandbox} isolates browser files only inside the sandbox and reports an early exit`, {
     skip: process.platform === 'win32' && 'browser fixture uses a shebang',
   }, (t) => {
     const h = makeRepo(t);
@@ -47,19 +47,42 @@ fs.writeFileSync(process.env.CHROME_REPORT, JSON.stringify({
   args: process.argv.slice(2), home: process.env.HOME,
   config: process.env.XDG_CONFIG_HOME, cache: process.env.XDG_CACHE_HOME,
   tmp: process.env.TMPDIR,
+  temp: process.env.TEMP, winTmp: process.env.TMP, userProfile: process.env.USERPROFILE,
+  profileEntries: fs.readdirSync(process.argv.slice(2).find((arg) => arg.startsWith('--user-data-dir=')).slice('--user-data-dir='.length)),
 }));
 console.error('fixture Chrome sandbox failure');
 process.exit(23);
 `, { mode: 0o755 });
+    const hostEnv = {
+      HOME: path.join(h.base, 'host-home'), USERPROFILE: path.join(h.base, 'host-user-profile'),
+      XDG_CONFIG_HOME: path.join(h.base, 'host-config'), XDG_CACHE_HOME: path.join(h.base, 'host-cache'),
+      TMPDIR: path.join(h.base, 'host-tmp'), TEMP: path.join(h.base, 'host-temp'), TMP: path.join(h.base, 'host-win-tmp'),
+    };
+    Object.assign(h.env, hostEnv);
     const result = attempt(h, chrome, sandbox);
-    assert.match(result.error, /Chrome.*23.*fixture Chrome sandbox failure/s);
+    assert.match(result.error, /Chrome.*23/s);
+    if (sandbox === '1') assert.match(result.error, /fixture Chrome sandbox failure/);
+    else assert.doesNotMatch(result.error, /fixture Chrome sandbox failure/, 'host Chrome keeps ignored stderr');
     const seen = JSON.parse(fs.readFileSync(path.join(h.base, 'chrome.json'), 'utf8'));
-    assert.equal(seen.args.includes('--no-sandbox'), sandbox === '1');
+    assert.equal(seen.args.includes('--no-sandbox'), sandbox === '1' || (process.getuid && process.getuid() === 0));
     assert.equal(seen.args.includes('--disable-dev-shm-usage'), sandbox === '1');
     const profile = seen.args.find((a) => a.startsWith('--user-data-dir=')).slice('--user-data-dir='.length);
+    assert.deepEqual(seen.args, [
+      '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions',
+      ...(sandbox === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : process.getuid && process.getuid() === 0 ? ['--no-sandbox'] : []),
+      'about:blank',
+    ]);
     assert.equal(path.dirname(profile), h.base);
-    assert.equal(seen.home, profile);
-    for (const dir of [seen.config, seen.cache, seen.tmp]) assert.equal(path.dirname(dir), profile);
+    if (sandbox === '1') {
+      assert.equal(seen.home, profile);
+      assert.equal(seen.userProfile, profile);
+      for (const dir of [seen.config, seen.cache, seen.tmp, seen.temp, seen.winTmp]) assert.equal(path.dirname(dir), profile);
+    } else {
+      assert.deepEqual(seen.profileEntries, [], 'host profiles have no sandbox config/cache/temp directories');
+      assert.deepEqual([seen.home, seen.config, seen.cache, seen.tmp, seen.temp, seen.winTmp, seen.userProfile],
+        [hostEnv.HOME, hostEnv.XDG_CONFIG_HOME, hostEnv.XDG_CACHE_HOME, hostEnv.TMPDIR, hostEnv.TEMP, hostEnv.TMP, hostEnv.USERPROFILE]);
+    }
     assert.equal(fs.existsSync(profile), false, 'even a failed launch removes the profile');
   });
 }
