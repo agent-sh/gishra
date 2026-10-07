@@ -155,7 +155,8 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   const seen = u.report();
   assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'user memory stays out');
   assert.match(seen.memory.join('\n'), /^# tower-crane-small/m, 'the role instructions load instead');
-  assert.deepEqual(seen.hooks, [], 'no user, project or local hooks');
+  assert.deepEqual(Object.keys(seen.settings.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
+  assert.ok(!JSON.stringify(seen.hooks).includes('planted'), 'no user, project or local hooks');
   assert.deepEqual(seen.mcp, {}, 'no MCP server');
   assert.deepEqual(seen.rules, [], 'no approved-command rules');
   assert.deepEqual(seen.settings.env, { CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: 'us-east-1' }, 'provider settings only, never a credential');
@@ -199,7 +200,10 @@ test('a spawned codex agent loads none of the user memory, instructions, MCP ser
   assert.equal(seen.env, `AWS_BEARER_TOKEN_BEDROCK=${SECRET}-ENV\n`, '.env reaches the agent');
   assert.equal(seen.config.model_provider, 'p', 'the provider is kept');
   assert.deepEqual(seen.config.model_providers, { p: { name: 'P', env_key: 'P_KEY' }, q: { name: 'Q', env_key: 'Q_KEY', wire_api: 'responses' } }, 'providers in any layout, without credentials');
-  for (const k of ['approval_policy', 'notify', 'model_instructions_file']) assert.equal(seen.config[k], undefined, `${k} is the user's, not the role's`);
+  for (const k of ['approval_policy', 'model_instructions_file']) assert.equal(seen.config[k], undefined, `${k} is the user's, not the role's`);
+  assert.ok(seen.config.notify.includes(path.join(ROOT, 'lib', 'hook-bridge.js')));
+  assert.ok(!seen.config.notify.includes('planted-notify'));
+  assert.deepEqual(Object.keys(seen.config.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
   const home = path.join(h.state, 'homes', started.agent);
   for (const f of ['auth.json', '.env']) assert.ok(fs.lstatSync(path.join(home, f)).isSymbolicLink(), `${f} is linked`);
   assert.equal(fs.readFileSync(path.join(home, 'sol.config.toml'), 'utf8'), 'model = "s"\n\n[model_providers.r]\nname = "R"\n', 'the profile without its tokens or instructions');
