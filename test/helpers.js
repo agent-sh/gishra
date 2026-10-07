@@ -76,7 +76,7 @@ function makeRepo(t) {
     readState: (file) => JSON.parse(fs.readFileSync(path.join(ctx.state, file), 'utf8')),
     writeState: (file, data) => fs.writeFileSync(path.join(ctx.state, file), JSON.stringify(data, null, 2) + '\n'),
     git: (args, cwd = repo) => git(args, cwd, env),
-    init: (extra = []) => ctx.ok(['init', '--name', 'demo', '--goal', 'prove the engine', ...extra]),
+    init: (extra = []) => ctx.ok(['init', '--name', 'demo', '--goal', 'prove the engine', ...(ctx.gateSettings || []), ...extra]),
   };
   if (t) t.after(ctx.cleanup);
   return ctx;

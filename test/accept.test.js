@@ -23,6 +23,7 @@ test('accept refuses a code task without gates, and a review by the submitter do
   const h = makeRepo(t);
   h.init();
   submitted(h);
+  h.ok(['project', 'set', '--tests-cmd', 'null']);
   const none = h.run(['accept', 'T1']);
   assert.equal(none.code, 1);
   assert.match(none.stderr, /tests: no tests evidence/);
@@ -77,6 +78,7 @@ test('a revision bump invalidates earlier evidence', (t) => {
   ev(h, 'clean', 'w-1');
   ev(h, 'review', 'r-1');
   h.ok(['task', 'update', 'T1', '--acceptance', 'it works', '--acceptance', 'and logs it']);
+  h.ok(['project', 'set', '--tests-cmd', 'null']);
   const r = h.run(['accept', 'T1']);
   assert.equal(r.code, 1);
   assert.ok(r.stderr.includes(`no tests evidence at ${h.sha.slice(0, 7)} for revision 2`));
