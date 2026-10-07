@@ -254,6 +254,17 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['git', 'push', 'origin', '--delete', 'gone'], 126, 126],
     [['git', 'push', '-d', 'origin', 'gone'], 126, 126],
     [['git', 'push', '--prune', 'origin', 'refs/heads/*:refs/heads/*'], 126, 126],
+    // git takes abbreviated options; a push to another machine may use only
+    // exact, harmless ones.
+    ...['--del', '--pru', '--forc', '--mir', '--all', '--tags', '--no-verify'].map((o) => [['git', 'push', o, 'origin', 'HEAD:refs/heads/x'], 126, 126]),
+    [['git', 'push', '-o', 'x', 'origin', 'HEAD:refs/heads/x'], 126, 126],
+    [['git', 'push', 'origin', '--del', 'x'], 126, 126],
+    [['git', 'push', '-u', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
+    [['git', 'push', '--set-upstream', '-q', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
+    // Configuration that turns a plain push into a mirror.
+    [['git', 'config', 'remote.origin.mirror', 'true'], 0, 0],
+    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 126, 126],
+    [['git', 'config', '--unset', 'remote.origin.mirror'], 0, 0],
     [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], NET, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
