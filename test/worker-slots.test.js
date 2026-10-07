@@ -309,11 +309,14 @@ test('sandboxed claims and expired renewals cannot discard hidden live reservati
   }
 });
 
-test('only a trusted observer can free a reservation by verified process exit', (t) => {
+test('a reservation ends at its monitor exit or lease horizon, the same for every observer', (t) => {
   const h = setup(t, 1);
   h.ok(['ladder', 'set', 'easy', '--harness', 'command',
     '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)']), '--clear', 'profile', '--clear', 'effort']);
-  h.json(['spawn', '--task', 'T1', '--wait']);
+  const spawned = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.ok(events(h).some((e) => e.cmd === 'spawn phase' && e.detail.agent === spawned.agent && e.detail.active === false));
+  // No exit receipt was recorded; MONITOR_SILENT also drops the monitor's
+  // closing phase, and AGED moves the attempt's records past one lease.
   const hook = path.join(h.base, 'missing-exit-receipts.js');
   fs.writeFileSync(hook, `
 const fs = require('node:fs');
@@ -325,17 +328,44 @@ fs.readFileSync = function(file, ...args) {
     if (!line) return [line];
     const e = JSON.parse(line);
     if (['spawn exit', 'worker-exited'].includes(e.cmd)) return [];
-    if (process.env.UNKNOWN_SLOT && ['spawn', 'spawn phase'].includes(e.cmd)) e.detail.host = 'unobservable-host';
+    if (process.env.MONITOR_SILENT && e.cmd === 'spawn phase' && e.detail.active === false) return [];
+    if (process.env.AGED && e.task === 'T1') e.at = new Date(Date.parse(e.at) - 61 * 60000).toISOString();
     return [JSON.stringify(e)];
   }).join('\\n');
 };
 `);
-  const opts = { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } };
-  const worker = h.run(['claim', 'T2', '--agent', 'worker-T2-1'], opts);
-  assert.equal(worker.code, 1, worker.stderr);
-  assert.match(worker.stderr, /T1.*worker-T1-1.*reservation/);
-  const unknown = h.run(['claim', 'T2', '--agent', 'orchestrator'], { env: { ...opts.env, UNKNOWN_SLOT: '1' } });
-  assert.equal(unknown.code, 1, unknown.stderr);
-  assert.match(unknown.stderr, /T1.*worker-T1-1.*reservation/);
-  h.ok(['claim', 'T2', '--agent', 'orchestrator'], opts);
+  const run = (agent, extra) => h.run(['claim', 'T2', '--agent', agent], {
+    env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"`, ...extra },
+    hooks: { HOOK_HIDDEN_PIDS: agent === 'orchestrator' ? '[]' : JSON.stringify([spawned.pid, spawned.monitor_pid]) },
+  });
+  for (const agent of ['worker-T2-1', 'orchestrator']) {
+    const held = run(agent, { MONITOR_SILENT: '1' });
+    assert.equal(held.code, 1, held.stderr);
+    assert.match(held.stderr, /T1.*worker-T1-1.*reservation/);
+    for (const extra of [{}, { MONITOR_SILENT: '1', AGED: '1' }]) {
+      const r = run(agent, extra);
+      assert.equal(r.code, 0, `${agent} ${JSON.stringify(extra)}: ${r.stderr}`);
+      h.ok(['release', 'T2', '--agent', agent, '--reason', 'slot checked']);
+    }
+  }
+});
+
+test('historical worker spawns from the 2026-10-07 log hold no slot for a sandboxed claim', (t) => {
+  // 61 spawn, claim and exit events copied from the live log as T71 was
+  // reverted: 23 unclaimed worker spawns without exit receipts.
+  const fixture = fs.readFileSync(path.join(__dirname, 'fixtures', 'live-slots-2026-10-07.jsonl'), 'utf8');
+  const h = setup(t, 5, 6);
+  for (let i = 1; i <= 4; i++) h.ok(['claim', `T${i}`, '--agent', `held-${i}`]);
+  const log = path.join(h.state, 'events.jsonl');
+  fs.writeFileSync(log, fixture + fs.readFileSync(log, 'utf8'));
+  const pids = fixture.trim().split('\n').map(JSON.parse).flatMap((e) => [e.detail.pid, e.detail.monitor_pid]).filter(Boolean);
+  const hidden = { hooks: { HOOK_HIDDEN_PIDS: JSON.stringify([...new Set(pids)]) } };
+  const claim = h.run(['claim', 'T5', '--agent', 'worker-T5-9'], hidden);
+  assert.equal(claim.code, 0, claim.stderr);
+  for (const [agent, opts] of [['worker-T6-1', hidden], ['orchestrator', {}]]) {
+    const full = h.run(['claim', 'T6', '--agent', agent], opts);
+    assert.equal(full.code, 1, full.stderr);
+    assert.match(full.stderr, /\(5 worker slots held, limit 5\)/);
+    assert.doesNotMatch(full.stderr, /reservation/);
+  }
 });
