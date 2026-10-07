@@ -94,6 +94,7 @@ test('project set and init help document the JSON settings and clearing value', 
     assert.match(help, /--tests-expensive JSON.*null/);
     assert.match(help, /--ci-ignore-apps JSON.*null/);
     assert.match(help, /--ci-required JSON.*null/);
+    assert.match(help, /--decision-delegation JSON.*owner only/);
   }
 });
 
@@ -172,17 +173,42 @@ test('project set and show text print configured lists and their defaults alongs
   const defaults = h.ok(['project', 'show']);
   assert.match(defaults, /tests\.paths: default layouts/);
   assert.match(defaults, /ci\.ignore_apps: \[\]/);
+  assert.match(defaults, /decision_delegation\.orchestrator_technical: false/);
   assert.match(defaults, /ladder \(default harness /);
 
   const set = h.ok(['project', 'set', '--tests-paths', '["qa/"]', '--ci-ignore-apps', '["claude","cursor"]']);
   assert.match(set, /tests\.paths: \["qa\/"\]/);
   assert.match(set, /ci\.ignore_apps: \["claude","cursor"\]/);
   assert.equal(h.ok(['project', 'show']), set);
+  const delegated = h.json([
+    'project', 'set', '--decision-delegation', '{"orchestrator_technical":true}', '--agent', 'owner',
+  ]);
+  assert.deepEqual(delegated.decision_delegation, { orchestrator_technical: true });
+  assert.match(h.ok(['project', 'show']), /decision_delegation\.orchestrator_technical: true/);
+  assert.match(h.ok(['project', 'set', '--decision-delegation', 'null', '--agent', 'owner']), /decision_delegation\.orchestrator_technical: false/);
+  assert.equal(h.ok(['project', 'show']), set);
 
   const empty = h.ok(['project', 'set', '--ci-ignore-apps', '[]']);
   assert.match(empty, /ci\.ignore_apps: \[\]/);
   const cleared = h.ok(['project', 'set', '--tests-paths', 'null', '--ci-ignore-apps', 'null']);
   assert.equal(cleared, defaults);
+});
+
+test('decision delegation accepts only its supported project rule', (t) => {
+  const initialized = makeRepo(t);
+  initialized.init(['--decision-delegation', '{"orchestrator_technical":true}', '--agent', 'owner']);
+  assert.deepEqual(initialized.json(['project', 'show']).decision_delegation, { orchestrator_technical: true });
+
+  const h = makeRepo(t);
+  h.init();
+  const files = ['project.json', 'events.jsonl'];
+  const before = files.map((file) => fs.readFileSync(path.join(h.state, file), 'utf8'));
+  for (const value of ['[', '[]', 'true', '{"orchestrator_technical":1}', '{"unexpected":true}']) {
+    const result = h.run(['project', 'set', '--name', 'must not persist', '--decision-delegation', value, '--agent', 'owner']);
+    assert.equal(result.code, 2, `${value}: ${result.stderr}`);
+    assert.match(result.stderr, /--decision-delegation/);
+    assert.deepEqual(files.map((file) => fs.readFileSync(path.join(h.state, file), 'utf8')), before);
+  }
 });
 
 test('test modes, kind overrides and expensive suites can be set, replaced and cleared', (t) => {
@@ -214,6 +240,7 @@ for (const [flag, value] of [
   ['--tests-mode', 'none'], ['--tests-by-kind', '{"code":"run-only"}'],
   ['--tests-expensive', 'true'], ['--tests-paths', '["src/**"]'], ['--tests-keep', '["lib/**"]'],
   ['--ci-local', JSON.stringify({ command: [process.execPath, '-e', ''], timeout: 5 })],
+  ['--decision-delegation', '{"orchestrator_technical":true}'],
 ]) {
   test(`${flag} requires explicit owner on init and project set without writing state`, (t) => {
     const h = makeRepo(t);

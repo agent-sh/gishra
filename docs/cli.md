@@ -4,7 +4,7 @@
 
 Agent identity comes from `--agent NAME`, then `TOWER_CRANE_AGENT`. With neither, `owner` is used only when stdin and stdout are both TTYs and `TOWER_CRANE_TASK` is unset. Otherwise the command exits 2 with `no agent: pass --agent NAME or set TOWER_CRANE_AGENT` and writes nothing. An empty or whitespace-only identity exits 2 with the same message. Help needs no agent.
 
-`accept --waive`, `owner-done`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's live or unverified claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `TOWER_CRANE_AGENT=owner`. The terminal fallback never grants these owner powers. Any agent may release a spawned claim verified exited under the lock. An agent requests other owner action with `tower-crane ask` or a task note.
+`accept --waive`, `owner-done`, `decision delegate`, `project set --decision-delegation`, clearing or replacing an existing `needs_owner` through `task update`, and releasing another agent's live or unverified claim require the resolved name to be exactly `owner`, supplied explicitly by `--agent owner` or `TOWER_CRANE_AGENT=owner`. The terminal fallback never grants these owner powers. Any agent may release a spawned claim verified exited under the lock. An agent requests other owner action with `tower-crane ask` or a task note.
 
 Writes take the lock, re-read the files, validate, write atomically, append to `events.jsonl` and re-render the sketch. `render` takes the lock too. A refused command writes nothing.
 
@@ -13,8 +13,8 @@ Writes take the lock, re-read the files, validate, write atomically, append to `
 | Command | Does |
 |---|---|
 | `init --name N --goal G [--repo O/R] [--base B] [settings]` | create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid |
-| `project set [--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON]` | change settings, limits and budget |
-| `project show` | print settings, including `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch` and `merge.admin`, and the resolved ladder |
+| `project set [--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--decision-delegation JSON]` | change settings, limits and budget |
+| `project show` | print settings, including `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch`, `merge.admin` and `decision_delegation.orchestrator_technical`, and the resolved ladder |
 | `ladder show` | print each rung as it resolves: harness (and whether it is the default), model, profile, provider, effort, args, and where the rung comes from (project, user file or built-in); also the default harness, its source, the user file path, and every rung that cannot run (`problems` under `--json`) |
 | `ladder set RUNG [--harness H] [--model M] [--profile P] [--provider P] [--effort E] [--args JSON] [--command JSON] [--supervision JSON] [--fallbacks JSON] [--tools JSON] [--mcp JSON] [--clear FIELD]...` | change the named fields of one rung and keep the rest; `--fallbacks` is an ordered array of route objects; `--tools` and `--mcp` (claude and codex only) opt the rung back in to tools and MCP servers its agent file leaves out. Changing a rung's harness (or the default harness), `--args`, `--command`, `--fallbacks`, `--tools` or `--mcp` needs the explicit owner identity; `--args` on a claude or codex rung may hold only a short list of safe flags; `--clear` removes a field (a cleared harness follows the default). A rung the project left out starts from the one it fell back to. Refused if it leaves a rung or fallback unable to run that could run before (state.md lists the checks); rungs already broken do not block it |
 | `ladder harness H` | set the default harness; every rung without its own moves to it. Owner only when a rung changes harness. Refused, naming the rungs, if one of them cannot run there (a codex profile on pi, a missing model) |
@@ -118,9 +118,12 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 | Command | Does |
 |---|---|
 | `ask --question Q --option A --option B [--recommend A] [--why W] [--blocks ID]...` | open a decision; prints its id |
-| `answer DID --choice C [--note T]` | answer it (any agent may record the owner's answer; the event names who). `C` must be one of the options when there are any; an answered decision stays answered |
+| `decision delegate DID [--answerers JSON] [--technical JSON]` | owner-only set named answerers or mark the decision technical; at least one field is required |
+| `answer DID --choice C [--note T]` | answer with explicit owner identity or an owner-named agent. The orchestrator may answer only a technical decision when project delegation allows it. `C` must be one of the options when there are any; an answered decision stays answered |
 | `decisions [--open]` | list |
 | `decision note DID TEXT` | append a comment; an explicit owner comment wakes the orchestrator and tasks blocked by the decision |
+
+`decision delegate DID --answerers '["worker-1"]'` replaces the decision's named answerers; `[]` clears them. `--technical true` marks it technical and `false` removes that mark. Both settings require explicit owner identity. `project set --decision-delegation '{"orchestrator_technical":true}' --agent owner` enables orchestrator answers for decisions the owner marked technical; it does not allow the orchestrator to answer other decisions. `null` clears the project rule. The answer event records the actor and its rule: `owner`, `owner-named-agent` or `owner-technical-delegation`.
 
 ## Event wakeups
 

@@ -67,6 +67,7 @@ const SETTINGS = {
   'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds, by_kind?: overrides}; null restores hosted CI'),
   'merge-keep-branch': str('JSON', 'true keeps merged task branches for retained worktrees; false or null restores deletion'),
   'merge-admin': str('JSON', 'owner only: true uses gh --admin for solely owned repos; false or null disables it'),
+  'decision-delegation': str('JSON', 'owner only: allow the orchestrator to answer owner-marked technical decisions; null clears'),
   'review-policy': str('JSON', 'owner-only review diff limits and canonical model prices; null clears the policy'),
 };
 
@@ -140,7 +141,8 @@ const COMMANDS = [
 
   { section: 'Decisions', name: 'ask', usage: '--question Q --option A --option B [--recommend A] [--why W] [--blocks ID]...', summary: 'open a decision; prints its id', flags: { question: str('Q', 'the question'), option: many('A', 'an allowed answer; repeat'), recommend: str('A', 'the recommended option'), why: str('W', 'the reasoning'), blocks: many('ID', 'a task that waits for the answer; repeat') }, required: ['question'], run: D.ask },
   { section: 'Decisions', name: 'decision note', pos: ['DID', 'TEXT...'], usage: 'DID TEXT', summary: 'append a comment on a decision', run: D.comment },
-  { section: 'Decisions', name: 'answer', pos: ['DID'], usage: 'DID --choice C [--note T]', summary: "record the owner's answer", flags: { choice: str('C', 'the chosen option'), note: str('T', 'context') }, required: ['choice'], run: D.answer },
+  { section: 'Decisions', name: 'decision delegate', pos: ['DID'], usage: 'DID [--answerers JSON] [--technical JSON]', summary: 'owner-only set named answerers or mark a decision technical', flags: { answerers: str('JSON', 'owner-named agents; [] clears the list'), technical: str('JSON', 'true or false') }, run: D.delegate },
+  { section: 'Decisions', name: 'answer', pos: ['DID'], usage: 'DID --choice C [--note T]', summary: 'answer under owner or owner-set delegation', flags: { choice: str('C', 'the chosen option'), note: str('T', 'context') }, required: ['choice'], run: D.answer },
   { section: 'Decisions', name: 'decisions', usage: '[--open]', summary: 'list decisions', flags: { open: bool('only open ones') }, run: D.list },
 
   { section: 'Views', name: 'status', summary: 'one screen: counts, ready tasks, open decisions, owner tasks, spend, expired leases, exited spawned claims', run: R.status },

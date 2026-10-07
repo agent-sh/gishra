@@ -26,7 +26,7 @@ The identity recorded in state and events comes from `--agent NAME`, then `TOWER
 
 | File | Holds |
 |---|---|
-| `project.json` | name, goal, repo, base branch, default harness and model ladder, limits, budgets, standards profile |
+| `project.json` | name, goal, repo, base branch, default harness and model ladder, limits, budgets, standards profile, owner policies |
 | `tasks.json` | every task and its status, evidence and spend |
 | `decisions.json` | questions for the owner and their answers |
 | `briefs/<task>.md` | shared task context and optional worker or reviewer sections, kept current by the orchestrator |
@@ -70,7 +70,8 @@ A marker's holder and modification time are read through one opened file descrip
     "small":        { "profile": "luna", "effort": "low" }
   },
   "limits": { "workers": 6, "lease_minutes": 60 },
-  "budget": { "hours": 40, "tokens": 20000000 }
+  "budget": { "hours": 40, "tokens": 20000000 },
+  "decision_delegation": { "orchestrator_technical": true }
 }
 ```
 
@@ -89,6 +90,8 @@ If an expired pre-claim already belongs to the generated worker, dispatch renews
 `merge` is an optional object with boolean `keep_branch` and `admin` fields, both defaulting to false. `keep_branch: true` omits `gh pr merge --delete-branch` so retained worktrees can keep their task branches; it also keeps branches without a worktree. Only owner-set `admin: true` adds `--admin` for repositories solely owned by the project owner, as allowed by SHARED.md. A command argument cannot enable admin merging; `merge --admin` is refused. Neither option skips Tower Crane's acceptance gates or its accepted-head check.
 
 Set these fields through `project set --merge-keep-branch true --merge-admin true`, or the same flags on `init`. They accept JSON true, false or null. Null clears that field, preserving other merge settings and removing an empty merge object. Changes to `merge.admin`, including clearing or setting an unchanged value, require explicit owner identity from `--agent` or `TOWER_CRANE_AGENT`; terminal fallback is insufficient. Refused changes write no state or events. `project show` prints both resolved defaults.
+
+`decision_delegation` is an optional owner policy. Its `orchestrator_technical` boolean defaults to false. Set it with `project set --decision-delegation '{"orchestrator_technical":true}'` or the same flag on `init`; `null` clears it. Setting, repeating or clearing it requires explicit owner identity. When true, the orchestrator may answer a decision only after the owner marks that decision technical with `decision delegate DID --technical true`.
 
 Every use of `init --ci-local` or `project set --ci-local`, including setting the current value or clearing it with `null`, requires explicit owner identity. Refused calls write no settings or events.
 
@@ -350,19 +353,24 @@ The standards profile may add gates. `--waive TYPE --reason TEXT` records an own
       "recommendation": "postgres",
       "why": "keys must survive a Redis flush; volume is 30/s",
       "blocks": ["T3"],
+      "answerers": [],
+      "technical": false,
       "status": "open",
       "answer": null,
       "note": null,
       "asked_by": "orchestrator",
       "asked_at": "...",
       "answered_by": null,
-      "answered_at": null
+      "answered_at": null,
+      "answer_rule": null
     }
   ]
 }
 ```
 
-A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
+A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. Only an explicit owner identity can answer every decision. `answerers` lists agents the owner named with `decision delegate DID --answerers JSON`; the owner can replace the list or clear it with `[]`. `technical` is set by the owner through the same command. The orchestrator can answer only when `technical` is true and `project.json` enables `decision_delegation.orchestrator_technical`. An answer stores `answered_by` and `answer_rule`; older decisions default to no named answerers, not technical, and no answer rule.
+
+Answer rules are `owner`, `owner-named-agent` and `owner-technical-delegation`. The `answer` event records the actor in `agent` and `detail.answered_by`, and the rule in `detail.answer_rule`. Refused answers write no event. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
 
 ## events.jsonl
 

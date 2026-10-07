@@ -1,0 +1,87 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { makeRepo } = require('./helpers');
+
+function events(h) {
+  return fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+}
+
+test('only the owner or a named agent can answer, and the answer event records its rule', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres', '--agent', 'worker-ask']);
+
+  const before = events(h);
+  const denied = h.run(['answer', 'D1', '--choice', 'redis', '--agent', 'worker-other']);
+  assert.equal(denied.code, 1, denied.stderr);
+  assert.match(denied.stderr, /owner/);
+  assert.equal(h.readState('decisions.json').decisions[0].status, 'open');
+  assert.deepEqual(events(h), before, 'a refused answer writes no event');
+
+  const delegateDenied = h.run([
+    'decision', 'delegate', 'D1', '--answerers', '["worker-allowed"]', '--agent', 'worker-allowed',
+  ]);
+  assert.equal(delegateDenied.code, 1, delegateDenied.stderr);
+  assert.match(delegateDenied.stderr, /only the owner/);
+  assert.deepEqual(events(h), before, 'a worker cannot name itself');
+
+  h.ok(['decision', 'delegate', 'D1', '--answerers', '["worker-allowed"]', '--agent', 'owner']);
+  const stillDenied = h.run(['answer', 'D1', '--choice', 'redis', '--agent', 'worker-other']);
+  assert.equal(stillDenied.code, 1, stillDenied.stderr);
+  assert.match(stillDenied.stderr, /worker-allowed/);
+  assert.match(stillDenied.stderr, /owner/);
+
+  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'worker-allowed']);
+  const decision = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([decision.status, decision.answer, decision.answered_by, decision.answer_rule], [
+    'answered', 'redis', 'worker-allowed', 'owner-named-agent',
+  ]);
+  const answerEvent = events(h).findLast((event) => event.cmd === 'answer');
+  assert.equal(answerEvent.agent, 'worker-allowed');
+  assert.deepEqual(
+    [answerEvent.detail.answered_by, answerEvent.detail.answer_rule],
+    ['worker-allowed', 'owner-named-agent'],
+  );
+});
+
+test('the orchestrator answers only owner-marked technical decisions when project policy allows it', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres']);
+
+  h.ok(['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}', '--agent', 'owner']);
+  const unmarked = h.run(['answer', 'D1', '--choice', 'redis', '--agent', 'orchestrator']);
+  assert.equal(unmarked.code, 1, unmarked.stderr);
+  assert.match(unmarked.stderr, /owner/);
+
+  h.ok(['decision', 'delegate', 'D1', '--technical', 'true', '--agent', 'owner']);
+  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'orchestrator']);
+  const decision = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([decision.technical, decision.answered_by, decision.answer_rule], [
+    true, 'orchestrator', 'owner-technical-delegation',
+  ]);
+  const answerEvent = events(h).findLast((event) => event.cmd === 'answer');
+  assert.deepEqual(
+    [answerEvent.agent, answerEvent.detail.answer_rule],
+    ['orchestrator', 'owner-technical-delegation'],
+  );
+});
+
+test('the owner can always answer explicitly, and technical classification alone does not delegate', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres']);
+  h.ok(['decision', 'delegate', 'D1', '--technical', 'true', '--agent', 'owner']);
+
+  const denied = h.run(['answer', 'D1', '--choice', 'redis', '--agent', 'orchestrator']);
+  assert.equal(denied.code, 1, denied.stderr);
+  assert.match(denied.stderr, /owner/);
+
+  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'owner']);
+  const decision = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([decision.answered_by, decision.answer_rule], ['owner', 'owner']);
+});

@@ -180,10 +180,11 @@ test('terminal fallback cannot release another agent claim without explicit owne
   }
 });
 
-test('terminal fallback cannot set tests policy on init or project set', { skip: !PTY_AVAILABLE }, (t) => {
+test('terminal fallback cannot set owner policies on init or project set', { skip: !PTY_AVAILABLE }, (t) => {
   for (const [flag, value] of [
     ['--tests-mode', 'none'], ['--tests-by-kind', '{"code":"run-only"}'], ['--tests-expensive', 'true'],
     ['--tests-paths', '["src/**"]'], ['--tests-keep', '["lib/**"]'],
+    ['--decision-delegation', '{"orchestrator_technical":true}'],
   ]) {
     const h = makeRepo(t);
     const deniedInit = terminal(h, ['init', '--name', 'demo', '--goal', 'owner policy', flag, value]);
@@ -199,6 +200,22 @@ test('terminal fallback cannot set tests policy on init or project set', { skip:
     assert.deepEqual(h.readState('project.json'), project);
     assert.equal(events(h), before);
     assertOwnerRequest(deniedSet.stdout);
+  }
+});
+
+test('terminal fallback cannot answer or delegate a decision as the owner', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['ask', '--question', 'Which?', '--option', 'a', '--option', 'b']);
+  const before = events(h);
+  for (const args of [
+    ['answer', 'D1', '--choice', 'a'],
+    ['decision', 'delegate', 'D1', '--answerers', '["worker"]'],
+  ]) {
+    const denied = terminal(h, args);
+    assert.equal(denied.code, 1, denied.stdout + denied.stderr);
+    assert.match(denied.stdout, /explicit identity/);
+    assert.equal(events(h), before);
   }
 });
 
