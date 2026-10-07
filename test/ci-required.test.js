@@ -10,7 +10,9 @@ const { makeRepo, BIN } = require('./helpers');
 const REQUIRED = [
   'test (ubuntu-latest, node 26)',
   'test (ubuntu-latest, node 24)',
-  'test (windows-latest, node 26)',
+  'test (windows-latest, node 26, shard 1/3)',
+  'test (windows-latest, node 26, shard 2/3)',
+  'test (windows-latest, node 26, shard 3/3)',
 ];
 const CAP_POLICY = [{ app: 'revuto-review', pattern: 'reached the \\d+-round review limit' }];
 const github = path.join(__dirname, 'fixtures', 'github.js');
@@ -21,14 +23,16 @@ test('package support, CI matrix, and required jobs target Node 24 and 26', () =
   assert.equal(metadata.engines.node, '>=24');
 
   const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
-  const matrix = [...workflow.matchAll(/^\s+- \{ os: ([^,]+), node: (\d+) \}$/gm)]
-    .map(([, os, node]) => ({ os, node: Number(node) }));
+  const matrix = [...workflow.matchAll(/^\s+- \{ os: ([^,]+), node: (\d+), shard: '([^']*)' \}$/gm)]
+    .map(([, os, node, shard]) => ({ os, node: Number(node), shard }));
   assert.deepEqual(matrix, [
-    { os: 'ubuntu-latest', node: 26 },
-    { os: 'ubuntu-latest', node: 24 },
-    { os: 'windows-latest', node: 26 },
+    { os: 'ubuntu-latest', node: 26, shard: '' },
+    { os: 'ubuntu-latest', node: 24, shard: '' },
+    { os: 'windows-latest', node: 26, shard: '1/3' },
+    { os: 'windows-latest', node: 26, shard: '2/3' },
+    { os: 'windows-latest', node: 26, shard: '3/3' },
   ]);
-  assert.deepEqual(matrix.map(({ os, node }) => `test (${os}, node ${node})`), REQUIRED);
+  assert.deepEqual(matrix.map(({ os, node, shard }) => `test (${os}, node ${node}${shard ? `, shard ${shard}` : ''})`), REQUIRED);
 
   const requiredJson = JSON.stringify(REQUIRED);
   for (const file of ['docs/state.md', 'docs/cli.md']) {
@@ -131,7 +135,7 @@ test('a mergeable PR with only CodeQL and a capped review reports every missing 
   for (const name of REQUIRED) assert.ok(r.summary.includes(name), r.summary);
 });
 
-test('every named job must run, and all three successes pass even when reviews block merging', (t) => {
+test('every named job must run, and all required jobs pass even when reviews block merging', (t) => {
   const h = fixture(t);
   for (const missing of REQUIRED) {
     const r = h.check({ runs: [...CODEQL, ...REQUIRED.filter((name) => name !== missing).map((name) => run(name)), CAPPED] });
