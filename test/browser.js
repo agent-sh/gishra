@@ -68,8 +68,11 @@ async function openBrowser(t) {
   });
   let id = 0;
   const pending = new Map();
+  // Protocol events (Network.requestWillBeSent and the like), in order.
+  const seen = [];
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
+    if (msg.method) seen.push(msg);
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id)(msg);
       pending.delete(msg.id);
@@ -88,6 +91,8 @@ async function openBrowser(t) {
     return r.result.value;
   };
   return {
+    send,
+    seen,
     inPage,
     // Types into whatever has focus, as a keyboard would: a disabled field
     // cannot hold focus, so nothing lands there.
