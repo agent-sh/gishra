@@ -200,6 +200,20 @@ test('direct review dispatch refuses missing and failed gates and supplies lean 
   assert.equal(out.rung, 'review');
 });
 
+test('review packet uses role headings consistently and ignores fenced headings', (t) => {
+  const h = setup(t);
+  h.ok(['brief', 'set', 'T1', '-'], { input: [
+    '## Worker', 'BUILDER-HISTORY', '```md', '## Reviewer', 'FAKE-REVIEWER', '```',
+    '## rEvIeWeR', 'REVIEWER-ONLY instruction', '### Probe', 'keep this nested heading',
+    '## Shared', 'SHARED-HISTORY',
+  ].join('\n') });
+  ready(h);
+  const prompt = choice(h).argv.find((arg) => arg.includes('## Task'));
+  assert.match(prompt, /## rEvIeWeR\nREVIEWER-ONLY instruction/);
+  assert.match(prompt, /### Probe\nkeep this nested heading/);
+  for (const secret of ['BUILDER-HISTORY', 'FAKE-REVIEWER', 'SHARED-HISTORY']) assert.ok(!prompt.includes(secret));
+});
+
 function commandReviewer(h, out) {
   const script = `const fs = require('node:fs'); const cp = require('node:child_process');
 fs.writeFileSync(process.argv[1], process.argv[2]);
@@ -246,6 +260,18 @@ test('a failed automatic gate never starts a reviewer', (t) => {
   assert.equal(h.readState('tasks.json').tasks[0].evidence[0].type, 'tests');
 });
 
+test('automatic tests honor owner none mode and forward expensive proof commands', (t) => {
+  for (const expensive of [false, true]) {
+    const h = setup(t);
+    commandReviewer(h, path.join(h.base, 'review-context.txt'));
+    h.ok(['project', 'set', '--tests-mode', expensive ? 'prove' : 'none', '--tests-expensive', String(expensive)]);
+    const args = expensive ? ['--cmd', 'node test/value.test.js', '--proof-cmd', 'node {tests}'] : [];
+    assert.equal(h.json(['accept', 'T1', ...args]).review_pending, true);
+    const evidence = h.readState('tasks.json').tasks[0].evidence.find((e) => e.type === 'tests');
+    assert.equal(evidence.tests_mode, expensive ? 'prove' : 'none');
+    assert.equal(evidence.ok, true);
+  }
+});
 test('accept reuses an active review and direct dispatch refuses a duplicate', (t) => {
   const h = setup(t);
   ready(h);

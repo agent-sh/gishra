@@ -35,9 +35,6 @@ function writeSkill(plugin, name, body) {
 
 function reviewable(h) {
   h.ok(['task', 'update', 'T1', '--kind', 'docs']);
-  for (const name of ['easy', 'medium', 'hard', 'research']) {
-    h.ok(['ladder', 'set', name, '--model', 'builder', '--clear', 'profile']);
-  }
   h.ok(['claim', 'T1', '--agent', 'builder']);
   h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder']);
 }
@@ -107,6 +104,8 @@ test('spawn --dry-run builds each harness command', (t) => {
 
 test('spawn embeds the role skill before the brief for claude, codex, opencode and agy', (t) => {
   const h = setup(t);
+  h.ok(['task', 'update', 'T1', '--tier', 'easy']);
+  reviewable(h);
   const plugin = path.join(h.base, 'plugin');
   const bodies = {
     worker: 'WORKER_SKILL_BODY_SENTINEL\n\nFix the task in the worktree.',
@@ -133,7 +132,8 @@ test('spawn embeds the role skill before the brief for claude, codex, opencode a
       assert.ok(!prompt.includes(bodies[other]), `${harness} ${job} excludes the other role's skill`);
       assert.ok(!prompt.includes(`name: tower-crane-${job === 'worker' ? 'work' : 'review'}`));
       assert.ok(!prompt.includes('description: fixture frontmatter'), 'skill frontmatter is omitted');
-      assert.ok(prompt.indexOf(bodies[job]) < prompt.indexOf('start from the webhook handler'), 'the role skill comes before the brief');
+      const context = job === 'worker' ? 'start from the webhook handler' : 'Review T1 at';
+      assert.ok(prompt.indexOf(bodies[job]) < prompt.indexOf(context), 'the role skill comes before the task context');
     }
   }
 });
@@ -155,7 +155,7 @@ test('spawn warns when a role SKILL.md is missing', (t) => {
   assert.ok(!prompt.includes('Role instructions'));
 });
 
-test('spawn gives workers and reviewers only shared brief text and their own section', (t) => {
+test('spawn gives workers shared brief text and reviewers only their review section', (t) => {
   const h = setup(t);
   h.ok(['brief', 'set', 'T1', '-'], {
     input: [
@@ -183,11 +183,12 @@ test('spawn gives workers and reviewers only shared brief text and their own sec
   assert.ok(worker.includes('WORKER_BRIEF_SENTINEL'));
   assert.ok(!worker.includes('REVIEWER_BRIEF_SENTINEL'));
 
+  reviewable(h);
   const reviewer = dry(h, 'review').argv.find((arg) => arg.includes('## Task'));
-  assert.ok(reviewer.includes('SHARED_PREAMBLE_SENTINEL'));
-  assert.ok(reviewer.includes('FENCED_REVIEWER_SENTINEL'));
-  assert.ok(reviewer.includes('FENCED_WORKER_SENTINEL'));
-  assert.ok(reviewer.includes('SHARED_SECTION_SENTINEL'));
+  assert.ok(!reviewer.includes('SHARED_PREAMBLE_SENTINEL'));
+  assert.ok(!reviewer.includes('FENCED_REVIEWER_SENTINEL'));
+  assert.ok(!reviewer.includes('FENCED_WORKER_SENTINEL'));
+  assert.ok(!reviewer.includes('SHARED_SECTION_SENTINEL'));
   assert.ok(reviewer.includes('REVIEWER_BRIEF_SENTINEL'));
   assert.ok(!reviewer.includes('WORKER_BRIEF_SENTINEL'));
 });
@@ -377,6 +378,8 @@ test('command brief placeholders point to role-filtered temporary copies', async
   assert.ok(!workerCopy.text.includes('REVIEWER_ONLY_COMMAND'));
   assert.ok(!fs.existsSync(workerCopy.path));
 
+  reviewable(h);
+  commandRung(h, 'medium', [process.execPath, '-e', script, reviewerOut, '{brief}']);
   const reviewer = h.json(['spawn', '--role', 'review', '--task', 'T1'], { env: { TOWER_CRANE_TMP: tempRoot } });
   assert.equal(reviewer.agent, 'reviewer-T1-1');
   const deadline = Date.now() + 10000;
@@ -385,9 +388,9 @@ test('command brief placeholders point to role-filtered temporary copies', async
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const reviewerCopy = JSON.parse(fs.readFileSync(reviewerOut, 'utf8'));
-  assert.match(reviewerCopy.text, /SHARED_FOR_COMMANDS/);
+  assert.ok(!reviewerCopy.text.includes('SHARED_FOR_COMMANDS'));
   assert.match(reviewerCopy.text, /REVIEWER_ONLY_COMMAND/);
-  assert.match(reviewerCopy.text, /REWORK_SHARED_COMMAND/);
+  assert.ok(!reviewerCopy.text.includes('REWORK_SHARED_COMMAND'));
   assert.ok(!reviewerCopy.text.includes('WORKER_ONLY_COMMAND'));
   while (fs.existsSync(reviewerCopy.path)) {
     if (Date.now() > deadline) throw new Error('the monitor did not remove the reviewer brief copy');

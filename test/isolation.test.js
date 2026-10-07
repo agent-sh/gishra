@@ -114,9 +114,6 @@ function noSecretsCopied(h) {
 function spawn(h, u, role, env = {}) {
   if (role === 'review' && h.readState('tasks.json').tasks[0].status !== 'submitted') {
     h.ok(['task', 'update', 'T1', '--kind', 'docs']);
-    for (const name of ['easy', 'medium', 'hard', 'research']) {
-      h.ok(['ladder', 'set', name, '--model', 'builder', '--clear', 'profile']);
-    }
     h.ok(['claim', 'T1', '--agent', 'builder']);
     h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder']);
   }
