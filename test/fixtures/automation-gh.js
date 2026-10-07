@@ -33,7 +33,14 @@ if (args[0] === 'pr') {
       const executor = events.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running');
       process.kill(executor.detail.pid, 'SIGKILL');
     }
-  } else out = JSON.stringify(pr);
+  } else {
+    out = JSON.stringify(pr);
+    if (state.becomeMergeableAfterView) {
+      pr.mergeable = 'MERGEABLE';
+      pr.mergeStateStatus = 'CLEAN';
+      state.becomeMergeableAfterView = false;
+    }
+  }
 } else if (args[0] === 'api') {
   const sha = /commits\/([a-f\d]+)/.exec(args[1])?.[1];
   const status = state.ci?.[sha] || 'success';

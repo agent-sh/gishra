@@ -156,12 +156,19 @@ While a task is `submitted`, its recorded `submitted_by` agent can submit anothe
 
 The trusted `wait` watcher and dispatch supervisor react to submissions,
 worker exits, review evidence, acceptance, CI completions and confirmed
-merges. Submission runs unattempted software gates at the submitted head.
+merges. Submission runs unattempted tests, cleanup and source verification
+once the PR head matches, including while mergeability is unknown. CI,
+review dispatch and merging still require known mergeability.
 A tracked worker must exit before automatic review dispatch. Native
 workers without a recorded exit use explicit `accept` to dispatch review.
 Passing independent review accepts the task; accepted PRs with green
-gates merge through the existing head guards. A watcher catches up active
-PRs when starting, except a default `wait --timeout 0` cursor snapshot.
+gates merge through the existing head guards. A watcher creates a fresh
+reconciliation request for every active PR when starting, except a default
+`wait --timeout 0` cursor snapshot. It queries current mergeability even
+when the last reaction completed, recovering conflicts after merges that
+happened without a waiter. Existing evidence at the same head is reused.
+Reconciliation does not wait on a busy state lock; the next notification
+or existing fallback tick retries it within the wait's timeout.
 Filters apply to the returned event, not to the software reactions.
 
 After a confirmed merge, outstanding submitted or accepted PRs are checked

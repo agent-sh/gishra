@@ -476,6 +476,28 @@ test('an observer waiting for the state lock does not block its timeout', async 
   assert.equal((await writer.result).code, 0);
 });
 
+test('startup reconciliation with an active PR does not hold a timeout behind the state lock', async (t) => {
+  const h = setup(t);
+  h.sha = gateFixture(h);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
+  submit(h, ['--pr', '7']);
+  const paused = path.join(h.base, 'paused');
+  const ready = created(paused);
+  const writer = child(t, h, ['task', 'note', 'T1', 'owner comment'], { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused });
+  await ready;
+  try {
+    const before = performance.now();
+    const result = h.run(['wait', '--agent', 'orchestrator', '--types', 'never', '--timeout', '0.1']);
+    assert.equal(result.code, 2, result.stderr);
+    assert.equal(JSON.parse(result.stdout).type, 'timeout');
+    assert.ok(performance.now() - before < 2000, 'reconciliation waits for another notification rather than blocking');
+    assert.equal(log(h).filter((e) => e.cmd === 'automation reconcile').length, 0);
+  } finally {
+    fs.writeFileSync(`${paused}.go`, '');
+    assert.equal((await writer.result).code, 0);
+  }
+});
+
 test('timeout and invalid cursors have bounded exits and default now ignores history', async (t) => {
   const h = setup(t);
   h.ok(['msg', '--to', 'orchestrator', 'already handled']);

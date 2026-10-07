@@ -42,7 +42,12 @@ external notification; its payload is a hint to query GitHub, never gate
 evidence.
 
 The trusted `wait` watcher consumes submissions and catches up active PRs
-on startup. The dispatch supervisor handles submission and review after
+on startup through fresh reconciliation requests. Completed reaction
+receipts do not suppress checking current mergeability, so conflicts
+after a missed merge sweep still go to rework. Tests, cleanup and source
+verification run at a matching submitted head while mergeability is
+unknown; CI, review and merge retain their guards.
+The dispatch supervisor handles submission and review after
 agent exit even without a waiter. Native workers without an exit receipt
 use explicit `accept` for review dispatch. `ci completed ID --sha SHA` and
 `ci webhook FILE` receive host completion notifications. A host integration
@@ -58,4 +63,6 @@ Failures remain visible in gate receipts and task notes. Conflicting PRs
 return to rework with a file list. Unknown mergeability, failed transport,
 pending CI, moved heads and missing review never authorize a merge.
 Stack-head reconciliation, scope calculation and changelog fragments stay
-with T94, T95 and T86 respectively.
+with T94, T95 and T86 respectively. T99 owns merge-line ordering and fresh
+full-suite checks at the head of that line. Reconciliation here preserves
+existing evidence at an unchanged, mergeable head.

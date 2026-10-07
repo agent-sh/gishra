@@ -138,6 +138,87 @@ test('a merge sends another conflicting PR to rework with real filenames and pre
   assert.equal(h.git(['worktree', 'list', '--porcelain']).split('worktree ').length - 1, 1);
 });
 
+test('startup reconciles a newly conflicting PR after a merge happened without a waiter', (t) => {
+  const h = setup(t, { kind: 'docs' });
+  h.submit();
+  h.consume();
+  h.git(['switch', '-qc', 'other-change', 'main']);
+  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 2;\n');
+  h.git(['add', 'value.js']);
+  h.git(['commit', '-qm', 'other submitted change']);
+  const other = h.git(['rev-parse', 'HEAD']);
+  h.ok(['task', 'add', '--title', 'Other', '--acceptance', 'works', '--kind', 'docs']);
+  const state = h.github();
+  state.prs['8'] = { ...state.prs['7'], headRefOid: other, headRefName: 'other-change' };
+  h.saveGithub(state);
+  h.submit('T2', other, '8');
+  h.consume();
+  h.consume();
+  assert.equal(h.readState('tasks.json').tasks[1].status, 'submitted');
+  const ci = h.logs().findLast((e) => e.cmd === 'check ci' && e.task === 'T2');
+  assert.ok(h.logs().some((e) => e.cmd === 'automation' && e.detail.source === ci.id && e.detail.phase === 'done'));
+
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  const changed = h.github();
+  changed.advanceBase = true;
+  h.saveGithub(changed);
+  h.ok(['merge', 'T1', '--agent', 'orchestrator']);
+  const conflicting = h.github();
+  conflicting.prs['8'].mergeable = 'CONFLICTING';
+  conflicting.prs['8'].mergeStateStatus = 'DIRTY';
+  h.saveGithub(conflicting);
+  const before = h.git(['rev-parse', 'HEAD']);
+  const event = JSON.parse(h.ok(['wait', '--types', 'rework', '--timeout', '5', '--agent', 'orchestrator']));
+  assert.equal(event.task, 'T2');
+  const task = h.readState('tasks.json').tasks[1];
+  assert.equal(task.status, 'rework');
+  assert.match(task.notes.at(-1).text, /value\.js/);
+  assert.equal(h.git(['rev-parse', 'HEAD']), before);
+});
+
+test('a matching UNKNOWN head runs submission gates during the same wait', async (t) => {
+  const h = setup(t);
+  h.submit();
+  const state = h.github();
+  state.prs['7'].mergeable = state.prs['7'].mergeStateStatus = 'UNKNOWN';
+  state.becomeMergeableAfterView = true;
+  h.saveGithub(state);
+  const result = await h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0.2', '--agent', 'orchestrator']);
+  assert.equal(result.code, 2, result.stderr);
+  const task = h.readState('tasks.json').tasks[0];
+  assert.deepEqual(task.evidence.filter((e) => ['tests', 'clean'].includes(e.type)).map((e) => [e.type, e.ok]),
+    [['tests', true], ['clean', true]]);
+  assert.equal(task.status, 'submitted');
+  assert.equal(h.github().prs['7'].mergeable, 'MERGEABLE');
+  assert.equal(h.logs().filter((e) => e.cmd === 'spawn').length, 0);
+  assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+  const unknown = h.github();
+  unknown.prs['7'].mergeable = unknown.prs['7'].mergeStateStatus = 'UNKNOWN';
+  h.saveGithub(unknown);
+  h.consume();
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted',
+    'UNKNOWN still blocks acceptance even with earlier passing CI and independent review');
+  assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false);
+});
+
+test('startup retains gate evidence when main moves and the submitted head stays mergeable', (t) => {
+  const h = setup(t);
+  h.submit();
+  h.consume();
+  const before = h.readState('tasks.json').tasks[0].evidence;
+  h.git(['switch', 'main']);
+  fs.appendFileSync(path.join(h.repo, 'README.md'), 'Independent base update.\n');
+  h.git(['add', 'README.md']);
+  h.git(['commit', '-qm', 'advance main']);
+  h.consume();
+  const after = h.json(['task', 'show', 'T1']);
+  assert.deepEqual(after.evidence, before);
+  assert.ok(after.gates.gates.filter((g) => g.type !== 'review').every((g) => g.ok));
+});
+
 test('stale or unknown PR heads and missing review never merge', (t) => {
   const h = setup(t);
   h.submit();

@@ -494,6 +494,9 @@ tracked worker exits, accept independent passing review, merge accepted
 PRs with green gates, and detect conflicting outstanding PRs after merges.
 Conflict rework names the files and preserves the worker branch. Native
 workers without an exit record need explicit review dispatch.
+Tests, cleanup and source verification run when the submitted PR head
+matches, even with unknown mergeability. CI, review dispatch and merging
+retain their mergeability guards.
 
 `ci completed` records a `ci-completed` hint with `sha` and `revision`.
 The host delivers completion hints directly or through `ci webhook`
@@ -526,6 +529,15 @@ again, including after an executor dies before writing its receipt.
 Waiters retain automatic events even when their actor matches the waiter.
 Reactions run before event output filters, and active PRs catch up at
 watcher startup except a default zero-timeout cursor snapshot.
+`automation reconcile` records a fresh startup request for every active
+submitted or accepted PR, with `{sha, revision, startup}`; `startup` is a
+unique identifier for that watcher. It uses the same task reservation as
+other reactions and queries current PR state regardless of earlier
+completed receipts. A newly conflicting PR goes to rework even if its
+base moved while no watcher ran. Matching gate evidence is reused rather
+than rerun because of reconciliation. An idle startup writes no request.
+A busy state lock defers the request to the existing watch notification
+or fallback tick without holding the wait timeout.
 
 The append-only log is the event source of truth. One JSON object per line: `{ "id", "type", "to", "at", "agent", "cmd", "task", "detail" }`, plus `"via": "broker"` on an event the state broker wrote for a sandboxed agent or `"via": "automation"` on a software reaction (provenance, not proof). Every append occurs under the state lock after validation and state writes. Refused commands append nothing, except the `ask` an orchestrator's owner-required change opens ([Authority](#authority)). Each new event has a unique `E<uuid>` id. `cmd` preserves the command name (`task add`, `claim`, `spawn`, `check tests` and so on); `tower-crane spawn` counts its earlier `spawn` events to number agents. Older audit lines without ids remain readable; `wait` exposes their byte offsets for resuming.
 
