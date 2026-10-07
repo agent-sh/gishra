@@ -141,3 +141,25 @@ test('a harness without live usage is shown unavailable, never as zero', async (
   assert.equal(h.json(['status']).spend.missing_usage, 0, 'a running spawn is not yet missing usage');
   assert.match(h.ok(['status']), /usage unavailable from command while it runs/);
 });
+
+test('a budget lowered during retry backoff cancels the relaunch, records the stop and asks the owner', async (t) => {
+  const h = setup(t, 'claude', { retries: 1, backoff_ms: 60000, max_backoff_ms: 60000 });
+  const attempts = path.join(h.base, 'attempts');
+  const script = "const fs = require('node:fs'); fs.appendFileSync(process.argv[2], 'x');"
+    + " require('node:child_process').execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']); process.exit(75);";
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, require('./helpers').BIN, attempts])]);
+  h.ok(['spend', 'T1', '--agent', 'earlier', '--tokens', '5000']);
+  const spawned = h.json(['spawn', '--task', 'T1']);
+  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'retry was not scheduled');
+  h.ok(['project', 'set', '--budget-tokens', '1000']);
+  await until(() => exited(h, spawned.agent), 'the pending retry was not cancelled');
+  const log = events(h);
+  assert.equal(fs.readFileSync(attempts, 'utf8'), 'x', 'no paid attempt was launched');
+  assert.equal(log.filter((e) => e.cmd === 'spawn retry').length, 0);
+  const stop = log.find((e) => e.cmd === 'budget stop');
+  assert.deepEqual(stop.detail.breaches.map((b) => [b.scope, b.what, b.limit]), [['project', 'tokens', 1000]]);
+  assert.deepEqual(h.readState('decisions.json').decisions.find((d) => d.escalation).escalation.settings, ['budget.raise']);
+  const run = h.json(['task', 'show', 'T1']).run;
+  assert.equal(run.phase, 'blocked');
+  assert.match(run.reason, /tokens budget crossed/);
+});
