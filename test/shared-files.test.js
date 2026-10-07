@@ -55,6 +55,8 @@ test('generated command rows match real CLI help, preserve details and reject dr
   assert.equal(f.script('cli-docs.js').status, 0);
   assert.equal(f.check().status, 0);
   assert.ok(f.read('docs/cli.md').includes('| append a task note |'));
+  const prose = (text) => text.replace(/<!-- commands:[^\n]+:start -->[\s\S]*?<!-- commands:[^\n]+:end -->/g, '');
+  assert.equal(prose(f.read('docs/cli.md')), prose(docs), 'all contract descriptions and authority rules survive regeneration');
   assert.ok(f.read('docs/cli.md').includes('`init`: create the state directory and `project.json` with the default harness and ladder'), 'contract prose is preserved');
 
   for (const file of ['bin/tower-crane.js', 'docs/cli.md', 'changelog.d/T999.md']) {
