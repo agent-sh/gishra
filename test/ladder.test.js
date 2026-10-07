@@ -215,9 +215,9 @@ test('a ladder write is evented and re-renders the sketch with the ladder and ea
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Small fix', '--acceptance', 'a', '--size', 'S']);
-  h.ok(['ladder', 'set', 'easy', '--model', 'gpt-x', '--clear', 'profile', '--agent', 'w-1']);
+  h.ok(['ladder', 'set', 'easy', '--model', 'gpt-x', '--clear', 'profile', '--agent', 'orchestrator']);
   const ev = events(h).find((e) => e.cmd === 'ladder set');
-  assert.deepEqual([ev.agent, ev.detail], ['w-1', { rung: 'easy', model: 'gpt-x', effort: 'medium' }]);
+  assert.deepEqual([ev.agent, ev.detail], ['orchestrator', { rung: 'easy', model: 'gpt-x', effort: 'medium', authority: 'orchestrator' }]);
   assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'medium' });
   const html = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
   assert.match(html, /<tr data-rung="easy"><th scope="row">easy<\/th><td>codex \(default\)<\/td><td>gpt-x<\/td><td>medium<\/td>/);

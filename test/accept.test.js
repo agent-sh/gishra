@@ -143,14 +143,15 @@ test('accept runs missing CI for a non-code task with a PR', (t) => {
   assert.equal(h.readState('tasks.json').tasks[0].evidence.at(-1).type, 'ci');
 });
 
-test('only the owner can waive a gate, and a refused accept records no waiver', (t) => {
+test('only the owner can waive tests or clean, the orchestrator escalates, and a refused accept records no waiver', (t) => {
   const h = makeRepo(t);
   h.init();
   submitted(h);
   ev(h, 'review', 'r-1');
   const notOwner = h.run(['accept', 'T1', '--waive', 'tests', '--reason', 'no test harness', '--agent', 'orchestrator']);
   assert.equal(notOwner.code, 1);
-  assert.match(notOwner.stderr, /only the owner can waive/);
+  assert.match(notOwner.stderr, /waive\.tests is owner-required; opened D1 for the owner/);
+  assert.equal(h.readState('tasks.json').tasks[0].evidence.filter((e) => e.waived).length, 0);
   assert.equal(h.run(['accept', 'T1', '--waive', 'tests', '--agent', 'owner']).code, 2, '--reason is required');
 
   const partial = h.run(['accept', 'T1', '--waive', 'tests', '--reason', 'no test harness yet'], { env: { FIXTURE_GATE_OK: '0' } });
@@ -165,6 +166,23 @@ test('only the owner can waive a gate, and a refused accept records no waiver', 
     ['tests', 'owner', 'generated code'],
     ['clean', 'owner', 'generated code'],
   ]);
+});
+
+test('the orchestrator waives review for a capped or down reviewer and the waiver counts', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  submitted(h);
+  ev(h, 'tests', 'orchestrator');
+  ev(h, 'clean', 'orchestrator');
+  const waive = ['accept', 'T1', '--waive', 'review', '--reason', 'reviewer capped'];
+  const worker = h.run([...waive, '--agent', 'w-2']);
+  assert.equal(worker.code, 1, worker.stderr);
+  assert.match(worker.stderr, /waive\.review is operational/);
+  h.ok([...waive, '--agent', 'orchestrator']);
+  const task = h.readState('tasks.json').tasks[0];
+  assert.equal(task.status, 'accepted');
+  assert.deepEqual(task.evidence.filter((e) => e.waived).map((e) => [e.type, e.agent]), [['review', 'orchestrator']]);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
 });
 
 test('rework sends the task back with the reason in the brief, and it can be claimed again', (t) => {
