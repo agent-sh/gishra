@@ -369,3 +369,61 @@ test('historical worker spawns from the 2026-10-07 log hold no slot for a sandbo
     assert.doesNotMatch(full.stderr, /reservation/);
   }
 });
+
+// Monitor records as the supervisor writes them, timed relative to now.
+function monitorLog(h, records) {
+  const now = Date.now();
+  const lines = records.map(([ago, cmd, task, detail]) => JSON.stringify({
+    at: new Date(now - ago * 1000).toISOString(), agent: cmd === 'claim' ? detail.agent : 'owner', cmd, task,
+    detail: { role: 'worker', attempt: 1, ...detail },
+  }));
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), lines.join('\n') + '\n');
+  return { hooks: { HOOK_HIDDEN_PIDS: JSON.stringify([424201, 424202, 424203]) } };
+}
+
+test('an unclaimed retry keeps its slot through a backoff longer than the lease', (t) => {
+  const h = setup(t, 1);
+  h.ok(['project', 'set', '--lease-minutes', '1']);
+  const agent = 'worker-T1-1';
+  const hidden = monitorLog(h, [
+    [90, 'spawn', 'T1', { agent, pid: 424201, reserved: true, phase: 'running', retry: 0, active: true }],
+    [80, 'spawn phase', 'T1', { agent, pid: 424201, phase: 'retrying', retry: 1, backoff_ms: 120000, active: true }],
+  ]);
+  // The relaunch is 40 s away; the lease horizon after the last record passed.
+  const r = h.run(['claim', 'T2', '--agent', 'worker-T2-1'], hidden);
+  assert.equal(r.code, 1, r.stderr);
+  assert.match(r.stderr, /T1.*worker-T1-1.*reservation/);
+});
+
+test('a lapsed reservation is not revived by later monitor records', (t) => {
+  const h = setup(t, 2);
+  h.ok(['project', 'set', '--lease-minutes', '1']);
+  const agent = 'worker-T1-1';
+  const hidden = monitorLog(h, [
+    [150, 'spawn', 'T1', { agent, pid: 424201, reserved: true, phase: 'running', retry: 0, active: true }],
+    [140, 'spawn phase', 'T1', { agent, pid: 424201, phase: 'retrying', retry: 1, backoff_ms: 5000, active: true }],
+  ]);
+  // The slot lapsed 75 s after the backoff was scheduled; T2 took it.
+  h.ok(['claim', 'T2', '--agent', 'worker-T2-1'], hidden);
+  monitorLog(h, [
+    [30, 'spawn retry', 'T1', { agent, pid: 424202, phase: 'running', retry: 1, active: true }],
+    [30, 'spawn phase', 'T1', { agent, pid: 424202, phase: 'running', retry: 1, active: true }],
+  ]);
+  const r = h.run(['claim', 'T3', '--agent', 'worker-T3-1'], hidden);
+  assert.equal(r.code, 0, r.stderr);
+});
+
+test('a session receipt replaying the first attempt does not hide the retry exit', (t) => {
+  const h = setup(t, 1);
+  const agent = 'worker-T1-1';
+  const first = { agent, pid: 424201, reserved: true, phase: 'running', retry: 0, active: true };
+  const hidden = monitorLog(h, [
+    [40, 'spawn', 'T1', first],
+    [35, 'spawn phase', 'T1', { agent, pid: 424201, phase: 'retrying', retry: 1, backoff_ms: 1000, active: true }],
+    [30, 'spawn retry', 'T1', { agent, pid: 424202, phase: 'running', retry: 1, active: true }],
+    [25, 'spawn session', 'T1', { ...first, session_id: 'session-1' }],
+    [10, 'worker-exited', 'T1', { agent, pid: 424202 }],
+  ]);
+  const r = h.run(['claim', 'T2', '--agent', 'worker-T2-1'], hidden);
+  assert.equal(r.code, 0, r.stderr);
+});
