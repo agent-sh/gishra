@@ -8,12 +8,18 @@ const cp = require('node:child_process');
 const { makeRepo, ROOT } = require('./helpers');
 const { readText, escapeTableCell } = require('../scripts/text');
 
-function fixture(t) {
+function fixture(t, { crlfProtected = false } = {}) {
   const h = makeRepo(t);
   for (const name of ['bin', 'lib', 'scripts', 'docs', 'changelog.d']) {
     fs.cpSync(path.join(ROOT, name), path.join(h.repo, name), { recursive: true });
   }
   fs.copyFileSync(path.join(ROOT, 'CHANGELOG.md'), path.join(h.repo, 'CHANGELOG.md'));
+  if (crlfProtected) {
+    for (const name of ['CHANGELOG.md', 'changelog.d/T86.md']) {
+      const file = path.join(h.repo, name);
+      fs.writeFileSync(file, readText(file).replace(/\n/g, '\r\n'));
+    }
+  }
   h.git(['add', '.']);
   h.git(['commit', '-qm', 'shared file fixture']);
   const base = h.git(['rev-parse', 'HEAD']);
@@ -107,7 +113,7 @@ test('the shared file check enforces sorted single-line command entries with spa
 });
 
 test('tasks add fragments instead of editing the archive or an existing change', (t) => {
-  const f = fixture(t);
+  const f = fixture(t, { crlfProtected: true });
   f.write('README.md', '# changed\n');
   const missing = f.check();
   assert.equal(missing.status, 1);
@@ -116,21 +122,31 @@ test('tasks add fragments instead of editing the archive or an existing change',
   assert.equal(f.check().status, 0, 'unstaged fragments count during local checks');
   f.h.git(['add', 'changelog.d/T999.md']);
   assert.equal(f.check().status, 0, 'tracked fragments count in CI');
-  const archive = f.read('CHANGELOG.md');
-  f.write('CHANGELOG.md', archive + '- Direct edit.\n');
+  const archive = fs.readFileSync(path.join(f.h.repo, 'CHANGELOG.md'));
+  assert.ok(archive.includes(Buffer.from('\r\n')), 'the baseline uses raw CRLF on every platform');
+  f.write('CHANGELOG.md', Buffer.concat([archive, Buffer.from('- Direct edit.\n')]));
   const direct = f.check();
   assert.equal(direct.status, 1);
   assert.match(direct.stderr, /do not edit CHANGELOG.md/);
   f.write('CHANGELOG.md', archive);
-  const original = f.read('changelog.d/T86.md');
+  assert.equal(f.check().status, 0, 'the archive snapshot restores its original bytes');
+  f.write('CHANGELOG.md', f.read('CHANGELOG.md'));
+  const lineEndings = f.check();
+  assert.equal(lineEndings.status, 1);
+  assert.match(lineEndings.stderr, /do not edit CHANGELOG.md/, 'line-ending edits remain archive edits');
+  f.write('CHANGELOG.md', archive);
+  assert.equal(f.check().status, 0, 'restoring raw CRLF removes the line-ending edit');
+  const original = fs.readFileSync(path.join(f.h.repo, 'changelog.d/T86.md'));
   f.write('changelog.d/T86.md', '- Edited another change.\n');
   const edited = f.check();
   assert.equal(edited.status, 1);
   assert.match(edited.stderr, /belongs to its original change/);
   f.write('changelog.d/T86.md', original);
+  assert.equal(f.check().status, 0, 'the fragment snapshot restores its original bytes');
   fs.rmSync(path.join(f.h.repo, 'changelog.d/T86.md'));
   assert.equal(f.check().status, 1, 'existing fragments cannot be deleted');
   f.write('changelog.d/T86.md', original);
+  assert.equal(f.check().status, 0, 'recreating the fragment preserves its original bytes');
   f.write('changelog.d/T999.md', '\n');
   const empty = f.check();
   assert.equal(empty.status, 1);
