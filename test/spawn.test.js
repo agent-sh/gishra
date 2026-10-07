@@ -89,7 +89,13 @@ test('spawn --dry-run builds each harness command', (t) => {
     const out = dry(h, 'small', { TOWER_CRANE_PLUGIN_ROOT: empty });
     const prompt = out.argv.find((a) => a.includes('## Task'));
     assert.ok(prompt, `prompt present for ${flags.join(' ')}`);
-    assert.deepEqual(out.argv, expected(prompt, out.env.TOWER_CRANE_STATE), flags.join(' '));
+    const argv = expected(prompt, out.env.TOWER_CRANE_STATE);
+    if (flags.includes('claude')) {
+      assert.match(out.session_id, /^[a-f0-9-]{36}$/);
+      if (out.argv.includes('--resume')) assert.equal(out.session_id, out.argv[out.argv.indexOf('--resume') + 1]);
+      else argv.push('--session-id', out.session_id);
+    }
+    assert.deepEqual(out.argv, argv, flags.join(' '));
   }
   const out = dry(h, 'small');
   assert.equal(out.agent, 'small-T1-1');

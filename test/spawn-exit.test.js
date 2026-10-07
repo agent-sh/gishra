@@ -119,7 +119,7 @@ test('a killed spawned claimant is reported with its log tail and released for r
   assert.ok(released.notes.some((n) => n.text.includes('recover killed worker')));
   assert.ok(released.notes.some((n) => n.text.includes(spawned.log) && n.text.includes(String(spawned.pid))));
   assert.deepEqual(events().find((e) => e.cmd === 'release').detail.exited_spawn, {
-    pid: spawned.pid, log: spawned.log, code: null, size: fs.statSync(spawned.log).size,
+    pid: spawned.pid, log: spawned.log, code: process.platform === 'win32' ? 1 : null, size: fs.statSync(spawned.log).size,
   });
   assertNoLogText(h);
   assert.deepEqual(h.json(['status']).exited_claims, []);
@@ -185,7 +185,7 @@ test('a missing log does not hide an exited claimant', async (t) => {
   const release = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
     .find((e) => e.cmd === 'release');
   assert.deepEqual(release.detail.exited_spawn, {
-    pid: spawned.pid, log: spawned.log, code: null, size: null,
+    pid: spawned.pid, log: spawned.log, code: process.platform === 'win32' ? 1 : null, size: null,
   });
   assertNoLogText(h);
 });
@@ -195,9 +195,12 @@ test('a spawn on another host is not inferred dead from a local PID', async (t) 
   const hook = path.join(h.base, 'other-host.js');
   fs.writeFileSync(hook, "const os = require('node:os');\nconst hostname = os.hostname;\nos.hostname = () => hostname() + '-other';\n");
   const spawned = await start(t, h, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } });
-  spawned.kill();
+  // A local probe cannot infer the remote PID's exit. The remote supervisor
+  // records an authoritative exit after the real child finishes.
   assert.deepEqual(h.json(['status']).exited_claims, []);
   assert.deepEqual(h.json(['ready']).exited_claims, []);
+  spawned.kill();
+  await until(() => (h.json(['status']).exited_claims || []).length === 1, 'supervised exit was not recorded');
 });
 
 test('terminal fallback cannot release another live claim', { skip: !PTY_AVAILABLE }, async (t) => {
@@ -224,7 +227,7 @@ test('Linux zombie and reused pid diagnostics do not mistake the process for a l
   assert.equal(event.detail.start_ticks, ticks);
   assert.deepEqual(h.json(['status']).exited_claims, []);
   const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
-  const baseEnv = { NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_PROC_PID: String(spawned.pid) };
+  const baseEnv = { NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_PROC_PID: String(spawned.pid), TOWER_CRANE_TEST_MONITOR_PID: String(spawned.monitor_pid) };
   for (const change of [{ TOWER_CRANE_TEST_PROC_STATE: 'Z' }, { TOWER_CRANE_TEST_PROC_STATE: 'X' }, { TOWER_CRANE_TEST_PROC_TICKS: String(BigInt(ticks) + 1n) }]) {
     for (const args of [['status'], ['ready']]) {
       const data = h.json(args, { env: { ...baseEnv, ...change } });

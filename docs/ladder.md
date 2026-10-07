@@ -23,7 +23,9 @@ tower-crane ladder save-user                                      # make this la
 tower-crane task update T3 --tier hard
 ```
 
-A rung is `{ "harness", "model", "profile", "provider", "effort", "args", "command" }`, every field optional; a rung without `harness` runs on the default harness. `ladder set` changes only the fields it names and `--clear FIELD` removes one. A write that would leave a rung unable to run (a codex profile on pi, a missing model) is refused. The Settings view of `tower-crane serve` edits the same ladder and each task's tier. [CLI: agents and worktrees](cli.md#agents-and-worktrees) lists the command and effort values each harness takes.
+A rung is `{ "harness", "model", "profile", "provider", "effort", "args", "command", "supervision" }`, every field optional; a rung without `harness` runs on the default harness. `ladder set` changes only the fields it names and `--clear FIELD` removes one. A write that would leave a rung unable to run (a codex profile on pi, a missing model) is refused. The Settings view of `tower-crane serve` edits the same ladder and each task's tier. [CLI: agents and worktrees](cli.md#agents-and-worktrees) lists the command and effort values each harness takes.
+
+`tower-crane ladder set hard --supervision '{"retries":5,"backoff_ms":30000,"max_backoff_ms":600000,"stall_ms":300000,"progress_paths":["lib","test"]}'` sets retry and progress checks for that rung. `--clear supervision` restores the defaults. Reruns keep the resolved route. Codex and command adapters resume their session; Claude starts fresh with the brief and an interruption note. Provider fallback is a separate task. [State: supervision](state.md#projectjson) records the default values and their reasons.
 
 ## How each harness dispatches
 

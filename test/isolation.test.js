@@ -71,14 +71,33 @@ function plant(h) {
     'if [ "$1" = pr ] && [ "$2" = comment ] && [ "$GH_TOKEN" != stub-gh-token ]; then echo "HTTP 401: Requires authentication" >&2; exit 1; fi',
     'echo fake gh', '',
   ].join('\n'), { mode: 0o755 });
+  // A test nested inside an agent must not cycle through the parent and
+  // child git shims. Delegate local work through the parent's guarded PATH;
+  // network pushes return a fixture error without contacting a remote.
+  const parentPath = process.env.PATH;
+  fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+const env = { ...process.env, PATH: ${JSON.stringify(parentPath)} };
+if (args[0] === 'push') {
+  const target = args.find((a, i) => i > 0 && !a.startsWith('-')) || 'origin';
+  const remote = cp.spawnSync('git', ['remote', 'get-url', '--push', target], { env, encoding: 'utf8', timeout: 10000 });
+  if (/^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
+    process.stderr.write('fixture remote unavailable\\n');
+    process.exit(1);
+  }
+}
+const result = cp.spawnSync('git', args, { env, stdio: 'inherit', timeout: 10000 });
+process.exit(result.status ?? 1);
+`, { mode: 0o755 });
   const out = path.join(h.base, 'stub.json');
   const runEnv = { ...h.env, HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_OUT: out };
   // The developer's own harness homes and gh tokens must not leak in: the
   // fixture's gh login lives in its stub keyring. The tokens are emptied, not
   // deleted, since the caller's own env would fill a missing key back in.
   for (const k of ['GH_TOKEN', 'GITHUB_TOKEN']) runEnv[k] = '';
-  delete runEnv.CLAUDE_CONFIG_DIR;
-  delete runEnv.CODEX_HOME;
+  runEnv.CLAUDE_CONFIG_DIR = '';
+  runEnv.CODEX_HOME = '';
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
 }
 

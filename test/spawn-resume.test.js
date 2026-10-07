@@ -18,15 +18,16 @@ function setup(t, format = 'codex', session = true) {
   fs.writeFileSync(script, `
 const fs = require('node:fs');
 const cp = require('node:child_process');
-const [bin, out, prior, prompt, format, enabled] = process.argv.slice(2);
+const [bin, out, prior, prompt, format, enabled, assigned] = process.argv.slice(2);
 fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.TOWER_CRANE_AGENT }));
 const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { stdio: 'pipe' });
 const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
-if (!task.claim) cli('claim', 'T1');
+// The launcher restores a resumed session's claim after its startup receipt.
+if (!prior && !task.claim) cli('claim', 'T1');
 if (enabled === 'true') {
   const record = format === 'codex'
     ? { type: 'thread.started', thread_id: prior || 'worker-session-1' }
-    : { type: 'result', session_id: prior || 'worker-session-1' };
+    : { type: 'result', session_id: prior || assigned || 'worker-session-1' };
   if (process.env.RESUME_USAGE && format === 'claude') {
     record.usage = prior
       ? { input_tokens: 15, cache_read_input_tokens: 40, cache_creation_input_tokens: 0, output_tokens: 7 }
@@ -60,22 +61,35 @@ function sendBack(h, agent = 'worker-T1-1') {
 function nativeHarness(h, script, seen, harness) {
   const bins = path.join(h.base, 'bin');
   fs.mkdirSync(bins, { recursive: true });
-  fs.writeFileSync(path.join(bins, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-  const hook = path.join(h.base, 'native-harness.js');
-  fs.writeFileSync(hook, `
+  const stub = path.join(bins, harness + (process.platform === 'win32' ? '.exe' : ''));
+  fs.writeFileSync(stub, `#!/usr/bin/env node
+  const args = process.argv.slice(2);
+  const flag = args.indexOf('--resume');
+  const prior = flag >= 0 ? args[flag + 1] : args.includes('worker-session-1') ? 'worker-session-1' : '';
+  const assigned = args.includes('--session-id') ? args[args.indexOf('--session-id') + 1] : '';
+  const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework'));
+  process.argv = [process.execPath, ${JSON.stringify(script)}, ...${JSON.stringify([BIN, seen])}, prior, prompt, '${harness}', 'true', assigned];
+  require(${JSON.stringify(script)});
+`, { mode: 0o755 });
+  h.env.NODE_OPTIONS = '';
+  if (process.platform === 'win32') {
+    const hook = path.join(h.base, 'native-harness.js');
+    fs.writeFileSync(hook, `
 const cp = require('node:child_process');
 const spawn = cp.spawn;
 cp.spawn = function(command, args, options) {
-  if (command !== '${harness}') return spawn.call(this, command, args, options);
-  const flag = args.indexOf('--resume');
-  const prior = flag >= 0 ? args[flag + 1] : args.includes('worker-session-1') ? 'worker-session-1' : '';
-  const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework'));
-  return spawn.call(this, process.execPath, ${JSON.stringify([script, BIN, seen])}.concat([prior, prompt, '${harness}', 'true']), options);
+  return command === '${harness}'
+    ? spawn.call(this, process.execPath, [${JSON.stringify(stub)}, ...args], options)
+    : spawn.call(this, command, args, options);
 };
 `);
-  h.env.PATH = bins + path.delimiter + (h.env.PATH || h.env.Path || '');
-  // NODE_OPTIONS treats backslashes as escapes even inside its quoted value.
-  h.env.NODE_OPTIONS = `--require "${hook.replace(/\\/g, '/')}"`;
+    // Windows cannot execute the shebang stub directly.
+    h.env.NODE_OPTIONS = `--require "${hook.replace(/\\/g, '/')}"`;
+  }
+  const pathKey = Object.keys(h.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
+  h.env[pathKey] = bins + path.delimiter + (h.env[pathKey] || '');
+  h.env.CODEX_HOME = path.join(h.base, 'codex-home');
+  h.env.CLAUDE_CONFIG_DIR = path.join(h.base, 'claude-config');
   h.env.RESUME_USAGE = '1';
   h.ok(['ladder', 'set', 'medium', '--harness', harness, '--clear', 'command',
     ...(harness === 'codex' ? ['--profile', 'sol', '--effort', 'high'] : ['--model', 'opus', '--effort', 'high'])]);
@@ -229,15 +243,19 @@ for (const harness of ['codex', 'claude']) {
   test(`${harness} native rework ${harness === 'codex' ? 'resumes' : 'starts fresh'} without putting the recorded id in the prompt`, (t) => {
     const { h, script, seen } = setup(t, harness);
     nativeHarness(h, script, seen, harness);
-    h.json(['spawn', '--task', 'T1', '--wait']);
+    const first = h.json(['spawn', '--task', 'T1', '--wait']);
     const receipt = events(h).find((e) => e.cmd === 'spawn session');
-    assert.equal(receipt.detail.session_id, 'worker-session-1');
+    assert.equal(receipt.detail.session_id, harness === 'codex' ? 'worker-session-1' : first.session_id);
     assert.equal(receipt.detail.harness, harness);
     sendBack(h);
     const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);
     assert.equal(dry.harness, harness);
     assert.equal(dry.resumed, harness === 'codex');
-    assert.equal(dry.session_id, harness === 'codex' ? 'worker-session-1' : null);
+    if (harness === 'codex') assert.equal(dry.session_id, 'worker-session-1');
+    else {
+      assert.match(dry.session_id, /^[a-f0-9-]{36}$/);
+      assert.notEqual(dry.session_id, first.session_id);
+    }
     if (harness === 'codex') {
       assert.deepEqual(dry.argv.slice(0, 5), ['codex', 'exec', '-p', 'sol', 'resume']);
       assert.ok(dry.argv.includes('--json'));
@@ -275,11 +293,12 @@ for (const harness of ['codex', 'claude']) {
 
 test('a still-running worker cannot be resumed', async (t) => {
   const { h, script } = setup(t);
-  fs.appendFileSync(script, '\nsetInterval(() => {}, 1000);\n');
+  const ready = path.join(h.base, 'live-ready');
+  fs.appendFileSync(script, `\nfs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
   const first = h.json(['spawn', '--task', 'T1']);
   t.after(() => { try { process.kill(first.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; } });
   const deadline = Date.now() + 10000;
-  while (!events(h).some((e) => e.cmd === 'spawn session')) {
+  while (!fs.existsSync(ready) || fs.readFileSync(ready, 'utf8') !== String(first.pid)) {
     if (Date.now() > deadline) throw new Error('worker did not start');
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -337,10 +356,11 @@ test('an earlier attempt exit cannot collect or resume a live attempt with a reu
   const { h, script } = setup(t);
   const first = h.json(['spawn', '--task', 'T1', '--wait']);
   sendBack(h);
-  fs.appendFileSync(script, '\nsetInterval(() => {}, 1000);\n');
+  const ready = path.join(h.base, 'live-ready');
+  fs.appendFileSync(script, `\nfs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
   const live = h.json(['spawn', '--task', 'T1']);
   const deadline = Date.now() + 10000;
-  while (!events(h).some((e) => e.cmd === 'spawn session' && e.detail.attempt === live.attempt)) {
+  while (!fs.existsSync(ready) || fs.readFileSync(ready, 'utf8') !== String(live.pid)) {
     if (Date.now() > deadline) throw new Error('resumed worker did not start');
     await new Promise((resolve) => setTimeout(resolve, 50));
   }

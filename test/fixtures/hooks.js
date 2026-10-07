@@ -109,6 +109,8 @@ function before(name, args) {
 
 function after(name, args) {
   const target = args[0];
+  if (env.HOOK_STOP_RENDER && name === 'renameSync' && args[1] === path.join(STATE, 'sketch.md')
+    && path.basename(process.argv[1]) === 'tower-crane.js' && process.argv.includes('spawn') && first('render')) stop(env.HOOK_STOP_RENDER);
   // HOOK_PAUSE_ON=FILE: stop at HOOK_PAUSED after the first read of FILE.
   if (env.HOOK_PAUSE_ON && name === 'readFileSync' && inState(target) && path.basename(target) === env.HOOK_PAUSE_ON && first('pause')) stop(env.HOOK_PAUSED);
   // HOOK_STOP_LOCK_READ=SIGNAL: stop after first reading who holds the lock.
@@ -273,6 +275,7 @@ if (env.HOOK_USAGE_READ_FAIL) {
 
 if (env.HOOK_USAGE_WRITE_FAIL) {
   const logFds = new Set();
+  if (env.HOOK_USAGE_INHERITED_FD) logFds.add(Number(env.HOOK_USAGE_INHERITED_FD));
   const open = fs.openSync;
   const close = fs.closeSync;
   const isLog = (file) => typeof file === 'string' && file.startsWith(path.join(env.HOOK_STATE, 'logs') + path.sep);
@@ -297,12 +300,35 @@ if (env.HOOK_USAGE_WRITE_FAIL) {
 
 // Track detached children outside state so teardown can await every collector.
 if (env.HOOK_PROCESSES_DIR) {
+  if (path.basename(process.argv[1] || '') === 'spawn-monitor.js') {
+    process.once('exit', () => {
+      const file = path.join(env.HOOK_PROCESSES_DIR, `${process.pid}.json`);
+      try {
+        const tracked = JSON.parse(real.readFileSync(file, 'utf8'));
+        const tmp = `${file}.exited`;
+        real.writeFileSync(tmp, JSON.stringify({ ...tracked, exited: true }));
+        real.renameSync(tmp, file);
+      } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    });
+  }
   const original = cp.spawn;
   cp.spawn = function trackDetached(file, args, options) {
     const monitor = args.some((arg) => path.basename(arg) === 'spawn-monitor.js');
+    if (monitor && Number.isInteger(options?.stdio?.[3])) {
+      options = { ...options, env: { ...options.env, HOOK_USAGE_INHERITED_FD: '3' } };
+    }
     if (monitor && env.HOOK_MONITOR_HOST) {
       args = [...args];
-      args[args.length - 1] = JSON.stringify({ ...JSON.parse(args.at(-1)), host: env.HOOK_MONITOR_HOST });
+      if (args.at(-1).startsWith('{')) {
+        args[args.length - 1] = JSON.stringify({ ...JSON.parse(args.at(-1)), host: env.HOOK_MONITOR_HOST });
+      } else {
+        const fd = real.openSync(args.at(-1), 'r+');
+        try {
+          const job = JSON.parse(real.readFileSync(fd, 'utf8'));
+          fs.ftruncateSync(fd, 0);
+          fs.writeSync(fd, JSON.stringify({ ...job, host: env.HOOK_MONITOR_HOST }), 0, 'utf8');
+        } finally { fs.closeSync(fd); }
+      }
     }
     const child = original.call(this, file, args, options);
     if (options?.detached && child.pid) {
@@ -314,10 +340,14 @@ if (env.HOOK_PROCESSES_DIR) {
         } catch { /* A short-lived child may have already exited. */ }
       }
       real.mkdirSync(env.HOOK_PROCESSES_DIR, { recursive: true });
-      real.writeFileSync(path.join(env.HOOK_PROCESSES_DIR, `${child.pid}.json`), JSON.stringify({
+      const trackedFile = path.join(env.HOOK_PROCESSES_DIR, `${child.pid}.json`);
+      real.writeFileSync(trackedFile, JSON.stringify({
         pid: child.pid, startTicks,
         kind: monitor ? 'monitor' : 'worker',
       }));
+      // A reaped Windows PID can immediately belong to another test's CLI.
+      // The live parent observes worker exit; monitors record their own exit.
+      if (!monitor) child.once('exit', () => real.rmSync(trackedFile, { force: true }));
     }
     return child;
   };
