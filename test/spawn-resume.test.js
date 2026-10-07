@@ -5,8 +5,28 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, BIN } = require('./helpers');
+const Sessions = require('../lib/spawn-session');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+
+test('isolated session lookup checks Codex rollouts and Claude config sessions', (t) => {
+  const h = makeRepo(t);
+  const codexHome = path.join(h.base, 'homes', '.codex');
+  const claudeHome = path.join(h.base, 'homes', 'claude-worker');
+  const codexSession = path.join(codexHome, 'sessions', '2026', '10', '07', 'rollout-test-codex-session.jsonl');
+  const claudeSession = path.join(claudeHome, 'projects', 'repo', 'claude-session.jsonl');
+  fs.mkdirSync(path.dirname(codexSession), { recursive: true });
+  fs.mkdirSync(path.dirname(claudeSession), { recursive: true });
+  fs.writeFileSync(codexSession, '{}\n');
+  fs.writeFileSync(claudeSession, '{}\n');
+
+  assert.equal(Sessions.missingIsolatedSession('codex-session', 'codex', { usageRoot: codexHome }), null);
+  assert.equal(Sessions.missingIsolatedSession('other-session', 'codex', { usageRoot: codexHome }),
+    'recorded codex session has no rollout file in the isolated sessions directory');
+  assert.equal(Sessions.missingIsolatedSession('claude-session', 'claude', { env: { CLAUDE_CONFIG_DIR: claudeHome } }), null);
+  assert.equal(Sessions.missingIsolatedSession('other-session', 'claude', { env: { CLAUDE_CONFIG_DIR: claudeHome } }),
+    'recorded claude session has no session file in the isolated config directory');
+});
 
 function setup(t, format = 'codex', session = true) {
   const h = makeRepo(t);
@@ -58,6 +78,20 @@ function sendBack(h, agent = 'worker-T1-1') {
 }
 
 function nativeHarness(h, script, seen, harness) {
+  fs.appendFileSync(script, `
+const path = require('node:path');
+const id = prior || 'worker-session-1';
+if (format === 'codex') {
+  const sessions = path.join(process.env.CODEX_HOME, 'sessions');
+  const rollout = path.join(sessions, \`rollout-test-\${id}.jsonl\`);
+  if (prior && !fs.existsSync(rollout)) {
+    console.error(\`thread/resume failed: no rollout found for thread id \${prior}\`);
+    process.exit(1);
+  }
+  fs.mkdirSync(sessions, { recursive: true });
+  fs.writeFileSync(rollout, '{}\\n');
+}
+`);
   const bins = path.join(h.base, 'bin');
   fs.mkdirSync(bins, { recursive: true });
   fs.writeFileSync(path.join(bins, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
@@ -272,6 +306,30 @@ for (const harness of ['codex', 'claude']) {
     assert.equal(reviewer.resumed, false);
   });
 }
+
+test('a missing isolated codex rollout falls back to a fresh worker and records why', (t) => {
+  const { h, script, seen } = setup(t, 'codex');
+  nativeHarness(h, script, seen, 'codex');
+  const first = h.json(['spawn', '--task', 'T1', '--wait']);
+  const rollout = path.join(h.state, 'homes', '.codex', 'sessions', 'rollout-test-worker-session-1.jsonl');
+  assert.ok(fs.existsSync(rollout));
+  fs.unlinkSync(rollout);
+  sendBack(h);
+
+  const result = h.run(['spawn', '--task', 'T1', '--wait', '--json']);
+  assert.equal(result.code, 0, result.stderr);
+  const next = JSON.parse(result.stdout);
+  assert.equal(next.resumed, false);
+  assert.equal(next.agent, 'worker-T1-2');
+  assert.equal(next.session_id, null);
+  const spawn = events(h).findLast((e) => e.cmd === 'spawn' && e.task === 'T1' && e.detail.agent === next.agent);
+  assert.equal(spawn.detail.resume_fallback_reason, 'recorded codex session has no rollout file in the isolated sessions directory');
+  const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
+  assert.equal(input.prior, '');
+  assert.match(input.prompt, /Add the worktree guard/);
+  assert.match(input.prompt, /Missing worktree validation/);
+  assert.equal(first.agent, 'worker-T1-1');
+});
 
 test('a still-running worker cannot be resumed', async (t) => {
   const { h, script } = setup(t);
