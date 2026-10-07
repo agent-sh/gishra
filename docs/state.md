@@ -1,5 +1,25 @@
 # State
 
+Tasks may carry `stack: { parent, base, parent_sha, repo, linked, synced_base }`. `parent` is the lower task id, `base` is the PR's current target branch, `parent_sha` is the dependency head used for dispatch or the last synchronization, `repo` is the same GitHub repository as the project, and `synced_base` is the last observed main commit. `linked` records successful `gh stack link`. One unmerged dependency chain forms one stack; outstanding sibling branches are not appended to that chain.
+
+`stack_disabled: true` records an unavailable stacks capability or explicit `stack unstack`. It selects ordinary merges, which wait for lower merge evidence before retargeting an existing upper PR. An accepted dependency can still use the ordinary main-based dispatch flow when the repository cannot stack; a submitted dependency requires an available chain.
+
+A successful `stack link` clears fallback markers for its linked members and restores the stack merge gate, including its refusal of admin merges.
+
+For an unlinked dependent whose lower members all have merge evidence, linking retargets its PR to the project base, removes `stack` and `stack_disabled`, and emits `stack complete` with the former parent, new base and PR number. Its sha is unchanged. Rework notes append only to an existing brief; a brief removed during the append is treated as absent.
+
+`github_stack` holds the unmodified `pull_request.stack` object (or the payload's top-level `stack`) from a trusted payload passed to `stack webhook`, or null when the payload has no stack. The repository and PR number must match a known task. Task show and board sheets expose this metadata separately from Tower Crane's local dependency chain. Webhook metadata does not satisfy a gate, change a submitted head, accept a task or prove a merge.
+
+Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, the single `gh stack merge` invocation and the confirmations. Sync emits `stack sync` events for the affected tasks. A moved branch or sync conflict emits rework and appends its reason to the task's brief. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack unavailable` and `stack link failed` events.
+
+Sync holds the state lock only for its initial read and final compare-and-apply. Its gh commands and branch reads, fetches and pushes run unlocked. Application compares project configuration, stack membership, complete member task records and member events against the snapshot. A difference refuses application without writing sync events, briefs or task records. Writes to unrelated tasks are preserved by applying to freshly read state.
+
+Linking, completed-chain retirement and unstacking use the same snapshot, unlocked commands and compare-and-apply rule. Automatic linking runs after exit collection commits, outside that mutation. A stale link or unstack result cannot clear a new claim or replace member metadata. Remote PR changes may already have completed when application is refused; inspect them before retrying.
+
+The shared command runner rejects Git and gh calls inside state mutation transactions. Spawn prepares repository directories and credentials before its write; acceptance and review dispatch prepare local CI inputs and snapshots before their writes and reject changed inputs. View rendering starts after the mutation releases its lock and reads current state.
+
+Tests, cleanup, review diffs and local CI use the dependency branch as the base for stacked tasks. A successful sync changes that base to main when the lower task has merge evidence. Old head evidence cannot count after the worker resubmits a refreshed head. Stack merge rechecks all lower heads because GitHub's stack merge command has no head-match option; see cli.md for its limits and the ordinary admin fallback.
+
 Tower Crane keeps a project's plan and progress in plain files. People and dashboards read them; the `tower-crane` CLI and serve's owner forms write through the same locked, validated functions. An agent that needs to change state runs a command.
 
 ## Where
@@ -48,9 +68,9 @@ All JSON files carry `"version": 1`. Writes go to a temp file in the same direct
 
 Every command that writes in the state directory holds the lock while it reads and writes, `render` included. Reads take no lock.
 
-A writer takes the lock by renaming a directory it prepared to `lock`. That directory holds one file named after the writer's random nonce, with its pid, host and time. The rename fails while `lock` holds such a file, so one writer holds it at a time; the others retry with backoff for up to 10 s, then exit 3.
+A writer takes the lock by renaming a directory it prepared to `lock`. That directory holds one file named after the writer's random nonce, with its pid, host, pid namespace (`pidns`, the target of `/proc/self/ns/pid`, or null where there is none) and time. The rename fails while `lock` holds such a file, so one writer holds it at a time; the others retry with backoff for up to 10 s, then exit 3.
 
-A marker's holder and modification time are read through one opened file descriptor, so they refer to the same file even if its path is replaced. A lock is stale when its holder process is gone (same host) or its file is older than 60 s. The next writer breaks it by deleting that file by its name, then the directory if it is empty. A name is never reused, so breaking a stale lock cannot remove a newer holder's, however the writers interleave. If a stale lock cannot be removed, writers still exit 3 after 10 s and say so.
+A marker's holder and modification time are read through one opened file descriptor, so they refer to the same file even if its path is replaced. A lock is stale when its holder process is gone or its file is older than 60 s. The holder is checked by pid only when it ran on the same host in the same pid namespace: a command sandbox gives each command a namespace of its own, where a live holder in another one looks gone, and breaking its lock would let two writers save over each other. A marker without `pidns`, from an older writer, counts only by age on hosts that have pid namespaces. The next writer breaks it by deleting that file by its name, then the directory if it is empty. A name is never reused, so breaking a stale lock cannot remove a newer holder's, however the writers interleave. If a stale lock cannot be removed, writers still exit 3 after 10 s and say so.
 
 ## project.json
 
@@ -274,6 +294,8 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 - `notes`: `{ "at", "agent", "text" }` entries. The orchestrator folds what matters into the brief. A note starting with `split:` on an `L` task records why it stays whole.
 
 The CLI never writes a dependency on a task that does not exist, a dependency cycle, or a task without acceptance. `validate` still checks files edited by hand.
+
+Task ids are never reused. A new task takes the larger of `next` and one past the highest task id any `events.jsonl` record names, so a task that tasks.json lost keeps its id. `validate` reconciles tasks.json with the log and reports drift: a task id the log names that tasks.json lacks, a `task note` the log records that the task lacks, and a `next` at or below a logged id. It reads without the lock; every reader reads `events.jsonl` before tasks.json, and a commit writes tasks.json before it appends its events, so a commit between the two reads is never mistaken for drift.
 
 Resource lock holders are derived from the same pure event-log, lease and clock view as worker slot holders. A task holds all its locks while its lease is live or its unclaimed worker dispatch reservation holds a slot. Claim, worker spawn and expired-lease renewal refuse conflicting locks under the state lock, naming the resource, task and agent holding it; the same task and agent can consume their own reservation. `ready`, blocked views and task descriptions include conflicts with other tasks. Submission, release and lease expiry free leased locks. Unclaimed reservations free their locks on the matching exit, inactive monitor record or reservation horizon, and retain them through supervised retry and fallback backoff. No process probe can free a lock for one observer alone. Reviewer and other non-worker dispatches acquire no resource locks. Lock and environment changes do not bump the task revision.
 

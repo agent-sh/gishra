@@ -538,6 +538,31 @@ test('an isolated Codex worker can publish its task branch with an allow rule an
   assert.doesNotMatch(u.report().rules.join('\n'), /decision = "allow"/);
 });
 
+test('the orchestrator can run gh-stack atomic pushes while direct forced pushes and worker stack commands stay refused', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const bin = path.join(h.base, 'bin');
+  const git = path.join(bin, 'git');
+  const text = fs.readFileSync(git, 'utf8');
+  fs.writeFileSync(git, text.replace('const args = process.argv.slice(2);',
+    `const args = process.argv.slice(2);
+if (args[0] === 'push' && args.includes('--atomic')) process.exit(0);`));
+  fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === 'auth') { console.log('stub-gh-token'); process.exit(0); }
+const r = cp.spawnSync('git', ['push', '--atomic', '--force-with-lease', 'origin', 'HEAD:refs/heads/stack'], {stdio: 'inherit'});
+process.exit(r.status ?? 1);
+`);
+  for (const [rung, allowed] of [['orchestrator', true], ['hard', false]]) {
+    isolated(h, rung, 'codex');
+    spawn(h, u, rung, { STUB_RUN: JSON.stringify([
+      ['git', 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/stack'],
+      ['gh', 'stack', 'sync'],
+    ]) });
+    assert.deepEqual(u.report().ran.map((r) => r.code), [126, allowed ? 0 : 126]);
+  }
+});
+
 test('an isolated reviewer posts through gh, records evidence in a symlinked state dir and runs a git fixture', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   // The state directory reached through a symlink, as .tower-crane -> .gishra was.
