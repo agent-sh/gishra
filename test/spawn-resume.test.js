@@ -22,7 +22,8 @@ const [bin, out, prior, prompt, format, enabled, assigned] = process.argv.slice(
 fs.writeFileSync(out, JSON.stringify({ prior, prompt, cwd: process.cwd(), agent: process.env.TOWER_CRANE_AGENT }));
 const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { stdio: 'pipe' });
 const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
-if (!task.claim) cli('claim', 'T1');
+// The launcher restores a resumed session's claim after its startup receipt.
+if (!prior && !task.claim) cli('claim', 'T1');
 if (enabled === 'true') {
   const record = format === 'codex'
     ? { type: 'thread.started', thread_id: prior || 'worker-session-1' }
@@ -60,23 +61,35 @@ function sendBack(h, agent = 'worker-T1-1') {
 function nativeHarness(h, script, seen, harness) {
   const bins = path.join(h.base, 'bin');
   fs.mkdirSync(bins, { recursive: true });
-  fs.writeFileSync(path.join(bins, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-  const hook = path.join(h.base, 'native-harness.js');
-  fs.writeFileSync(hook, `
-const cp = require('node:child_process');
-const spawn = cp.spawn;
-cp.spawn = function(command, args, options) {
-  if (command !== '${harness}') return spawn.call(this, command, args, options);
+  const stub = path.join(bins, harness + (process.platform === 'win32' ? '.exe' : ''));
+  fs.writeFileSync(stub, `#!/usr/bin/env node
+  const args = process.argv.slice(2);
   const flag = args.indexOf('--resume');
   const prior = flag >= 0 ? args[flag + 1] : args.includes('worker-session-1') ? 'worker-session-1' : '';
   const assigned = args.includes('--session-id') ? args[args.indexOf('--session-id') + 1] : '';
   const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework'));
-  return spawn.call(this, process.execPath, ${JSON.stringify([script, BIN, seen])}.concat([prior, prompt, '${harness}', 'true', assigned]), options);
+  process.argv = [process.execPath, ${JSON.stringify(script)}, ...${JSON.stringify([BIN, seen])}, prior, prompt, '${harness}', 'true', assigned];
+  require(${JSON.stringify(script)});
+`, { mode: 0o755 });
+  h.env.NODE_OPTIONS = '';
+  if (process.platform === 'win32') {
+    const hook = path.join(h.base, 'native-harness.js');
+    fs.writeFileSync(hook, `
+const cp = require('node:child_process');
+const spawn = cp.spawn;
+cp.spawn = function(command, args, options) {
+  return command === '${harness}'
+    ? spawn.call(this, process.execPath, [${JSON.stringify(stub)}, ...args], options)
+    : spawn.call(this, command, args, options);
 };
 `);
-  h.env.PATH = bins + path.delimiter + (h.env.PATH || h.env.Path || '');
-  // NODE_OPTIONS treats backslashes as escapes even inside its quoted value.
-  h.env.NODE_OPTIONS = `--require "${hook.replace(/\\/g, '/')}"`;
+    // Windows cannot execute the shebang stub directly.
+    h.env.NODE_OPTIONS = `--require "${hook.replace(/\\/g, '/')}"`;
+  }
+  const pathKey = Object.keys(h.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
+  h.env[pathKey] = bins + path.delimiter + (h.env[pathKey] || '');
+  h.env.CODEX_HOME = path.join(h.base, 'codex-home');
+  h.env.CLAUDE_CONFIG_DIR = path.join(h.base, 'claude-config');
   h.env.RESUME_USAGE = '1';
   h.ok(['ladder', 'set', 'medium', '--harness', harness, '--clear', 'command',
     ...(harness === 'codex' ? ['--profile', 'sol', '--effort', 'high'] : ['--model', 'opus', '--effort', 'high'])]);

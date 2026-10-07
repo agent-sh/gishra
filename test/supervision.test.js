@@ -7,6 +7,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const http = require('node:http');
 const { makeRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
+const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -247,11 +248,14 @@ test('progress paths and CPU detect a stalled process without dropping its live 
 
 test('submitted-task reviewers resume transient exits and show their phase', (t) => {
   const h = setup(t, { claim: false });
+  const sha = gateFixture(h);
+  h.ok(['project', 'set', '--ci-local', JSON.stringify({ command: [process.execPath, 'test/value.test.js'], timeout: 30 })]);
   const rung = h.json(['ladder', 'show']).ladder.easy;
   h.ok(['ladder', 'set', 'review', '--harness', 'command', '--command', JSON.stringify(rung.command),
     '--supervision', JSON.stringify(rung.supervision), '--clear', 'profile', '--clear', 'effort']);
   h.ok(['claim', 'T1', '--agent', 'original-worker']);
-  h.ok(['submit', 'T1', '--agent', 'original-worker', '--sha', 'abcdef1']);
+  h.ok(['submit', 'T1', '--agent', 'original-worker', '--sha', sha]);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'fixture-gates');
   const result = h.spawn('review');
   assert.equal(result.code, 0, result.stderr);
   assert.equal(h.readAttempts().length, 2);
