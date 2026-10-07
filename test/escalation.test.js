@@ -213,6 +213,25 @@ test('a brokered failed review records the climb and leaves dispatch to its host
   }
 });
 
+test('a resource lock delays dispatch while retaining the recorded climb for wait to retry', async (t) => {
+  const h = setup(t, 'review');
+  h.ok(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+  h.ok(['task', 'update', 'T1', '--lock', 'lab']);
+  h.ok(['task', 'add', '--title', 'Hold the lab', '--lock', 'lab', '--acceptance', 'exclusive use']);
+  h.ok(['claim', 'T2', '--agent', 'lab-holder']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
+    '--agent', 'reviewer', '--summary', 'wrong result']);
+  const task = h.json(['task', 'show', 'T1']);
+  assert.equal(task.tier, 'medium');
+  assert.equal(task.escalation_pending, true);
+  assert.equal(h.readAttempts().length, 1);
+  h.ok(['release', 'T2', '--agent', 'lab-holder', '--reason', 'lab free']);
+  h.ok(['wait', '--types', 'submitted', '--task', 'T1', '--agent', 'orchestrator', '--timeout', '10']);
+  await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
+  assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
+});
+
 test('failure at the range top opens one owner decision and blocks further dispatch', async (t) => {
   const h = setup(t, 'top', 'easy..hard');
   h.ok(['spawn', '--task', 'T1']);
