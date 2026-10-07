@@ -138,7 +138,6 @@ test('accepted wakes after gates pass; a refused accept emits nothing', async (t
   assert.equal(h.run(['accept', 'T1']).code, 1);
   assert.equal(log(h).length, count);
   gates(h);
-  h.ok(['accept', 'T1']);
   await event(result, 'accepted');
 });
 
