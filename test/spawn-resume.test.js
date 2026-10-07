@@ -419,6 +419,42 @@ process.kill = function(pid, signal) {
   assert.equal(next.agent, first.agent);
 });
 
+test('exit receipts without attempt match the latest spawn by task, agent and pid', (t) => {
+  const { h } = setup(t);
+  const first = h.json(['spawn', '--task', 'T1', '--wait']);
+  const receipt = events(h).find((e) => e.cmd === 'spawn exit' && e.detail.pid === first.pid);
+  assert.equal(receipt.detail.attempt, first.attempt);
+  sendBack(h);
+  const hook = path.join(h.base, 'unverified-exit.js');
+  fs.writeFileSync(hook, `
+const fs = require('node:fs');
+const kill = process.kill;
+process.kill = function(pid, signal) {
+  if (pid === ${first.pid} && signal === 0) return true;
+  return kill.call(this, pid, signal);
+};
+const read = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  if (String(file) === '/proc/${first.pid}/stat') throw Object.assign(new Error('unavailable'), { code: 'EACCES' });
+  const value = read.call(this, file, ...args);
+  if (!String(file).endsWith('events.jsonl') || typeof value !== 'string') return value;
+  return value.split('\\n').map((line) => {
+    if (!line) return line;
+    const event = JSON.parse(line);
+    if (event.cmd === 'spawn exit' && event.detail.pid === ${first.pid}) delete event.detail.attempt;
+    return JSON.stringify(event);
+  }).join('\\n');
+};
+`);
+  for (const args of [
+    ['spawn', '--task', 'T1', '--dry-run'],
+    ['spend', 'T1', '--from-spawn', first.agent],
+  ]) {
+    const r = h.run(args, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } });
+    assert.equal(r.code, 0, r.stderr);
+  }
+});
+
 test('the shared eligibility check compares route values independent of key order', (t) => {
   const { h } = setup(t);
   h.json(['spawn', '--task', 'T1', '--wait']);
@@ -468,20 +504,25 @@ fs.readFileSync = function(file, ...args) {
     return value.split('\\n').map((line) => {
       if (!line) return line;
       const event = JSON.parse(line);
-      if (event.cmd === 'spawn exit' && event.detail.pid === ${first.pid}) event.detail.pid = ${live.pid};
+      if (event.cmd === 'spawn exit' && event.detail.pid === ${first.pid}) {
+        event.detail.pid = ${live.pid};
+        if (process.env.OMIT_EXIT_ATTEMPT) delete event.detail.attempt;
+      }
       return JSON.stringify(event);
     }).join('\\n');
   }
   return value;
 };
 `);
-  for (const args of [
-    ['spend', 'T1', '--from-spawn', live.agent],
-    ['spawn', '--task', 'T1', '--dry-run'],
-  ]) {
-    const result = h.run(args, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` } });
-    assert.equal(result.code, 1, result.stderr);
-    assert.match(result.stderr, /still running or its exit is unverified/);
+  for (const missing of ['', '1']) {
+    for (const args of [
+      ['spend', 'T1', '--from-spawn', live.agent],
+      ['spawn', '--task', 'T1', '--dry-run'],
+    ]) {
+      const result = h.run(args, { env: { NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"`, OMIT_EXIT_ATTEMPT: missing } });
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, /still running or its exit is unverified/);
+    }
   }
 });
 
