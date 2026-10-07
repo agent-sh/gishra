@@ -64,7 +64,7 @@ test('only the explicit owner can set or clear gate commands at init and project
 });
 
 test('gates use pinned commands and reject differing flags and cleanup environment before execution', (t) => {
-  const { h } = fixture(t);
+  const { h, sha } = fixture(t);
   pin(h);
   for (const type of ['tests', 'clean']) {
     const r = h.run(['check', type, 'T1', '--cmd', 'node -e "process.exit(0)"', '--agent', 'worker', '--json']);
@@ -83,6 +83,9 @@ test('gates use pinned commands and reject differing flags and cleanup environme
     assert.deepEqual(events(h).at(-1).detail.gate_policy, receipt.gate_policy);
     assert.equal(shown(h, type).ok, true);
   }
+  h.ok(['project', 'set', '--clean-cmd', `${h.env.TOWER_CRANE_CLEAN_CMD} --base=${sha}`]);
+  h.ok(['check', 'clean', 'T1'], { env: { TOWER_CRANE_CLEAN_CMD: '' } });
+  assert.equal(shown(h, 'clean').ok, true, 'the pinned prefix can contain its own arguments');
 });
 
 test('terminal owner fallback cannot pin gate commands', { skip: !PTY_AVAILABLE }, (t) => {
