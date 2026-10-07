@@ -55,6 +55,18 @@ module.exports = function stub(harness) {
     if (!args.includes('--strict-mcp-config')) Object.assign(report.mcp, json(global).mcpServers || {});
     if (after('--mcp-config')) Object.assign(report.mcp, json(after('--mcp-config')).mcpServers || {});
     report.auth = read(path.join(dir, '.credentials.json'));
+    if (process.env.STUB_CLAUDE_SANDBOX_PLACEHOLDERS) {
+      const placeholders = JSON.parse(process.env.STUB_CLAUDE_SANDBOX_PLACEHOLDERS);
+      for (const relative of placeholders) {
+        const file = path.join(process.cwd(), relative);
+        if (fs.existsSync(file)) continue;
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, '');
+        fs.chmodSync(file, 0o444);
+      }
+      const status = cp.spawnSync('git', ['status', '--short', '--untracked-files=all'], { encoding: 'utf8' });
+      report.placeholderGitStatus = { code: status.status, stdout: status.stdout || '', stderr: status.stderr || '' };
+    }
   } else {
     const dir = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
     const disabled = args.filter((a, i) => args[i - 1] === '--disable');

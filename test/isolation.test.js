@@ -8,12 +8,14 @@ const cp = require('node:child_process');
 const { makeRepo, ROOT, BIN, detachedAlive } = require('./helpers');
 const A = require('../lib/agents');
 const TOML = require('../lib/toml');
+const ClaudeSandboxPlaceholders = require('../lib/claude-sandbox-placeholders');
 
 const STUB = path.join(__dirname, 'fixtures', 'harness-stub.js');
 // The stubs are scripts started through a shebang; Windows starts only .exe
 // and .com files from a rung, so the end-to-end runs are POSIX only.
 const NO_STUBS = process.platform === 'win32' && 'harness stubs are shebang scripts';
 const SECRET = 'PLANTED-SECRET';
+const CLAUDE_SANDBOX_PLACEHOLDERS = ClaudeSandboxPlaceholders.FILES;
 
 // A user home holding what must never reach a tower-crane agent: memory and
 // instruction files, hooks, an MCP server, approved-command rules, and
@@ -186,6 +188,52 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   assert.match(fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8'), /^\.claude\/\.cc-writes\/$/m, 'the sandbox marker is never committed');
   assert.equal(fs.readFileSync(path.join(h.state, 'homes', '.gitignore'), 'utf8'), '*\n');
   noSecretsCopied(h);
+});
+
+test('a sandboxed claude removes its ignored cwd placeholders after exit', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolated(h, 'small', 'claude');
+  fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
+  const gitignoreFile = path.join(h.repo, '.gitignore');
+  const gitignore = fs.existsSync(gitignoreFile) ? fs.readFileSync(gitignoreFile, 'utf8') : null;
+
+  const started = spawn(h, u, 'small', {
+    STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(CLAUDE_SANDBOX_PLACEHOLDERS),
+  });
+  const seen = u.report();
+  assert.deepEqual(seen.placeholderGitStatus, { code: 0, stdout: '', stderr: '' }, 'git status stays clean while the placeholders exist');
+  for (const relative of CLAUDE_SANDBOX_PLACEHOLDERS) {
+    assert.equal(fs.existsSync(path.join(wt, relative)), false, `${relative} is removed after exit`);
+  }
+  assert.equal(h.git(['status', '--short', '--untracked-files=all'], started.cwd), '', 'the worktree stays clean after exit');
+
+  const excludes = fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8').split(/\r?\n/);
+  for (const pattern of ClaudeSandboxPlaceholders.IGNORE_PATTERNS) {
+    assert.ok(excludes.includes(pattern), `${pattern} is in git info/exclude`);
+  }
+  assert.equal(fs.existsSync(gitignoreFile) ? fs.readFileSync(gitignoreFile, 'utf8') : null, gitignore, 'the repository .gitignore is unchanged');
+});
+
+test('sandbox cleanup preserves a pre-existing empty read-only file with a placeholder name', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolated(h, 'small', 'claude');
+  fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
+  const realFile = path.join(wt, '.bash_profile');
+  fs.writeFileSync(realFile, '');
+  fs.chmodSync(realFile, 0o444);
+
+  const started = spawn(h, u, 'small', {
+    STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(CLAUDE_SANDBOX_PLACEHOLDERS),
+  });
+  const seen = u.report();
+  assert.deepEqual(seen.placeholderGitStatus, { code: 0, stdout: '', stderr: '' });
+  assert.equal(fs.existsSync(realFile), true, 'the existing file remains');
+  assert.equal(fs.statSync(realFile).size, 0, 'the existing file stays empty');
+  assert.equal(fs.statSync(realFile).mode & 0o222, 0, 'the existing file keeps its read-only mode');
+  for (const relative of CLAUDE_SANDBOX_PLACEHOLDERS.slice(1)) {
+    assert.equal(fs.existsSync(path.join(wt, relative)), false, `${relative} placeholder is removed`);
+  }
+  assert.equal(h.git(['status', '--short', '--untracked-files=all'], started.cwd), '');
 });
 
 test('a spawned codex agent loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
