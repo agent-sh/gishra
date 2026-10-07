@@ -1,5 +1,10 @@
 # Changelog
 
+- Host Chrome tests retain their original launch environment and flags; private cache/config/temp directories and temp-backed shared memory apply only inside an agent sandbox.
+- Browser kits omit unavailable servers and unsupported harnesses with diagnostics in spawn output and events. Design tasks still dispatch without a kit; explicit browser needs refuse only when no primary or fallback route can attach a configured server.
+- Spawn removes outer `NODE_TEST_*` runner variables from every agent launch, including retries and fallback routes, so agents can run nested test suites. Browser probe failures include the child receipt and agent log tails.
+- Design tasks and tasks declaring `needs: ["browser"]` receive the user's named browser MCP kit on every Claude/Codex rung, with approved tools and no copied server env or headers. `browser-kit show/set` manages the user server list, defaulting to playwright.
+- Board browser tests run Chrome under the worker's outer sandbox with temp-backed shared memory and a private temp profile, and report startup errors instead of discarding Chrome's stderr. An opt-in real-worker probe checks MCP navigation, a PNG screenshot and a board browser test on both harnesses.
 - Tests, cleanup and scoped proof commands are pinned by the owner in project settings. Gates refuse different caller commands, and acceptance and merge require receipts matching the current pins. Task output and the board ledger mark individual receipts from older command policies as no longer counting.
 - Worker spawns reserve a worker slot until the worker claims, its attempt ends or one lease passes; dispatch, claim and expired-lease renewal count leases and reservations from the event log alike, so a full limit refuses dispatch before launch.
 - Rungs configure ordered provider fallback routes after bounded outage retries or a structured harness policy refusal. Route switches start fresh sessions, wake the orchestrator, and keep usage attributed to the route that ran.

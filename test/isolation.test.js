@@ -314,6 +314,97 @@ test('every spawn gets a fresh home, and an exited agent\'s home is removed', { 
   }
 });
 
+test('only sandboxed claude and codex dispatches mark commands for nested Chrome', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const output = path.join(wt, 'sandbox-marker.json');
+  const script = `require('node:fs').writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.env.TOWER_CRANE_SANDBOX))`;
+  for (const harness of ['claude', 'codex']) {
+    for (const [role, expected] of [['hard', '1'], ['orchestrator', '0']]) {
+      isolated(h, role, harness);
+      spawn(h, u, role, {
+        TOWER_CRANE_SANDBOX: expected === '1' ? '0' : '1',
+        STUB_RUN: JSON.stringify([[process.execPath, '-e', script]]),
+      });
+      assert.equal(u.report().ran[0].code, 0);
+      assert.equal(JSON.parse(fs.readFileSync(output, 'utf8')), expected, `${harness} ${role} replaces an inherited marker`);
+    }
+  }
+});
+
+test('browser tasks attach the user kit on every rung with approved tools and no copied secrets', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const definitions = {
+    playwright: { command: 'browser-mcp', args: ['--headless'], env: { TOKEN: SECRET }, headers: { Authorization: SECRET } },
+    visual: { command: 'visual-mcp', args: [], env: { TOKEN: SECRET }, headers: { Authorization: SECRET } },
+  };
+  fs.writeFileSync(path.join(u.home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers: definitions }));
+  const config = path.join(u.home, '.codex', 'config.toml');
+  fs.appendFileSync(config, '\n' + TOML.stringify({ mcp_servers: definitions }));
+  fs.appendFileSync(path.join(u.home, '.codex', 'sol.config.toml'), '\n' + TOML.stringify({
+    mcp_servers: { playwright: {
+      command: 'profile-browser-mcp', enabled: false, default_tools_approval_mode: 'prompt',
+      env_vars: [SECRET], env_http_headers: { Authorization: SECRET },
+      tools: { browser_navigate: { approval_mode: 'prompt' } },
+    } },
+  }));
+  for (const harness of ['claude', 'codex']) {
+    for (const declaration of [['--kind', 'design', '--needs', '[]'], ['--kind', 'code', '--needs', '["browser"]']]) {
+      h.ok(['task', 'update', 'T1', ...declaration]);
+      for (const role of ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']) {
+        isolated(h, role, harness);
+        const dry = h.json(['spawn', '--role', role, '--task', 'T1', '--dry-run'], { env: u.env });
+        assert.deepEqual(dry.home.mcp, ['playwright'], `${harness} ${role} ${declaration}`);
+        if (harness === 'claude') assert.match(dry.argv[dry.argv.indexOf('--allowedTools') + 1], /mcp__playwright/);
+      }
+    }
+    const started = spawn(h, u, 'hard');
+    const seen = u.report();
+    assert.match(seen.memory.join('\n'), /Approved MCP servers for this dispatch: playwright/);
+    if (harness === 'claude') assert.deepEqual(seen.mcp, { playwright: { command: 'browser-mcp', args: ['--headless'] } });
+    else {
+      assert.deepEqual(seen.config.mcp_servers.playwright, {
+        command: 'browser-mcp', args: ['--headless'], enabled: true, default_tools_approval_mode: 'approve',
+      });
+      const profile = TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, 'sol.config.toml'), 'utf8')).mcp_servers.playwright;
+      assert.equal(profile.enabled, true);
+      assert.equal(profile.default_tools_approval_mode, 'approve');
+      assert.equal(profile.tools.browser_navigate.approval_mode, 'approve');
+      assert.equal(profile.env_vars, undefined);
+      assert.equal(profile.env_http_headers, undefined);
+    }
+    noSecretsCopied(h);
+    h.ok(['browser-kit', 'set', '--servers', '["visual","playwright"]']);
+    const custom = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
+    assert.deepEqual(custom.home.mcp, ['visual', 'playwright']);
+    h.ok(['task', 'update', 'T1', '--needs', '[]']);
+    const plain = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
+    assert.deepEqual(plain.home.mcp, [], 'a plain code task gets no kit');
+    h.ok(['browser-kit', 'set', '--servers', '["playwright"]']);
+  }
+});
+
+test('browser spawns use the original user kit through a nested isolated home and refuse missing servers', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const userFile = path.join(u.home, '.config', 'tower-crane', 'config.json');
+  fs.mkdirSync(path.dirname(userFile), { recursive: true });
+  fs.writeFileSync(userFile, JSON.stringify({ browser_kit: ['planted'] }));
+  h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
+  isolated(h, 'hard', 'codex');
+  const parent = spawn(h, u, 'hard', { TOWER_CRANE_CONFIG: '' });
+  const generated = path.join(h.state, 'homes', parent.agent);
+  const nestedEnv = { ...u.env, HOME: path.join(generated, 'home'), CODEX_HOME: generated, TOWER_CRANE_CONFIG: '' };
+  assert.deepEqual(h.json(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: nestedEnv }).home.mcp, ['planted']);
+  fs.writeFileSync(userFile, JSON.stringify({ browser_kit: ['missing-browser'] }));
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'small', harness);
+    const result = h.run(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '' } });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /missing-browser.*(?:mcp\.json|config\.toml)/);
+  }
+  h.ok(['task', 'update', 'T1', '--needs', '[]']);
+  assert.deepEqual(h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '' } }).home.mcp, []);
+});
+
 test('a codex agent writes only where its agent file says; a worker writes its git metadata, reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   // A worker fetches, adds, commits and pushes: it writes the repository's
