@@ -129,6 +129,10 @@ test('stack merge rechecks every accepted head and records evidence for all merg
     assert.match(task.phase?.label || f.h.ok(['task', 'show', id]), /merged/);
   }
   assert.equal(f.h.git(['rev-parse', 'origin/main']), f.h.git(['rev-parse', 'HEAD'], f.h.json(['worktree', 'T2']).path));
+  f.write((d) => { d.linked = false; });
+  f.h.ok(['merge', 'T1']);
+  f.h.ok(['merge', 'T2']);
+  assert.equal(f.read().calls.filter((c) => c.args[0] === 'stack' && c.args[1] === 'merge').length, 1);
 });
 
 test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents stack merge', (t) => {
@@ -148,12 +152,20 @@ test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents 
 
 test('queued stack merges are not evidence of a merge', (t) => {
   const f = setup(t);
-  upper(f);
+  const { wt } = upper(f);
   f.accept('T1');
   f.accept('T2');
   f.write((d) => { d.queued = true; });
   assert.equal(f.h.run(['merge', 'T2']).code, 1);
   assert.equal(f.h.json(['task', 'show', 'T1']).evidence.some((e) => e.type === 'merge'), false);
+  f.write((d) => {
+    d.linked = false;
+    for (const pr of Object.values(d.prs)) { pr.state = 'MERGED'; pr.mergeCommit = { oid: pr.headRefOid }; }
+  });
+  f.h.git(['push', 'origin', `${wt.branch}:main`]);
+  f.h.ok(['merge', 'T2']);
+  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.equal(f.read().calls.filter((c) => c.args[0] === 'stack' && c.args[1] === 'merge').length, 1);
 });
 
 test('lower merge refreshes upper worktrees with gh stack sync and conflicts send upper work to rework', (t) => {
@@ -335,6 +347,21 @@ test('stacks disabled after acceptance select ordinary merge gates and keep depe
   f.h.ok(['merge', 'T1']);
   f.h.ok(['merge', 'T2']);
   assert.equal(f.read().prs[12].baseRefName, 'main');
+});
+
+test('relinking after capability recovery restores the stack gate and refuses admin bypass', (t) => {
+  const f = setup(t);
+  upper(f);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.unavailable = true; });
+  assert.equal(f.h.run(['merge', 'T2']).code, 1);
+  f.write((d) => { d.unavailable = false; });
+  f.h.ok(['stack', 'link', 'T2']);
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack_disabled, undefined);
+  assert.match(f.h.run(['merge', 'T2', '--admin']).stdout, /cannot use --admin/);
+  assert.equal(f.read().calls.some((c) => c.args[0] === 'pr' && c.args[1] === 'merge'), false);
+  f.h.ok(['merge', 'T2']);
 });
 
 test('older gh-stack versions fall back before creating a dependency-based branch', (t) => {
