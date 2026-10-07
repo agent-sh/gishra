@@ -51,6 +51,10 @@ for (const explicit of [false, true]) {
     const override = { name: 'backup-web', command: 'node', args: ['/web/backup.mjs'] };
     const h = setup(t, { rung: 'research', primaryHarness: 'claude', nextHarness: 'claude',
       reason: 'refusal', webMcp: server, ...(explicit ? { fallbackWebMcp: override } : {}) });
+    const cache = path.join(h.base, 'cache');
+    fs.mkdirSync(cache);
+    h.spawnEnv.XDG_CACHE_HOME = cache;
+    h.spawnEnv.LOCALAPPDATA = cache;
     h.spawnEnv.CLAUDE_CODE_USE_BEDROCK = '1';
     const spawned = h.json(['spawn', '--task', 'T1'], { env: h.spawnEnv });
     const result = await h.runAsync(['wait', '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '20']);
