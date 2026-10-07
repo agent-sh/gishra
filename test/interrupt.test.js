@@ -1,0 +1,191 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { makeRepo, BIN, detachedAlive } = require('./helpers');
+
+const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+
+async function until(fn, message) {
+  const deadline = Date.now() + 15000;
+  while (!fn()) {
+    if (Date.now() >= deadline) assert.fail(message);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function setup(t, retry = false, stubborn = false) {
+  const h = makeRepo(t);
+  h.init(['--workers', '1']);
+  h.ok(['task', 'add', '--title', 'Keep unfinished work', '--acceptance', 'original requirement']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Finish the work.\n' });
+  const seen = path.join(h.base, 'seen.json');
+  const script = path.join(h.base, 'harness.js');
+  fs.writeFileSync(script, `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const [bin, seen, session, prompt] = process.argv.slice(2);
+const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { encoding: 'utf8' });
+${stubborn ? `
+process.on('SIGTERM', () => {});
+const child = cp.spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
+fs.writeFileSync(seen + '.child', String(child.pid));
+` : ''}
+const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
+if (!task.claim) cli('claim', 'T1');
+const previous = fs.existsSync(seen) ? JSON.parse(fs.readFileSync(seen)) : [];
+previous.push({ agent: process.env.TOWER_CRANE_AGENT, session, prompt, cwd: process.cwd() });
+fs.writeFileSync(seen, JSON.stringify(previous));
+fs.writeFileSync('README.md', '# unfinished tracked work\\n');
+fs.writeFileSync('unfinished.txt', 'keep this untracked work\\n');
+console.log(JSON.stringify({ type: 'thread.started', thread_id: session || 'interrupted-session' }));
+if (${retry}) process.exit(75);
+if (!session) setInterval(() => {}, 1000);
+`);
+  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
+    '--command', JSON.stringify([process.execPath, script, BIN, seen, '{session}', '{prompt}']),
+    '--supervision', JSON.stringify({ retries: 1, backoff_ms: 30000, max_backoff_ms: 30000 })]);
+  h.seen = () => fs.existsSync(seen) ? JSON.parse(fs.readFileSync(seen)) : [];
+  return h;
+}
+
+test('interrupt stops supervision, preserves dirty work and resumes the original worker without rework', async (t) => {
+  const h = setup(t);
+  const first = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not record its session');
+  const claim = h.json(['task', 'show', 'T1']).claim;
+  h.ok(['claim', 'T1', '--agent', first.agent]);
+  h.ok(['task', 'note', 'T1', 'keep the current approach']);
+  const stopped = h.json(['interrupt', 'T1', '--agent', 'orchestrator']);
+  assert.equal(stopped.status, 'todo');
+  assert.equal(stopped.claim, null);
+  assert.equal(stopped.revision, 1);
+  assert.equal(stopped.branch, h.json(['task', 'show', 'T1']).branch);
+  await until(() => !detachedAlive({ pid: first.monitor_pid }), 'supervisor did not stop');
+  assert.equal(detachedAlive({ pid: first.pid }), false);
+  assert.equal(fs.readFileSync(path.join(first.cwd, 'README.md'), 'utf8'), '# unfinished tracked work\n');
+  assert.equal(fs.readFileSync(path.join(first.cwd, 'unfinished.txt'), 'utf8'), 'keep this untracked work\n');
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn exit').length, 1);
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn retry').length, 0);
+  assert.equal(events(h).filter((e) => e.cmd === 'rework').length, 0);
+  assert.equal(h.json(['task', 'show', 'T1']).run?.active ?? false, false);
+  const second = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(second.resumed, true);
+  assert.equal(second.agent, first.agent);
+  assert.equal(second.cwd, first.cwd);
+  assert.notEqual(second.log, first.log);
+  assert.equal(h.seen()[1].session, 'interrupted-session');
+  assert.match(h.seen()[1].prompt, /Interrupt T1/);
+  assert.equal(h.json(['task', 'show', 'T1']).claim.from, 'todo');
+  assert.equal(h.json(['task', 'show', 'T1']).claim.since, claim.since);
+});
+
+test('live requirements need an authorized interrupt; metadata and unchanged requirements keep running', async (t) => {
+  const h = setup(t);
+  h.ok(['task', 'add', '--title', 'Another task', '--acceptance', 'later']);
+  const first = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not start');
+  for (const fields of [['--acceptance', 'new requirement'], ['--dep', 'T2'], ['--kind', 'docs'],
+    ['--ci-local', '{"command":["node","check.js"]}']]) {
+    const refused = h.run(['task', 'update', 'T1', ...fields]);
+    assert.equal(refused.code, 1, refused.stderr);
+    assert.match(refused.stderr, /live claim.*--interrupt/);
+  }
+  for (const agent of [first.agent, 'reviewer-T1-1', 'small-T1-1']) {
+    for (const args of [['interrupt', 'T1'], ['task', 'update', 'T1', '--acceptance', 'new requirement', '--interrupt']]) {
+      const refused = h.run([...args, '--agent', agent]);
+      assert.equal(refused.code, 1, refused.stderr);
+      assert.match(refused.stderr, /only.*owner.*orchestrator/);
+    }
+  }
+  h.ok(['task', 'note', 'T1', 'a note from the worker', '--agent', first.agent]);
+  h.ok(['task', 'update', 'T1', '--title', 'Renamed', '--size', 'S', '--tier', 'easy', '--interrupt']);
+  h.ok(['task', 'update', 'T1', '--acceptance', 'original requirement']);
+  assert.equal(detachedAlive({ pid: first.pid }), true);
+  assert.equal(h.json(['task', 'show', 'T1']).revision, 1);
+  assert.equal(events(h).filter((e) => e.cmd === 'interrupt').length, 0);
+  h.ok(['task', 'update', 'T1', '--tier', 'medium']);
+  h.ok(['task', 'update', 'T2', '--dep', 'T1']);
+  const invalid = h.run(['task', 'update', 'T1', '--dep', 'T2', '--interrupt']);
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stderr, /cycle/);
+  assert.equal(events(h).filter((e) => e.cmd === 'interrupt').length, 0);
+  const updated = h.json(['task', 'update', 'T1', '--acceptance', 'new requirement', '--interrupt', '--agent', 'orchestrator']);
+  assert.equal(updated.revision, 2);
+  assert.equal(updated.claim, null);
+  await until(() => !detachedAlive({ pid: first.monitor_pid }), 'requirements interrupt did not stop');
+  h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.match(h.seen()[1].prompt, /new requirement/);
+});
+
+test('interrupt during backoff cancels the retry and releases the claim', async (t) => {
+  const h = setup(t, true);
+  const first = h.json(['spawn', '--task', 'T1']);
+  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'worker did not enter backoff');
+  h.ok(['interrupt', 'T1']);
+  await until(() => !detachedAlive({ pid: first.monitor_pid }), 'backoff supervisor did not stop');
+  assert.equal(h.seen().length, 1);
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn retry').length, 0);
+  h.ok(['claim', 'T1', '--agent', 'replacement']);
+  assert.equal(h.json(['task', 'show', 'T1']).claim.agent, 'replacement');
+});
+
+test('manual claims can be interrupted only by the owner or an orchestrator', (t) => {
+  const h = setup(t);
+  h.ok(['claim', 'T1', '--agent', 'manual-worker']);
+  const before = h.json(['task', 'show', 'T1']);
+  assert.equal(h.run(['interrupt', 'T1', '--agent', 'manual-worker']).code, 1);
+  const stopped = h.json(['interrupt', 'T1', '--agent', 'orchestrator']);
+  assert.equal(stopped.revision, before.revision);
+  assert.equal(stopped.claim, null);
+  assert.equal(stopped.status, 'todo');
+  assert.equal(h.run(['interrupt', 'T1']).code, 1);
+  h.ok(['claim', 'T1', '--agent', 'manual-worker']);
+  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', 'manual-worker']);
+  h.ok(['rework', 'T1', '--reason', 'finish it']);
+  h.ok(['claim', 'T1', '--agent', 'manual-worker']);
+  assert.equal(h.json(['interrupt', 'T1']).status, 'rework');
+});
+
+test('an interrupted supervisor holds its worker slot until the process group stops', { skip: process.platform === 'win32' }, async (t) => {
+  const h = setup(t, false, true);
+  h.ok(['task', 'add', '--title', 'Next worker', '--acceptance', 'gets a slot']);
+  const first = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not start');
+  const child = Number(fs.readFileSync(path.join(h.base, 'seen.json.child'), 'utf8'));
+  h.ok(['interrupt', 'T1']);
+  const refused = h.run(['claim', 'T2', '--agent', 'replacement']);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /workers limit/);
+  assert.equal(h.run(['claim', 'T1', '--agent', first.agent]).code, 1);
+  for (const flags of [[], ['--dry-run']]) {
+    const refusedSpawn = h.run(['spawn', '--task', 'T1', ...flags]);
+    assert.equal(refusedSpawn.code, 1, refusedSpawn.stderr);
+    assert.match(refusedSpawn.stderr, /still stopping/);
+  }
+  await until(() => !detachedAlive({ pid: first.monitor_pid }), 'supervisor did not stop the stubborn group');
+  assert.equal(detachedAlive({ pid: first.pid }), false);
+  assert.equal(detachedAlive({ pid: child }), false);
+  h.ok(['claim', 'T2', '--agent', 'replacement']);
+});
+
+test('a generated orchestrator identity may interrupt; an expired lease needs no requirements interrupt', (t) => {
+  const h = setup(t);
+  h.ok(['task', 'add', '--title', 'Coordinate', '--acceptance', 'coordinates']);
+  h.ok(['brief', 'set', 'T2', '-'], { input: 'Coordinate the worker.\n' });
+  h.ok(['ladder', 'set', 'orchestrator', '--harness', 'command', '--clear', 'profile', '--clear', 'effort', '--clear', 'model',
+    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]);
+  const orchestrator = h.json(['spawn', '--task', 'T2', '--role', 'orchestrator', '--wait']);
+  h.ok(['claim', 'T1', '--agent', 'manual-worker']);
+  h.ok(['interrupt', 'T1', '--agent', orchestrator.agent]);
+  h.ok(['claim', 'T1', '--agent', 'manual-worker']);
+  const claim = h.json(['task', 'show', 'T1']).claim;
+  const clock = path.join(__dirname, 'fixtures', 'clock.js').replace(/\\/g, '/');
+  const updated = h.json(['task', 'update', 'T1', '--acceptance', 'after expiry'], {
+    env: { NODE_OPTIONS: `--require "${clock}"`, TOWER_CRANE_TEST_NOW: String(Date.parse(claim.until) + 1) },
+  });
+  assert.equal(updated.revision, 2);
+  assert.deepEqual(updated.claim, claim);
+});
