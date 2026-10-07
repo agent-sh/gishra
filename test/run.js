@@ -12,7 +12,8 @@ const concurrency = process.platform === 'win32'
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
 // Four Windows file workers leave CPU for test children that poll timers.
 args.push(`--test-concurrency=${concurrency}`);
-if (process.env.TC_TEST_SHARD) args.push(`--test-shard=${process.env.TC_TEST_SHARD}`);
+const shard = process.env.TC_TEST_SHARD;
+if (shard) args.push(`--test-shard=${shard}`);
 const testFiles = [
   ...fs.readdirSync(__dirname).filter((file) => file.endsWith('.test.js')).map((file) => `test/${file}`),
   ...fs.readdirSync(path.join(__dirname, 'gates')).filter((file) => file.endsWith('.test.js')).map((file) => `test/gates/${file}`),
@@ -56,9 +57,11 @@ args.push(...orderedFiles);
 const seed = createRepoSeed();
 let result;
 try {
+  const testEnv = { ...process.env, TC_TEST_REPO_SEED: seed.repo };
+  delete testEnv.TC_TEST_SHARD;
   result = cp.spawnSync(process.execPath, args, {
     stdio: 'inherit',
-    env: { ...process.env, TC_TEST_REPO_SEED: seed.repo },
+    env: testEnv,
   });
 } finally {
   cleanupRepoSeed(seed);

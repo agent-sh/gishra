@@ -20,8 +20,9 @@ jobs:
         include:
           - { os: ubuntu-latest, node: 26, shard: '' }
           - { os: ubuntu-latest, node: 24, shard: '' }
-          - { os: windows-latest, node: 26, shard: '1/2' }
-          - { os: windows-latest, node: 26, shard: '2/2' }
+          - { os: windows-latest, node: 26, shard: '1/3' }
+          - { os: windows-latest, node: 26, shard: '2/3' }
+          - { os: windows-latest, node: 26, shard: '3/3' }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
