@@ -332,6 +332,31 @@ test('live CLI writes keep Plan, its task sheet, scroll and the focused control 
   });
 });
 
+test('live updates match task sheet buttons by form and fall back when the focused action is removed', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const b = await openBrowser(t);
+  for (const action of ['comments', 'owner-done']) {
+    await t.test(action === 'comments' ? 'the focused button survives a removed sibling form' : 'the removed focused button falls back to the heading', async (t) => {
+      const h = makeRepo(t);
+      h.init();
+      h.ok(['task', 'add', '--title', 'Dashboard access', '--acceptance', 'access granted', '--needs-owner', 'grant dashboard access']);
+      await withServers(async (servers) => {
+        const url = await startServe(servers, h);
+        await b.goto(`${url}#T1`);
+        await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+        const button = JSON.stringify(`#T1 form[data-api="/api/tasks/T1/${action}"] button[type="submit"]`);
+        await b.inPage(`document.querySelector(${button}).focus({ preventScroll: true })`);
+        assert.equal(await b.inPage(`document.activeElement === document.querySelector(${button})`), true, 'the action starts focused');
+
+        h.ok(['owner-done', 'T1', '--note', 'access granted']);
+        await b.until(`!document.querySelector('#T1 form[data-api="/api/tasks/T1/owner-done"]')`, 'the owner-done form to be removed by the live update');
+        assert.deepEqual(await b.inPage(`[location.hash, document.querySelector('.sheet.open').id]`), ['#T1', 'T1'], 'the task sheet stays open');
+        const expected = action === 'comments' ? button : JSON.stringify('#T1 h2');
+        assert.equal(await b.inPage(`document.activeElement === document.querySelector(${expected})`), true, action === 'comments' ? 'Send comment keeps focus when Mark done disappears' : 'focus moves to the heading when Mark done disappears');
+      });
+    });
+  }
+});
+
 test('a viewer cannot edit tiers or the ladder from a sheet, Settings or a forged POST', async (t) => {
   const h = makeRepo(t);
   h.init();
