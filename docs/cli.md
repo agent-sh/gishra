@@ -61,6 +61,20 @@ The list settings also work with `init`. Omitted options leave their fields unch
 
 ## Run
 
+The owner can configure toolchain homes, writable caches and an environment file at project level, then override fields on a rung:
+
+```sh
+tower-crane project set --sandbox '{"write":["~/.cargo","~/.rustup"]}' --env '{"CARGO_HOME":"/home/user/.cargo","RUSTUP_HOME":"/home/user/.rustup"}' --env_file '~/.config/claude-code/bedrock.env' --scope '{"CPUQuota":"200%","MemoryMax":"8G"}' --agent owner
+tower-crane ladder set hard --env_file '~/.config/claude-code/bedrock.env' --agent owner
+tower-crane ladder set review --sandbox '{"write":[]}' --scope '{}' --agent owner
+```
+
+`init` accepts the same `--sandbox JSON`, `--env JSON`, `--env_file FILE` and `--scope JSON` flags. `project set` replaces the named project field; `null` removes it. `ladder set --clear sandbox`, `--clear env`, `--clear env_file` or `--clear scope` restores the project default for that rung. Setting, repeating and clearing require explicit owner identity. Rung `env` merges over project `env`; these override the env file, which overrides the spawning environment. A rung file replaces the project file. Each rung sandbox field replaces the corresponding project field. A rung `scope` replaces the entire project scope; `{}` disables it for that rung.
+
+`sandbox.write` extends the standard writable paths in Claude and Codex. `~` in sandbox paths or the env-file path refers to the original user's home; relative paths start at the repository root. Environment values are literal; provide absolute paths for `CARGO_HOME` and `RUSTUP_HOME`. Home, PATH, harness-home and `TOWER_CRANE_*` variables are reserved. `env` is saved and shown as configuration, so keep secrets in `env_file`. That file uses systemd EnvironmentFile quoting, without shell evaluation. Only its path is stored; dry-run does not read it, and the CLI does not log its variable names or contents. The supervisor reads it at spawn and supplies values only to the harness process, including retries. Invalid or unreadable files fail without echoing contents. Agents must keep secrets out of printed output and prompts because harness logs and transcripts persist.
+
+`scope` launches the agent process on the host under `systemd-run --user --scope --quiet --expand-environment=no -p PROPERTY=VALUE ... -- COMMAND`. Every agent command inherits the scope limits, including retries. `TOWER_CRANE_SCOPED=1` tells agent scripts they already run in a scope. Real spawn refuses configured scopes on non-Linux systems or when `systemd-run` is unavailable; an unavailable user manager or invalid property makes the launch fail. Empty `{}` disables scopes. Scope properties are owner-controlled systemd property names and string values. Environment expansion of command arguments is disabled so literal `$VAR` and `${VAR}` in briefs and diffs cannot expose agent environment values in prompts. Systemd versions that lack `--expand-environment=no` reject the scoped launch; there is no fallback with expansion enabled. The host CLI needs access to the user systemd session. The command sandbox does not need the session bus: Codex blocks its AF_UNIX connection even with the runtime directory readable, so `sandbox.user_bus` is not supported. Both rendered sandboxes permit TCP loopback servers and clients. Run the real worker probe from an unsandboxed user session with `TOWER_CRANE_LIVE_CODEX=1 TOWER_CRANE_TEST_TMP="$HOME/.local/share/tower-crane-live-tests" node --test test/sandbox-extensions.test.js`. The fixture root must be outside the standard writable temp and cache directories so the lock proves the extra write grant. `TOWER_CRANE_LIVE_PROFILE` selects its Codex profile (`sol` by default).
+
 | Command | Does |
 |---|---|
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason |
