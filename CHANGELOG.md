@@ -1,5 +1,6 @@
 # Changelog
 
+- `bench gates` labels every tests, clean, ci and merge gate result from the event log as a true or false positive or negative and reports precision and recall per gate, per failed CI check run and, from the detector's eval files, per deslop check. `bench tokens` reports tokens and priced cost per accepted task by rung and by escalation path. docs/bench.md holds the method and the first results.
 - Tests, cleanup and scoped proof commands are pinned by the owner in project settings. Gates refuse different caller commands, and acceptance and merge require receipts matching the current pins. Task output and the board ledger mark individual receipts from older command policies as no longer counting.
 - Worker spawns reserve a worker slot until the worker claims, its attempt ends or one lease passes; dispatch, claim and expired-lease renewal count leases and reservations from the event log alike, so a full limit refuses dispatch before launch.
 - Rungs configure ordered provider fallback routes after bounded outage retries or a structured harness policy refusal. Route switches start fresh sessions, wake the orchestrator, and keep usage attributed to the route that ran.
