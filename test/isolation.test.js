@@ -458,7 +458,7 @@ test('a codex rework resumes in a fresh isolated home and finds its first sessio
   const seen = u.report();
   assert.ok(seen.resumed, 'codex runs exec resume');
   assert.equal(seen.home, path.join(home, 'home'), 'the resume runs in the agent\'s isolated home');
-  assert.deepEqual(seen.sessions, [`rollout-${first.agent}.jsonl`], 'the first session is there');
+  assert.deepEqual(seen.sessions, [`rollout-${first.agent}-stub-thread.jsonl`], 'the first session is there');
   assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'the home was rebuilt');
 });
 
