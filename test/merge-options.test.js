@@ -72,11 +72,17 @@ test('agents cannot request admin merging outside owner-set project policy', (t)
       assert.match(refused.stderr, /unknown option --admin for merge/);
       assert.ok(!fs.existsSync(h.env.FIXTURE_GH_LOG), 'no GitHub command ran');
       assert.deepEqual(snapshot(), before, 'refusal records no merge evidence');
-      const denied = h.run(['project', 'set', '--merge-admin', 'true', '--agent', agent]);
-      assert.equal(denied.code, 1, denied.stderr);
-      assert.match(denied.stderr, /only the owner/);
-      assert.deepEqual(snapshot(), before, 'refusal writes no events');
     }
+    const project = h.readState('project.json');
+    const denied = h.run(['project', 'set', '--merge-admin', 'true', '--agent', 'w-1']);
+    assert.equal(denied.code, 1, denied.stderr);
+    assert.match(denied.stderr, /only the owner/);
+    assert.deepEqual(snapshot(), before, 'refusal writes no events');
+    // The orchestrator's request becomes a decision for the owner and changes nothing.
+    const escalated = h.run(['project', 'set', '--merge-admin', 'true', '--agent', 'orchestrator']);
+    assert.equal(escalated.code, 1, escalated.stderr);
+    assert.match(escalated.stderr, /merge\.admin is owner-required; opened D1 for the owner/);
+    assert.deepEqual(h.readState('project.json'), project);
   }
   assert.doesNotMatch(h.ok(['merge', '--help']), /--admin\b/);
 });

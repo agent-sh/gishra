@@ -42,12 +42,12 @@ test('unpinned agent commands cannot execute a shell payload', (t) => {
   }
 });
 
-test('only the explicit owner can set or clear gate commands at init and project set', (t) => {
+test('only the orchestrator or the explicit owner can set or clear gate commands at init and project set', (t) => {
   for (const flag of ['--tests-cmd', '--clean-cmd', '--tests-proof-cmd']) {
     const h = makeRepo(t);
     const init = h.run(['init', '--name', 'demo', '--goal', 'work', flag, 'node check.js', '--agent', 'worker']);
     assert.equal(init.code, 1, init.stderr);
-    assert.match(init.stderr, /only the owner/);
+    assert.match(init.stderr, /only the orchestrator or the owner/);
     assert.equal(fs.existsSync(path.join(h.state, 'project.json')), false);
     h.init([flag, flag === '--tests-proof-cmd' ? 'node {tests}' : 'node check.js']);
     const before = h.readState('project.json');
@@ -96,7 +96,7 @@ test('terminal owner fallback cannot pin gate commands', { skip: !PTY_AVAILABLE 
   delete env.TOWER_CRANE_AGENT;
   const result = runPty(['project', 'set', '--tests-cmd', 'node check.js'], { cwd: h.repo, env });
   assert.equal(result.code, 1);
-  assert.match(result.stdout, /only the owner with an explicit identity/);
+  assert.match(result.stdout, /only the orchestrator or the owner/);
   assert.deepEqual(h.readState('project.json'), before);
 });
 
