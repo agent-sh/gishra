@@ -300,6 +300,17 @@ if (env.HOOK_USAGE_WRITE_FAIL) {
 
 // Track detached children outside state so teardown can await every collector.
 if (env.HOOK_PROCESSES_DIR) {
+  if (path.basename(process.argv[1] || '') === 'spawn-monitor.js') {
+    process.once('exit', () => {
+      const file = path.join(env.HOOK_PROCESSES_DIR, `${process.pid}.json`);
+      try {
+        const tracked = JSON.parse(real.readFileSync(file, 'utf8'));
+        const tmp = `${file}.exited`;
+        real.writeFileSync(tmp, JSON.stringify({ ...tracked, exited: true }));
+        real.renameSync(tmp, file);
+      } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    });
+  }
   const original = cp.spawn;
   cp.spawn = function trackDetached(file, args, options) {
     const monitor = args.some((arg) => path.basename(arg) === 'spawn-monitor.js');
@@ -329,10 +340,14 @@ if (env.HOOK_PROCESSES_DIR) {
         } catch { /* A short-lived child may have already exited. */ }
       }
       real.mkdirSync(env.HOOK_PROCESSES_DIR, { recursive: true });
-      real.writeFileSync(path.join(env.HOOK_PROCESSES_DIR, `${child.pid}.json`), JSON.stringify({
+      const trackedFile = path.join(env.HOOK_PROCESSES_DIR, `${child.pid}.json`);
+      real.writeFileSync(trackedFile, JSON.stringify({
         pid: child.pid, startTicks,
         kind: monitor ? 'monitor' : 'worker',
       }));
+      // A reaped Windows PID can immediately belong to another test's CLI.
+      // The live parent observes worker exit; monitors record their own exit.
+      if (!monitor) child.once('exit', () => real.rmSync(trackedFile, { force: true }));
     }
     return child;
   };

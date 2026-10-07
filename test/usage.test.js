@@ -162,6 +162,25 @@ test('foreground spawn captures usage after stderr and stdout close, including f
   assert.equal(events(h).find((e) => e.cmd === 'spawn exit').detail.code, 7);
 });
 
+test('completed processes cannot leave teardown targeting a reused pid', async (t) => {
+  const h = setup(t);
+  h.json(['spawn', '--task', 'T1'], {
+    env: { ...h.usageEnv, USAGE_DELAY: '100' }, hooks: h.usageHooks,
+  });
+  await collected(h);
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const tracked = h.detached();
+    if (!tracked.some((child) => child.kind === 'worker') && tracked.filter((child) => child.kind === 'monitor').every((child) => child.exited)) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const tracked = h.detached();
+  assert.equal(tracked.filter((child) => child.kind === 'worker').length, 0);
+  const monitors = tracked.filter((child) => child.kind === 'monitor');
+  assert.equal(monitors.length, 1, 'monitor dispatch remains in the audit tracker');
+  assert.equal(monitors[0].exited, true, 'teardown knows the monitor exited before its pid can be reused');
+});
+
 test('detached exits record both spawns exactly once and keep dispatch metadata', async (t) => {
   const h = setup(t);
   const options = { env: { ...h.usageEnv, USAGE_DELAY: '900' }, hooks: h.usageHooks };

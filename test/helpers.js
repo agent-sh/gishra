@@ -52,7 +52,10 @@ function makeRepo(t) {
     state: path.join(repo, '.tower-crane'),
     detached: () => {
       const dir = path.join(base, 'detached');
-      return fs.existsSync(dir) ? fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))) : [];
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')).flatMap((f) => {
+        try { return [JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))]; }
+        catch (e) { if (e.code === 'ENOENT') return []; throw e; }
+      }) : [];
     },
     cleanup: async () => {
       try { await stopDetached(ctx.detached()); }
@@ -117,6 +120,7 @@ function runAsync(args, { cwd, env, pre = [] } = {}) {
 const real = (p) => fs.realpathSync.native(p);
 
 function detachedAlive(child) {
+  if (child.exited) return false;
   try { process.kill(child.pid, 0); } catch (e) { if (e.code === 'ESRCH') return false; throw e; }
   if (process.platform === 'linux') {
     let stat;
