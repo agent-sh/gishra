@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, cachedFixture } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -34,11 +34,11 @@ function writeUser(h, doc) {
 }
 
 function setup(t) {
-  const h = makeRepo(t);
-  harnessConfig(h);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'done', '--needs-owner', 'approve access']);
-  return h;
+  return cachedFixture(t, 'owner task', (h) => {
+    harnessConfig(h);
+    h.init();
+    h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'done', '--needs-owner', 'approve access']);
+  });
 }
 
 const OPERATIONAL = [

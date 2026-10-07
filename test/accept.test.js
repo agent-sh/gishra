@@ -4,15 +4,20 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, cachedFixture } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 
-function submitted(h, extra = [], kind = 'code') {
-  h.sha = gateFixture(h);
-  h.ok(['project', 'set', '--repo', 'acme/demo']);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works', '--kind', kind]);
-  h.ok(['claim', 'T1', '--agent', 'w-1']);
-  h.ok(['submit', 'T1', '--sha', h.sha.slice(0, 10), '--agent', 'w-1', ...extra]);
+// A submitted task, built once per process for each submit shape and kind.
+function submitted(t, extra = [], kind = 'code') {
+  return cachedFixture(t, JSON.stringify([extra, kind]), (h) => {
+    h.init();
+    h.sha = gateFixture(h);
+    h.ok(['project', 'set', '--repo', 'acme/demo']);
+    h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works', '--kind', kind]);
+    h.ok(['claim', 'T1', '--agent', 'w-1']);
+    h.ok(['submit', 'T1', '--sha', h.sha.slice(0, 10), '--agent', 'w-1', ...extra]);
+    return { sha: h.sha };
+  });
 }
 
 const ev = (h, type, agent, ok = true) => ['tests', 'clean', 'ci'].includes(type)
@@ -20,9 +25,7 @@ const ev = (h, type, agent, ok = true) => ['tests', 'clean', 'ci'].includes(type
   : h.ok(['evidence', 'T1', '--type', type, ok ? '--ok' : '--fail', '--sha', h.sha, '--agent', agent]);
 
 test('accept refuses a code task without gates, and a review by the submitter does not count', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h);
+  const h = submitted(t);
   h.ok(['project', 'set', '--tests-cmd', 'null']);
   const none = h.run(['accept', 'T1']);
   assert.equal(none.code, 1);
@@ -45,9 +48,7 @@ test('accept refuses a code task without gates, and a review by the submitter do
 });
 
 test('the latest evidence at the submitted sha decides, and other shas do not count', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h, ['--pr', '7']);
+  const h = submitted(t, ['--pr', '7']);
   ev(h, 'tests', 'w-1');
   ev(h, 'clean', 'w-1');
   ev(h, 'review', 'r-1');
@@ -71,9 +72,7 @@ test('the latest evidence at the submitted sha decides, and other shas do not co
 });
 
 test('a revision bump invalidates earlier evidence', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h);
+  const h = submitted(t);
   ev(h, 'tests', 'w-1');
   ev(h, 'clean', 'w-1');
   ev(h, 'review', 'r-1');
@@ -90,9 +89,7 @@ test('a revision bump invalidates earlier evidence', (t) => {
 });
 
 test('an accepted task keeps its acceptance, dependencies and kind until it is sent back', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h);
+  const h = submitted(t);
   ev(h, 'tests', 'w-1');
   ev(h, 'clean', 'w-1');
   ev(h, 'review', 'r-1');
@@ -125,9 +122,7 @@ test('an accepted task keeps its acceptance, dependencies and kind until it is s
 });
 
 test('other kinds need only a review from another agent', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h, [], 'docs');
+  const h = submitted(t, [], 'docs');
   ev(h, 'review', 'w-1');
   assert.equal(h.run(['accept', 'T1']).code, 1);
   ev(h, 'review', 'r-1');
@@ -135,18 +130,14 @@ test('other kinds need only a review from another agent', (t) => {
 });
 
 test('accept runs missing CI for a non-code task with a PR', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h, ['--pr', '7'], 'docs');
+  const h = submitted(t, ['--pr', '7'], 'docs');
   ev(h, 'review', 'r-1');
   h.ok(['accept', 'T1']);
   assert.equal(h.readState('tasks.json').tasks[0].evidence.at(-1).type, 'ci');
 });
 
 test('only the owner can waive tests or clean, the orchestrator escalates, and a refused accept records no waiver', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h);
+  const h = submitted(t);
   ev(h, 'review', 'r-1');
   const notOwner = h.run(['accept', 'T1', '--waive', 'tests', '--reason', 'no test harness', '--agent', 'orchestrator']);
   assert.equal(notOwner.code, 1);
@@ -188,9 +179,7 @@ function reviewerCapped(h) {
 
 for (const [state, makeOut] of [['capped', reviewerCapped], ['down', reviewerDown]]) {
   test(`the orchestrator waives review only for a ${state} reviewer and the waiver counts`, (t) => {
-    const h = makeRepo(t);
-    h.init();
-    submitted(h);
+    const h = submitted(t);
     ev(h, 'tests', 'orchestrator');
     ev(h, 'clean', 'orchestrator');
     const waive = ['accept', 'T1', '--waive', 'review', '--reason', `reviewer ${state}`];
@@ -213,9 +202,7 @@ for (const [state, makeOut] of [['capped', reviewerCapped], ['down', reviewerDow
 }
 
 test('rework sends the task back with the reason in the brief, and it can be claimed again', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  submitted(h);
+  const h = submitted(t);
   h.ok(['brief', 'set', 'T1', '-'], { input: '# Brief\n\nDo the change.\n' });
   assert.equal(h.run(['rework', 'T1']).code, 2);
   h.ok(['rework', 'T1', '--reason', 'handle the empty key case', '--agent', 'r-1']);

@@ -7,7 +7,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const http = require('node:http');
 const { once } = require('node:events');
-const { makeRepo, BIN, HOOKS, ROOT } = require('./helpers');
+const { cachedFixture, BIN, HOOKS, ROOT } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 function log(h) {
@@ -15,7 +15,10 @@ function log(h) {
 }
 
 function setup(t, flags = []) {
-  const h = makeRepo();
+  const h = cachedFixture(null, JSON.stringify(flags), (h) => {
+    h.init(flags);
+    h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+  });
   h.children = [];
   h.workerPids = [];
   t.after(async () => {
@@ -29,12 +32,10 @@ function setup(t, flags = []) {
     // Windows keeps a running child's cwd open, so stop children first.
     await h.cleanup();
   });
-  h.init(flags);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
   return h;
 }
 
-function child(t, h, args, hooks = {}) {
+function child(t, h, args, hooks = {}, ms = 10000) {
   const p = cp.spawn(process.execPath, ['--require', HOOKS, BIN, ...args], {
     cwd: h.repo, env: { ...h.env, HOOK_STATE: h.state, ...hooks },
   });
@@ -42,7 +43,7 @@ function child(t, h, args, hooks = {}) {
   let stderr = '';
   p.stdout.on('data', (d) => { stdout += d; });
   p.stderr.on('data', (d) => { stderr += d; });
-  const timer = setTimeout(() => p.kill(), 10000);
+  const timer = setTimeout(() => p.kill(), ms);
   const result = once(p, 'close').then(([code]) => {
     clearTimeout(timer);
     return { code, stdout, stderr };
@@ -62,11 +63,12 @@ async function created(file) {
   }
 }
 
-async function waiting(t, h, args = [], hooks = {}) {
+// seconds bounds the wait; a waiter that sits through gate runs needs longer on a loaded machine.
+async function waiting(t, h, args = [], hooks = {}, seconds = 5) {
   const signal = path.join(h.base, `watch-${require('node:crypto').randomUUID()}`);
   const ready = created(signal);
   const actor = args.includes('--agent') ? [] : ['--agent', 'orchestrator'];
-  const c = child(t, h, ['wait', ...actor, '--timeout', '5', ...args], { ...hooks, HOOK_WATCH_READY: signal });
+  const c = child(t, h, ['wait', ...actor, '--timeout', String(seconds), ...args], { ...hooks, HOOK_WATCH_READY: signal }, seconds * 1000 + 5000);
   // A baseline CLI that lacks wait closes immediately; never wait for a marker
   // it cannot write.
   await Promise.race([ready, c.result.then((r) => { throw new Error(`wait exited before watch setup: ${r.code} ${r.stderr}`); })]);
@@ -133,7 +135,7 @@ test('accepted wakes after gates pass; a refused accept emits nothing', async (t
   h.sha = gateFixture(h);
   submit(h);
   h.ok(['project', 'set', '--tests-cmd', 'null']);
-  const result = await waiting(t, h, ['--types', 'accepted']);
+  const result = await waiting(t, h, ['--types', 'accepted'], {}, 60);
   const count = log(h).length;
   assert.equal(h.run(['accept', 'T1']).code, 1);
   assert.equal(log(h).length, count);

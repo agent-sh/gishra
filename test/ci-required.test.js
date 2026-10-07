@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, BIN } = require('./helpers');
+const { BIN, cachedFixture } = require('./helpers');
 
 const REQUIRED = [
   'test (ubuntu-latest, node 26)',
@@ -54,12 +54,15 @@ const CAPPED = {
 };
 
 function fixture(t, withPr = true) {
-  const h = makeRepo(t);
-  h.init(['--repo', 'acme/app']);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
-  h.ok(['claim', 'T1', '--agent', 'worker']);
-  const sha = h.git(['rev-parse', 'HEAD']);
-  h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha, ...(withPr ? ['--pr', '40'] : [])]);
+  const h = cachedFixture(t, String(withPr), (h) => {
+    h.init(['--repo', 'acme/app']);
+    h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+    h.ok(['claim', 'T1', '--agent', 'worker']);
+    const sha = h.git(['rev-parse', 'HEAD']);
+    h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha, ...(withPr ? ['--pr', '40'] : [])]);
+    return { sha };
+  });
+  const { sha } = h;
   return {
     check({ pr = { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, runs = REQUIRED.map((name) => run(name)), ci = {} } = {}) {
       const project = h.readState('project.json');

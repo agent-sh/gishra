@@ -5,11 +5,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { makeRepo } = require('./helpers');
+const { makeRepo, cachedFixture } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 
+// Each fixture is built once per process and copied for each test.
 function fixture(t, script) {
-  const h = makeRepo(t);
+  return cachedFixture(t, `local:${script || ''}`, (h) => build(h, script));
+}
+
+function build(h, script) {
   h.env.TOWER_CRANE_TMP = path.join(h.base, 'gate-tmp');
   h.log = path.join(h.base, 'check.json');
   h.command = [process.execPath, 'ci.js', h.log, 'literal argument; $(exit 1)'];
@@ -41,15 +45,17 @@ fs.writeFileSync(process.argv[2], JSON.stringify({
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.sha, '--branch', 'local-change', '--pr', '1']);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
-  return h;
+  return { log: h.log, command: h.command, sha: h.sha, baseSha: h.baseSha };
 }
 
-function mergeFixture(t) {
-  const h = fixture(t);
-  h.ok(['project', 'set', '--repo', 'acme/demo']);
-  h.merged = path.join(h.base, 'merged');
-  const preload = path.join(h.base, 'github.js');
-  fs.writeFileSync(preload, `
+// A fake gh on a preload, and with origin a bare remote and a clone of it.
+function mergeFixture(t, { origin = false } = {}) {
+  return cachedFixture(t, `merge:${origin}`, (h) => {
+    const fields = build(h);
+    h.ok(['project', 'set', '--repo', 'acme/demo']);
+    h.merged = path.join(h.base, 'merged');
+    const preload = path.join(h.base, 'github.js');
+    fs.writeFileSync(preload, `
 const cp = require('node:child_process');
 const fs = require('node:fs');
 const original = cp.spawnSync;
@@ -72,8 +78,10 @@ cp.spawnSync = function(command, args, opts) {
   })};
 };
 `);
-  h.env.NODE_OPTIONS = `${h.env.NODE_OPTIONS || ''} --require=${JSON.stringify(preload)}`;
-  return h;
+    h.env.NODE_OPTIONS = `${h.env.NODE_OPTIONS || ''} --require=${JSON.stringify(preload)}`;
+    if (origin) originFixture(h);
+    return { ...fields, merged: h.merged, origin: h.origin, upstream: h.upstream };
+  });
 }
 
 function originFixture(h) {
@@ -153,8 +161,7 @@ test('local CI receipt for an older merged tree cannot satisfy acceptance or mer
 
 for (const changedTree of [true, false]) {
   test(`merge refreshes a remote-only base advance with ${changedTree ? 'a changed' : 'the same'} tree`, (t) => {
-    const h = mergeFixture(t);
-    originFixture(h);
+    const h = mergeFixture(t, { origin: true });
     h.ok(['check', 'ci', 'T1']);
     h.ok(['accept', 'T1']);
     if (changedTree) fs.writeFileSync(path.join(h.upstream, 'remote.txt'), 'remote\n');
@@ -185,8 +192,7 @@ for (const changedTree of [true, false]) {
 }
 
 test('merge refuses an unreachable or timed out local CI base fetch', (t) => {
-  const h = mergeFixture(t);
-  originFixture(h);
+  const h = mergeFixture(t, { origin: true });
   h.ok(['check', 'ci', 'T1']);
   h.ok(['accept', 'T1']);
   const timedOut = h.run(['merge', 'T1'], { env: { LOCAL_FETCH_TIMEOUT: '1' } });
@@ -201,8 +207,7 @@ test('merge refuses an unreachable or timed out local CI base fetch', (t) => {
 });
 
 test('a divergent local base cannot hide a remote advance from merge', (t) => {
-  const h = mergeFixture(t);
-  originFixture(h);
+  const h = mergeFixture(t, { origin: true });
   fs.writeFileSync(path.join(h.repo, 'local.txt'), 'local\n');
   h.git(['add', '.']);
   h.git(['commit', '-qm', 'local base advances']);
@@ -237,8 +242,7 @@ test('hosted CI merges without fetching an unavailable origin when ci.local is a
 });
 
 test('completed local CI tasks keep their audited result without reading current trees', (t) => {
-  const h = mergeFixture(t);
-  originFixture(h);
+  const h = mergeFixture(t, { origin: true });
   h.ok(['check', 'ci', 'T1']);
   h.ok(['accept', 'T1']);
   h.ok(['merge', 'T1']);

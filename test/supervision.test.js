@@ -9,6 +9,7 @@ const http = require('node:http');
 const { makeRepo, makeTaskRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
+const { errorReader, transient } = require('../lib/spawn-monitor');
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -70,37 +71,73 @@ ${waitForFinish ? `const timer = setInterval(() => {
   return h;
 }
 
-describe('independent retry cases', { concurrency: windowsConcurrency }, () => {
-for (const attempt of bedrockOutage.attempts) {
-  for (const type of ['error', 'turn.failed']) {
-    test(`recorded Bedrock attempt ${attempt.attempt} ${type} reruns with the session and claim kept`, (t) => {
-      const h = setup(t, { records: attempt.records.filter((record) => record.type === type) });
-      const result = h.spawn();
-      assert.equal(result.code, 0, result.stderr);
-      const attempts = h.readAttempts();
-      assert.equal(attempts.length, 2);
-      for (const key of ['agent', 'session', 'cwd', 'claim']) assert.deepEqual(attempts[1][key], attempts[0][key]);
-      assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 1);
-      assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
-    });
-  }
+// What counts as an outage is decided per output line, in process: every
+// recorded and synthetic case here, and one supervised spawn per family below.
+function outage(harness, stream, lines) {
+  let seen = false;
+  const read = errorReader(harness, stream === 'stderr', (value) => { seen = value; });
+  read(Buffer.from(lines.join('\n') + '\n'));
+  read(null, true);
+  return seen;
 }
 
-for (const record of [
-  { type: 'error', message: 'rate limit exceeded' },
-  { type: 'turn.failed', error: { message: 'The service is temporarily unavailable.' } },
-  { type: 'error', message: 'HTTP 429 Too Many Requests' },
-  { type: 'turn.failed', error: { message: 'overloaded' } },
-  { type: 'result', is_error: true, api_error_status: 429 },
-]) {
-  test(`capacity error envelope ${JSON.stringify(record)} reruns`, (t) => {
-    const h = setup(t, { records: [record] });
-    const result = h.spawn();
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(h.readAttempts().length, 2);
-    assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
-  });
-}
+test('outages come only from harness error envelopes and stderr, and quoted errors never count', () => {
+  const json = (records) => records.map((record) => JSON.stringify(record));
+  for (const attempt of bedrockOutage.attempts) {
+    for (const type of ['error', 'turn.failed']) {
+      assert.equal(outage('command', 'stdout', json(attempt.records.filter((r) => r.type === type))), true, `Bedrock ${attempt.attempt} ${type}`);
+    }
+  }
+  for (const record of [
+    { type: 'error', message: 'rate limit exceeded' },
+    { type: 'turn.failed', error: { message: 'The service is temporarily unavailable.' } },
+    { type: 'error', message: 'HTTP 429 Too Many Requests' },
+    { type: 'turn.failed', error: { message: 'overloaded' } },
+    { type: 'result', is_error: true, api_error_status: 429 },
+    { type: 'result', is_error: true, api_error_status: 503 },
+    { type: 'error', message: 'HTTP 502 bad gateway' },
+    { type: 'turn.failed', error: { message: 'provider outage' } },
+  ]) assert.equal(outage('command', 'stdout', json([record])), true, JSON.stringify(record));
+  for (const text of ['API Error: 503 service unavailable', '500 Internal Server Error', '{"status_code":502}']) {
+    assert.equal(outage('command', 'stderr', [text]), true, text);
+  }
+  assert.equal(outage('command', 'stdout', json([
+    { type: 'error', message: 'Reconnecting... 1/5 (rate limit exceeded: The service is temporarily unavailable.)' },
+    { type: 'turn.failed', error: { message: 'invalid API key' } },
+  ])), false, 'a later permanent error replaces a recovered reconnect');
+  const quoted = 'API Error: 503 service unavailable; provider outage; rate limit exceeded: The service is temporarily unavailable.; HTTP 429 Too Many Requests; overloaded';
+  for (const stream of ['stdout', 'stderr']) {
+    assert.equal(outage('command', stream, json([
+      { type: 'item.completed', item: { type: 'command_execution', aggregated_output: quoted } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: quoted }] } },
+      { type: 'result', is_error: false, result: quoted },
+    ])), false, `quoted on ${stream}`);
+    assert.equal(outage('command', stream, ['rate limit exceeded: The service is temporarily unavailable.; HTTP 429 Too Many Requests; overloaded']), false, `plain capacity text on ${stream}`);
+  }
+  assert.deepEqual([transient(75, null, false), transient(null, 'SIGTERM', false), transient(null, 'SIGINT', false),
+    transient(1, null, true), transient(1, null, false), transient(0, null, true)], [true, true, true, true, false, false]);
+});
+
+describe('independent retry cases', { concurrency: windowsConcurrency }, () => {
+test('a recorded Bedrock outage reruns with the session and claim kept', (t) => {
+  const [attempt] = bedrockOutage.attempts;
+  const h = setup(t, { records: attempt.records.filter((record) => record.type === 'error') });
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  const attempts = h.readAttempts();
+  assert.equal(attempts.length, 2);
+  for (const key of ['agent', 'session', 'cwd', 'claim']) assert.deepEqual(attempts[1][key], attempts[0][key]);
+  assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 1);
+  assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
+});
+
+test('a capacity error envelope reruns', (t) => {
+  const h = setup(t, { records: [{ type: 'result', is_error: true, api_error_status: 429 }] });
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(h.readAttempts().length, 2);
+  assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
+});
 
 test('a recovered rate-limit reconnect does not retry a later permanent failure', (t) => {
   const h = setup(t, { records: [
@@ -132,7 +169,8 @@ test('default retry budget waits beyond the observed ten-minute outage and remai
   assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
 });
 
-for (const error of ['75', 'outage', 'server', 'status-json', 'claude-error', 'codex-error', 'codex-failed', 'signal', 'interrupt']) {
+// One exit code, stderr text, harness envelope and signal; the rest of each family is in process above.
+for (const error of ['75', 'outage', 'codex-error', 'signal']) {
   test(`transient ${error} reruns the same session, preserving the claim until success`, {
     skip: process.platform === 'win32' && ['signal', 'interrupt'].includes(error) && 'POSIX signal observations',
   }, (t) => {
@@ -509,7 +547,7 @@ for (const harness of ['claude', 'codex']) {
   });
 }
 
-for (const stream of ['stdout', 'stderr']) {
+for (const stream of ['stdout']) {
   test(`provider errors quoted in agent JSON on ${stream} do not trigger a rerun`, (t) => {
     const h = setup(t, { failures: 0 });
     const script = `
@@ -529,7 +567,7 @@ process.exit(1);
   });
 }
 
-for (const stream of ['stdout', 'stderr']) {
+for (const stream of ['stderr']) {
   test(`plain capacity text on ${stream} cannot substitute for a harness error envelope`, (t) => {
     const h = setup(t, { failures: 0 });
     const script = `

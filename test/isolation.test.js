@@ -352,9 +352,13 @@ test('browser tasks attach the user kit on every rung with approved tools and no
     } },
   }));
   for (const harness of ['claude', 'codex']) {
-    for (const declaration of [['--kind', 'design', '--needs', '[]'], ['--kind', 'code', '--needs', '["browser"]']]) {
+    // Every rung for the design kind; an explicit browser need takes the same path.
+    for (const [declaration, roles] of [
+      [['--kind', 'design', '--needs', '[]'], ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']],
+      [['--kind', 'code', '--needs', '["browser"]'], ['hard', 'review']],
+    ]) {
       h.ok(['task', 'update', 'T1', ...declaration]);
-      for (const role of ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']) {
+      for (const role of roles) {
         isolated(h, role, harness);
         const dry = h.json(['spawn', '--role', role, '--task', 'T1', '--dry-run'], { env: u.env });
         assert.deepEqual(dry.home.mcp, ['playwright'], `${harness} ${role} ${declaration}`);
@@ -503,13 +507,17 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['gh', 'cache', 'delete', 'x'], 126, 126],
     [['gh', 'co', '1'], 126, 126],
   ];
-  for (const harness of ['claude', 'codex']) {
+  // Both harnesses install the same shims, so the whole table runs once per
+  // role on codex; claude runs the cases where the roles differ, which shows
+  // its shims are installed and given the role.
+  const differ = cases.filter((c) => c[1] !== c[2] || c[0][1] === 'status');
+  for (const [harness, table] of [['codex', cases], ['claude', differ]]) {
     for (const [rung, column] of [['hard', 1], ['small', 2]]) {
       isolated(h, rung, harness);
-      spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
+      spawn(h, u, rung, { STUB_RUN: JSON.stringify(table.map((c) => c[0])) });
       const ran = u.report().ran;
-      const codes = ran.map((r, i) => (cases[i][column] === NET && r.code !== 126 && r.code !== 0 ? NET : r.code));
-      assert.deepEqual(codes, cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+      const codes = ran.map((r, i) => (table[i][column] === NET && r.code !== 126 && r.code !== 0 ? NET : r.code));
+      assert.deepEqual(codes, table.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
     }
   }
   // A mirror key with no value, which git reads as true.
@@ -766,8 +774,10 @@ test('a push counts as local only when every URL git would use is local, so rewr
     [['git', '-C', fx, 'config', `url.${away}.pushInsteadOf`, local], 0, 0],
     [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/x'], 126, 126],
   ];
-  for (const harness of ['claude', 'codex']) {
-    for (const rung of ['hard', 'small']) {
+  // The cases do not depend on the role, and both harnesses install the same
+  // shims: each harness runs the table once, under a different role.
+  for (const [harness, rung] of [['codex', 'hard'], ['claude', 'small']]) {
+    {
       try {
         h.git(['-C', fx, 'config', '--unset-all', `url.${away}.pushInsteadOf`]);
       } catch {

@@ -4,13 +4,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, cachedFixture } = require('./helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const snapshot = (h) => ['tasks.json', 'events.jsonl'].map((file) => fs.readFileSync(path.join(h.state, file), 'utf8'));
 
 function setup(t) {
-  const h = makeRepo(t);
+  return cachedFixture(t, 'labs', (h) => {
   h.init(['--workers', '6']);
   for (let i = 1; i <= 3; i++) {
     h.ok(['task', 'add', '--title', `Lab ${i}`, '--tier', 'easy', '--acceptance', 'hardware is exclusive']);
@@ -22,7 +22,7 @@ function setup(t) {
   doc.tasks[1].locks = ['lab/rdma'];
   doc.tasks[2].locks = ['gpu/1'];
   h.writeState('tasks.json', doc);
-  return h;
+  });
 }
 
 async function until(fn, message) {

@@ -5,15 +5,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { makeRepo, real, BIN, PTY_AVAILABLE } = require('./helpers');
+const { cachedFixture, real, BIN, PTY_AVAILABLE } = require('./helpers');
 const A = require('../lib/agents');
 
 function setup(t) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Idempotency key on retries', '--acceptance', 'processed once', '--acceptance', 'test proves it']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: '- start from the webhook handler\n' });
-  return h;
+  return cachedFixture(t, 'task', (h) => {
+    h.init();
+    h.ok(['task', 'add', '--title', 'Idempotency key on retries', '--acceptance', 'processed once', '--acceptance', 'test proves it']);
+    h.ok(['brief', 'set', 'T1', '-'], { input: '- start from the webhook handler\n' });
+  });
 }
 
 const dry = (h, rung, env) => h.json(['spawn', ...(rung ? ['--role', rung] : []), '--task', 'T1', '--dry-run'], { env });
