@@ -147,6 +147,27 @@ test('wait recovers a verified worker exit after its supervisor is lost', {
   assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
 });
 
+test('a sandboxed reviewer waits for a hidden live worker to exit before climbing', async (t) => {
+  const h = setup(t, 'hold');
+  h.ok(['ladder', 'set', 'easy', '--supervision', '{"stall_ms":60000}']);
+  const spawn = h.json(['spawn', '--task', 'T1']);
+  await until(() => h.readAttempts().length === 1);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', spawn.agent]);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer',
+    '--summary', 'wrong result'], {
+    hooks: { HOOK_HIDDEN_PIDS: JSON.stringify([spawn.pid, spawn.monitor_pid]) },
+  });
+  assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy');
+  assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 0);
+  process.kill(spawn.pid, 'SIGKILL');
+  await until(() => {
+    const task = h.json(['task', 'show', 'T1']);
+    return task.status === 'submitted' && task.tier === 'medium' && h.readAttempts().length === 2;
+  });
+  assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
+});
+
 test('failure at the range top opens one owner decision and blocks further dispatch', async (t) => {
   const h = setup(t, 'top', 'easy..hard');
   h.ok(['spawn', '--task', 'T1']);
