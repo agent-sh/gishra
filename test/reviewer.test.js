@@ -4,7 +4,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
+const { makeRepo, makeProjectRepo, makeTaskRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 const prices = {
@@ -19,12 +19,11 @@ function rung(h, name, model) {
 }
 
 function setup(t, tier = 'easy', builder = 'other', profile) {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Change', '--acceptance', 'value becomes one', '--tier', tier],
+    brief: 'BUILDER-HISTORY that the reviewer does not need\n\n## Reviewer\nREVIEWER-ONLY instruction\n\n## Worker\nWORKER-HISTORY that the reviewer does not need\n',
+  }], { projectArgs: ['--repo', 'acme/demo'] });
   h.sha = gateFixture(h);
-  h.ok(['project', 'set', '--repo', 'acme/demo']);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'value becomes one', '--tier', tier]);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'BUILDER-HISTORY that the reviewer does not need\n\n## Reviewer\nREVIEWER-ONLY instruction\n\n## Worker\nWORKER-HISTORY that the reviewer does not need\n' });
   if (profile) {
     const bin = path.join(h.base, 'bin');
     const codexHome = path.join(h.base, 'codex');
@@ -375,8 +374,7 @@ test('the review packet flags changed files outside the paths the brief names', 
 });
 
 test('review policy validates price and diff settings through the CLI', (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   for (const bad of [{ prices: { 'openai.gpt-6.1-sol': { input: -1 } } },
     { prices: { sol: prices['openai.gpt-6.1-sol'], 'openai.gpt-6.1-sol': prices['openai.gpt-6.1-sol'] } },
     { small_lines: -1 }, { risk_paths: [3] }, { surprise: true }]) {
@@ -412,8 +410,7 @@ test('review policy and prices are the orchestrator\'s or the explicit owner\'s'
 });
 
 test('terminal owner fallback cannot change review policy', { skip: !PTY_AVAILABLE }, (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   const env = { ...h.env };
   delete env.TOWER_CRANE_AGENT;
   const result = runPty(['project', 'set', '--review-policy', 'null'], { cwd: h.repo, env });

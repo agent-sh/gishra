@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const http = require('node:http');
-const { makeRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
+const { makeRepo, makeTaskRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
@@ -25,10 +25,10 @@ async function until(fn, message) {
 }
 
 function setup(t, { failures = 1, error = '75', records = null, hold = 0, waitForFinish = false, config = {}, env = {}, busy = false, claimDelay = 0, claim = true, sessionReceipt = false } = {}) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Supervise an outage', '--tier', 'easy', '--acceptance', 'same session reruns']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Finish the task.\n' });
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Supervise an outage', '--tier', 'easy', '--acceptance', 'same session reruns'],
+    brief: 'Finish the task.\n',
+  }]);
   h.attempts = path.join(h.base, 'attempts.json');
   const script = `
 const fs = require('node:fs');
@@ -223,12 +223,11 @@ test('detached supervision renews a short lease during backoff and does not allo
 });
 
 test('later spawns preserve retrying homes through backoff, retries and queued hook writes', async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  for (const id of ['T1', 'T2', 'T3']) {
-    h.ok(['task', 'add', '--title', `Task ${id}`, '--tier', 'easy', '--acceptance', 'finish the supervised run']);
-    h.ok(['brief', 'set', id, '-'], { input: 'Finish the task.\n' });
-  }
+  const h = makeTaskRepo(t, ['T1', 'T2', 'T3'].map((id) => ({
+    id,
+    args: ['--title', `Task ${id}`, '--tier', 'easy', '--acceptance', 'finish the supervised run'],
+    brief: 'Finish the task.\n',
+  })));
   const retryReady = path.join(h.base, 'retry-ready');
   const script = `
 const cp = require('node:child_process');

@@ -4,7 +4,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, makeProjectRepo, makeTaskRepo } = require('./helpers');
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -24,10 +24,10 @@ async function until(fn, message) {
 }
 
 function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false } = {}) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Fallback routes', '--tier', 'easy', '--acceptance', 'fresh fallback session']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Complete the original task brief.\n' });
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Fallback routes', '--tier', 'easy', '--acceptance', 'fresh fallback session'],
+    brief: 'Complete the original task brief.\n',
+  }]);
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
   // A gh on PATH and no token in the environment make every route ask gh for
@@ -274,8 +274,7 @@ test('agent output quoting outage and refusal does not switch routes', (t) => {
 });
 
 test('user fallback configuration validates route shapes without project flags', (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   for (const value of [{}, [null], [{ profile: 'sol', fallbacks: [] }]]) {
     setFallbacks(h, value);
     assert.notEqual(h.run(['ladder', 'show']).code, 0);

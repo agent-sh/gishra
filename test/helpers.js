@@ -50,7 +50,11 @@ function getRepoSeed() {
 
 function makeRepo(t) {
   fs.mkdirSync(TMP_ROOT, { recursive: true });
-  const seed = getRepoSeed();
+  return makeRepoFromSeed(t, getRepoSeed().repo);
+}
+
+function makeRepoFromSeed(t, seedRepo) {
+  fs.mkdirSync(TMP_ROOT, { recursive: true });
   const base = fs.realpathSync.native(fs.mkdtempSync(path.join(TMP_ROOT, 'tower-crane-')));
   fs.writeFileSync(
     path.join(base, 'gitconfig'),
@@ -59,13 +63,50 @@ function makeRepo(t) {
   const env = baseEnv(base);
   const repo = path.join(base, 'repo');
   try {
-    fs.cpSync(seed.repo, repo, { recursive: true });
+    fs.cpSync(seedRepo, repo, { recursive: true });
     fs.mkdirSync(path.join(repo, '.git', 'refs', 'remotes', 'origin'), { recursive: true });
   } catch (error) {
     fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     throw error;
   }
   return context(t, base);
+}
+
+const repoTemplates = new Map();
+function getRepoTemplate(key, prepare) {
+  if (repoTemplates.has(key)) return repoTemplates.get(key);
+  const ctx = makeRepo();
+  try {
+    prepare(ctx);
+    const template = { base: ctx.base, repo: ctx.repo };
+    repoTemplates.set(key, template);
+    process.once('exit', () => {
+      fs.rmSync(template.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    });
+    return template;
+  } catch (error) {
+    fs.rmSync(ctx.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    throw error;
+  }
+}
+
+function makeProjectRepo(t) {
+  const template = getRepoTemplate('project', (ctx) => ctx.init());
+  return makeRepoFromSeed(t, template.repo);
+}
+
+function makeTaskRepo(t, tasks, { projectArgs = [] } = {}) {
+  const key = `tasks:${JSON.stringify({ tasks, projectArgs })}`;
+  const template = getRepoTemplate(key, (ctx) => {
+    ctx.init();
+    if (projectArgs.length) ctx.ok(['project', 'set', ...projectArgs]);
+    for (const [index, task] of tasks.entries()) {
+      const id = task.id || `T${index + 1}`;
+      ctx.ok(['task', 'add', ...task.args]);
+      if (task.brief !== undefined) ctx.ok(['brief', 'set', id, '-'], { input: task.brief });
+    }
+  });
+  return makeRepoFromSeed(t, template.repo);
 }
 
 // A test context over a copy of another context's directory, for files that
@@ -196,4 +237,4 @@ async function stopDetached(children) {
   }
 }
 
-module.exports = { makeRepo, copyRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
+module.exports = { makeRepo, makeProjectRepo, makeTaskRepo, copyRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
