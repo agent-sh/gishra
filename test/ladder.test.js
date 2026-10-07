@@ -88,6 +88,31 @@ test('research web MCP settings persist in user defaults and refuse other rungs 
   assert.equal(h.json(['ladder', 'show']).ladder.research.web_mcp, undefined);
 });
 
+test('research web MCP and provider fallbacks coexist and require owner identity for either change', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
+  const fallbacks = [{ harness: 'codex', model: 'second' }];
+  h.ok(['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server), '--fallbacks', JSON.stringify(fallbacks)]);
+  h.ok(['ladder', 'save-user']);
+  const saved = JSON.parse(fs.readFileSync(h.userConfig, 'utf8')).ladder.research;
+  assert.deepEqual(saved.web_mcp, server);
+  assert.deepEqual(saved.fallbacks, fallbacks);
+  for (const [flag, value] of [
+    ['--web-mcp', { ...server, name: 'replacement' }],
+    ['--fallbacks', [{ harness: 'claude', model: 'third' }]],
+  ]) {
+    assert.equal(h.run(['ladder', 'set', 'research', flag, JSON.stringify(value), '--agent', 'worker']).code, 1);
+    const rung = h.json(['ladder', 'show']).ladder.research;
+    assert.deepEqual(rung.web_mcp, server);
+    assert.deepEqual(rung.fallbacks, fallbacks);
+  }
+  h.ok(['ladder', 'set', 'research', '--clear', 'fallbacks']);
+  assert.deepEqual(h.json(['ladder', 'show']).ladder.research.web_mcp, server);
+  h.ok(['ladder', 'set', 'research', '--fallbacks', JSON.stringify(fallbacks), '--clear', 'web_mcp']);
+  assert.deepEqual(h.json(['ladder', 'show']).ladder.research.fallbacks, fallbacks);
+});
+
 test('ladder save-user makes the project ladder the default for new projects', (t) => {
   const h = makeRepo(t);
   h.init();
