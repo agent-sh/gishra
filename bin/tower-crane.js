@@ -1,6 +1,25 @@
 #!/usr/bin/env node
 'use strict';
 
+const OUTPUT_PIPE_CLOSED = 'tower-crane:output-pipe-closed';
+let outputPipeClosed = false;
+
+for (const stream of [process.stdout, process.stderr]) {
+  let broken = false;
+  stream.on('error', (error) => {
+    if (error.code === 'EPIPE') {
+      broken = true;
+      stream.destroy();
+      if (!outputPipeClosed) {
+        outputPipeClosed = true;
+        process.emit(OUTPUT_PIPE_CLOSED);
+      }
+      return;
+    }
+    if (!broken) throw error;
+  });
+}
+
 const { TowerCraneError, usage } = require('../lib/util');
 const S = require('../lib/state');
 const P = require('../lib/project');
@@ -353,9 +372,23 @@ async function main(argv) {
   }
 }
 
+// A queued no-op write completes after prior bytes, so natural exit waits for healthy output.
+function flushStream(stream) {
+  if (stream.destroyed) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      stream.removeListener('close', done);
+      resolve();
+    };
+    stream.once('close', done);
+    stream.write('', done);
+  });
+}
+
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
+    return Promise.all([flushStream(process.stdout), flushStream(process.stderr)]);
   });
 }
 

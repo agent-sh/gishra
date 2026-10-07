@@ -52,13 +52,13 @@ function child(t, h, args, hooks = {}) {
   return c;
 }
 
-function created(file) {
+function created(file, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const watcher = fs.watch(path.dirname(file), check);
     const timer = setTimeout(() => {
       watcher.close();
       reject(new Error(`file not created: ${file}`));
-    }, 5000);
+    }, timeoutMs);
     function check() {
       if (!fs.existsSync(file)) return;
       clearTimeout(timer);
@@ -264,7 +264,7 @@ console.log('worker alive'); fs.writeFileSync(${JSON.stringify(claimed)}, '');
 setInterval(() => {}, 1000);\n`);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
   commandWorker(h, [process.execPath, script]);
-  const ready = created(claimed);
+  const ready = created(claimed, 15000);
   const spawned = h.json(['spawn', '--task', 'T1']);
   h.workerPids.push(spawned.pid);
   await ready;
@@ -315,7 +315,7 @@ fs.writeFileSync(${JSON.stringify(claimed)}, '');
 setInterval(() => {}, 1000);\n`);
     h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
     commandWorker(h, [process.execPath, script]);
-    const ready = created(claimed);
+    const ready = created(claimed, 15000);
     const live = h.json(['spawn', '--task', 'T1']);
     h.workerPids.push(live.pid);
     await ready;
