@@ -183,19 +183,19 @@ process.exit(process.env.TOWER_CRANE_RETRY === '0' ? 75 : 0);
       '--supervision', '{"retries":1,"backoff_ms":1}']);
     h.ok(['project', 'set', '--scope', '{"CPUQuota":"200%","MemoryMax":"8G"}', '--env_file', file]);
     const dry = h.json(['spawn', '--task', 'T1', '--dry-run'], { env });
-    assert.deepEqual(dry.argv.slice(0, 9), ['systemd-run', '--user', '--scope', '--quiet', '-p', 'CPUQuota=200%', '-p', 'MemoryMax=8G', '--']);
+    assert.deepEqual(dry.argv.slice(0, 10), ['systemd-run', '--user', '--scope', '--quiet', '--expand-environment=no', '-p', 'CPUQuota=200%', '-p', 'MemoryMax=8G', '--']);
     assert.ok(!JSON.stringify(dry).includes(SECRET_KEY) && !JSON.stringify(dry).includes(SECRET));
     h.ok(['spawn', '--task', 'T1', '--wait'], { env });
     let attempts = fs.readFileSync(out, 'utf8').trim().split('\n').map(JSON.parse);
     assert.deepEqual(attempts.slice(-2), [{ scoped: '1', retry: '0' }, { scoped: '1', retry: '1' }]);
     let wrappers = fs.readFileSync(wrapped, 'utf8').trim().split('\n').map(JSON.parse);
-    assert.deepEqual(wrappers.slice(-2).map((a) => a.slice(0, 8)), Array(2).fill(dry.argv.slice(1, 9)));
+    assert.deepEqual(wrappers.slice(-2).map((a) => a.slice(0, 9)), Array(2).fill(dry.argv.slice(1, 10)));
     h.ok(['ladder', 'set', 'medium', '--scope', '{"MemoryMax":"4G"}']);
     const overridden = h.json(['spawn', '--task', 'T1', '--dry-run'], { env });
-    assert.deepEqual(overridden.argv.slice(0, 7), ['systemd-run', '--user', '--scope', '--quiet', '-p', 'MemoryMax=4G', '--']);
+    assert.deepEqual(overridden.argv.slice(0, 8), ['systemd-run', '--user', '--scope', '--quiet', '--expand-environment=no', '-p', 'MemoryMax=4G', '--']);
     h.ok(['spawn', '--task', 'T1', '--wait'], { env });
     wrappers = fs.readFileSync(wrapped, 'utf8').trim().split('\n').map(JSON.parse);
-    assert.deepEqual(wrappers.at(-1).slice(0, 6), overridden.argv.slice(1, 7));
+    assert.deepEqual(wrappers.at(-1).slice(0, 7), overridden.argv.slice(1, 8));
     h.ok(['ladder', 'set', 'medium', '--scope', '{}']);
     const wrapperCount = wrappers.length;
     h.ok(['spawn', '--task', 'T1', '--wait'], { env });
@@ -203,9 +203,57 @@ process.exit(process.env.TOWER_CRANE_RETRY === '0' ? 75 : 0);
     assert.deepEqual(attempts.slice(-2), [{ scoped: null, retry: '0' }, { scoped: null, retry: '1' }]);
     assert.equal(fs.readFileSync(wrapped, 'utf8').trim().split('\n').length, wrapperCount);
     h.ok(['ladder', 'set', 'medium', '--clear', 'scope']);
-    assert.deepEqual(h.json(['spawn', '--task', 'T1', '--dry-run'], { env }).argv.slice(0, 9), dry.argv.slice(0, 9));
+    assert.deepEqual(h.json(['spawn', '--task', 'T1', '--dry-run'], { env }).argv.slice(0, 10), dry.argv.slice(0, 10));
     noFileSecrets(h.state);
   }
+});
+
+test('scoped arguments keep literal env references and old systemd refuses to launch the child', {
+  skip: NO_STUBS || (process.platform !== 'linux' && 'Linux systemd scopes'),
+}, (t) => {
+  const h = setup(t);
+  const bin = path.join(h.base, 'bin');
+  fs.mkdirSync(bin);
+  const out = path.join(h.base, 'literal-args.json');
+  const script = path.join(h.base, 'agent.js');
+  const file = path.join(h.base, 'private.env');
+  const literals = ['${TC_ARG_ENV}', '${TC_ARG_FILE}', 'review diff: ${TC_ARG_FILE} and $TC_ARG_ENV'];
+  fs.writeFileSync(file, `TC_ARG_FILE='${SECRET}'\n`);
+  fs.writeFileSync(script, `
+const fs = require('node:fs');
+if (process.env.TC_ARG_ENV !== 'configured-value' || process.env.TC_ARG_FILE !== ${JSON.stringify(SECRET)}) throw new Error('agent env missing');
+const args = process.argv.slice(2);
+if (JSON.stringify(args) !== ${JSON.stringify(JSON.stringify(literals))}) throw new Error('scope expanded literal argv');
+fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify(args));
+console.log('literal args passed');
+`);
+  fs.writeFileSync(path.join(bin, 'systemd-run'), `#!${process.execPath}
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+if (process.env.SIMULATE_OLD_SYSTEMD && args.includes('--expand-environment=no')) {
+  console.error("systemd-run: unrecognized option '--expand-environment=no'");
+  process.exit(1);
+}
+let command = args.slice(args.indexOf('--') + 1);
+if (!args.includes('--expand-environment=no')) {
+  command = command.map(a => a.replace(/\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}/g, (_, k) => process.env[k] || ''));
+}
+const r = cp.spawnSync(command[0], command.slice(1), {stdio: 'inherit'});
+process.exit(r.status ?? 1);
+`, { mode: 0o755 });
+  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, script, ...literals]),
+    '--clear', 'profile', '--supervision', '{"retries":0}']);
+  h.ok(['project', 'set', '--scope', '{"CPUQuota":"200%"}', '--env', '{"TC_ARG_ENV":"configured-value"}', '--env_file', file]);
+  const env = { PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  h.ok(['spawn', '--task', 'T1', '--wait'], { env });
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), literals);
+  noFileSecrets(h.state);
+  fs.rmSync(out);
+  const refused = h.run(['spawn', '--task', 'T1', '--wait'], { env: { ...env, SIMULATE_OLD_SYSTEMD: '1' } });
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /unrecognized option.*--expand-environment=no/);
+  assert.equal(fs.existsSync(out), false, 'an unsupported flag must never fall back to expanding arguments');
+  noFileSecrets(h.state);
 });
 
 test('configured scopes refuse unavailable systemd-run before creating a worktree', (t) => {
