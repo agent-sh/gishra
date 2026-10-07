@@ -250,7 +250,7 @@ test('codex session fallback opens only the exact session and counts cached inpu
   const h = setup(t);
   // The agent writes its session in its own home, which links sessions to
   // one kept after the home is removed.
-  const codexHome = path.join(h.state, 'homes', '.codex');
+  const codexHome = path.join(h.state, 'homes', '.codex', 'worker-T1-1');
   const id = '01a11284-12da-7953-94fb-07a97b081e94';
   const file = path.join('sessions', '2026', '10', '06', `rollout-2026-10-06T21-40-07-${id}.jsonl`);
   h.ok(['spawn', '--task', 'T1', '--wait'], {
@@ -311,7 +311,7 @@ test('late session detail enriches a partial total without counting it twice', (
   });
   assert.equal(spends(h).tokens, 120);
   assert.equal(spends(h).entries[0].cached, null);
-  const dir = path.join(h.state, 'homes', '.codex', 'sessions', '2026', '10', '06');
+  const dir = path.join(started.codex_home, 'sessions', '2026', '10', '06');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `rollout-2026-10-06T00-00-00-${id}.jsonl`), [
     JSON.stringify({ type: 'turn_context', payload: { model: 'enriched-model' } }),
