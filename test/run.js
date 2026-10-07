@@ -5,9 +5,9 @@ const os = require('node:os');
 
 const args = ['--test'];
 const concurrency = process.platform === 'win32'
-  ? 6
+  ? 8
   : Math.max(1, Math.min(4, os.availableParallelism() - 1));
-// Keep Windows file workers low enough to avoid process and disk contention.
+// Windows process-bound integration files benefit from a larger independent file pool.
 args.push(`--test-concurrency=${concurrency}`);
 args.push('test/*.test.js', 'test/gates/*.test.js');
 
