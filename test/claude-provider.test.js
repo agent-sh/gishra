@@ -167,3 +167,70 @@ test('Claude helper commands and AWS SSO config can satisfy local auth checks', 
   fs.writeFileSync(path.join(h.userHome, '.aws', 'config'), '[default]\nregion = eu-west-1\nsso_session = personal\n');
   assert.deepEqual(h.json(['ladder', 'show']).problems, []);
 });
+
+for (const provider of ['anthropic', 'bedrock']) {
+  test(`${provider} readiness includes project and rung environment variable names`, (t) => {
+    const h = setup(t);
+    h.primary(provider);
+    h.ok(['project', 'set', '--env', JSON.stringify(provider === 'bedrock'
+      ? { AWS_BEARER_TOKEN_BEDROCK: 'stub-secret-project-value', AWS_REGION: 'us-east-1' }
+      : { ANTHROPIC_API_KEY: 'stub-secret-project-value' })]);
+    if (provider === 'bedrock') h.ok(['ladder', 'set', 'hard', '--env', '{"AWS_REGION":"eu-west-1"}']);
+    assert.deepEqual(h.json(['ladder', 'show']).problems, []);
+    const preview = h.json(['spawn', '--task', 'T1', '--dry-run']);
+    assert.equal(JSON.stringify(preview).includes('stub-secret'), false);
+    const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(h.attempts()[0].provider, provider);
+    if (provider === 'bedrock') assert.equal(h.attempts()[0].provider_env.AWS_REGION, 'eu-west-1');
+  });
+}
+
+test('Bedrock env_file readiness is deferred without reading the file during a dry run', (t) => {
+  const h = setup(t);
+  h.primary('bedrock');
+  const file = path.join(h.base, 'provider.env');
+  h.ok(['project', 'set', '--env_file', file]);
+  // A nonexistent file makes any attempted preview read fail.
+  assert.deepEqual(h.json(['ladder', 'show']).problems, []);
+  const preview = h.json(['spawn', '--task', 'T1', '--dry-run']);
+  assert.equal(preview.env.CLAUDE_CODE_USE_BEDROCK, '1');
+  const missing = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /cannot read env_file/);
+  fs.writeFileSync(file, 'AWS_REGION=eu-west-1\nAWS_BEARER_TOKEN_BEDROCK=stub-secret-file-value\n');
+  const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(h.attempts()[0].provider_env.AWS_REGION, 'eu-west-1');
+  const stored = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8')
+    + fs.readFileSync(path.join(h.state, 'homes', 'worker-T1-1', 'settings.json'), 'utf8');
+  assert.equal(stored.includes('stub-secret-file-value'), false);
+});
+
+for (const source of ['project env', 'rung env', 'env_file']) {
+  test(`Bedrock fallback uses ${source} with no inherited AWS credentials`, (t) => {
+    const h = setup(t);
+    h.login();
+    h.primary('anthropic');
+    h.env.TOWER_CRANE_TEST_FAIL_PROVIDER = 'anthropic';
+    const env = { AWS_REGION: 'eu-west-1', AWS_BEARER_TOKEN_BEDROCK: 'stub-secret-fallback-value' };
+    let route = { provider: 'bedrock', model: 'opus' };
+    if (source === 'project env') h.ok(['project', 'set', '--env', JSON.stringify(env)]);
+    else if (source === 'rung env') route.env = env;
+    else {
+      const file = path.join(h.base, 'fallback.env');
+      fs.writeFileSync(file, Object.entries(env).map(([name, value]) => `${name}=${value}\n`).join(''));
+      route.env_file = file;
+      // User routing defaults must not override the file at launch.
+      fs.writeFileSync(path.join(h.claude, 'settings.json'), JSON.stringify({
+        env: { AWS_REGION: 'us-east-1', AWS_PROFILE: 'unused' },
+      }));
+    }
+    h.fallbacks([route]);
+    assert.deepEqual(h.json(['ladder', 'show']).problems, []);
+    const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(h.attempts().map((a) => a.provider), ['anthropic', 'anthropic', 'bedrock']);
+    assert.equal(h.attempts()[2].provider_env.AWS_REGION, 'eu-west-1');
+  });
+}

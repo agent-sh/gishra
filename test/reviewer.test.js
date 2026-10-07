@@ -62,7 +62,7 @@ function choice(h, env) {
 }
 
 function model(out) {
-  const flag = out.argv.includes('-m') ? '-m' : out.argv.includes('-p') ? '-p' : '--model';
+  const flag = out.harness === 'claude' ? '--model' : out.argv.includes('-m') ? '-m' : out.argv.includes('-p') ? '-p' : '--model';
   return out.argv[out.argv.indexOf(flag) + 1];
 }
 
@@ -133,6 +133,31 @@ test('a stronger model wins only when its median priced review cost is no higher
   // Worker spend must not masquerade as a cheap review sample.
   h.ok(['spend', 'T1', '--agent', 'cheap-worker', '--tokens', '1', '--input', '1', '--cached', '0', '--output', '0', '--rung', 'hard', '--model', 'opus']);
   assert.equal(model(choice(h)), 'sol');
+});
+
+test('review selection matches Claude provider aliases to recorded provider spend', (t) => {
+  const bedrock = 'global.anthropic.claude-opus-5-5';
+  const anthropic = 'claude-opus-5-5';
+  for (const tier of ['medium', 'hard']) {
+    const h = setup(t, tier);
+    const bin = path.join(h.base, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
+    const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
+      AWS_REGION: 'eu-west-1', AWS_BEARER_TOKEN_BEDROCK: 'stub-secret-bedrock',
+      ANTHROPIC_API_KEY: 'stub-secret-anthropic' };
+    h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--provider', 'bedrock', '--model', 'opus']);
+    h.ok(['ladder', 'set', 'research', '--harness', 'claude', '--provider', 'anthropic', '--model', 'opus']);
+    h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [bedrock]: prices[anthropic] } })]);
+    ready(h);
+    sample(h, tier === 'medium' ? 'sol' : bedrock, 1000000, 0, 0);
+    sample(h, tier === 'medium' ? bedrock : anthropic, 0, 0, 1);
+    const promoted = choice(h, env);
+    assert.equal(promoted.review_rung, tier === 'medium' ? 'hard' : 'research');
+    assert.equal(model(promoted), tier === 'medium' ? bedrock : anthropic);
+    sample(h, tier === 'medium' ? bedrock : anthropic, 0, 0, 1000000);
+    assert.equal(choice(h, env).review_rung, tier, 'a higher provider median keeps the current rung');
+  }
 });
 
 test('equal cost promotes, missing components do not provide a cost sample', (t) => {
