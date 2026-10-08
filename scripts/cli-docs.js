@@ -41,7 +41,8 @@ function generate(root = ROOT) {
     const commands = COMMANDS.filter((c) => section === 'Stack' ? c.name.startsWith('stack ')
       : c.section === section && !c.name.startsWith('stack '));
     const rows = commands.map((c) => `| \`${escapeTableCell(c.name + (c.usage ? ` ${c.usage}` : ''))}\` | ${escapeTableCell(c.description || c.summary)} |`);
-    generated = generated.slice(0, from) + '\n| Command | Does |\n|---|---|\n' + rows.join('\n') + '\n' + generated.slice(to);
+    // Empty table rows separate edits without breaking the Markdown table.
+    generated = generated.slice(0, from) + '\n| Command | Does |\n|---|---|\n' + rows.join('\n| | |\n') + '\n' + generated.slice(to);
   }
   return { docPath, original, generated };
 }

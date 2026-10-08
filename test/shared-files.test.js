@@ -93,6 +93,48 @@ test('long command descriptions are generated from metadata while CLI help keeps
   assert.ok(f.read('docs/cli.md').includes(`| ${description} and text |`));
 });
 
+test('independent task list and task note flag additions merge without generated-doc conflicts', (t) => {
+  const f = fixture(t);
+  const base = f.h.git(['rev-parse', 'HEAD']);
+  const addFlag = (command, flag, fragment) => {
+    let found = false;
+    const source = f.read('bin/tower-crane.js').split('\n').map((line) => {
+      if (!line.includes(`name: '${command}'`)) return line;
+      found = true;
+      line = line.replace(/usage: '([^']*)'/, (_, usage) => `usage: '${usage} [--${flag} LABEL]'`);
+      const spec = `'${flag}': str('LABEL', 'label for ${command}')`;
+      return line.includes('flags: {') ? line.replace('flags: {', `flags: { ${spec},`)
+        : line.replace(', run:', `, flags: { ${spec} }, run:`);
+    }).join('\n');
+    assert.ok(found, command);
+    f.write('bin/tower-crane.js', source);
+    f.write(`changelog.d/${fragment}.md`, `- Add --${flag} to ${command}.\n`);
+    assert.equal(f.script('cli-docs.js').status, 0);
+    const check = f.check();
+    assert.equal(check.status, 0, check.stderr);
+    f.h.git(['add', '.']);
+    f.h.git(['commit', '-qm', `add ${command} flag`]);
+  };
+
+  f.h.git(['checkout', '-qb', 'task-list-flag', base]);
+  addFlag('task list', 'list-label', 'T901');
+  f.h.git(['checkout', '-qb', 'task-note-flag', base]);
+  addFlag('task note', 'note-label', 'T902');
+  const merge = cp.spawnSync('git', ['merge', '--no-ff', '-m', 'combine independent command flags', 'task-list-flag'],
+    { cwd: f.h.repo, env: f.h.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(merge.status, 0, merge.stdout + merge.stderr);
+  assert.equal(f.h.git(['diff', '--name-only', '--diff-filter=U']), '', 'no file has a merge conflict');
+  const check = f.check();
+  assert.equal(check.status, 0, check.stderr);
+  const merged = f.read('docs/cli.md');
+  assert.ok(merged.includes('task list [--status S] [--list-label LABEL]'));
+  assert.ok(merged.includes('task note ID TEXT [--note-label LABEL]'));
+  assert.ok(fs.existsSync(path.join(f.h.repo, 'changelog.d/T901.md')));
+  assert.ok(fs.existsSync(path.join(f.h.repo, 'changelog.d/T902.md')));
+  assert.equal(f.script('cli-docs.js').status, 0);
+  assert.equal(f.read('docs/cli.md'), merged, 'the automatic merge is already canonical');
+});
+
 test('the shared file check enforces sorted single-line command entries with space between them', (t) => {
   const f = fixture(t);
   const source = f.read('bin/tower-crane.js');
