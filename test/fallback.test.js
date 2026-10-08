@@ -385,7 +385,10 @@ for (const harness of ['claude', 'codex']) {
       h.env.USERPROFILE = userHome;
       if (config === 'default') {
         delete h.env.TOWER_CRANE_CONFIG;
+        const ownerDir = path.join(path.dirname(h.userConfig), 'owner');
         h.userConfig = path.join(userHome, '.config', 'tower-crane', 'config.json');
+        // The owner key sits beside the user file, so it moves with it.
+        fs.cpSync(ownerDir, path.join(path.dirname(h.userConfig), 'owner'), { recursive: true });
       } else {
         h.env.TOWER_CRANE_CONFIG = path.relative(h.repo, h.userConfig);
       }
