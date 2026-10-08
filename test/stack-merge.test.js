@@ -6,6 +6,29 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { setup, stacked } = require('./stack-fixture');
 
+test('a stack that adds then modifies the same file merges without changing accepted heads', (t) => {
+  const f = setup(t);
+  const wt = f.h.json(['worktree', 'T2']);
+  fs.writeFileSync(path.join(wt.path, 'T1.txt'), 'T2 modified T1\n');
+  f.h.git(['add', 'T1.txt'], wt.path);
+  const upper = f.submit('T2', 12, wt);
+  f.h.ok(['stack', 'link', 'T2']);
+  f.accept('T1');
+  f.accept('T2');
+  const merged = f.h.run(['merge', 'T2']);
+  assert.equal(merged.code, 0, `${merged.stdout}\n${merged.stderr}`);
+  const data = f.read();
+  for (const [pr, head] of [[11, f.sha], [12, upper]]) {
+    assert.equal(data.prs[pr].state, 'MERGED');
+    assert.equal(data.prs[pr].headRefOid, head);
+    assert.notEqual(data.prs[pr].mergeCommit.oid, head);
+    assert.equal(f.h.git(['merge-base', head, 'origin/main']), head);
+  }
+  assert.equal(f.h.git(['show', 'origin/main:T1.txt']), 'T2 modified T1');
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), upper);
+  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+});
+
 test('M4: a head pushed after the last stack check cannot land', (t) => {
   const f = stacked(t);
   f.accept('T1');
@@ -46,7 +69,8 @@ test('a later head race stops the chain and records only the accepted lower merg
   assert.equal(data.prs[11].state, 'MERGED');
   assert.equal(data.prs[11].headRefOid, f.sha);
   assert.equal(data.prs[12].state, 'OPEN');
-  assert.equal(f.h.git(['rev-parse', 'origin/main']), f.sha);
+  assert.equal(f.h.git(['rev-parse', 'origin/main']), data.prs[11].mergeCommit.oid);
+  assert.equal(f.h.git(['merge-base', f.sha, 'origin/main']), f.sha);
   assert.equal(f.h.json(['task', 'show', 'T1']).evidence.findLast((e) => e.type === 'merge').ok, true);
   assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge' && e.ok), false);
 });
@@ -66,6 +90,10 @@ test('an unlinked dependent targets main and merges normally when its lower PR m
   });
   f.accept('T1');
   f.h.ok(['merge', 'T1']);
+  const squash = f.read().prs[11].mergeCommit.oid;
+  assert.notEqual(squash, f.sha);
+  assert.equal(f.h.git(['show', '-s', '--format=%P', squash]).split(' ').length, 1);
+  assert.notEqual(f.h.git(['merge-base', f.sha, squash]), f.sha);
   assert.equal(f.h.git(['ls-remote', '--heads', 'origin', f.lower.branch]), '');
   assert.equal(f.h.json(['task', 'show', 'T2']).stack.linked, false);
   f.h.ok(['submit', 'T2', '--sha', sha, '--branch', wt.branch, '--pr', '12', '--agent', 'worker-T2']);
@@ -93,12 +121,12 @@ test('stack merge rechecks every accepted head and records evidence for all merg
   assert.match(moved.stdout, /T1: PR head moved/);
   assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
   f.write((d) => { d.prs[11].headRefOid = f.sha; });
-  f.h.ok(['merge', 'T2']);
+  f.h.ok(['merge', 'T2', '--method', 'merge']);
   const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
   assert.deepEqual(merges.map((c) => c.args.slice(0, 3)), [['pr', 'merge', '11'], ['pr', 'merge', '12']]);
   for (const [index, head] of [f.sha, f.upper.sha].entries()) {
     assert.equal(merges[index].args[merges[index].args.indexOf('--match-head-commit') + 1], head);
-    assert.ok(merges[index].args.includes('--squash'));
+    assert.ok(merges[index].args.includes('--merge'));
     assert.ok(!merges[index].args.includes('--delete-branch'));
   }
   assert.equal(f.read().prs[12].baseRefName, 'main');
@@ -109,7 +137,9 @@ test('stack merge rechecks every accepted head and records evidence for all merg
     assert.ok(evidence.commands.some((c) => c.args[0] === 'pr' && c.args[1] === 'merge' && c.args.includes('--match-head-commit')));
     assert.match(task.phase?.label || f.h.ok(['task', 'show', id]), /merged/);
   }
-  assert.equal(f.h.git(['rev-parse', 'origin/main']), f.h.git(['rev-parse', 'HEAD'], f.h.json(['worktree', 'T2']).path));
+  const upper = f.h.git(['rev-parse', 'HEAD'], f.h.json(['worktree', 'T2']).path);
+  assert.equal(f.h.git(['merge-base', upper, 'origin/main']), upper);
+  assert.equal(f.h.git(['rev-parse', 'origin/main^{tree}']), f.h.git(['rev-parse', `${upper}^{tree}`]));
   f.write((d) => { d.linked = false; });
   f.h.ok(['merge', 'T1']);
   f.h.ok(['merge', 'T2']);
@@ -132,21 +162,38 @@ test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents 
 
 test('queued stack merges are not evidence of a merge', (t) => {
   const f = stacked(t);
-  const { wt } = f.upper;
   f.accept('T1');
   f.accept('T2');
   f.write((d) => { d.queued = true; });
   assert.equal(f.h.run(['merge', 'T2']).code, 1);
   assert.equal(f.h.json(['task', 'show', 'T1']).evidence.some((e) => e.type === 'merge'), false);
+  let base = f.h.git(['rev-parse', 'origin/main']);
   f.write((d) => {
     d.linked = false;
-    for (const pr of Object.values(d.prs)) { pr.state = 'MERGED'; pr.mergeCommit = { oid: pr.headRefOid }; }
+    for (const pr of Object.values(d.prs)) {
+      const tree = f.h.git(['rev-parse', `${pr.headRefOid}^{tree}`]);
+      base = f.h.git(['commit-tree', tree, '-p', base, '-p', pr.headRefOid, '-m', `Queued merge PR #${pr.number}`]);
+      pr.state = 'MERGED';
+      pr.mergeCommit = { oid: base };
+    }
   });
-  f.h.git(['push', 'origin', `${wt.branch}:main`]);
+  f.h.git(['push', 'origin', `${base}:main`]);
   f.h.ok(['merge', 'T2']);
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
   const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
   assert.deepEqual(merges.map((c) => c.args.slice(0, 3)), [['pr', 'merge', '11']]);
+});
+
+test('linked stacks refuse squash and rebase to preserve accepted dependency ancestry', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  for (const method of ['squash', 'rebase']) {
+    const r = f.h.run(['merge', 'T2', '--method', method]);
+    assert.equal(r.code, 1);
+    assert.match(r.stdout, /stack merges use merge commits/);
+  }
+  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
 });
 
 test('a refused upper merge retains lower evidence and retries without merging the lower PR again', (t) => {
