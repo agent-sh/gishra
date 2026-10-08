@@ -20,11 +20,33 @@ test('agy dry-run renders a config home and locks permission flags on every plat
   if (process.platform === 'win32') assert.equal(dry.env.USERPROFILE, dry.env.HOME);
   assert.ok(dry.argv.includes('--sandbox'));
   assert.equal(dry.argv[dry.argv.indexOf('--agent') + 1], 'gishra-worker');
-  for (const args of [['--agent', 'user-agent'], ['--add-dir', '..'], ['--dangerously-skip-permissions']]) {
+  for (const args of [['--agent', 'user-agent'], ['--add-dir', '..'], ['--dangerously-skip-permissions'], ['--output-format', 'text']]) {
     const refused = h.run(['ladder', 'set', 'medium', '--args', JSON.stringify(args)]);
     assert.notEqual(refused.code, 0);
     assert.match(refused.stderr, /args may only use/);
   }
+});
+
+test('agy orchestrator runs headlessly with native command denials retained', { skip: noStub }, t => {
+  const { h, env, report } = setup(t);
+  h.ok(['ladder', 'set', 'orchestrator', '--harness', 'agy', '--model', 'gemini-3-pro', '--clear', 'profile', '--clear', 'args']);
+  h.json(['spawn', '--role', 'orchestrator', '--task', 'T1', '--wait'], { env });
+  const seen = report();
+  assert.equal(seen.settings.toolPermission, 'always-proceed');
+  assert.equal(seen.settings.allowNonWorkspaceAccess, true);
+  assert.equal(seen.settings.enableTerminalSandbox, false);
+  assert.ok(seen.rules.deny.includes('command(gh repo delete)'));
+  assert.ok(!seen.args.includes('--sandbox'));
+});
+
+test('agy private HOME does not authorize unverified sandbox authority or nested Chrome', { skip: noStub }, t => {
+  const { h, env, report } = setup(t);
+  const refused = h.run(['ladder', 'set', 'hard', '--harness', 'agy', '--model', 'gemini-3-pro',
+    '--clear', 'profile', '--clear', 'effort', '--clear', 'args'], { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /ladder\.reach/);
+  h.json(['spawn', '--task', 'T1', '--wait'], { env: { ...env, TOWER_CRANE_SANDBOX: '1' } });
+  assert.equal(report().sandboxMarker, '0');
 });
 
 function setup(t) {
@@ -89,6 +111,8 @@ test('agy isolates planted user context and reports only house rules requested b
   assert.ok(!seen.rules.allow.includes('command(planted-rule)'));
   assert.ok(seen.rules.deny.includes('unsandboxed(*)'));
   assert.ok(seen.tools.includes('run_command'));
+  assert.ok(!seen.tools.includes('command_status'));
+  assert.ok(!seen.tools.includes('send_command_input'));
   assert.ok(!seen.tools.includes('search_web'));
   assert.ok(!seen.tools.includes('invoke_subagent'));
   assert.equal(seen.settings.modelProvider, 'gemini');
@@ -97,7 +121,7 @@ test('agy isolates planted user context and reports only house rules requested b
   assert.ok(seen.skills.every(s => s.endsWith('tower-crane-work')));
   assert.equal(seen.ran[0].code, 0, seen.ran[0].stderr);
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  assert.ok(events.some(e => e.cmd === 'task note' && e.agent === spawned.agent && e.via === 'broker'));
+  assert.ok(events.some(e => e.cmd === 'task note' && e.agent === spawned.agent && !e.via));
   const startup = events.find(e => e.cmd === 'startup').detail;
   assert.equal(startup.instructions_file, seen.agentFile);
   const global = startup.rules.find(r => r.path === path.join(home, '.gemini', 'GEMINI.md'));
@@ -154,20 +178,23 @@ test('agy small role denies file writes, push, gh writes and sandbox escape', { 
 test('agy refuses workspace MCP and role overrides before starting the harness', { skip: noStub }, t => {
   const { h, env, out } = setup(t);
   const wt = h.json(['worktree', 'T1']).path;
-  const config = path.join(wt, '.agents');
-  fs.mkdirSync(path.join(config, 'agents'), { recursive: true });
-  const mcp = path.join(config, 'mcp_config.json');
-  fs.writeFileSync(mcp, '{"mcpServers":{"planted":{"command":"planted-server"}}}');
-  let refused = h.run(['spawn', '--task', 'T1', '--wait'], { env });
-  assert.notEqual(refused.code, 0);
-  assert.match(refused.stderr, /cannot load workspace/);
-  assert.ok(!fs.existsSync(out));
-  fs.rmSync(mcp);
-  fs.writeFileSync(path.join(config, 'agents', 'gishra-worker.md'), 'override');
-  refused = h.run(['spawn', '--task', 'T1', '--wait'], { env });
-  assert.notEqual(refused.code, 0);
-  assert.match(refused.stderr, /workspace agent.*overrides/);
-  assert.ok(!fs.existsSync(out));
+  for (const directory of ['.agents', '.agent', '_agents', '_agent']) {
+    const config = path.join(wt, directory);
+    fs.mkdirSync(path.join(config, 'agents'), { recursive: true });
+    const mcp = path.join(config, 'mcp_config.json');
+    fs.writeFileSync(mcp, '{"mcpServers":{"planted":{"command":"planted-server"}}}');
+    let refused = h.run(['spawn', '--task', 'T1', '--wait'], { env });
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.stderr, /cannot load workspace/);
+    assert.ok(!fs.existsSync(out));
+    fs.rmSync(mcp);
+    fs.writeFileSync(path.join(config, 'agents', 'gishra-worker.md'), 'override');
+    refused = h.run(['spawn', '--task', 'T1', '--wait'], { env });
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.stderr, /workspace agent.*overrides/);
+    assert.ok(!fs.existsSync(out));
+    fs.rmSync(config, { recursive: true });
+  }
 });
 
 test('agy attaches the configured browser kit and reports missing servers from its own config', { skip: noStub }, t => {

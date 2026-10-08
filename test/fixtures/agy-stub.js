@@ -31,4 +31,5 @@ const ran = JSON.parse(process.env.STUB_RUN || '[]').map(argv => {
 });
 fs.writeFileSync(process.env.STUB_OUT, JSON.stringify({
   home, agentFile, agent, args, memory, settings, mcp, rules, tools, skills, contextBytes, ran,
+  sandboxMarker: process.env.TOWER_CRANE_SANDBOX,
 }));
