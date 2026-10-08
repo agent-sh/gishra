@@ -233,6 +233,44 @@ the task to rework with Git's filenames in its note and brief. Trial merges
 do not resolve conflicts or update worker branches. Unknown PR heads,
 unknown mergeability and failed GitHub transport cannot authorize merging.
 
+Accepted PRs merge through a merge queue in the order of their `accept`
+events. A stack is one entry, ordered by its lowest unmerged task: it holds
+that task and the accepted, linked tasks directly above it, and an upper
+task whose lower task is not accepted waits outside the line. Only the head
+of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
+goes to rework with its files and leaves the line. Unknown mergeability, a
+moved head, failing gates or a refused merge stop the line until a later
+reaction; the executor's `done` event names the blocking task and why.
+Gate evidence belongs to the submitted sha, so a base move alone reruns no
+gate. The fail-before proof reruns only for a new head. Before merging, the
+head runs the pinned `gates.tests_cmd` once on the merge of `project.base`'s
+current tip into its top task's head, which for a stack carries every task
+in the entry, never on a stacked task's lower branch. It first trial-merges
+each task bottom up and sends the lowest conflicting one to rework with its
+files. The suite is skipped when the head already contains that tip or an
+earlier `head check` covered the same head, revision, base tip and command.
+Entries without a tests gate, or with tests mode `none`, skip it. A failing
+check sends the top task to rework with the output tail, and the tasks
+below it take the line again on their own. A failure under heads, stack
+metadata or project settings that changed while the suite ran sends nothing
+to rework; the line starts over on the current state. The rest of the line runs no
+gate and no suite. The merge is bound to what the check covered: if the
+entry's heads, revisions, statuses, PRs or stack metadata, or the project
+settings, changed while the suite ran, the merge gate does not run and the
+line starts over on the current state. A head that a reaction sends to
+rework for a conflict drains the line in the same reaction, so the PRs
+behind a blocked head move on. After the check the executor fetches the base
+again and checks again if it moved; `gh pr merge --match-head-commit` pins the head,
+but nothing pins the base, so a push to the base in the seconds between
+that fetch and the merge call is not checked. A branch protection rule that
+requires up-to-date branches closes that window. Hosted CI evidence comes
+from GitHub's `pull_request` run, which already tests the merge ref; never
+merge the base into a PR to refresh evidence or pick up a workflow change.
+One executor drains the queue; a reaction that finds it busy records a
+request, and the executor makes another pass before releasing. Manual
+`merge ID` bypasses the queue and its head check: it keeps only the merge
+gate's own guards.
+
 CI completion requires notification delivery by the host's webhook or job
 integration, using `ci webhook` or `ci completed`. No listener or CI polling
 loop is installed. The notification's conclusion is never evidence: the
@@ -355,7 +393,7 @@ The token protects against foreign web origins and against local processes that 
 | | |
 | `serve [--port P]` | serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. As the owner it also prints a one-time link to open in the browser that will write (`--json` prints `{ url, state, open }`; `open` is `url` for other identities). Exits 1 if the port is in use |
 | | |
-| `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
+| `status` | one screen: counts by status, ready tasks, blocked required gates when their test or cleanup command is unpinned, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
 <!-- commands:Views:end -->
 
 The board is one HTML document with four views (Board, Plan, History, Spend) and a sheet per task, linked as `#board`, `#plan`, `#history`, `#spend` and `#T7`; docs/design.md is its design. `sketch.html` loads nothing from the network: no fonts, scripts, styles or images outside the file, and its inline script makes no request. Every view and task sheet opens by its link with scripts disabled. Links in evidence (`--ref`) open only when clicked. The snapshot has no token and no forms; where serve would offer a write, it shows the CLI command. The script adds local times, keyboard keys (`b`, `p`, `h`, `s`, Escape), copy buttons and a digest of what changed since the browser last showed the board, kept in the browser's local storage and never in the state directory. The snapshot embeds the newest 400 events for History.
@@ -467,6 +505,8 @@ Review diff reads run before the spawn state lock. Inside the lock, a changed su
 
 Every rung gets a fresh, private `homes/<agent>/` with hook bindings and Git and gh shims, built under the lock before the agent starts. Homes of exited agents are removed. For claude, codex and opencode, `spawn` also renders the agent file of the rung's job (`agents/tower-crane-worker.md` for the tiers, `tower-crane-reviewer.md` for `review`, `tower-crane-small.md`, `tower-crane-orchestrator.md`) into flags and configuration. Opencode writes `agents/gishra-<job>.md`, selects it with `--agent`, replaces all XDG and config sources, and links its credential source without copying auth values into generated files. At launch, its native auth-content override receives API/OAuth entries only; wellknown entries are excluded to prevent remote instructions, plugins and MCP from loading. Its writable auth store remains separate from the user source. Its native tool permissions do not provide an OS shell sandbox. All opencode house-rule entries are `read` in `startup`, because automatic project instruction discovery is disabled. Their `HOME` is the home's `home/`; other harnesses retain their existing HOME and authentication setup. Every harness's `PATH` starts with the generated shims. The rung's `tools` and `mcp` opt back in to what the file leaves out; an MCP server the user's harness config does not define refuses the spawn, `--dry-run` included. [Agent files and homes](ladder.md#agent-files-and-homes) has what each harness gets.
 
+Started spawns also return and record `tool: {sha, version, path}`, with the checkout SHA (null for an installed package without Git metadata), package version and private runtime snapshot path. Shims, hooks and the supervisor use that snapshot through retries and route fallbacks. Moving or upgrading the tool checkout affects the next dispatch; live agents keep their generated policy and runtime until exit. Pre-T112 policies missing branch or repository fields migrate in memory from their bound task and project state before permission checks, as specified in [state.md](state.md#files).
+
 Codex roles with `gitPush: branch` receive an explicit `git push` allow rule so branch publishing does not need an approval prompt. The git shim permits a push to another machine only through `origin` in the repository recorded at dispatch, with every destination resolving to `refs/heads/<task branch>`. The configured fetch URL must name the recorded GitHub repository over HTTPS or SSH. Direct URL arguments and other remote names are refused, including implicit remote selection. Every configured `origin.pushurl` must equal the fetch URL, and Git's resolved push URLs must all equal its resolved fetch URL after URL rewriting. A missing recorded repository or task branch refuses remote pushes. The shim checks explicit refspecs, configured refspecs and implicit upstream or current-branch destinations, and passes fully qualified destinations to Git with submodule pushes disabled. Other branches, tags, wildcards, namespaces, force, delete, mirror, automatic tag pushes and configured recursive submodule pushes are refused. Roles with `gitPush: none` receive no push authorization. Plain pushes to local test repositories retain the local exception.
 
 `spawn` also records the host and, on Linux when available, the process start time in clock ticks. `status` and `ready` match the most recent spawn to the current claim's agent, including workers that claim after starting. An exited process is reported as `exited without submit`, with the pid, log path, the last 20 log lines within the final 8192 bytes, and guidance to release with a reason. Neither view prints a command that supplies owner identity. The engine rechecks exit under the lock before another agent can recover it. A live or unverified process still requires the claimant or an explicit owner. The tail is bounded so a large harness log cannot overwhelm a status check. A missing or unreadable log is reported without hiding the exit. Foreground spawns retain their logs; legacy events with a null log report `foreground output; no log`.
@@ -531,7 +571,7 @@ Native agents use one call, for example `tower-crane spend T1 --tokens 100 --inp
 
 ## Gates
 
-Each gate runs software, then records evidence on the task. Only `check tests`, `check clean`, `check sources`, `check ci` and `merge` record their respective software evidence types. Each result carries `source` naming that command and `commands` listing the processes it ran, with their arguments, working directory, exit status and signal. This includes the test command at head and, in `prove` mode, without the change, the cleanup invocation, GitHub queries and the merge invocation. Expensive proof records the full head run and both scoped runs. Tests mode `none` records only the Git command verifying the submitted commit and names the skip policy in its summary. Tests evidence and audit detail record the resolved `tests_mode`; successful tests evidence with a missing or mismatched mode no longer counts against the current project policy. A precondition failure can have no commands; an ok entry needs at least one command to count. The audit event carries the same receipts and revision.
+Each gate runs software, then records evidence on the task. Only `check tests`, `check clean`, `check sources`, `check ci` and `merge` record their respective software evidence types. Each result carries `source` naming that command and `commands` listing the processes it ran, with their arguments, working directory, exit status and signal. This includes the test command at head and, in `prove` mode, without the change, the cleanup invocation, GitHub queries and the merge invocation. Expensive proof records the full head run and both scoped runs. A failed test command records `test_failure.names` from node:test spec (`✖`) or TAP (`not ok`) output and `test_failure.output_tail`, bounded to the last 40 lines and 8192 characters; the summary prints both. Names and tails redact environment values that look like secrets before storage or printing. A value looks like a secret when it has a token shape (GitHub, API, AWS and Slack keys, `Authorization` header values), or when its name is credential-named (token, secret, password, passwd, credential, API key, access key, private key or cookie) and it is 20 or more characters of letters and digits with no spaces. This covers the process environment and project, resolved rung and environment-file values. Numbers, booleans and short words are never redacted, whatever the name. Paths, file names and commit SHAs are never redacted. Environment-file contents are never stored. Tests mode `none` records only the Git command verifying the submitted commit and names the skip policy in its summary. Tests evidence and audit detail record the resolved `tests_mode`; successful tests evidence with a missing or mismatched mode no longer counts against the current project policy. A precondition failure can have no commands; an ok entry needs at least one command to count. The audit event carries the same receipts and revision.
 
 For the `check tests` run without the code change in `prove` mode, changed declarative manifests, lockfiles and `tests.keep` matches stay at the submitted sha. This includes files such as `package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`, `pyproject.toml` and `requirements*.txt`; executable build files such as `Makefile` need an explicit keep glob. The summary names each kept path.
 
@@ -552,7 +592,7 @@ The CLI refuses manual software verdicts, and software receipts require matching
 | | |
 | `check sources ID` | fetch the distinct cited pages from committed `research/ID.json` and verify every quote; records sources evidence; required for research kind on every tier |
 | | |
-| `check tests ID [--cmd CMD] [--proof-cmd CMD]` | use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs CMD once and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests` and resolved `tests_mode` |
+| `check tests ID [--cmd CMD] [--proof-cmd CMD]` | use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs CMD once and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests`, resolved `tests_mode`, and failed test names plus a bounded output tail when its command fails |
 | | |
 | `merge ID [--subject S] [--body B] [--method M]` | merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise). Linked stacks merge bottom up with `--merge`, pinning each accepted head and confirming it before the next member. If an upper member fails, the target reports `merge FAIL` while confirmed lower members retain successful merge evidence. Inspect each member with `task show ID` and check its PR state; fix the refusal or wait for queued merges to complete. Sync the idle remaining chain when needed with `stack sync ID`; changed heads need rework, a new submission, passing gates, review and acceptance. Refresh stale gates and retry `merge ID` on the target; confirmed lower members are skipped. Records `merge` |
 <!-- commands:Gates:end -->
