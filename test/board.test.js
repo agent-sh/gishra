@@ -189,6 +189,33 @@ test('the board escapes every text the state holds', (t) => {
   assert.match(page, /href="https:\/\/example\.com\/x&quot;onmouseover=&quot;alert\(1\)"/);
 });
 
+test('review gate pips and ledger ignore unspawned and self-review verdicts', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  const sheet = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article id="T1"[\s\S]*?<\/article>/)[0];
+
+  for (const agent of ['made-up-reviewer', 'worker']) {
+    for (const verdict of ['--ok', '--fail']) {
+      h.ok(['evidence', 'T1', '--type', 'review', verdict, '--sha', sha, '--agent', agent]);
+      const page = sheet();
+      assert.match(page, /class="pip missing">review<\/span>/, `${agent} ${verdict} leaves review missing`);
+      assert.doesNotMatch(page, /class="pip (?:pass|fail)">review<\/span>/);
+      assert.match(page, /class="nocount">\(does not count: (?:not a spawned reviewer|self-review)\)/);
+      assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'review').ok, false);
+    }
+  }
+
+  h.reviewer('T1', 'reviewer', sha);
+  for (const [verdict, state] of [['--fail', 'fail'], ['--ok', 'pass']]) {
+    h.ok(['evidence', 'T1', '--type', 'review', verdict, '--sha', sha, '--agent', 'reviewer']);
+    assert.match(sheet(), new RegExp(`class="pip ${state}">review</span>`));
+  }
+});
+
 test('accepted task gate pips and ledger stop counting tests after the owner changes mode', (t) => {
   const h = makeRepo(t);
   h.init();

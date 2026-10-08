@@ -443,7 +443,7 @@ Any agent recovers a verified exited task with `release ID --reason R`. The dete
 - other tasks: `review` ok from an independent reviewer
 - any task with a PR, whatever its kind: `ci` ok as well
 
-An independent reviewer is the owner, or a reviewer that `spawn` dispatched for that task at that sha and revision, never the submitter. Review evidence that does not count also does not hold back the review dispatch `accept` makes, does not raise the review rung and is not passed to a rework worker as a finding.
+An independent reviewer is the owner, or a reviewer that `spawn` dispatched for that task at that sha and revision, never the submitter. Review evidence that does not count also does not hold back the review dispatch `accept` makes, does not raise the review rung and is not passed to a rework worker as a finding. The board keeps it in the ledger with a does-not-count reason; neither its pass nor its fail verdict sets the review gate indicator.
 
 Tests modes change how `check tests` produces evidence, not which gates acceptance requires. A code task in mode `none` still needs audited tests evidence for its submitted sha, plus cleanup and independent review.
 
