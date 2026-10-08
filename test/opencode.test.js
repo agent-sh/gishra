@@ -188,6 +188,57 @@ test('opencode reads JSONC opt-ins and provider choices without user plugins or 
   assert.deepEqual(nested.home.mcp, ['docs']);
 });
 
+test('opencode recursively merges partial provider and MCP overrides across config layers', { skip: NO_STUBS }, (t) => {
+  const f = setup(t);
+  const base = {
+    provider: { fixture: {
+      npm: '@ai-sdk/openai-compatible',
+      options: { baseURL: 'https://provider.invalid/v1', timeout: 1000, apiKey: 'PLANTED-SECRET' },
+      models: { fixture: { limit: { context: 32000, output: 2000 } } },
+    } },
+    mcp: {
+      docs: { type: 'local', command: ['node', 'base-server.js'], environment: { TOKEN: 'PLANTED-SECRET' } },
+      remote: { type: 'remote', url: 'https://docs.invalid/mcp', headers: { Authorization: 'PLANTED-SECRET' } },
+    },
+  };
+  fs.writeFileSync(path.join(f.global, 'opencode.json'), JSON.stringify(base));
+  fs.writeFileSync(path.join(f.global, 'opencode.jsonc'), JSON.stringify({
+    provider: { fixture: { options: { timeout: 2000 }, models: { fixture: { limit: { output: 4000 } } } } },
+    mcp: { docs: { enabled: false }, remote: { timeout: 3000 } },
+  }));
+  const custom = path.join(f.h.base, 'custom-opencode.json');
+  fs.writeFileSync(custom, JSON.stringify({
+    provider: { fixture: { options: { baseURL: 'https://override.invalid/v1' } } },
+    mcp: { docs: { command: ['node', 'override-server.js'] } },
+  }));
+  const extra = path.join(f.h.base, 'extra-opencode');
+  fs.mkdirSync(extra);
+  fs.writeFileSync(path.join(extra, 'opencode.json'), JSON.stringify({
+    provider: { fixture: { options: { maxRetries: 2 } } },
+    mcp: { remote: { timeout: 4000 } },
+  }));
+  f.env.OPENCODE_CONFIG = custom;
+  f.env.OPENCODE_CONFIG_DIR = extra;
+  f.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+    provider: { fixture: { options: { timeout: 5000 } } },
+    mcp: { docs: { enabled: true }, remote: { enabled: true } },
+  });
+  f.h.ok(['ladder', 'set', 'medium', '--mcp', '["docs","remote"]']);
+  assert.deepEqual(dry(f).home.mcp, ['docs', 'remote']);
+  spawn(f);
+  const report = f.report();
+  assert.deepEqual(report.config.provider.fixture, {
+    npm: '@ai-sdk/openai-compatible',
+    options: { baseURL: 'https://override.invalid/v1', timeout: 5000, maxRetries: 2 },
+    models: { fixture: { limit: { context: 32000, output: 4000 } } },
+  });
+  assert.deepEqual(report.mcp, {
+    docs: { type: 'local', command: ['node', 'override-server.js'], enabled: true },
+    remote: { type: 'remote', url: 'https://docs.invalid/mcp', timeout: 4000, enabled: true },
+  });
+  assert.ok(!JSON.stringify(report.config).includes('PLANTED-SECRET'));
+});
+
 test('opencode small denies edits, publishing and skills; args cannot override isolation', (t) => {
   const f = setup(t, 'small');
   const preview = dry(f);

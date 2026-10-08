@@ -110,7 +110,7 @@ Briefs can use `## Shared`, `## Worker` and `## Reviewer` level-two headings. Ma
 
 The list settings also work with `init`. Omitted options leave their fields unchanged. Removing a field keeps other settings in its object section and removes the section itself only when empty. Invalid JSON, a value other than an array or `null`, or a blank or non-string array entry exits 2 and writes no state or event, including when combined with valid settings.
 
-Harness sandbox support comes from `CAPABILITIES` in [lib/agents.js](../lib/agents.js). Its `sandbox` flag selects the ladder authority rule: moves among sandboxed harnesses are operational; moving a confined role off a sandboxed harness is owner-required. The flag covers native permission enforcement, including opencode. `osSandbox` separately records OS command isolation for broker and nested browser setup.
+Harness sandbox support comes from `CAPABILITIES` in [lib/agents.js](../lib/agents.js). Its `osSandbox` flag selects the ladder authority rule and the OS-isolated broker/browser behavior: moving a confined role to a harness without OS command confinement is owner-required. Opencode keeps its private home and native file-tool permissions, with both sandbox capabilities false; those rules do not constrain Bash writes.
 
 ## Run
 
