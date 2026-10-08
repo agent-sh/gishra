@@ -218,7 +218,7 @@ test('spawn embeds the role skill in the system context for isolated reviewers a
         continue;
       }
       const prompt = job === 'reviewer' && harness === 'claude'
-        ? out.argv[out.argv.indexOf('--append-system-prompt') + 1] : user;
+        ? out.system : user;
       assert.ok(prompt.includes(bodies[job]), `${harness} ${job} has its skill body`);
       assert.ok(!prompt.includes(bodies[other]), `${harness} ${job} excludes the other role's skill`);
       assert.ok(!prompt.includes(`name: tower-crane-${job === 'worker' ? 'work' : 'review'}`));

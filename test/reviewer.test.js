@@ -114,16 +114,17 @@ test('reviewers share static system instructions and receive audited gates in th
     assert.match(user, /"tests_mode": "prove"/);
     assert.match(user, /Do not re-run the full suite/);
     if (harness === 'claude') {
-      const system = out.argv[out.argv.indexOf('--append-system-prompt') + 1];
+      const system = out.system;
       assert.ok(out.argv.includes('--exclude-dynamic-system-prompt-sections'));
       assert.equal(out.env.FORCE_PROMPT_CACHING_5M, '1');
-      assert.equal(out.argv.filter((arg) => arg === '--append-system-prompt').length, 1);
+      assert.ok(!out.argv.includes('--append-system-prompt'));
+      assert.equal(out.argv[out.argv.indexOf('--append-system-prompt-file') + 1], path.join(out.home.path, 'system.md'));
       for (const text of ['Role instructions', 'REPO_REVIEW_RULE', 'STATE_REVIEW_CONTRACT', 'CLI_REVIEW_CONTRACT', 'REVIEW_STANDARDS', 'CUSTOM_REVIEW_RULE']) {
         assert.ok(system.includes(text), text);
       }
       for (const text of ['## Task', 'REVIEWER-ONLY', 'UNNEEDED_STATE_DOC', 'UNNEEDED_CLI_DOC', h.repo]) assert.ok(!system.includes(text), text);
       const second = choice(h);
-      assert.equal(second.argv[second.argv.indexOf('--append-system-prompt') + 1], system);
+      assert.equal(second.system, system);
     } else {
       assert.ok(out.startup.instructions_file.endsWith('AGENTS.md'));
       assert.ok(out.startup.system_bytes > 0);
@@ -131,6 +132,23 @@ test('reviewers share static system instructions and receive audited gates in th
       assert.ok(!out.startup.rules.some((r) => r.path === path.join(h.repo, 'AGENTS.md')));
     }
   }
+});
+
+test('a claude reviewer prefix over 32 KB stays off the command line', (t) => {
+  const h = setup(t);
+  h.ok(['submit', 'T1', '--agent', h.builder, '--sha', h.sha, '--pr', '42']);
+  ready(h);
+  gateEvidence(h, 'ci', 'gates');
+  const standards = path.join(h.repo, 'review-standards.md');
+  fs.writeFileSync(standards, `LARGE_STANDARDS\n${'Each finding names a file and line.\n'.repeat(1200)}`);
+  h.ok(['project', 'set', '--standards', standards]);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'fixture', '--clear', 'profile', '--clear', 'args']);
+  const out = choice(h);
+  assert.ok(Buffer.byteLength(out.system) > 32 * 1024, 'the fixture prefix is over 32 KB');
+  assert.match(out.system, /LARGE_STANDARDS/);
+  assert.ok(!out.argv.some((arg) => arg.includes('LARGE_STANDARDS')));
+  // Windows CreateProcess caps the whole command line at 32,767 characters.
+  assert.ok(out.argv.map((arg) => `"${arg}"`).join(' ').length < 32767);
 });
 
 test('stub reviewers 2 through 4 reuse the static prefix across tasks and fresh homes', {
@@ -152,7 +170,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const args = process.argv.slice(2);
 const claude = path.basename(process.argv[1]) === 'claude';
-const system = claude ? args[args.indexOf('--append-system-prompt') + 1]
+const system = claude ? fs.readFileSync(args[args.indexOf('--append-system-prompt-file') + 1], 'utf8')
   : fs.readFileSync(path.join(process.env.CODEX_HOME, 'AGENTS.md'), 'utf8');
 const configHome = process.env[claude ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'];
 const policy = JSON.parse(fs.readFileSync(path.join(configHome, 'policy.json'), 'utf8'));

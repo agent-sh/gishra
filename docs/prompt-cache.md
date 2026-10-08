@@ -181,7 +181,7 @@ different tasks. The shared prefix was the `tower-crane-review` skill plus
 `standards/default.md` (8,231 characters). Each trial put a new UUID at the top of
 the prefix, so reviewer A started cold for it. The rows show reviewer B.
 
-T37 layout: the prefix in `--append-system-prompt`, the task in the user message.
+T37 layout: the prefix in `--append-system-prompt-file`, the task in the user message.
 
 | Variant | Read | Write | Cost USD | Diverged at |
 |---|---:|---:|---:|---|
