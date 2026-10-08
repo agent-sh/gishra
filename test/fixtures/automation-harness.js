@@ -4,6 +4,8 @@ const cp = require('node:child_process');
 const fs = require('node:fs');
 const bin = process.argv[2];
 const mode = process.argv[3];
+const brief = fs.readFileSync(process.argv[4], 'utf8');
+if (!brief.includes('## Goal') || !brief.includes('## House rules')) throw new Error('missing startup context');
 const task = process.env.TOWER_CRANE_TASK;
 const state = JSON.parse(fs.readFileSync(process.env.AUTOMATION_GITHUB, 'utf8'));
 const pr = state.prs['7'];

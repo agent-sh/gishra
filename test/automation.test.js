@@ -341,7 +341,7 @@ test('a remotely merged different head produces failed merge evidence', (t) => {
 function configureHarness(h) {
   h.ok(['task', 'update', 'T1', '--tier', 'easy']);
   for (const rung of ['easy', 'review']) h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
-    JSON.stringify([process.execPath, harness, BIN, 'auto']),
+    JSON.stringify([process.execPath, harness, BIN, 'auto', '{brief}']),
     ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((f) => ['--clear', f])]);
 }
 
