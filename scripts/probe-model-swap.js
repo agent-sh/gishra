@@ -54,6 +54,10 @@ try {
   console.log(`Probe log: ${log}`);
   console.log(output.split('\n').filter(line => /^# (tests|pass|fail|skipped)|^not ok /.test(line)).join('\n'));
   const expected = 'BUILTIN matches the documented defaults and init fallback';
+  // A timed-out run leaves unfinished tests that say nothing about the swap.
+  if (result.error?.code === 'ETIMEDOUT') {
+    throw new Error(`the suite did not finish within the probe timeout; rerun on a less loaded machine (log: ${log})`);
+  }
   if (result.error || result.status !== 1 || failures.length !== 1 || failures[0] !== expected) {
     throw new Error(`expected only "${expected}" to fail: ${JSON.stringify(failures)}; ${result.error || ''}`);
   }

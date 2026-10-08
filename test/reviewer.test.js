@@ -197,6 +197,23 @@ test('review selection matches Claude provider aliases to recorded provider spen
   }
 });
 
+test('review selection prices a Claude alias rung by the release id its spend records', (t) => {
+  const [alias, release] = Object.entries(require('../lib/ladder').BUILTIN.claude_aliases)[0];
+  const h = setup(t, 'medium');
+  const bin = path.join(h.base, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
+  const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || '') };
+  h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--model', alias, '--clear', 'provider']);
+  h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [release]: prices['fixture-large'] } })]);
+  ready(h);
+  sample(h, 'fixture-main', 1000000, 0, 0);
+  sample(h, release, 0, 0, 1);
+  const promoted = choice(h, env);
+  assert.equal(promoted.review_rung, 'hard');
+  assert.equal(model(promoted), alias);
+});
+
 test('equal cost promotes, missing components do not provide a cost sample', (t) => {
   const h = setup(t, 'medium');
   ready(h);
