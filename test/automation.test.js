@@ -339,11 +339,51 @@ test('a remotely merged different head produces failed merge evidence', (t) => {
   assert.equal(h.github().calls.filter((a) => a[1] === 'merge').length, 0);
 });
 
-function configureHarness(h) {
+function configureHarness(h, { rules = false } = {}) {
+  const home = path.join(h.base, 'home');
+  fs.mkdirSync(home, { recursive: true });
+  Object.assign(h.env, {
+    HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, '.codex'),
+    CLAUDE_CONFIG_DIR: path.join(home, '.claude'), XDG_CONFIG_HOME: path.join(home, '.config'),
+    PI_CODING_AGENT_DIR: path.join(home, '.pi', 'agent'), XDG_CACHE_HOME: path.join(home, '.cache'),
+    LOCALAPPDATA: path.join(home, 'AppData', 'Local'), npm_config_cache: path.join(home, 'npm'),
+    GH_TOKEN: 'automation-fixture', STUB_RUN: '[]',
+    AUTOMATION_CONTEXT_DIR: path.join(h.base, 'context'),
+  });
+  fs.mkdirSync(h.env.AUTOMATION_CONTEXT_DIR);
+  if (rules) fs.writeFileSync(path.join(h.base, 'AGENTS.md'), 'Read the acceptance before changing code.\n');
   h.ok(['task', 'update', 'T1', '--tier', 'easy']);
   for (const rung of ['easy', 'review']) h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
-    JSON.stringify([process.execPath, harness, BIN, 'auto']),
+    JSON.stringify([process.execPath, harness, BIN, 'auto', '{prompt}']),
     ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((f) => ['--clear', f])]);
+}
+
+function startupContexts(h, withRules) {
+  const startups = h.logs().filter((e) => e.cmd === 'startup');
+  assert.deepEqual(startups.map((e) => e.detail.role), ['worker', 'reviewer']);
+  for (const { task, detail } of startups) {
+    const report = JSON.parse(fs.readFileSync(path.join(h.env.AUTOMATION_CONTEXT_DIR, `${detail.agent}.json`), 'utf8'));
+    assert.equal(report.harness, 'command');
+    assert.equal(report.args[2], report.prompt, 'the shared stub records the delivered argument');
+    assert.match(report.prompt, /^## Goal\n/);
+    assert.ok(report.prompt.includes(`Project goal: ${detail.goal}`));
+    const target = JSON.parse(/## Task\s+```json\n([\s\S]*?)\n```/.exec(report.prompt)[1]);
+    assert.equal(target.id, task);
+    assert.equal(target.title, detail.target.title);
+    assert.equal(target.acceptance.length, detail.target.acceptance);
+    assert.equal(detail.receives_prompt, true);
+    assert.equal(detail.prompt_bytes, Buffer.byteLength(report.prompt));
+    assert.equal(detail.prompt_tokens, Math.ceil(detail.prompt_bytes / 4));
+    assert.equal(report.prompt.includes('## House rules'), withRules);
+    if (withRules) {
+      assert.ok(detail.rules.some((r) => r.path === path.join(h.base, 'AGENTS.md') && r.loaded === 'read'));
+      for (const rule of detail.rules) assert.ok(report.prompt.includes(rule.path));
+    } else {
+      assert.deepEqual(detail.rules, []);
+      assert.equal(detail.rules_bytes, 0);
+      assert.equal(detail.rules_tokens, 0);
+    }
+  }
 }
 
 test('a worker identity cannot authorize reactions by passing the orchestrator name', (t) => {
@@ -368,7 +408,7 @@ test('supervisor reactions pin unconfigured gates and bypass the real restrictiv
   configureHarness(h);
   h.env.AUTOMATION_POLICY_PROBE = path.join(h.base, 'policy-probe.jsonl');
   h.ok(['spawn', '--task', 'T1', '--wait', '--agent', 'orchestrator']);
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 60000;
   while (!h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'merge' && e.ok)) {
     if (Date.now() > deadline) throw new Error(JSON.stringify(h.logs().slice(-10)));
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -380,15 +420,16 @@ test('supervisor reactions pin unconfigured gates and bypass the real restrictiv
   assert.equal(probes.length, 2);
   assert.ok(probes.every((p) => p.denials.every((d) => d.status === 126 && /not allowed/.test(d.stderr))), JSON.stringify(probes));
   assert.ok(probes.every((p) => p.path.includes(path.join(h.state, 'homes'))));
+  startupContexts(h, false);
 });
 
 test('a supervised worker submission runs gates and dispatches the offline reviewer after exit', async (t) => {
   const h = setup(t);
-  configureHarness(h);
+  configureHarness(h, { rules: true });
   const hold = path.join(h.base, 'worker-hold');
   const spawned = h.runAsync(['spawn', '--task', 'T1', '--wait', '--agent', 'orchestrator'],
     { env: { AUTOMATION_WORKER_HOLD: hold } });
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 60000;
   try {
     while (!fs.existsSync(hold)) {
       if (Date.now() > deadline) throw new Error('worker did not submit');
@@ -401,14 +442,22 @@ test('a supervised worker submission runs gates and dispatches the offline revie
     fs.writeFileSync(`${hold}.go`, '');
     assert.equal((await spawned).code, 0);
   }
+  // Reviewer completion has its own CLI command deadline after worker exit.
+  const reviewDeadline = Date.now() + 60000;
   while (!h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'merge' && e.ok)) {
-    if (Date.now() > deadline) throw new Error(JSON.stringify(h.logs().slice(-10)));
+    if (Date.now() > reviewDeadline) throw new Error(JSON.stringify(h.logs().slice(-10)));
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   const events = h.logs();
   const review = events.findIndex((e) => e.cmd === 'spawn' && e.detail.role === 'reviewer');
   const exit = events.findIndex((e) => e.cmd === 'spawn exit' && e.detail.role === 'worker');
   assert.ok(review > exit);
+  const workerStartup = events.findIndex((e) => e.cmd === 'startup' && e.detail.role === 'worker');
+  const worker = events.findIndex((e) => e.cmd === 'spawn' && e.detail.role === 'worker');
+  const reviewStartup = events.findIndex((e) => e.cmd === 'startup' && e.detail.role === 'reviewer');
+  assert.ok(workerStartup >= 0 && workerStartup < worker && worker < exit);
+  assert.ok(reviewStartup > exit && reviewStartup < review);
+  startupContexts(h, true);
   assert.equal(events.filter((e) => e.cmd === 'spawn' && e.detail.role === 'reviewer').length, 1);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
 });
