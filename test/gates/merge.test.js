@@ -203,6 +203,30 @@ test('a stack PR must target its dependency branch rather than the project base'
   assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
 });
 
+test('a partially merged stack retries on the project base and refuses an unrelated base', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.refuseMergePr = 12; });
+  const partial = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(partial.code, 1, partial.stdout);
+  assert.equal(f.read().prs[11].state, 'MERGED');
+  assert.equal(f.read().prs[12].baseRefName, 'main');
+  f.write((d) => { d.calls = []; delete d.refuseMergePr; d.prs[12].baseRefName = 'release'; });
+  const refused = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stdout, /base.*release/);
+  assert.equal(f.read().calls.some((c) => ['edit', 'merge'].includes(c.args[1])), false);
+  f.write((d) => { d.prs[12].baseRefName = 'main'; });
+  const merged = f.h.json(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(merged.ok, true, merged.summary);
+  const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
+  assert.equal(merges.length, 1);
+  assert.equal(merges[0].args[2], '12');
+  assert.ok(merges[0].args.includes('--merge'));
+  assert.equal(merges[0].args[merges[0].args.indexOf('--match-head-commit') + 1], f.upper.sha);
+});
+
 test('unstacked fallback retargets only the recorded dependency base after lower tasks land', (t) => {
   const f = stacked(t);
   f.accept('T1');
