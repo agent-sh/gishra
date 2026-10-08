@@ -29,6 +29,8 @@ test('the npm package ships the plugin and loads pi skills through its CLI', (t)
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
     'components.json',
+    'hooks/hooks.json',
+    'hooks/tower-crane.mjs',
   ]) assert.ok(files.includes(file), `npm package is missing ${file}`);
   assert.ok(!files.includes('commands/tower-crane.md'), 'the skill must be the only tower-crane entry point');
   const components = JSON.parse(fs.readFileSync(path.join(ROOT, 'components.json'), 'utf8'));
