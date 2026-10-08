@@ -200,7 +200,7 @@ process.stdout.write(r.stdout || '');
 process.stderr.write(r.stderr || '');
 process.exit(r.status === null ? 1 : r.status);
 `);
-  f.h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, script]),
+  f.h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, script, '{prompt}']),
     '--clear', 'model', '--clear', 'profile', '--clear', 'effort']);
 
   const spawned = f.h.run(['spawn', '--task', 'T2', '--wait']);
@@ -210,6 +210,47 @@ process.exit(r.status === null ? 1 : r.status);
   assert.equal(task.stack.linked, true);
   assert.equal(task.stack_disabled, undefined);
   assert.ok(f.read().calls.some((call) => call.args[0] === 'api' && call.args[1] === 'repos/acme/app/stacks'));
+});
+
+test('a stacked rework is claimable while its lower task is only submitted', (t) => {
+  const f = setup(t);
+  upper(f);
+  f.h.ok(['rework', 'T2', '--reason', 'revise the stacked change']);
+  const claim = f.h.run(['claim', 'T2', '--agent', 'claim-probe']);
+  assert.equal(claim.code, 0, claim.stderr);
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'in_progress');
+});
+
+test('a stacked rework whose branch is gone resumes from its own pushed head, not its dependency', (t) => {
+  const f = setup(t);
+  const { wt, sha } = upper(f);
+  f.h.git(['worktree', 'remove', '--force', wt.path]);
+  f.h.git(['branch', '-D', wt.branch]);
+  f.h.ok(['rework', 'T2', '--reason', 'revise the stacked change']);
+  const again = f.h.json(['worktree', 'T2']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], again.path), sha);
+});
+
+test('a stacked rework with its own branch but no worktree is not refused as prepared before its dependency', (t) => {
+  const f = setup(t);
+  const { wt, sha } = upper(f);
+  f.h.git(['worktree', 'remove', '--force', wt.path]);
+  f.h.ok(['rework', 'T2', '--reason', 'revise the stacked change']);
+  const again = f.h.json(['worktree', 'T2']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], again.path), sha);
+});
+
+test('a transient stack API failure refuses a stacked rework claim without disabling its stack', (t) => {
+  const f = setup(t);
+  upper(f);
+  f.h.ok(['rework', 'T2', '--reason', 'revise the stacked change']);
+  f.write((d) => { d.apiFailure = { status: 1, stderr: 'HTTP 503: Service Unavailable' }; });
+  const claim = f.h.run(['claim', 'T2', '--agent', 'claim-probe']);
+  assert.equal(claim.code, 1);
+  assert.match(claim.stderr, /stack availability check failed/);
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(task.stack_disabled, undefined);
+  assert.equal(task.stack.linked, true);
 });
 
 test('an outage leaves a dependent without a stack record unflagged, and recovery claims it once GitHub confirms its dependency', (t) => {
