@@ -180,6 +180,33 @@ test('a timeout stops the command and everything it started', { skip: process.pl
   assertCleanedUp();
 });
 
+test('timeouts at head, scoped proof and reversion are infrastructure failures, never proof', async () => {
+  const sha = task({ 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST });
+  for (const stage of [1, 2, 3]) {
+    const context = ctx(sha, { project: {
+      tests: { expensive: true },
+      gates: { tests_cmd: CMD, tests_proof_cmd: `${CMD} {tests}`, tests_timeout_min: 0.05 },
+    } });
+    let calls = 0;
+    context.exec = (command, args, opts) => {
+      if (!opts.shell) return require('node:child_process').spawnSync(command, args, opts);
+      assert.equal(opts.timeout, 3000);
+      if (++calls !== stage) return { status: 0, stdout: '', stderr: '' };
+      return { status: 1, error: Object.assign(new Error('deadline'), { code: 'ETIMEDOUT' }),
+        stdout: 'not ok 1 - cut off', stderr: '', timeoutOutput: '# Subtest: test/slow.test.js\n' };
+    };
+    const r = await gate.run(context);
+    assert.equal(r.ok, false, `stage ${stage}: ${r.summary}`);
+    assert.equal(r.infrastructure_failure, true);
+    assert.equal(r.confirmed_failure, undefined);
+    assert.equal(r.test_failure, undefined);
+    assert.match(r.summary, /timed out after 0\.05 min/);
+    assert.deepEqual(r.timeout.running_files, ['test/slow.test.js']);
+    assert.equal(calls, stage);
+    assertCleanedUp();
+  }
+});
+
 test('a worktree add that fails after registering leaves no registration behind', async () => {
   // git registers the worktree, checks it out, then runs post-checkout; a failing hook makes
   // the add exit non-zero with the registration already written.

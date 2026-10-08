@@ -4,31 +4,38 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, cachedFixture, ROOT } = require('./helpers');
+const { shellQuote } = require('../lib/gates/common');
 const { gateFixture } = require('./gate-helpers');
+
+const runner = `node ${shellQuote(path.join(ROOT, 'test/run.js'))}`;
+const fullCommand = `${runner} test/*.test.js`;
 
 const map = { 'value.js': ['test/mapped.test.js'], '**/*.md': [] };
 
 function fixture(t, settings = map, withPr = true) {
-  const h = makeRepo(t);
+  const h = cachedFixture(t, 'tests-map-base', (h) => {
+    delete h.env.NODE_TEST_CONTEXT;
+    h.init();
+    gateFixture(h);
+    h.git(['switch', 'main']);
+    fs.mkdirSync(path.join(h.repo, 'test'), { recursive: true });
+    fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 0;\n');
+    fs.writeFileSync(path.join(h.repo, 'test/mapped.test.js'), 'console.log("mapped suite");\n');
+    h.git(['add', '.']);
+    h.git(['commit', '-qm', 'mapped suite']);
+    h.git(['switch', 'fixture-change']);
+    h.git(['merge', '--no-edit', 'main']);
+    fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 1;\n');
+    fs.writeFileSync(path.join(h.repo, 'README.md'), 'Changed documentation.\n');
+    h.git(['add', '.']);
+    h.git(['commit', '--allow-empty', '-qm', 'submitted change']);
+    return { sha: h.git(['rev-parse', 'HEAD']) };
+  });
   delete h.env.NODE_TEST_CONTEXT;
-  h.init();
-  gateFixture(h);
-  h.git(['switch', 'main']);
-  fs.mkdirSync(path.join(h.repo, 'test'), { recursive: true });
-  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 0;\n');
-  fs.writeFileSync(path.join(h.repo, 'test/mapped.test.js'), 'console.log("mapped suite");\n');
-  h.git(['add', '.']);
-  h.git(['commit', '-qm', 'mapped suite']);
-  h.git(['switch', 'fixture-change']);
-  h.git(['merge', '--no-edit', 'main']);
-  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 1;\n');
-  fs.writeFileSync(path.join(h.repo, 'README.md'), 'Changed documentation.\n');
-  h.git(['add', '.']);
-  h.git(['commit', '--allow-empty', '-qm', 'submitted change']);
-  const sha = h.git(['rev-parse', 'HEAD']);
+  const sha = h.sha;
   h.ok(['project', 'set', '--tests-expensive', 'true', '--tests-map', JSON.stringify(settings),
-    '--tests-cmd', 'node --test test/*.test.js', '--tests-proof-cmd', 'node --test {tests}', '--ci-required', '["test ("]']);
+    '--tests-cmd', fullCommand, '--tests-proof-cmd', `${runner} {tests}`, '--ci-required', '["test ("]']);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker', ...(withPr ? ['--pr', '1'] : [])]);
@@ -62,7 +69,7 @@ test('mapped head suites preserve scoped proof and policy-bound evidence through
   const fallback = check(h);
   assert.equal(fallback.receipt.head_mode, 'full');
   assert.match(fallback.summary, /unmapped.*value.js/);
-  assert.equal(fallback.commands.find((c) => c.command !== 'git').command, 'node --test test/*.test.js');
+  assert.equal(fallback.commands.find((c) => c.command !== 'git').command, fullCommand);
   assert.deepEqual(fallback.receipt.proof_tests, receipt.receipt.proof_tests);
   h.ok(['project', 'set', '--tests-map', JSON.stringify(map)]);
   check(h);
@@ -150,7 +157,7 @@ test('a task without a PR runs the full head suite because hosted CI is not requ
   const result = check(h);
   assert.equal(result.receipt.head_mode, 'full');
   assert.match(result.receipt.head_reason, /no PR/);
-  assert.equal(result.commands.find((c) => c.command !== 'git').command, 'node --test test/*.test.js');
+  assert.equal(result.commands.find((c) => c.command !== 'git').command, fullCommand);
 });
 
 test('a change only to test/browser.js selects its explicitly mapped suite', (t) => {
@@ -167,4 +174,38 @@ test('a change only to test/browser.js selects its explicitly mapped suite', (t)
   const result = check(h);
   assert.equal(result.receipt.head_mode, 'mapped');
   assert.ok(result.receipt.head_tests.includes('test/mapped.test.js'));
+});
+
+
+test('mapped head timeout uses the project deadline and remains infrastructure failure', (t) => {
+  const h = fixture(t);
+  const script = path.join(h.base, 'slow-mapped-runner.js');
+  fs.writeFileSync(script, `
+const file = process.argv[2];
+console.log('TAP version 13\\n# Subtest: ' + file);
+process.on('SIGTERM', () => {
+  console.log('not ok 1 - ' + file + "\\n  error: 'Promise resolution is still pending but the event loop has already resolved'");
+  process.exit(1);
+});
+setTimeout(() => process.exit(0), 10000);
+`);
+  h.ok(['project', 'set', '--tests-timeout-min', '0.05',
+    '--tests-proof-cmd', `node ${shellQuote(script)} {tests}`]);
+  const run = h.run(['check', 'tests', 'T1', '--agent', 'worker', '--json']);
+  assert.equal(run.code, 1, run.stderr + run.stdout);
+  const result = JSON.parse(run.stdout);
+  assert.equal(result.receipt.head_mode, 'mapped');
+  assert.equal(result.infrastructure_failure, true);
+  assert.equal(result.confirmed_failure, undefined);
+  assert.equal(result.test_failure, undefined);
+  assert.equal(result.timeout.minutes, 0.05);
+  assert.deepEqual(result.timeout.running_files, ['test/mapped.test.js']);
+  assert.match(result.summary, /timed out after 0\.05 min/);
+  assert.doesNotMatch(result.summary, /Failing tests|Make the tests pass|Promise resolution/);
+  const commands = result.commands.filter((c) => c.command !== 'git');
+  assert.equal(commands.length, 1);
+  assert.match(commands[0].command, /test\/mapped\.test\.js test\/value\.test\.js$/);
+  const task = h.readState('tasks.json').tasks[0];
+  assert.equal(task.status, 'submitted');
+  assert.equal(task.evidence.at(-1).infrastructure_failure, true);
 });
