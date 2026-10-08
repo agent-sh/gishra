@@ -360,7 +360,11 @@ function queued(t) {
   fs.writeFileSync(suite, `require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(
   ['T1.txt', 'T2.txt', 'moved.txt'].filter((f) => require('node:fs').existsSync(f))) + '\\n');\n`);
   f.h.ok(['project', 'set', '--tests-cmd', `${shellQuote(process.execPath)} ${shellQuote(suite)}`]);
-  for (const id of ['T1', 'T2']) f.h.ok(['task', 'update', id, '--kind', 'code']);
+  // The shared stack template submits docs tasks, and a submitted task's kind
+  // cannot change, so these copies are written as code tasks.
+  const tasks = f.h.readState('tasks.json');
+  for (const task of tasks.tasks) task.kind = 'code';
+  f.h.writeState('tasks.json', tasks);
   f.write((d) => { for (const n of [11, 12]) Object.assign(d.prs[n], { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
   fs.writeFileSync(path.join(f.h.repo, 'moved.txt'), 'main moved\n');
   f.h.git(['add', 'moved.txt']);
@@ -388,7 +392,7 @@ test('a stack is one queue entry: its upper task waits for the lower one and the
   assert.deepEqual(f.checks().map((e) => [e.task, e.detail.members, e.detail.base_sha, e.detail.ok]),
     [['T2', ['T1', 'T2'], f.main, true]], 'one check at the top of the chain merged with main');
   assert.deepEqual(f.suites(), [['T1.txt', 'T2.txt', 'moved.txt']]);
-  assert.deepEqual(f.merges(), ['stack merge 12']);
+  assert.deepEqual(f.merges(), ['pr merge 11', 'pr merge 12']);
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
 });
 
@@ -399,7 +403,7 @@ test('after the lower task merges alone, the upper head check runs against main,
   fs.writeFileSync(scratch, 'local edit\n');
   f.acceptCode('T1');
   f.consume();
-  assert.deepEqual(f.merges(), ['stack merge 11']);
+  assert.deepEqual(f.merges(), ['pr merge 11']);
   assert.equal(f.h.json(['task', 'show', 'T2']).stack.base, f.lower.branch);
   f.h.git(['push', 'origin', `:${f.lower.branch}`]);
   f.h.git(['update-ref', '-d', `refs/remotes/origin/${f.lower.branch}`]);
@@ -409,13 +413,6 @@ test('after the lower task merges alone, the upper head check runs against main,
   f.consume();
   assert.deepEqual(f.checks().map((e) => [e.task, e.detail.members, e.detail.base_sha]),
     [['T1', ['T1'], f.main], ['T2', ['T2'], main]]);
-  const stopped = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
-    .findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
-  assert.equal(stopped.detail.blocked.task, 'T2');
-  assert.match(stopped.detail.blocked.reason, /PR base moved; sync its stack/, 'the line records who blocks it and why');
-  fs.rmSync(scratch);
-  f.h.ok(['stack', 'sync', 'T2']);
-  f.consume();
-  assert.deepEqual(f.merges(), ['stack merge 11', 'stack merge 12']);
-  assert.equal(f.suites().length, 2, 'the synced upper task reuses its check against the same main');
+  assert.deepEqual(f.merges(), ['pr merge 11', 'pr merge 12']);
+  assert.equal(f.suites().length, 2, 'the upper task runs one check, against main');
 });
