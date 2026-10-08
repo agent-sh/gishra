@@ -172,7 +172,7 @@ Set these fields through `project set --merge-keep-branch true --merge-admin tru
 
 For technical delegation, `lib/authority.js` must resolve the explicit caller as the orchestrator. A generated name such as `orchestrator-T1-1` is recognized through its recorded spawn role; an unsandboxed worker cannot claim the literal `orchestrator` identity by passing `--agent orchestrator`. Answers keep the caller's identity in `answered_by` and the event's actor fields.
 
-Every use of `init --ci-local` or `project set --ci-local`, including setting the current value or clearing it with `null`, is operational: the orchestrator or the owner. Refused calls write no settings.
+Every use of `init --ci-local` or `project set --ci-local`, including setting the current value or clearing it with `null`, is operational: the orchestrator or the owner. Refused calls write no settings or events.
 
 `ci.local.by_kind` is an optional object mapping known task kinds (`code`, `docs`, `research`, `design`, `ops`) to overrides, for example `{ "code": { "args": ["--native-extended"] }, "ops": { "args": ["--lab"], "timeout": 300 } }`. An override has exactly one of `command` (a replacement argv with the same validation as the default) or `args` (a string argv appended to the default, allowing an empty array). Optional `timeout` replaces the project timeout and uses the same range. Unknown fields and invalid mappings are refused. Missing kinds inherit the default. A task's `ci_local` override takes precedence and resolves directly against the project default, without combining with its kind mapping. These overrides apply only when `ci.local` is present.
 
