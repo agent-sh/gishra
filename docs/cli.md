@@ -270,9 +270,9 @@ The engine watches the state directory with `fs.watch`. A one-second internal st
 
 A task sheet's tier control posts to `/api/tiers` (below), as Settings does. Both `/api/tiers` and `/api/ladder` require the same explicit owner identity as the other board writes. Other serve identities see the ladder and tiers as read-only values. The board has no route that accepts, merges, waives, claims, releases, submits, records evidence or edits the plan: those stay CLI commands, and the board shows the command where it would help, such as `accept T1 --waive review --reason R --agent owner` on a submitted task's sheet.
 
-Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the page's `tower-crane-token` meta value as `x-tower-crane-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
+Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the run's token (below) as `x-tower-crane-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
 
-The token protects against foreign web origins. Local processes can read it from the page, just as they can supply an owner identity to the CLI.
+The token protects against foreign web origins and against local processes that read the pages: only the page opened from the owner's one-time link carries it. A local process can still supply an owner identity to the CLI.
 
 ## Views
 
@@ -283,7 +283,7 @@ The token protects against foreign web origins. Local processes can read it from
 |---|---|
 | `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock |
 | | |
-| `serve [--port P]` | serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use |
+| `serve [--port P]` | serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. As the owner it also prints a one-time link to open in the browser that will write (`--json` prints `{ url, state, open }`; `open` is `url` for other identities). Exits 1 if the port is in use |
 | | |
 | `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
 <!-- commands:Views:end -->
@@ -300,15 +300,16 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 
 | Method and path | Does |
 |---|---|
-| `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request; carries the run's token, and the owner forms when serve runs as the owner |
-| `GET /settings` | the Settings view; carries the run's token in `<meta name="tower-crane-token">` |
+| `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request, with the owner forms when serve runs as the owner |
+| `GET /settings` | the Settings view |
+| any page with `?key=<key>` | the first request with the one-time key serve printed also carries the run's token in `<meta name="tower-crane-token">`; the key is then spent. Every other page has that tag empty |
 | `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
 | `POST /api/ladder` | owner only: change the default harness and rungs, as `ladder harness` and `ladder set` do |
 | `POST /api/tiers` | owner only: change task tiers, as `task update --tier` does |
 
 Every POST needs:
 
-- `x-tower-crane-token: <token>`, the random token of this serve run, which only the served board and Settings pages carry;
+- `x-tower-crane-token: <token>`, the random token of this serve run. Only the page opened from the printed link gets it, so a local process that reads the pages, with or without an `Origin` header, cannot write. The page keeps the token in the origin's local storage, scoped to this host and port, so reloads and other tabs keep writing; it drops the key from the address bar. Another browser needs a restart of serve and its new link;
 - `content-type: application/json` and a body of at most 64 KiB;
 - an `Origin`, if the browser sends one, of `http://127.0.0.1:<port>` or `http://localhost:<port>`.
 
