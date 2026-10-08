@@ -56,6 +56,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | --- | --- | --- |
 | `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd` | operational | `project set --tests-cmd`, `--clean-cmd`, `--tests-proof-cmd`; gate self-pinning below |
 | `gates.executors` | operational | `project set --executors` |
+| `gates.priority` | operational | `gates prioritize ID --reason R`: a task's queued gate reactions run before older queued work |
 | `ci.required`, `ci.ignore_apps`, `ci.capped_review` | operational | `project set --ci-required`, `--ci-ignore-apps`, `--ci-capped-review` |
 | `ci.local` | operational | `project set --ci-local`, `task update --ci-local` |
 | `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive` | operational | `project set --tests-*` |
@@ -584,9 +585,17 @@ identity releases it when the process dies. Running receipts from other
 hosts do not count against this host's cap.
 `automation queued` records a blocked notification's source, with
 `executors` set to the cap when the cap blocked it rather than another
-executor of the same task. Queued notifications run in submission order:
-while one waits, a later notification queues behind it even if a slot is
-free. Each executor drains the queue after releasing its slot; watchers
+executor of the same task. Queued notifications run in drain order: submission
+order, except that the queued notifications of a task named by a
+`gates prioritize` event run first, the most recent request first. While one
+waits, a later notification queues behind it even if a slot is free. A
+notification submitted after the request keeps submission order.
+`gates prioritize ID --reason R` is operational ([Authority](#authority)); it
+records a `gates prioritize` event with `reason`, `queued` (the task's queued
+notifications at that moment) and `authority`. It is refused when the task
+has no queued notification, since it would change nothing. `status` lists the
+gate queue in drain order, running tasks first, and `--json` carries it as
+`gate_queue`. Each executor drains the queue after releasing its slot; watchers
 also retry their pending notifications on their next check. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
@@ -601,8 +610,8 @@ it refuses, as its release. It drains reactions queued behind it, as an
 executor does. The merge queue takes the head of the line's reservation
 with source `queue:<uuid>` around its merge, unless its own process
 already holds it. Stack head checks ignore `automation`,
-`automation queued` and `automation reconcile` events, which change no
-task state.
+`automation queued`, `automation reconcile` and `gates prioritize` events,
+which change no task state.
 An accepted PR already merged remotely goes through the merge gate's
 confirmation path. It records the matching accepted head and the PR's merge
 commit without merging again, including after an executor dies before

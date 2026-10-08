@@ -383,6 +383,59 @@ poll();
   }
 });
 
+test('gates prioritize runs the last queued task first and status shows the gate queue', async (t) => {
+  const h = setup(t);
+  const events = path.join(h.state, 'events.jsonl');
+  const suite = path.join(h.base, 'tools', 'hold-suite.js');
+  const stalled = path.join(h.base, 'stalled');
+  const release = path.join(h.base, 'release');
+  // The first run holds the only executor until the test releases it, so the
+  // three tasks submitted after it queue behind it.
+  fs.writeFileSync(suite, `const fs = require('node:fs');
+if (fs.existsSync(${JSON.stringify(stalled)})) process.exit(0);
+fs.writeFileSync(${JSON.stringify(stalled)}, '');
+const poll = () => (fs.existsSync(${JSON.stringify(release)}) ? process.exit(0) : setTimeout(poll, 50));
+poll();
+`);
+  h.ok(['project', 'set', '--tests-cmd', `node ${JSON.stringify(suite)}`, '--tests-mode', 'run-only',
+    '--executors', '1', '--agent', 'orchestrator']);
+  for (const id of ['T2', 'T3', 'T4']) h.ok(['task', 'add', '--title', `Change ${id}`, '--acceptance', 'it works', '--kind', 'code']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', h.sha, '--agent', 'worker']);
+  const holder = h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  assert.notEqual(await waitFor(stalled), null, 'the first executor starts');
+  const offset = fs.statSync(events).size;
+  for (const id of ['T2', 'T3', 'T4']) {
+    h.ok(['claim', id, '--agent', 'worker']);
+    h.ok(['submit', id, '--sha', h.sha, '--agent', 'worker']);
+  }
+  h.run(['wait', '--after', String(offset), '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  assert.deepEqual(h.logs().filter((e) => e.cmd === 'automation queued').map((e) => e.task), ['T2', 'T3', 'T4']);
+
+  const refused = h.run(['gates', 'prioritize', 'T4', '--reason', 'gate fix first', '--agent', 'worker']);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /operational/);
+  assert.ok(!h.logs().some((e) => e.cmd === 'gates prioritize'), 'a refused request logs nothing');
+
+  h.ok(['gates', 'prioritize', 'T4', '--reason', 'T134 shrinks every later gate run', '--agent', 'orchestrator']);
+  const event = h.logs().findLast((e) => e.cmd === 'gates prioritize');
+  assert.deepEqual([event.task, event.detail.reason], ['T4', 'T134 shrinks every later gate run']);
+  const text = h.ok(['status']);
+  assert.match(text, /^gate running: T1$/m);
+  assert.match(text, /^gate queue: T4 \(prioritized: T134 shrinks every later gate run\), T2, T3$/m);
+  const queue = h.json(['status']).gate_queue;
+  assert.deepEqual(queue.running, ['T1']);
+  assert.deepEqual(queue.queued.map((q) => q.id), ['T4', 'T2', 'T3']);
+  assert.equal(queue.queued[0].prioritized.reason, 'T134 shrinks every later gate run');
+  assert.equal(queue.queued[1].prioritized, null);
+
+  fs.writeFileSync(release, '');
+  // A zero-timeout wait with no matching type exits 2 once its drain is done.
+  assert.equal((await holder).code, 2, 'the held executor finishes and drains the queue');
+  const started = h.logs().filter((e) => e.cmd === 'automation' && e.detail.phase === 'running').map((e) => e.task);
+  assert.deepEqual(started, ['T1', 'T4', 'T2', 'T3'], 'the prioritized T4 runs before T2 and T3, which keep their order');
+});
+
 for (const reason of ['unknown mergeability', 'transport error']) {
   test(`startup retries ${reason} without a new lifecycle event`, (t) => {
     const h = setup(t, { kind: 'docs' });
