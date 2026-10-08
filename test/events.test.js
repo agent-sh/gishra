@@ -197,6 +197,19 @@ test('confirmed merge gate wakes; a failed gate never produces merged', async (t
   assert.equal((await event(result, 'merged')).detail.ref, h.sha);
 });
 
+test('a manual merge named by a lowercase id releases the reservation it took', (t) => {
+  const h = setup(t);
+  h.sha = gateFixture(h);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
+  submit(h, ['--pr', '9']);
+  gates(h, true);
+  h.ok(['accept', 'T1']);
+  h.ok(['merge', 't1']);
+  const receipts = log(h).filter((e) => e.cmd === 'automation');
+  assert.deepEqual(receipts.map((e) => [e.task, e.detail.phase]), [['T1', 'running'], ['T1', 'done']]);
+  assert.equal(receipts[0].detail.source, receipts[1].detail.source);
+});
+
 test('a manual merge racing an automatic merge of the same task: one merges, the other confirms, 30 of 30', async (t) => {
   const h = setup(t);
   h.sha = gateFixture(h);
