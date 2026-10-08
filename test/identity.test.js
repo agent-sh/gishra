@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, runPty, PTY_AVAILABLE } = require('./helpers');
+const { makeRepo, cachedFixture, runPty, PTY_AVAILABLE } = require('./helpers');
 
 const noAgent = { TOWER_CRANE_AGENT: undefined };
 const message = 'tower-crane: no agent: pass --agent NAME or set TOWER_CRANE_AGENT\n';
@@ -18,10 +18,10 @@ function assertOwnerRequest(output) {
 }
 
 function setup(t) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'approved', '--needs-owner', 'approve access']);
-  return h;
+  return cachedFixture(t, 'owner task', (h) => {
+    h.init();
+    h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'approved', '--needs-owner', 'approve access']);
+  });
 }
 
 test('a non-TTY command without an agent exits 2 and writes nothing', (t) => {
