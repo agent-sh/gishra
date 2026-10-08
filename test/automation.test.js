@@ -606,6 +606,9 @@ function queueFixture(t) {
   fs.writeFileSync(suite, `const fs = require('node:fs'), path = require('node:path');
 const gh = JSON.parse(fs.readFileSync(${JSON.stringify(h.env.AUTOMATION_GITHUB)}, 'utf8'));
 fs.appendFileSync(${JSON.stringify(h.suiteLog)}, JSON.stringify({ pr7: gh.prs['7'].state }) + '\\n');
+// A gate run that fails once, as gates did for tasks accepted before evidence.
+const failOnce = ${JSON.stringify(path.join(h.base, 'fail-once'))};
+if (fs.existsSync(failOnce)) { fs.rmSync(failOnce); process.exit(1); }
 // One run moves main while it runs, as another merge landing would.
 if (fs.existsSync(${JSON.stringify(path.join(h.base, 'move-main-once'))})) {
   fs.rmSync(${JSON.stringify(path.join(h.base, 'move-main-once'))});
@@ -810,4 +813,137 @@ process.exitCode = 1;
   h.consume();
   assert.deepEqual(headChecks(h).map((e) => [e.detail.command, e.detail.ok]), [[cmd, false], [`${cmd} again`, true]]);
   assert.equal(h.github().prs['7'].state, 'MERGED');
+});
+
+test('an accepted PR that already merged without current evidence is confirmed and the PR behind it merges', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  // T1 is a legacy task: its tests evidence no longer passes and its PR
+  // landed on GitHub before tower-crane recorded merge evidence.
+  fs.writeFileSync(path.join(h.base, 'fail-once'), '');
+  h.run(['check', 'tests', 'T1', '--agent', 'orchestrator']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
+  const github = h.github();
+  github.prs['7'].state = 'MERGED';
+  github.prs['7'].mergeCommit = { oid: 'c'.repeat(40) };
+  h.saveGithub(github);
+  h.consume();
+  const [t1, t2] = h.readState('tasks.json').tasks;
+  const receipt = t1.evidence.at(-1);
+  assert.deepEqual([receipt.type, receipt.ok, receipt.sha, receipt.ref], ['merge', true, h.sha, 'c'.repeat(40)]);
+  assert.equal(t2.evidence.at(-1).type, 'merge');
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8'], 'the landed PR is not merged again');
+  assert.equal(h.logs().filter((e) => e.cmd === 'queue skipped').length, 0);
+});
+
+test('a head the queue cannot advance is reported once and the PR behind it merges', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  const github = h.github();
+  github.prs['7'].state = 'MERGED';
+  github.prs['7'].headRefOid = 'f'.repeat(40);
+  h.saveGithub(github);
+  h.consume();
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+  assert.equal(h.readState('tasks.json').tasks[1].evidence.at(-1).type, 'merge');
+  const done = h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+  assert.equal(done.detail.blocked.task, 'T1');
+  assert.deepEqual(done.detail.skipped.map((s) => s.task), ['T1']);
+  h.ok(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'orchestrator']);
+  const skips = h.logs().filter((e) => e.cmd === 'queue skipped');
+  assert.deepEqual(skips.map((e) => [e.task, e.detail.sha]), [['T1', h.sha]], 'a later pass does not report the same head again');
+  assert.match(skips[0].detail.reason, /merged with head f+, not the accepted/);
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
+});
+
+for (const failure of ['failView', 'invalidView']) {
+  test(`an unreadable queue head (${failure}) is skipped once and the ready PR behind it merges`, (t) => {
+    const h = queueFixture(t);
+    acceptBoth(h);
+    const github = h.github();
+    github.prs['7'][failure] = true;
+    h.saveGithub(github);
+    const offset = h.logs().length;
+
+    h.ok(['ci', 'completed', 'T2', '--sha', h.second, '--agent', 'orchestrator']);
+    assert.equal(h.github().prs['8'].state, 'MERGED');
+    const [t1, t2] = h.readState('tasks.json').tasks;
+    assert.equal(t1.status, 'accepted');
+    assert.ok(!t1.evidence.some((e) => e.type === 'merge'));
+    assert.equal(t2.evidence.at(-1).type, 'merge');
+    assert.equal(t2.evidence.at(-1).ok, true);
+    const done = h.logs().slice(offset).findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+    assert.equal(done.detail.blocked.task, 'T1');
+    assert.deepEqual(done.detail.skipped.map((s) => s.task), ['T1']);
+
+    // The confirmed merge event starts another pass while T1 is still unreadable.
+    h.consume();
+    const events = h.logs().slice(offset);
+    assert.ok(events.filter((e) => e.cmd === 'merge queue' && e.detail.phase === 'done').length >= 2);
+    assert.ok(!events.some((e) => e.cmd === 'merge queue' && e.detail.phase === 'error'));
+    const skips = events.filter((e) => e.cmd === 'queue skipped');
+    assert.deepEqual(skips.map((e) => [e.task, e.detail.sha, e.detail.revision]), [['T1', h.sha, t1.revision]]);
+    assert.match(skips[0].detail.reason, failure === 'failView'
+      ? /Could not resolve PullRequest number 7/ : /cannot read PR #7 mergeability/);
+    assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8']);
+  });
+}
+
+test('a concurrent CI completion retries a skipped head in the next drain pass', async (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  h.moveMain();
+  const failed = h.github();
+  failed.ci[h.sha] = 'failure';
+  h.saveGithub(failed);
+  assert.equal(h.run(['check', 'ci', 'T1', '--agent', 'orchestrator']).code, 1);
+  const green = h.github();
+  green.ci[h.sha] = 'success';
+  h.saveGithub(green);
+
+  const paused = path.join(h.base, 'queue-paused');
+  const resume = path.join(h.base, 'queue-resume');
+  // Hold T2's head check after T1 is skipped, until a second command
+  // records T1's passing CI and requests another queue pass.
+  fs.writeFileSync(path.join(h.base, 'during-check.js'), `const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(paused)}, '');
+const until = Date.now() + 20000;
+const poll = () => {
+  if (fs.existsSync(${JSON.stringify(resume)})) return;
+  if (Date.now() > until) throw new Error('queue was not resumed');
+  setTimeout(poll, 25);
+};
+poll();
+`);
+  const offset = h.logs().length;
+  const first = h.runAsync(['ci', 'completed', 'T2', '--sha', h.second, '--agent', 'orchestrator']);
+  let result;
+  try {
+    assert.notEqual(await waitFor(paused), null, 'T2 holds the queue after T1 is skipped');
+    const skipped = h.logs().slice(offset).find((e) => e.cmd === 'queue skipped');
+    assert.equal(skipped?.task, 'T1');
+    assert.match(skipped.detail.reason, /ci: latest ci .* failed/);
+    h.ok(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'orchestrator']);
+    assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+    assert.ok(h.logs().slice(offset).some((e) => e.cmd === 'merge queue' && e.detail.phase === 'requested'));
+  } finally {
+    fs.writeFileSync(resume, '');
+    result = await first;
+  }
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8', '7'],
+    'both commands finish with both PRs merged, without a later notification');
+  for (const task of h.readState('tasks.json').tasks) {
+    const receipt = task.evidence.findLast((e) => e.type === 'merge');
+    assert.equal(receipt?.ok, true, task.id);
+    assert.equal(receipt.sha, task.sha);
+  }
+  const events = h.logs().slice(offset);
+  assert.equal(events.filter((e) => e.cmd === 'queue skipped').length, 1);
+  const passes = events.filter((e) => e.cmd === 'merge queue');
+  assert.equal(passes.filter((e) => e.detail.phase === 'running').length, 2);
+  assert.equal(passes.at(-1).detail.phase, 'done');
+  assert.equal(passes.at(-1).detail.blocked, null);
+  assert.deepEqual(passes.at(-1).detail.skipped, []);
 });
