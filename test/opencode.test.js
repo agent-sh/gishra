@@ -253,15 +253,19 @@ test('opencode reads JSONC opt-ins and provider choices without user plugins or 
   const f = setup(t);
   fs.writeFileSync(path.join(f.global, 'opencode.jsonc'), `{
     // User-selected connection and model, with trailing commas.
-    "provider": { "fixture": { "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "https://provider.invalid/v1", "apiKey": "PLANTED-SECRET", }, }, },
+    "provider": { "fixture": { "npm": "@ai-sdk/openai-compatible", "bearer": "PLANTED-SECRET", "name": ["PLANTED-SECRET"],
+      "options": { "baseURL": "https://provider.invalid/v1", "apiKey": "PLANTED-SECRET", "key": "PLANTED-SECRET", },
+      "models": { "m": { "name": "M", "headers": { "X-Key": "PLANTED-SECRET" }, "limit": { "context": "PLANTED-SECRET" } } }, }, },
     "mcp": { "docs": { "type": "remote", "url": "https://docs.invalid/mcp",
       "headers": { "Authorization": "PLANTED-SECRET" }, "enabled": false, }, },
   }`);
   f.h.ok(['ladder', 'set', 'medium', '--mcp', '["docs"]']);
   spawn(f);
   const report = f.report();
-  assert.deepEqual(report.config.provider.fixture.options, { baseURL: 'https://provider.invalid/v1' });
+  assert.deepEqual(report.config.provider.fixture, {
+    npm: '@ai-sdk/openai-compatible', options: { baseURL: 'https://provider.invalid/v1' }, models: { m: { name: 'M' } },
+  });
+  assert.ok(!JSON.stringify(report.config).includes('PLANTED-SECRET'));
   assert.deepEqual(report.mcp.docs, { type: 'remote', url: 'https://docs.invalid/mcp', enabled: true });
   const own = path.dirname(report.home);
   const nested = f.h.json(['spawn', '--task', 'T1', '--dry-run'], { env: {
