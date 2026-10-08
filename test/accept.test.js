@@ -62,12 +62,19 @@ test('the latest evidence at the submitted sha decides, and other shas do not co
   h.ok(['rework', 'T1', '--reason', 'check failure precedence']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   h.ok(['submit', 'T1', '--sha', h.sha, '--agent', 'w-1']);
+  const reworked = h.json(['task', 'show', 'T1']);
+  assert.equal(reworked.revision, 2);
+  assert.ok(reworked.evidence.every((e) => e.revision === 1));
+  ev(h, 'clean', 'w-1');
+  ev(h, 'review', 'r-1');
+  ev(h, 'ci', 'ci');
   ev(h, 'tests', 'w-1', false);
   const failed = h.run(['accept', 'T1']);
   assert.equal(failed.code, 1);
   assert.match(failed.stderr, /latest tests at .* failed:/);
   ev(h, 'tests', 'w-1');
   h.ok(['accept', 'T1']);
+  assert.equal(h.json(['task', 'show', 'T1']).status, 'accepted');
 });
 
 test('a revision bump invalidates earlier evidence', (t) => {
@@ -120,9 +127,10 @@ test('an accepted task keeps its acceptance, dependencies and kind until it is s
   assert.equal(h.readState('tasks.json').tasks[0].revision, 1, 'unchanged acceptance is not a change');
 
   h.ok(['rework', 'T1', '--reason', 'it must also log retries']);
+  assert.equal(h.json(['task', 'show', 'T1']).revision, 2);
   h.ok(['task', 'update', 'T1', '--acceptance', 'it works', '--acceptance', 'it logs retries']);
   const reworked = h.readState('tasks.json').tasks[0];
-  assert.deepEqual([reworked.status, reworked.revision], ['rework', 2]);
+  assert.deepEqual([reworked.status, reworked.revision], ['rework', 3]);
   assert.deepEqual(h.json(['ready']).ready.map((x) => x.id), ['T1', 'T3'], 'T2 waits for T1 again');
 });
 

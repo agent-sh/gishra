@@ -135,6 +135,12 @@ for (const format of ['codex', 'claude']) {
     assert.equal(receipt.detail.rung, 'medium');
     assert.equal(receipt.detail.cwd, first.cwd);
     sendBack(h);
+    const reworked = h.json(['task', 'show', 'T1']);
+    assert.equal(reworked.revision, 2);
+    assert.equal(reworked.evidence[0].revision, 1);
+    h.ok(['task', 'update', 'T1', '--acceptance', 'rework resumes with the revised acceptance']);
+    h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'later-reviewer',
+      '--summary', 'Unrelated later revision']);
     const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
     const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);
     assert.equal(dry.resumed, true);
@@ -151,6 +157,7 @@ for (const format of ['codex', 'claude']) {
     assert.match(input.prompt, /Missing worktree validation/);
     assert.match(input.prompt, /review-receipt/);
     assert.ok(!input.prompt.includes('Unrelated older head'));
+    assert.ok(!input.prompt.includes('Unrelated later revision'));
     assert.ok(!input.prompt.includes('worker-session-1'));
     const held = h.json(['task', 'show', 'T1']).claim;
     assert.equal(held.agent, claim.agent);

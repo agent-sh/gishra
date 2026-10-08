@@ -358,8 +358,15 @@ test('local CI selects kind args, replacement commands and the default with audi
     ['ops', 'kind:ops', local.by_kind.ops.command, 10],
     ['research', 'default', h.command, 5],
   ]) {
+    const before = h.json(['task', 'show', 'T1']);
     changeKind(h, kind);
+    const reworked = h.json(['task', 'show', 'T1']);
+    assert.equal(reworked.revision, before.revision + 1);
+    assert.equal(reworked.gates.gates.find(g => g.type === 'review').ok, false);
+    assert.deepEqual(reworked.evidence, before.evidence);
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
     const e = h.json(['check', 'ci', 'T1']);
+    assert.equal(e.revision, reworked.revision);
     assert.equal(e.receipt.variant, variant);
     assert.deepEqual(e.receipt.command, command);
     assert.equal(e.receipt.timeout, timeout);
@@ -442,10 +449,19 @@ test('kind variants with identical argv cannot reuse receipts or merge under a d
   const h = mergeFixture(t);
   const local = { command: h.command, timeout: 5, by_kind: { docs: { args: [] }, ops: { args: [] } } };
   h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
-  h.ok(['check', 'ci', 'T1']);
+  const previousCI = h.json(['check', 'ci', 'T1']);
   changeKind(h, 'ops');
-  assert.match(h.run(['accept', 'T1']).stderr, /receipt.*variant/);
+  const reworked = h.json(['task', 'show', 'T1']);
+  assert.equal(reworked.revision, previousCI.revision + 1);
+  assert.equal(reworked.gates.gates.find(g => g.type === 'ci').ok, false);
+  assert.deepEqual({ task: reworked.id, ...reworked.evidence.find(e => e.type === 'ci') }, previousCI);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   h.ok(['check', 'ci', 'T1']);
+  delete local.by_kind.ops;
+  h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  assert.match(h.run(['accept', 'T1']).stderr, /receipt.*variant/);
+  local.by_kind.ops = { args: [] };
+  h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
   h.ok(['accept', 'T1']);
   delete local.by_kind.ops;
   h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);

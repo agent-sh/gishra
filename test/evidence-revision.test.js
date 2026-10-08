@@ -2,7 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { makeRepo } = require('./helpers');
+const fs = require('node:fs');
+const path = require('node:path');
+const { makeRepo, BIN } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 function reviewedTask(t, kind = 'docs') {
@@ -106,3 +108,51 @@ test('brief edits before submission and identical writes preserve the revision',
   assert.deepEqual(shown.evidence, before.evidence);
   assert.equal(shown.gates.ok, true);
 });
+
+for (const change of ['brief', 'rework', 'acceptance']) {
+  test(`a reviewer finishing after ${change} records its dispatch revision`, async (t) => {
+    const { h, sha } = reviewedTask(t);
+    const release = path.join(h.base, 'release-review');
+    const script = `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const timer = setInterval(() => {
+  if (!fs.existsSync(${JSON.stringify(release)})) return;
+  clearInterval(timer);
+  const result = cp.spawnSync(process.execPath, ${JSON.stringify([BIN, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', sha])}, { env: process.env });
+  process.exit(result.status ?? 1);
+}, 30);
+setTimeout(() => process.exit(2), 60000).unref();
+`;
+    for (const rung of ['easy', 'medium', 'hard', 'research', 'review']) {
+      h.ok(['ladder', 'set', rung, '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}'])]);
+    }
+    const after = fs.statSync(path.join(h.state, 'events.jsonl')).size;
+    const running = h.runAsync(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
+    let dispatched;
+    let completion;
+    try {
+      dispatched = h.json(['wait', '--after', String(after), '--task', 'T1', '--types', 'spawn', '--timeout', '30']);
+      if (change === 'brief') {
+        h.ok(['brief', 'set', 'T1', '-'], { input: 'Check the link and another requirement.\n' });
+      } else if (change === 'rework') {
+        h.ok(['rework', 'T1', '--reason', 'review the link again']);
+        h.ok(['claim', 'T1', '--agent', 'worker']);
+        h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+      } else {
+        h.ok(['task', 'update', 'T1', '--acceptance', 'link works and logs errors']);
+      }
+    } finally {
+      fs.writeFileSync(release, '');
+      completion = await running;
+    }
+    assert.equal(completion.code, 0, completion.stderr);
+    const shown = h.json(['task', 'show', 'T1']);
+    const verdict = shown.evidence.at(-1);
+    assert.equal(verdict.agent, dispatched.detail.agent);
+    assert.equal(verdict.ok, true);
+    assert.equal(verdict.revision, 1, 'the verdict belongs to the reviewed revision');
+    assert.equal(shown.revision, 2);
+    assert.equal(shown.gates.ok, false);
+  });
+}

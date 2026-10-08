@@ -251,6 +251,12 @@ test('sources gate follows research kind when kind changes without moving the ta
   h.ok(['task', 'update', 'T1', '--tier', 'research']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find(g => g.type === 'sources').ok, false);
   changeKind(h, 'docs');
+  const reworked = h.json(['task', 'show', 'T1']);
+  assert.equal(reworked.revision, 2);
+  assert.equal(reworked.evidence[0].revision, 1);
+  assert.equal(reworked.gates.ok, false, 'the review from before rework remains stale');
+  assert.ok(!reworked.gates.gates.some(g => g.type === 'sources'));
+  h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha]);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
 });
 

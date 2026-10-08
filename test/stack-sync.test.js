@@ -9,6 +9,9 @@ const { setup, stacked } = require('./stack-fixture');
 test('lower merge refreshes upper worktrees with gh stack sync and conflicts send upper work to rework', (t) => {
   const f = stacked(t);
   const { wt, sha } = f.upper;
+  f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer',
+    '--summary', 'Resolve the upper conflict']);
+  const before = f.h.json(['task', 'show', 'T2']);
   f.accept('T1');
   f.write((d) => { d.conflict = true; });
   f.h.ok(['merge', 'T1']);
@@ -18,8 +21,15 @@ test('lower merge refreshes upper worktrees with gh stack sync and conflicts sen
   assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), sha);
   const task = f.h.json(['task', 'show', 'T2']);
   assert.equal(task.status, 'rework');
+  assert.equal(task.revision, before.revision + 1);
+  assert.deepEqual(task.evidence, before.evidence);
+  const rework = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    .findLast(e => e.cmd === 'rework' && e.task === 'T2');
+  assert.equal(rework.detail.previous_revision, before.revision);
+  assert.equal(rework.detail.revision, task.revision);
   assert.match(task.notes.at(-1).text, /all branches restored/);
   assert.match(f.h.ok(['brief', 'get', 'T2']), /Rework notes/);
+  assert.match(f.h.json(['spawn', '--task', 'T2', '--dry-run']).argv.join('\n'), /Resolve the upper conflict/);
 });
 
 test('sync rework preserves a brief deletion that races its append', (t) => {
