@@ -422,6 +422,46 @@ test('supervisor reactions pin unconfigured gates and bypass the real restrictiv
   startupContexts(h, false);
 });
 
+test('review dispatch hands revuto findings to the reviewer and an ok that ignores a P1 is refused', async (t) => {
+  const h = setup(t);
+  configureHarness(h);
+  const state = h.github();
+  const comment = (id, body, extra = {}) => ({ id, in_reply_to_id: null, path: 'src.js', line: 3, original_line: 3, body,
+    user: 'revuto-review[bot]', original_commit_id: h.sha, html_url: `https://github.com/acme/demo/pull/7#discussion_r${id}`, ...extra });
+  state.comments = [
+    comment(101, '[P1] The loop never terminates on empty input.'),
+    comment(102, '[P2] Missing null check.'),
+    { ...comment(103, 'Fixed by the guard above.'), in_reply_to_id: 102, user: 'worker' },
+    comment(104, 'Nit: rename this.'),
+    comment(105, '[P1] Outdated finding.', { line: null }),
+    comment(106, '[P1] Not from revuto.', { user: 'someone' }),
+  ];
+  h.saveGithub(state);
+  assert.equal((await h.runAsync(['spawn', '--task', 'T1', '--wait', '--agent', 'orchestrator'])).code, 0);
+  const deadline = Date.now() + 60000;
+  while (!h.logs().some((e) => e.cmd === 'spawn exit' && e.detail.role === 'reviewer')) {
+    if (Date.now() > deadline) throw new Error(JSON.stringify(h.logs().slice(-10)));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const review = h.logs().find((e) => e.cmd === 'spawn' && e.detail.role === 'reviewer');
+  assert.deepEqual(review.detail.revuto.map((f) => [f.id, f.severity, f.reply]), [[101, 'P1', null], [102, 'P2', 103], [104, null, null]]);
+  const brief = fs.readFileSync(path.join(h.state, 'reviews', `T1-${h.sha}.md`), 'utf8');
+  assert.match(brief, /## Revuto findings/);
+  assert.match(brief, /### \[P1\] src\.js:3 \(comment 101\)\n\n\[P1\] The loop never terminates on empty input\./);
+  assert.match(brief, /### \[P2\] src\.js:3 \(comment 102, answered in 103\)/);
+  assert.match(brief, /### src\.js:3 \(comment 104\)/);
+  assert.doesNotMatch(brief, /Outdated finding|Not from revuto/);
+  const task = h.readState('tasks.json').tasks[0];
+  assert.equal(task.evidence.some((e) => e.type === 'review'), false, 'the reviewer ok was refused');
+  assert.equal(task.status, 'submitted');
+  const refused = h.run(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', review.detail.agent]);
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stderr, /review ok refused; revuto \[P1\] comment 101 at src\.js:3 \(https:\/\/github\.com\/acme\/demo\/pull\/7#discussion_r101\)/);
+  assert.doesNotMatch(refused.stderr, /comment 10[2-6]/);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--fail', '--agent', review.detail.agent]);
+  assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false);
+});
+
 test('a supervised worker submission runs gates and dispatches the offline reviewer after exit', async (t) => {
   const h = setup(t);
   configureHarness(h, { rules: true });
