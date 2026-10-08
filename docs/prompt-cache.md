@@ -45,7 +45,7 @@ Measured levers, cost of the request that should reuse the cache:
 | Case | Lever | Read | Write | Cost USD | Baseline cost |
 |---|---|---:|---:|---:|---:|
 | Claude `--resume` turn | `--turn-breakpoint` | 16,026 | 413 | 0.0054 | 0.0734 |
-| Codex `exec fork` | `--inherit-cache-key` | 18,423 | 33 | 0.0021 | 0.0463 |
+| Codex `exec fork` | `--inherit-cache-key` | 18,418 | 33 | 0.0021 | 0.0463 |
 | Claude reviewer, prefix in system prompt | `--normalize` | 14,590 | 4,107 | 0.0252 | 0.0454 |
 | Claude reviewer, prefix in user prompt | `--normalize --breakpoint` | 15,233 | 3,456 | 0.0204 | 0.0454 |
 | Codex reviewer, prefix in user prompt | shared key, `--normalize --breakpoint` | 11,631 | 162 | 0.0017 | 0.0296 |
@@ -86,10 +86,13 @@ Each log line holds:
 - `usage`: input, cache read, cache write (5-minute and 1-hour on Anthropic) and
   output tokens.
 - `cost_usd`: cost at list price.
-- `params`: short request settings, with metadata hashed.
+- `params`: known request settings with short values as sent; any other field,
+  metadata included, as a hash.
 - `divergence`: the closest of the last 64 requests, whether this one is
-  identical, extends it or diverged, and if it diverged the segment path and
-  character offset.
+  identical to it, extends it, is a prefix of it (`prefix_of`) or diverged, and
+  if it diverged the segment path and character offset.
+- `analysis_error`: set when the body has a shape the proxy does not expect. The
+  request then goes upstream as received.
 
 A segment is one tool, one system block or one message content block, in
 provider prefix order.
@@ -105,10 +108,10 @@ Levers:
 | Flag | Provider | Rewrite |
 |---|---|---|
 | `--turn-breakpoint` | Anthropic | marks the last block before trailing `role: system` messages |
-| `--breakpoint MARKER` | both | splits the block holding MARKER after it and marks the head (`cache_control` or `prompt_cache_breakpoint`) |
-| `--normalize` | both | Claude: moves date, cwd and git status lines out of the system prompt, writes `$CWD` and `$CWD_SLUG` for the working directory with a note giving the real values, and puts the git status reminder after the prompt. Codex: moves `<environment_context>` after the prompt |
+| `--breakpoint MARKER` | both | splits the block holding MARKER after it and marks the head (`cache_control` or `prompt_cache_breakpoint`); on Anthropic, leaves the request unchanged (`breakpoint:over_limit`) when no earlier breakpoint can make room under the maximum of 4 |
+| `--normalize` | both | Claude: moves date, cwd and git status lines out of the system prompt, writes `$CWD` and `$CWD_SLUG` for the working directory (whole paths only, never for `/`) with a note giving the real values, and puts the git status reminder after the prompt. Codex: moves `<environment_context>` after the prompt |
 | `--cache-key KEY` | OpenAI | sets `prompt_cache_key` |
-| `--inherit-cache-key` | OpenAI | a request that extends an earlier one under another key takes that key |
+| `--inherit-cache-key` | OpenAI | a request that extends an earlier one (every segment, conversation included) under another key takes that key; sharing only codex's leading developer messages is not enough |
 | `--developer-breakpoint` | OpenAI | marks the end of the leading developer messages |
 
 Default prices, per million tokens: Opus 5.5 is $4 input, $20 output, $5 for a
@@ -152,17 +155,23 @@ turn a prefix it matches. A validation pair agreed: 16,026 read, 411 written.
 
 ### Codex fork starts cold
 
-Fresh codex turn on the same fixture, then `codex exec fork <thread>` with the
-rework prompt:
+Each trial ran three codex calls through one proxy: an unrelated one-line task,
+then a fresh turn on the same fixture (the parent), then `codex exec fork
+<thread>` with the rework prompt. The unrelated task shares codex's
+instructions, tools and developer messages with the parent and diverges at the
+user prompt.
 
 | Proxy | Parent read | Parent write | Fork read | Fork write | Fork cost USD |
 |---|---:|---:|---:|---:|---:|
-| none | 0 | 18,423 | 0 | 18,456 | 0.0463 |
-| `--inherit-cache-key` | 0 | 18,423 | 18,423 | 33 | 0.0021 |
+| none | 0 | 18,419 | 0 | 18,452 | 0.0463 |
+| `--inherit-cache-key` | 0 | 18,418 | 18,418 | 33 | 0.0021 |
 
 The fork's request extends the parent's, but it carries a new
 `prompt_cache_key`, and the key separates cache reuse. Giving it the parent's key
-makes the whole parent prompt a hit.
+makes the whole parent prompt a hit. In every trial the unrelated task and the
+parent kept their own keys, so the lever moved only the fork. A lever that also
+moved the parent onto the unrelated task's key would be the shared-key lever
+measured below, not a fork lever.
 
 ### Reviewer shared prefix
 

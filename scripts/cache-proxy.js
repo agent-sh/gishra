@@ -28,13 +28,11 @@ const RETAINED = 64;
 const ANTHROPIC_MAX_BREAKPOINTS = 4;
 
 // USD per million tokens, list prices: input, output, 5-minute and 1-hour cache
-// writes, cache reads. Unknown models log no cost; --prices FILE adds or overrides
+// writes, cache reads. Only the two measured models have defaults, each from a
+// cited price page; unknown models log no cost; --prices FILE adds or overrides
 // entries keyed by model id with the same fields.
 const PRICES = [
-  { match: /claude-fable-5-1/, input: 10, output: 50, write_5m: 12.5, write_1h: 20, read: 0.25 },
   { match: /claude-opus-5-5/, input: 4, output: 20, write_5m: 5, write_1h: 8, read: 0.2 },
-  { match: /claude-sonnet-5-5/, input: 2, output: 10, write_5m: 2.5, write_1h: 4, read: 0.1 },
-  { match: /claude-haiku-4-5/, input: 1, output: 5, write_5m: 1.25, write_1h: 2, read: 0.1 },
   { match: /gpt-6\.1-sol/, input: 2, output: 10, write_5m: 2.5, write_1h: 2.5, read: 0.1 },
 ];
 
@@ -143,16 +141,20 @@ function hashes(kind, segs) {
 }
 
 // Request settings outside the prompt also decide a cache hit (thinking, tool
-// choice, betas). Short values are logged as sent so two requests can be compared;
-// metadata and anything long are logged as hashes.
+// choice, betas). Known settings with short values are logged as sent so two
+// requests can be compared; any other field, and anything long, is logged as a hash
+// so a field that carries a credential never reaches the log.
 const PROMPT_FIELDS = new Set(['messages', 'system', 'tools', 'input', 'instructions']);
-const HASHED_FIELDS = new Set(['metadata', 'client_metadata', 'prompt_cache_key']);
+const PLAIN_FIELDS = new Set(['anthropic_version', 'anthropic_beta', 'max_tokens', 'max_output_tokens', 'temperature',
+  'top_p', 'top_k', 'stop_sequences', 'stream', 'thinking', 'tool_choice', 'output_config', 'context_management',
+  'model', 'reasoning', 'text', 'store', 'parallel_tool_calls', 'include', 'service_tier', 'truncation',
+  'prompt_cache_retention']);
 function params(body) {
   const out = {};
   for (const key of Object.keys(body).sort()) {
     if (PROMPT_FIELDS.has(key)) continue;
     const text = canonical(body[key]);
-    out[key] = HASHED_FIELDS.has(key) || text.length > 200 ? `sha:${short(text)}` : body[key];
+    out[key] = !PLAIN_FIELDS.has(key) || text.length > 200 ? `sha:${short(text)}` : body[key];
   }
   return out;
 }
@@ -221,15 +223,23 @@ function pinCacheKey(body, key) {
 
 // prompt_cache_key separates cache reuse between groups of requests. A codex fork
 // starts a new thread with a new key, so its first request misses the parent's
-// cache although it repeats the parent's conversation. A request that shares more
-// than the static prefix with an earlier one under a different key takes that
-// earlier request's key.
-function inheritFrom(current, divergence, retained) {
-  if (!divergence) return null;
-  const parent = retained.find(r => r.id === divergence.against);
-  if (!parent || parent.cacheKey === undefined || parent.cacheKey === current.cacheKey) return null;
-  const statics = current.segs.findIndex(s => s.path.startsWith('input'));
-  return divergence.shared_segments > (statics === -1 ? current.segs.length : statics) ? parent : null;
+// cache although it repeats the parent's conversation. A request that extends an
+// earlier one, all of its segments including conversation, under a different key
+// takes that earlier request's key; the longest such request wins. Sharing only the
+// leading developer messages is not enough: every codex session opens with them.
+function inheritFrom(current, retained) {
+  let parent = null;
+  let longest = 0;
+  for (const earlier of retained) {
+    if (earlier.kind !== current.kind || earlier.cacheKey === undefined || earlier.cacheKey === current.cacheKey) continue;
+    if (!earlier.segs.some(s => s.path.startsWith('input'))) continue;
+    const result = compare(current, earlier);
+    if (result.relation === 'extends' && result.shared_segments >= longest) {
+      parent = earlier;
+      longest = result.shared_segments;
+    }
+  }
+  return parent;
 }
 
 function countBreakpoints(body) {
@@ -244,8 +254,17 @@ function countBreakpoints(body) {
 // Puts a cache breakpoint right after the first occurrence of marker in the system
 // prompt or the conversation, splitting that text block in two. When the request
 // already carries the provider's maximum, the breakpoint nearest before the new one
-// is dropped: the new one covers the same prefix and more.
+// is dropped: the new one covers the same prefix and more. When nothing before it
+// can go, the request is left as it was; the provider rejects a fifth breakpoint.
 function insertBreakpoint(body, marker, ttl) {
+  const draft = structuredClone(body);
+  const changes = placeBreakpoint(draft, marker, ttl);
+  if (countBreakpoints(draft) > ANTHROPIC_MAX_BREAKPOINTS) return ['breakpoint:over_limit'];
+  Object.assign(body, draft);
+  return changes;
+}
+
+function placeBreakpoint(body, marker, ttl) {
   const control = ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' };
   if (typeof body.system === 'string') body.system = [{ type: 'text', text: body.system }];
   const lists = [['system', body.system || []]];
@@ -332,20 +351,24 @@ function normalize(body) {
   if (typeof body.system === 'string') body.system = [{ type: 'text', text: body.system }];
   if (!Array.isArray(body.system) || !Array.isArray(body.messages) || !body.messages.length) return [];
   const all = [...body.system.filter(b => b.type === 'text'), ...body.messages.flatMap(textBlocks)];
-  const cwd = all.map(b => CWD_LINE.exec(b.text)).find(Boolean)?.[1];
+  // The root directory names no project, so it is left alone. Any other directory
+  // is replaced only as a whole path: /w/repo, not /w/repo-worktrees.
+  const found = all.map(b => CWD_LINE.exec(b.text)).find(Boolean)?.[1];
+  const cwd = found && !/^\/+$/.test(found) ? found : null;
   const slug = cwd && cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const whole = cwd && [
+    [new RegExp(`(?<![\\w.-])${escape(slug)}(?![\\w-]|\\.[\\w-])`, 'g'), '$CWD_SLUG'],
+    [new RegExp(`(?<![\\w.~/-])${escape(cwd)}(?![\\w-]|\\.[\\w-])`, 'g'), '$CWD'],
+  ];
   const moved = [];
   let replaced = 0;
   for (const block of body.system) {
     if (block.type !== 'text') continue;
     let text = block.text;
     for (const pattern of VOLATILE) text = text.replace(pattern, match => { moved.push(match); return ''; });
-    if (cwd) {
-      for (const [value, name] of [[slug, '$CWD_SLUG'], [cwd, '$CWD']]) {
-        const parts = text.split(value);
-        replaced += parts.length - 1;
-        text = parts.join(name);
-      }
+    for (const [pattern, name] of whole || []) {
+      text = text.replace(pattern, () => { replaced++; return name; });
     }
     block.text = text.replace(/\n{3,}/g, '\n\n');
   }
@@ -572,7 +595,49 @@ function createProxy(opts) {
     const chunks = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => handle(req, res, Buffer.concat(chunks)));
+    req.on('error', () => res.destroy());
   });
+
+  // Applies the levers, logs the prefix analysis into entry and returns the body to
+  // send when a lever rewrote it.
+  function analyze(req, body, entry, headers, id, kind) {
+    let forward = null;
+    const rewrites = [];
+    if (kind === 'openai' && opts.cacheKey) rewrites.push(...pinCacheKey(body, opts.cacheKey));
+    if (kind === 'anthropic' && opts.normalize) rewrites.push(...normalize(body));
+    if (kind === 'openai' && opts.normalize) rewrites.push(...normalizeOpenAI(body));
+    if (kind === 'anthropic' && opts.breakpoint) rewrites.push(...insertBreakpoint(body, opts.breakpoint, opts.breakpointTtl));
+    if (kind === 'openai' && opts.breakpoint) rewrites.push(...insertOpenAIBreakpoint(body, opts.breakpoint));
+    if (kind === 'anthropic' && opts.turnBreakpoint) rewrites.push(...turnBreakpoint(body, opts.breakpointTtl));
+    if (kind === 'openai' && opts.developerBreakpoint) rewrites.push(...developerBreakpoint(body));
+    const segs = segments(kind, body);
+    const current = { id, kind, segs, cacheKey: body.prompt_cache_key };
+    entry.divergence = closest(current, retained);
+    if (kind === 'openai' && opts.inheritCacheKey) {
+      const parent = inheritFrom(current, retained);
+      if (parent) rewrites.push(...pinCacheKey(body, parent.cacheKey));
+      current.cacheKey = body.prompt_cache_key;
+    }
+    retained.push(current);
+    if (retained.length > RETAINED) retained.shift();
+    if (rewrites.length) {
+      entry.rewrites = rewrites;
+      forward = Buffer.from(JSON.stringify(body));
+    }
+    entry.model = kind === 'anthropic' ? modelFromPath(req.url) : body.model;
+    if (body.prompt_cache_key !== undefined) entry.cache_key = short(String(body.prompt_cache_key));
+    entry.segments = segs.length;
+    entry.chars = segs.reduce((n, s) => n + s.chars, 0);
+    entry.hash = hashes(kind, segs);
+    entry.params = params(body);
+    if (req.headers['anthropic-beta']) entry.betas = req.headers['anthropic-beta'];
+    if (opts.skeleton) {
+      fs.mkdirSync(opts.skeleton, { recursive: true });
+      fs.writeFileSync(`${opts.skeleton}/${id}.json`, `${JSON.stringify(skeleton(body), null, 1)}\n`);
+    }
+    if (forward) delete headers['content-encoding'];
+    return forward;
+  }
 
   function handle(req, res, raw) {
     const id = ++counter;
@@ -589,49 +654,34 @@ function createProxy(opts) {
       try {
         body = JSON.parse(decodeBody(raw, req.headers['content-encoding']).toString());
       } catch (error) {
-        entry.parse_error = error.message;
+        // A JSON syntax error quotes the body, so only its kind is logged.
+        entry.parse_error = error instanceof SyntaxError ? 'invalid JSON' : error.message;
       }
     }
     if (body) {
-      const rewrites = [];
-      if (kind === 'openai' && opts.cacheKey) rewrites.push(...pinCacheKey(body, opts.cacheKey));
-      if (kind === 'anthropic' && opts.normalize) rewrites.push(...normalize(body));
-      if (kind === 'openai' && opts.normalize) rewrites.push(...normalizeOpenAI(body));
-      if (kind === 'anthropic' && opts.breakpoint) rewrites.push(...insertBreakpoint(body, opts.breakpoint, opts.breakpointTtl));
-      if (kind === 'openai' && opts.breakpoint) rewrites.push(...insertOpenAIBreakpoint(body, opts.breakpoint));
-      if (kind === 'anthropic' && opts.turnBreakpoint) rewrites.push(...turnBreakpoint(body, opts.breakpointTtl));
-      if (kind === 'openai' && opts.developerBreakpoint) rewrites.push(...developerBreakpoint(body));
-      const segs = segments(kind, body);
-      const current = { id, kind, segs, cacheKey: body.prompt_cache_key };
-      entry.divergence = closest(current, retained);
-      if (kind === 'openai' && opts.inheritCacheKey) {
-        const parent = inheritFrom(current, entry.divergence, retained);
-        if (parent) rewrites.push(...pinCacheKey(body, parent.cacheKey));
-        current.cacheKey = body.prompt_cache_key;
-      }
-      retained.push(current);
-      if (retained.length > RETAINED) retained.shift();
-      if (rewrites.length) {
-        entry.rewrites = rewrites;
-        forward = Buffer.from(JSON.stringify(body));
-        delete headers['content-encoding'];
-      }
-      entry.model = kind === 'anthropic' ? modelFromPath(req.url) : body.model;
-      if (body.prompt_cache_key !== undefined) entry.cache_key = short(String(body.prompt_cache_key));
-      entry.segments = segs.length;
-      entry.chars = segs.reduce((n, s) => n + s.chars, 0);
-      entry.hash = hashes(kind, segs);
-      entry.params = params(body);
-      if (req.headers['anthropic-beta']) entry.betas = req.headers['anthropic-beta'];
-      if (opts.skeleton) {
-        fs.mkdirSync(opts.skeleton, { recursive: true });
-        fs.writeFileSync(`${opts.skeleton}/${id}.json`, `${JSON.stringify(skeleton(body), null, 1)}\n`);
+      try {
+        forward = analyze(req, body, entry, headers, id, kind) || raw;
+      } catch (error) {
+        // A body shape the levers or the segmenter do not expect is forwarded as
+        // received; the proxy keeps serving every other request.
+        entry.analysis_error = error.message;
+        forward = raw;
       }
     }
     if (forward !== raw || headers['content-length'] !== undefined) headers['content-length'] = String(forward.length);
 
     const base = kind === 'anthropic' ? opts.runtime : opts.mantle;
-    const target = new URL(base + req.url);
+    let target;
+    try {
+      target = new URL(base + req.url);
+    } catch (error) {
+      entry.status = 400;
+      entry.error = 'invalid request path';
+      write(entry);
+      res.writeHead(400, { 'content-type': 'text/plain' });
+      res.end('cache-proxy: invalid request path\n');
+      return;
+    }
     const client = target.protocol === 'https:' ? https : http;
     const upstream = client.request(target, { method: req.method, headers }, up => {
       const collector = usageCollector(kind);
@@ -643,6 +693,12 @@ function createProxy(opts) {
       delete outHeaders.connection;
       delete outHeaders['transfer-encoding'];
       res.writeHead(up.statusCode, outHeaders);
+      up.on('error', error => {
+        entry.status = up.statusCode;
+        entry.error = error.message;
+        write(entry);
+        res.destroy();
+      });
       up.on('data', chunk => {
         res.write(chunk);
         if (feed) feed(chunk);
@@ -669,6 +725,7 @@ function createProxy(opts) {
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
       res.end(`cache-proxy upstream error: ${error.message}\n`);
     });
+    res.on('close', () => { if (!res.writableFinished) upstream.destroy(); });
     upstream.end(forward);
   }
 

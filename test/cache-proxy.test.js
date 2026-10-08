@@ -128,6 +128,26 @@ test('logs prefix hashes, cache usage, cost and where a request diverges, never 
   for (const secret of ['SENTINEL', 'You are a reviewer', 'secret-token-value']) assert.equal(text.includes(secret), false, secret);
 });
 
+test('request settings are logged from an allowlist and every other field as a hash', async (t) => {
+  const proxy = await start(t);
+  await proxy.send(OPUS, { max_tokens: 64, mcp_servers: [{ name: 'x', authorization_token: 'SENTINEL-token' }], messages: [{ role: 'user', content: 'hi' }] });
+  const { lines, text } = await proxy.entries(1);
+  assert.equal(lines[0].params.max_tokens, 64);
+  assert.match(lines[0].params.mcp_servers, /^sha:[0-9a-f]{12}$/);
+  assert.equal(text.includes('SENTINEL'), false);
+});
+
+test('a body the proxy cannot analyze is forwarded unchanged and the proxy keeps serving', async (t) => {
+  const proxy = await start(t, ['--normalize', '--breakpoint', 'END']);
+  const odd = { system: { text: 'x' }, messages: 'not a list' };
+  await proxy.send(OPUS, odd);
+  await proxy.send(OPUS, { messages: [{ role: 'user', content: 'hi' }] });
+  const { lines } = await proxy.entries(2);
+  assert.deepEqual(proxy.received[0].body, odd);
+  assert.match(lines[0].analysis_error, /\S/);
+  assert.equal(lines[1].status, 200);
+});
+
 test('a codex fork takes the prompt_cache_key of the request it extends', async (t) => {
   const proxy = await start(t, ['--inherit-cache-key']);
   const parent = { model: 'openai.gpt-6.1-sol', instructions: SYSTEM, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'task' }] }], prompt_cache_key: 'parent-thread' };
@@ -140,6 +160,22 @@ test('a codex fork takes the prompt_cache_key of the request it extends', async 
   assert.deepEqual(lines[1].rewrites, ['cache_key:replaced']);
   assert.deepEqual(lines[0].usage, { input: 10, cache_read: 60, cache_write: 30, output: 5 });
   assert.equal(lines[0].cost_usd, (10 * 2 + 30 * 2.5 + 60 * 0.1 + 5 * 10) / 1e6);
+});
+
+test('only a request that extends an earlier one inherits its key, not one that shares the developer messages', async (t) => {
+  const proxy = await start(t, ['--inherit-cache-key']);
+  const message = (role, text) => ({ type: 'message', role, content: [{ type: 'input_text', text }] });
+  const session = (key, ...input) => ({ model: 'openai.gpt-6.1-sol', instructions: SYSTEM, prompt_cache_key: key,
+    input: [message('developer', 'skills'), message('developer', 'permissions'), ...input] });
+  const parent = session('thread-A', message('user', 'Review T1'));
+  await proxy.send('/openai/v1/responses', parent);
+  await proxy.send('/openai/v1/responses', session('thread-B', message('user', 'Implement T2')));
+  await proxy.send('/openai/v1/responses', { ...parent, prompt_cache_key: 'fork-1', input: [...parent.input, message('assistant', 'READY'), message('user', 'rework one')] });
+  await proxy.send('/openai/v1/responses', { ...parent, prompt_cache_key: 'fork-2', input: [...parent.input, message('assistant', 'READY'), message('user', 'rework two')] });
+  await proxy.send('/openai/v1/responses', { ...parent, prompt_cache_key: 'fork-1', input: [...parent.input, message('assistant', 'READY'), message('user', 'rework one'), message('user', 'next')] });
+  await proxy.entries(5);
+
+  assert.deepEqual(proxy.received.map(r => r.body.prompt_cache_key), ['thread-A', 'thread-B', 'thread-A', 'thread-A', 'thread-A']);
 });
 
 test('the turn breakpoint marks the user turn before trailing system messages', async (t) => {
@@ -177,6 +213,20 @@ test('normalize keeps tools and system identical across working directories and 
   assert.equal(lines[1].divergence.segment, 'messages[0].content[1]');
 });
 
+test('normalize replaces the working directory only as a whole path', async (t) => {
+  const proxy = await start(t, ['--normalize']);
+  const request = cwd => ({
+    system: [{ type: 'text', text: `Use /usr/bin and ${cwd}/src, not ${cwd}-worktrees/x or ${cwd}.git. Run in ${cwd}.` }],
+    messages: [{ role: 'system', content: [{ type: 'text', text: `Primary working directory: ${cwd}` }] }],
+  });
+  await proxy.send(OPUS, request('/'));
+  await proxy.send(OPUS, request('/w/repo'));
+  await proxy.entries(2);
+  const [root, repo] = proxy.received.map(r => r.body.system[0].text);
+  assert.equal(root, 'Use /usr/bin and //src, not /-worktrees/x or /.git. Run in /.');
+  assert.equal(repo, 'Use /usr/bin and $CWD/src, not /w/repo-worktrees/x or /w/repo.git. Run in $CWD.');
+});
+
 test('normalize moves the codex environment message after the prompt', async (t) => {
   const proxy = await start(t, ['--normalize']);
   const message = (role, text) => ({ type: 'message', role, content: [{ type: 'input_text', text }] });
@@ -205,6 +255,19 @@ test('a breakpoint goes right after the shared prefix marker on both providers',
     { type: 'input_text', text: '\nReview T1' },
   ]);
   assert.deepEqual(lines[0].hash.breakpoints.map(b => b.path), ['messages[0].content[0]']);
+});
+
+test('a breakpoint that would exceed the provider maximum is not added', async (t) => {
+  const proxy = await start(t, ['--breakpoint', 'END']);
+  const marked = { type: 'ephemeral' };
+  const request = {
+    system: [{ type: 'text', text: 'END of prefix' }],
+    messages: [{ role: 'user', content: ['a', 'b', 'c', 'd'].map(text => ({ type: 'text', text, cache_control: marked })) }],
+  };
+  await proxy.send(OPUS, request);
+  const { lines } = await proxy.entries(1);
+  assert.deepEqual(proxy.received[0].body, request);
+  assert.deepEqual(lines[0].rewrites, ['breakpoint:over_limit']);
 });
 
 test('the developer breakpoint marks the end of the leading codex developer messages', async (t) => {
