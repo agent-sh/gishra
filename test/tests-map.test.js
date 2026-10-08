@@ -9,7 +9,7 @@ const { gateFixture } = require('./gate-helpers');
 
 const map = { 'value.js': ['test/mapped.test.js'], '**/*.md': [] };
 
-function fixture(t, settings = map) {
+function fixture(t, settings = map, withPr = true) {
   const h = makeRepo(t);
   delete h.env.NODE_TEST_CONTEXT;
   h.init();
@@ -31,7 +31,7 @@ function fixture(t, settings = map) {
     '--tests-cmd', 'node --test test/*.test.js', '--tests-proof-cmd', 'node --test {tests}', '--ci-required', '["test ("]']);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
-  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker', ...(withPr ? ['--pr', '1'] : [])]);
   return h;
 }
 
@@ -136,6 +136,31 @@ test('explicit mappings still apply when a broad test glob matches the mapped so
   h.git(['add', '.']);
   h.git(['commit', '-qm', 'runtime support change']);
   h.ok(['rework', 'T1', '--reason', 'runtime coverage']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.git(['rev-parse', 'HEAD'])]);
+  h.ok(['project', 'set', '--tests-paths', '["test/**"]']);
+  const result = check(h);
+  assert.equal(result.receipt.head_mode, 'mapped');
+  assert.ok(result.receipt.head_tests.includes('test/mapped.test.js'));
+});
+
+
+test('a task without a PR runs the full head suite because hosted CI is not required', (t) => {
+  const h = fixture(t, map, false);
+  const result = check(h);
+  assert.equal(result.receipt.head_mode, 'full');
+  assert.match(result.receipt.head_reason, /no PR/);
+  assert.equal(result.commands.find((c) => c.command !== 'git').command, 'node --test test/*.test.js');
+});
+
+test('a change only to test/browser.js selects its explicitly mapped suite', (t) => {
+  const h = fixture(t, { ...map, 'test/browser.js': ['test/mapped.test.js'] });
+  h.git(['branch', '-f', 'main', 'HEAD']);
+  fs.writeFileSync(path.join(h.repo, 'test/browser.js'), 'module.exports = 1;\n');
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'browser support change']);
+  h.ok(['rework', 'T1', '--reason', 'browser support coverage']);
+  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.git(['rev-parse', 'HEAD'])]);
   h.ok(['project', 'set', '--tests-paths', '["test/**"]']);
