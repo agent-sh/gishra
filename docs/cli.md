@@ -55,7 +55,7 @@ Lock attempts use private staging directories named with the process pid and a f
 | | |
 | `task show ID` | read; `S` is a status, `ready` or `blocked` |
 | | |
-| `task update ID [--title T] [--acceptance A]... [--dep ID]... [--lock NAME]... [--environment LABEL] [--size S] [--kind K] [--needs JSON] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--budget-hours H] [--budget-tokens N] [--status cancelled]` | change a task; acceptance, dependency or capability changes bump `revision`. `--needs '[]'` clears capabilities, `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. `--lock` replaces all resource locks; `--lock ''` clears them. Lock changes require no live lease or dispatch reservation. `--environment ''` clears the label. Changing `--tier`, and clearing or replacing an existing owner ask, are operational (the orchestrator or the owner); any agent may set a new ask or keep the same reason. Changing `--kind` is operational, except that leaving `code` is owner-required and a submitted or accepted task refuses any kind change until `rework` ([Authority](state.md#authority)). Cancelling a task that has an owner ask is owner-required. `--ci-local` sets or clears an operational local CI override. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies, capabilities, kind and local CI override change only after `rework`. `--budget-hours`, `--budget-tokens` set the task's budget, enforced on live usage like the project budget; lowering is operational, raising is owner-required |
+| `task update ID [--title T] [--acceptance A]... [--dep ID]... [--lock NAME]... [--environment LABEL] [--size S] [--kind K] [--needs JSON] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--budget-hours H] [--budget-tokens N] [--interrupt] [--status cancelled]` | change a task; acceptance, dependency or capability changes bump `revision`. A live claim refuses changes to acceptance, dependencies, `--needs`, kind or the local CI override unless `--interrupt` stops it first (see `interrupt`); notes, title, size, tier and priority never stop a run. `--needs '[]'` clears capabilities, `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. `--lock` replaces all resource locks; `--lock ''` clears them. Lock changes require no live lease or dispatch reservation. `--environment ''` clears the label. Changing `--tier`, and clearing or replacing an existing owner ask, are operational (the orchestrator or the owner); any agent may set a new ask or keep the same reason. Changing `--kind` is operational, except that leaving `code` is owner-required and a submitted or accepted task refuses any kind change until `rework` ([Authority](state.md#authority)). Cancelling a task that has an owner ask is owner-required. `--ci-local` sets or clears an operational local CI override. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies, capabilities, kind and local CI override change only after `rework`. `--budget-hours`, `--budget-tokens` set the task's budget, enforced on live usage like the project budget; lowering is operational, raising is owner-required |
 | | |
 | `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It reconciles tasks.json with `events.jsonl` and reports drift: tasks or task notes the log records that tasks.json lacks, and a `next` the log has already used. It also reports every ladder rung that cannot run, and warns per open task when no reviewer rung can run |
 <!-- commands:Plan:end -->
@@ -183,6 +183,8 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `hook ACTION --binding FILE [--payload JSON\|-]` | deliver harness messages and record activity under the home identity |
 | | |
+| `interrupt ID` | owner or orchestrator only: stop the live agent through its supervisor and release the claim to its prior `todo` or `rework`. The revision, branch, evidence and dirty worktree stay, so the next dispatch resumes the work (Codex warm resume, or a fresh Claude worker in the same worktree). Distinct from `rework`, which sends a submitted task back with a reason, and from a requirements edit, which bumps the revision |
+| | |
 | `msg --to NAME [--task ID] [--steer] TEXT` | send a worker message through the event log |
 | | |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner |
@@ -238,9 +240,19 @@ events. A stack is one entry, ordered by its lowest unmerged task: it holds
 that task and the accepted, linked tasks directly above it, and an upper
 task whose lower task is not accepted waits outside the line. Only the head
 of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
-goes to rework with its files and leaves the line. Unknown mergeability, a
-moved head, failing gates or a refused merge stop the line until a later
-reaction; the executor's `done` event names the blocking task and why.
+goes to rework with its files and leaves the line. Unknown mergeability
+stops the line until a later reaction. A head the queue cannot advance (a
+closed or unreadable PR, a moved or differently merged head, failing gates, a refused
+merge or head check) is reported once in a `queue skipped` event and passed
+over, so the next entry merges; later passes try it again. The executor's
+next pass starts with no skipped heads, including when a concurrent CI
+completion requests that pass while the executor is still running. Its
+`done` event names the first head that did not merge and lists the skipped
+ones. An accepted PR already merged on GitHub at its accepted head is
+confirmed through the merge gate without current gate evidence.
+Merge text and method are validated before any GitHub call. With failed
+current gates, a read-only PR lookup can confirm a completed merge; an open
+PR is refused until its gates pass.
 Gate evidence belongs to the submitted sha, so a base move alone reruns no
 gate. The fail-before proof reruns only for a new head. Before merging, the
 head runs the pinned `gates.tests_cmd` once on the merge of `project.base`'s

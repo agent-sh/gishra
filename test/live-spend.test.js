@@ -234,6 +234,27 @@ test('submission ends lease renewal and retries but live budgets hold until the 
   await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'submitted exit usage was not finalized');
 });
 
+test('interrupt stops a live-spend dispatch and reconciles usage without changing its revision', async (t) => {
+  const h = setup(t, 'claude');
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: '60000' }) });
+  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  const revision = h.json(['task', 'show', 'T1']).revision;
+  h.ok(['interrupt', 'T1']);
+  await until(() => exited(h, spawned.agent), 'the interrupted harness did not exit');
+  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'interrupted exit usage was not finalized');
+  const task = h.json(['task', 'show', 'T1']);
+  assert.equal(task.revision, revision);
+  assert.equal(task.claim, null);
+  assert.equal(task.run.phase, 'stopped');
+  assert.equal(task.run.active, false);
+  assert.equal(task.spend.tokens, 1000);
+  assert.equal(task.spend.entries.length, 1);
+  assert.equal(fs.existsSync(h.done), false);
+  assert.equal(events(h).some((e) => ['spawn retry', 'spawn fallback'].includes(e.cmd)), false);
+  h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+  assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 1000);
+});
+
 test('unavailable telemetry preserves known spend and its age through recovery and exit', async (t) => {
   const h = setup(t, 'claude');
   const location = path.join(h.base, 'usage-file');
