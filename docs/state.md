@@ -507,7 +507,7 @@ Gate events have `{ "type", "ok", "sha", "ref", "revision", "source", "commands"
 
 Harness adapters use the CLI `hook` command under the identity fixed in `homes/<agent>/hook.json`. The binding contains `{agent, task, state, harness, attempt}` and cannot name owner. The bridge resolves its own binding from the dispatch environment, accepts no binding path, and refuses a binding identity that differs from the caller. Claude and Codex sandboxes protect the generated home and hide every other agent home; Codex session storage is scoped to the agent. Other harnesses have bindings and command shims but do not yet have permission renderers. Payload fields never override the binding.
 
-`homes/<agent>/policy.json` holds the shim permissions and the task's recorded `branch` at dispatch. With `gitPush: branch`, every destination of a push to another machine must resolve to `refs/heads/<branch>`. The current checkout and environment cannot replace that recorded branch. See [CLI](cli.md) for push restrictions and the local test repository exception.
+`homes/<agent>/policy.json` holds the shim permissions, the task's recorded `branch` and the project's recorded `repo` at dispatch. With `gitPush: branch`, a push to another machine must use `origin` in that GitHub repository, and every destination must resolve to `refs/heads/<branch>`. Origin's configured fetch URL must match `repo`; configured push URLs must equal the fetch URL, and all resolved push URLs must equal the resolved fetch URL after rewriting. The current checkout and environment cannot replace the recorded branch or repository. See [CLI](cli.md) for push restrictions and the local test repository exception.
 
 Hook state lives in the event log, not in another agent-written state file:
 

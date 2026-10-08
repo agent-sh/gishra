@@ -82,7 +82,7 @@ const env = { ...process.env, PATH: ${JSON.stringify(parentPath)} };
 if (args[0] === 'push') {
   const target = args.find((a, i) => i > 0 && !a.startsWith('-')) || 'origin';
   const remote = cp.spawnSync('git', ['remote', 'get-url', '--push', target], { env, encoding: 'utf8', timeout: 10000 });
-  if (/^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
+  if (/^(?:https?|ssh|git):|^[^/]*@/.test(target) || /^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
     process.stderr.write('fixture remote unavailable\\n');
     process.exit(1);
   }
@@ -108,7 +108,7 @@ function setup(t) {
   fs.writeFileSync(path.join(h.repo, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'planted-project-hook' }] }] } }));
   h.git(['add', '.']);
   h.git(['commit', '-q', '-m', 'project settings']);
-  h.init();
+  h.init(['--repo', 'acme/app']);
   h.ok(['task', 'add', '--title', 'Probe', '--acceptance', 'nothing planted reaches the agent']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'probe\n' });
   const wt = h.json(['worktree', 'T1']).path;
@@ -463,7 +463,7 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
   h.git(['init', '-q', '--bare', local]);
   // A remote on another machine; nothing listens there, so a push the shim
   // lets through fails in git itself, not with the shim's 126.
-  h.git(['remote', 'add', 'origin', 'https://127.0.0.1:9/r.git']);
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
   const NET = 'net';
   const cases = [
     [['git', 'status'], 0, 0],
@@ -527,13 +527,41 @@ test('remote pushes publish only the task branch, including configured and impli
   const { h, u, wt } = setup(t);
   const branch = h.git(['branch', '--show-current'], wt);
   const own = `refs/heads/${branch}`;
-  h.git(['remote', 'add', 'origin', 'https://127.0.0.1:9/r.git']);
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  h.git(['remote', 'add', 'elsewhere', 'https://github.com/acme/app.git']);
   h.git(['config', `branch.${branch}.remote`, 'origin']);
   h.git(['config', `branch.${branch}.merge`, own]);
   const cases = [];
   const push = (args, code) => cases.push([['git', 'push', ...args], code]);
   const config = (key, value) => cases.push([['git', 'config', key, value], 0]);
   const unset = (key) => cases.push([['git', 'config', '--unset-all', key], 0]);
+  push(['elsewhere', `HEAD:${own}`], 126);
+  push(['https://github.com/acme/app.git', `HEAD:${own}`], 126);
+  config('remote.origin.pushurl', 'https://github.com/acme/another.git');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('remote.origin.pushurl');
+  config('remote.origin.pushurl', 'https://github.com/acme/app.git');
+  push(['origin', `HEAD:${own}`], 1);
+  cases.push([['git', 'config', '--add', 'remote.origin.pushurl', 'https://github.com/acme/another.git'], 0]);
+  push(['origin', `HEAD:${own}`], 126);
+  unset('remote.origin.pushurl');
+  config('remote.origin.url', 'https://github.com/acme/another.git');
+  push(['origin', `HEAD:${own}`], 126);
+  config('remote.origin.url', 'https://github.com.evil.invalid/acme/app.git');
+  push(['origin', `HEAD:${own}`], 126);
+  config('remote.origin.url', 'git@github.com:acme/app.git');
+  push(['origin', `HEAD:${own}`], 1);
+  config('remote.origin.url', 'https://github.com/acme/app.git');
+  config('remote.pushDefault', 'elsewhere');
+  push([], 126);
+  unset('remote.pushDefault');
+  config(`branch.${branch}.pushRemote`, 'elsewhere');
+  push([], 126);
+  push(['origin', `HEAD:${own}`], 1);
+  unset(`branch.${branch}.pushRemote`);
+  config('url.https://github.com/acme/another.git.pushInsteadOf', 'https://github.com/acme/app.git');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('url.https://github.com/acme/another.git.pushInsteadOf');
   // X1 and X2 reached Git instead of being refused by the shim.
   push(['origin', 'HEAD:main'], 126);
   push(['origin', 'HEAD:refs/tags/v9.9.9'], 126);
@@ -591,27 +619,35 @@ test('remote pushes publish only the task branch, including configured and impli
 
 test('push destinations are qualified with the recorded task branch without shebang harnesses', (t) => {
   const h = makeRepo(t);
-  h.init();
+  h.init(['--repo', 'acme/app']);
   h.ok(['task', 'add', '--title', 'Publish', '--acceptance', 'only this branch']);
   const { path: wt, branch } = h.json(['worktree', 'T1']);
-  h.git(['remote', 'add', 'origin', 'https://example.invalid/app.git']);
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
   const script = `
 const { gitDenied } = require(process.argv[1]);
+const cp = require('node:child_process');
 const branch = process.argv[2];
-const policy = { gitPush: 'branch', branch };
+const policy = { gitPush: 'branch', branch, repo: 'acme/app' };
 const probes = ['HEAD:main', 'HEAD:refs/tags/v9.9.9', 'HEAD:' + branch, 'HEAD:refs/heads/' + branch, 'HEAD'];
 const results = probes.map(ref => {
   const args = [];
   return { why: gitDenied(['push', 'origin', ref], policy, 'git', args), args };
 });
 results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { gitPush: 'branch' }, 'git') });
+results.push({ why: gitDenied(['push', 'elsewhere', 'HEAD'], policy, 'git') });
+results.push({ why: gitDenied(['push', 'https://github.com/acme/app.git', 'HEAD'], policy, 'git') });
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { ...policy, repo: 'acme/another' }, 'git') });
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { gitPush: 'branch', branch }, 'git') });
+const changed = cp.spawnSync('git', ['config', 'remote.origin.pushurl', 'https://github.com/acme/another.git']);
+if (changed.status !== 0) throw new Error('fixture pushurl could not be configured');
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], policy, 'git') });
 process.stdout.write(JSON.stringify(results));
 `;
   const result = cp.spawnSync(process.execPath, ['-e', script, path.join(ROOT, 'lib', 'shim.js'), branch],
     { cwd: wt, env: h.env, encoding: 'utf8', timeout: 15000 });
   assert.equal(result.status, 0, result.stderr);
   const probes = JSON.parse(result.stdout);
-  for (const index of [0, 1, 5]) assert.ok(probes[index].why, `probe ${index} must be refused`);
+  for (const index of [0, 1, 5, 6, 7, 8, 9, 10]) assert.ok(probes[index].why, `probe ${index} must be refused`);
   for (const index of [2, 3, 4]) {
     assert.equal(probes[index].why, null);
     assert.deepEqual(probes[index].args, ['push', '--no-follow-tags', '--recurse-submodules=no', 'origin', `HEAD:refs/heads/${branch}`]);
