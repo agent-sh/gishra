@@ -278,6 +278,24 @@ test('after a lower stack merge, a dependent whose head GitHub moved takes the n
   assert.equal(task.status, 'submitted');
 });
 
+test('merging a stacked task whose head GitHub rebases after its lower PR merges returns it to submitted at the new head', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  const wt = f.upper.wt;
+  f.h.git(['commit', '--allow-empty', '-qm', 'T2 rebased onto main'], wt.path);
+  f.h.git(['push', 'origin', wt.branch], wt.path);
+  const rebased = f.h.git(['rev-parse', 'HEAD'], wt.path);
+  f.write((d) => { d.rebased = { 12: rebased }; });
+
+  const r = f.h.run(['merge', 'T2']);
+  assert.notEqual(r.code, 0, r.stdout + r.stderr);
+  assert.equal(f.read().prs[11].state, 'MERGED');
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(task.sha, rebased);
+  assert.equal(task.status, 'submitted');
+});
+
 test('three dependent PRs form one stack and all accepted lower tasks get merge evidence', (t) => {
   const f = stacked(t);
   f.add('third', 'T2');
