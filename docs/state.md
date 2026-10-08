@@ -207,7 +207,7 @@ The ladder says which harness, model and effort runs each kind of work. It has s
 | `web_mcp` | research on `claude` | owner-required: explicit `{name, command, args}` web server, with no env, headers or secrets; cannot combine with `mcp` |
 | `supervision` | all | per-rung `{ retries, backoff_ms, max_backoff_ms, stall_ms, progress_paths }`; omitted fields use the defaults below |
 | `fallbacks` | all, user file only | personal ordered array of route objects to try after provider outage retries or a harness refusal; each route takes rung fields except `fallbacks`; refused in project.json |
-| `sandbox` | `claude`, `codex` | owner-required: `{ write: [paths] }` extends writable paths |
+| `sandbox` | `claude`, `codex`, `agy` | owner-required: `{ write: [paths] }` extends writable paths |
 | `env` | all | owner-required: extra environment variables as an object of string values; use `env_file` for secrets |
 | `env_file` | all | owner-required: path to a systemd-quoted environment file; its contents are read at real spawn and given only to the agent process |
 | `scope` | all | owner-required: systemd user scope properties as an object of non-blank string values, e.g. `{"CPUQuota":"200%","MemoryMax":"8G"}`; `{}` disables |

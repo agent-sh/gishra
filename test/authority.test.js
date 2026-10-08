@@ -376,12 +376,12 @@ test('new args on an unsandboxed route require the owner, including following fa
   const harness = L.HARNESSES.find((name) => name !== 'command' && !A.CAPABILITIES[name].sandbox);
   assert.ok(harness, 'the fixture needs an unsandboxed harness');
   writeUser(h, { ladder: {
-    research: { fallbacks: [{ model: 'backup', args: ['--anything'] }] },
-    small: { fallbacks: [{ harness, model: 'fixture', args: ['--anything'] }] },
+    research: { fallbacks: [{ model: 'backup', args: ['--verbose'] }] },
+    small: { fallbacks: [{ harness, model: 'fixture', args: ['--verbose'] }] },
   } });
   for (const [index, args] of [
     ['ladder', 'set', 'research', '--harness', harness, '--model', 'fixture', '--clear', 'effort'],
-    ['ladder', 'set', 'orchestrator', '--harness', harness, '--model', 'fixture', '--args', '["--anything"]', '--clear', 'effort'],
+    ['ladder', 'set', 'orchestrator', '--harness', harness, '--model', 'fixture', '--args', '["--verbose"]', '--clear', 'effort'],
   ].entries()) {
     const before = h.readState('project.json');
     const result = h.run(args, as('orchestrator'));
@@ -389,7 +389,7 @@ test('new args on an unsandboxed route require the owner, including following fa
     assert.match(result.stderr, new RegExp(`ladder\\.reach is owner-required; opened D${index + 1} `));
     assert.deepEqual(h.readState('project.json'), before);
     const routes = h.readState('decisions.json').decisions.at(-1).escalation.change.ladder;
-    assert.ok(Object.values(routes).flatMap((rung) => rung.unconfined).some((route) => route.args?.includes('--anything')));
+    assert.ok(Object.values(routes).flatMap((rung) => rung.unconfined).some((route) => route.args?.includes('--verbose')));
   }
   // An unchanged unsandboxed fallback does not block a model/effort change.
   h.ok(['ladder', 'set', 'small', '--effort', 'medium'], as('orchestrator'));
