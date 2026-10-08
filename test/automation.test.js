@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, BIN } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { waitFor } = require('./canary');
 
 const ghStub = path.join(__dirname, 'fixtures', 'automation-gh.js');
 const harness = path.join(__dirname, 'fixtures', 'automation-harness.js');
@@ -332,6 +333,52 @@ test('a killed executor releases its gate executor slot', (t) => {
   assert.equal(runs().starts, 4, 'the killed run is retried and the other two run');
   for (const task of h.readState('tasks.json').tasks) {
     assert.deepEqual(task.evidence.map((e) => e.type), ['tests', 'clean'], task.id);
+  }
+});
+
+test('older queued work takes a freed executor slot before a newer arrival', async (t) => {
+  const h = setup(t);
+  const events = path.join(h.state, 'events.jsonl');
+  const suite = path.join(h.base, 'tools', 'stall-suite.js');
+  // The first run holds the only slot until T2 is queued behind it, then
+  // dies, leaving a free slot and T2 still waiting.
+  fs.writeFileSync(suite, `const fs = require('node:fs');
+const flag = ${JSON.stringify(path.join(h.base, 'stalled'))};
+if (fs.existsSync(flag)) process.exit(0);
+fs.writeFileSync(flag, '');
+const read = () => fs.readFileSync(${JSON.stringify(events)}, 'utf8').trim().split('\\n').map(JSON.parse);
+const until = Date.now() + 20000;
+const poll = () => {
+  const log = read();
+  if (log.some((e) => e.cmd === 'automation queued' && e.task === 'T2') || Date.now() > until) {
+    process.kill(log.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running').detail.pid, 'SIGKILL');
+    process.exit(1);
+  }
+  setTimeout(poll, 50);
+};
+poll();
+`);
+  h.ok(['project', 'set', '--tests-cmd', `node ${JSON.stringify(suite)}`, '--tests-mode', 'run-only',
+    '--executors', '1', '--agent', 'orchestrator']);
+  h.ok(['task', 'add', '--title', 'Change T2', '--acceptance', 'it works', '--kind', 'code']);
+  h.ok(['task', 'add', '--title', 'Change T3', '--acceptance', 'it works', '--kind', 'code']);
+  for (const id of ['T1', 'T2']) {
+    h.ok(['claim', id, '--agent', 'worker']);
+    h.ok(['submit', id, '--sha', h.sha, '--agent', 'worker']);
+  }
+  const holder = h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  assert.notEqual(await waitFor(path.join(h.base, 'stalled')), null, 'the first executor starts');
+  h.consume();
+  assert.notEqual((await holder).code, 2, 'the stalled executor is killed');
+  assert.ok(h.logs().some((e) => e.cmd === 'automation queued' && e.task === 'T2' && e.detail.executors === 1));
+  const offset = fs.statSync(events).size;
+  h.ok(['claim', 'T3', '--agent', 'worker']);
+  h.ok(['submit', 'T3', '--sha', h.sha, '--agent', 'worker']);
+  h.run(['wait', '--after', String(offset), '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  const started = h.logs().filter((e) => e.cmd === 'automation' && e.detail.phase === 'running').map((e) => e.task);
+  assert.deepEqual(started, ['T1', 'T1', 'T2', 'T3'], 'queued T1 and T2 run before the newer T3');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => [e.type, e.ok]), [['tests', true], ['clean', true]], task.id);
   }
 });
 
