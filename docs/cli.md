@@ -14,6 +14,8 @@ In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), co
 
 Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing.
 
+Lock attempts use private staging directories named with the process pid and a fresh random nonce. Concurrent staging cleanup retries with backoff within the usual 10 s acquisition deadline; it does not expose a staging `ENOENT` as a command or supervisor failure. Persistent contention or cleanup races exit 3. See [state.md: Lock](state.md#lock).
+
 ## Plan
 
 <!-- commands:Plan:start -->
