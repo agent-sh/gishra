@@ -8,8 +8,8 @@ const { makeRepo, BIN } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-async function until(fn) {
-  const deadline = Date.now() + 15000;
+async function until(fn, timeout = 15000) {
+  const deadline = Date.now() + timeout;
   while (!fn()) {
     if (Date.now() >= deadline) assert.fail('escalation did not finish');
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -241,7 +241,8 @@ test('rework records the review climb before pending worker cleanup finishes', {
   h.ok(['recover', 'T1', '--agent', 'orchestrator']);
   assert.equal(h.readAttempts().length, 1, 'recording the climb does not release the worktree');
   fs.writeFileSync(h.attempts + '.exit', '');
-  await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
+  // Cleanup, a contended state lock and the spawn handshake have separate deadlines.
+  await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted', 30000);
   assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
   assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
 });
@@ -278,12 +279,14 @@ for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
   });
 }
 
-for (const type of ['clean', 'ci']) {
+for (const type of ['tests', 'clean', 'ci']) {
   test(`unconfirmed ${type} observation failures do not climb`, async (t) => {
     const h = setup(t, 'review', 'easy..medium', (repo) => {
       gateFixture(repo);
       repo.ok(['project', 'set', '--repo', 'acme/demo']);
-      if (type === 'clean') {
+      if (type === 'tests') {
+        repo.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', 'tower-crane-missing-test-program']);
+      } else if (type === 'clean') {
         fs.writeFileSync(path.join(repo.base, 'tools', 'scanner.js'),
           'console.log(JSON.stringify({items:[{severity:"HIGH"}],errors:["scan incomplete"]}));');
       } else {
