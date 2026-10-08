@@ -89,15 +89,42 @@ test('agents cannot request admin merging outside owner-set project policy', (t)
 
 test('invalid merge text or methods refuse before calling GitHub', (t) => {
   const { h } = acceptedTask(t);
-  for (const extra of [
-    ['--subject', ' \t'], ['--method', 'rebase', '--subject', 'Ignored?'],
-    ['--method', 'rebase', '--body', ''], ['--method', 'octopus'],
-  ]) {
-    const refused = h.run(['merge', 'T1', ...extra, '--agent', 'orchestrator', '--json']);
-    assert.equal(refused.code, 1, refused.stderr);
-    assert.equal(JSON.parse(refused.stdout).ok, false);
-    assert.ok(!fs.existsSync(h.env.FIXTURE_GH_LOG), 'no GitHub command ran');
+  for (const gatesPass of [true, false]) {
+    if (!gatesPass) {
+      gateEvidence(h, 'ci', 'checker', false);
+      fs.rmSync(h.env.FIXTURE_GH_LOG, { force: true });
+    }
+    for (const state of ['OPEN', 'MERGED']) {
+      h.env.FIXTURE_PR_STATE = state;
+      for (const extra of [
+        ['--subject', ' \t'], ['--method', 'rebase', '--subject', 'Ignored?'],
+        ['--method', 'rebase', '--body', ''], ['--method', 'octopus'],
+      ]) {
+        const refused = h.run(['merge', 'T1', ...extra, '--agent', 'orchestrator', '--json']);
+        assert.equal(refused.code, 1, refused.stderr);
+        assert.equal(JSON.parse(refused.stdout).ok, false);
+        assert.ok(!fs.existsSync(h.env.FIXTURE_GH_LOG), `${state}, gates pass ${gatesPass}: no GitHub command ran`);
+      }
+    }
   }
+});
+
+test('failed current gates permit only confirmation of a merged PR at the accepted head', (t) => {
+  const { h, sha } = acceptedTask(t);
+  gateEvidence(h, 'ci', 'checker', false);
+  fs.rmSync(h.env.FIXTURE_GH_LOG, { force: true });
+  const refused = h.run(['merge', 'T1', '--agent', 'orchestrator']);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /its gates no longer pass: ci: latest ci at .* failed:/);
+  assert.ok(!h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'merge'));
+  h.env.FIXTURE_PR_STATE = 'MERGED';
+  const confirmed = h.json(['merge', 'T1', '--agent', 'orchestrator']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.deepEqual([confirmed.sha, confirmed.ref], [sha, sha]);
+  assert.match(confirmed.summary, /was already merged/);
+  const calls = fs.readFileSync(h.env.FIXTURE_GH_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls.map((args) => args.slice(0, 2)), [['pr', 'view'], ['pr', 'view']]);
+  assert.equal(confirmed.commands.length, 1, 'confirmation records the single lookup that proved the merge');
 });
 
 test('project merge options retain a branch checked out in a live worktree and select admin merging', (t) => {
