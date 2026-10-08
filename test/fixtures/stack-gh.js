@@ -5,7 +5,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const original = cp.spawnSync;
 const BIN = path.join(__dirname, '..', '..', 'bin', 'tower-crane.js');
-const { ownerKeyFile } = require('../../lib/authority');
+const { ownerKeyFile, ownerProject } = require('../../lib/authority');
 
 // Holds a gh call open until the test releases it, so another command can run meanwhile.
 function pause(ready, release) {
@@ -32,7 +32,8 @@ cp.spawnSync = function stackGh(command, args, opts) {
   // present the owner's key from its file, as the owner would.
   const key = args.slice(0, 2).join(' ');
   for (const cli of data.during?.[key] || []) {
-    const env = { ...process.env, TOWER_CRANE_OWNER_KEY: fs.readFileSync(ownerKeyFile(process.env), 'utf8').trim() };
+    const project = ownerProject(path.join(data.repo, '.tower-crane'));
+    const env = { ...process.env, TOWER_CRANE_OWNER_KEY: fs.readFileSync(ownerKeyFile(project), 'utf8').trim() };
     const r = original(process.execPath, [BIN, ...cli], { cwd: data.repo, env, encoding: 'utf8' });
     if (r.status !== 0) throw new Error(`tower-crane ${cli.join(' ')} failed: ${r.stderr}`);
   }

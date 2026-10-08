@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
+const { cachedFixture, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
 
 const PRIVATE_LOG = 'prompt: synthetic private instruction\ncredential: synthetic-secret-for-recovery-test';
 
@@ -17,16 +17,17 @@ function assertNoLogText(h) {
 }
 
 function setup(t) {
-  const h = makeRepo();
+  const h = cachedFixture(null, 'task', (h) => {
+    h.init();
+    h.ok(['task', 'add', '--title', 'Recover a worker', '--tier', 'easy', '--acceptance', 'exit is reported']);
+    h.ok(['brief', 'set', 'T1', '-'], { input: 'Work on T1.\n' });
+  });
   h.stopWorkers = [];
   // Windows holds directories open while a worker still uses them.
   t.after(async () => {
     for (const stop of h.stopWorkers) stop();
     await h.cleanup();
   });
-  h.init();
-  h.ok(['task', 'add', '--title', 'Recover a worker', '--tier', 'easy', '--acceptance', 'exit is reported']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Work on T1.\n' });
   return h;
 }
 

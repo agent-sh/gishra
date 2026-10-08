@@ -99,6 +99,16 @@ const under = (root, p) => !!root && typeof p === 'string' && (path.resolve(p) =
 const inState = (p) => under(STATE, p);
 const inLock = (p) => under(LOCK, p);
 
+function ownsLock() {
+  try {
+    return real.readdirSync(LOCK).some((name) =>
+      JSON.parse(real.readFileSync(path.join(LOCK, name), 'utf8')).pid === process.pid);
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return false;
+    throw error;
+  }
+}
+
 // Tells the test this process reached a point (by creating SIGNAL with its
 // pid), then waits until the test creates SIGNAL.go.
 function stop(signal) {
@@ -136,8 +146,9 @@ function before(name, args) {
   if (env.HOOK_RENDER_DELAY_MS && name === 'renameSync' && args[1] === path.join(STATE, 'sketch.html')) {
     sleep(Number(env.HOOK_RENDER_DELAY_MS));
   }
-  // HOOK_DIE_ON=FILE: killed when it reads FILE, which a write does while it holds the lock.
-  if (env.HOOK_DIE_ON && name === 'readFileSync' && inState(target) && path.basename(target) === env.HOOK_DIE_ON) {
+  // Authentication reads project.json before locking; a dead-holder probe
+  // must kill the process only after its own lock marker has been published.
+  if (env.HOOK_DIE_ON && name === 'readFileSync' && inState(target) && path.basename(target) === env.HOOK_DIE_ON && ownsLock()) {
     process.kill(process.pid, 'SIGKILL');
     sleep(5000);
   }
