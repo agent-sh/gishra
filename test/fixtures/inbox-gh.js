@@ -1,0 +1,33 @@
+'use strict';
+
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const file = process.env.INBOX_GITHUB;
+const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+data.calls.push(args);
+let result;
+if (data.fail || data.failEndpoint && args[1]?.includes(data.failEndpoint)) {
+  console.error('GitHub unavailable');
+  process.exitCode = 1;
+} else if (args[0] === 'pr') {
+  const pr = data.prs[args[2]];
+  if (args[1] === 'merge') {
+    if (args[args.indexOf('--match-head-commit') + 1] !== pr.headRefOid) throw new Error('head not pinned');
+    pr.state = 'MERGED';
+    pr.mergeCommit = { oid: pr.headRefOid };
+  }
+  result = pr;
+} else if (args[1].includes('/comments')) {
+  result = data.comments || [];
+} else if (args[1].includes('/code-scanning/')) {
+  const number = decodeURIComponent(args[1]).match(/refs\/pull\/(\d+)\//)?.[1];
+  result = data.alerts?.[number] || [];
+} else {
+  result = [{ name: 'test', suite: 1, id: 1, runs: 1, app: 'fixture', status: 'completed', conclusion: 'success' }];
+  if (args[1].includes('/check-runs') && data.revuto) result.push(data.revuto);
+}
+fs.writeFileSync(`${file}.${process.pid}`, JSON.stringify(data));
+fs.renameSync(`${file}.${process.pid}`, file);
+if (Array.isArray(result)) {
+  for (const row of result) console.log(JSON.stringify(row));
+} else if (result !== undefined) console.log(JSON.stringify(result));
