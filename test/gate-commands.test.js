@@ -4,18 +4,21 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, runPty, PTY_AVAILABLE } = require('./helpers');
+const { makeRepo, cachedFixture, runPty, PTY_AVAILABLE } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 const { shellQuote } = require('../lib/gates/common');
 
+// Built once per process and copied for each test.
 function fixture(t) {
-  const h = makeRepo(t);
-  h.init();
-  const sha = gateFixture(h);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
-  h.ok(['claim', 'T1', '--agent', 'worker']);
-  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
-  return { h, sha };
+  const h = cachedFixture(t, 'submitted', (h) => {
+    h.init();
+    const sha = gateFixture(h);
+    h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+    h.ok(['claim', 'T1', '--agent', 'worker']);
+    h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+    return { sha };
+  });
+  return { h, sha: h.sha };
 }
 
 function pin(h) {
