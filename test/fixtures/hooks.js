@@ -222,6 +222,16 @@ if (env.HOOK_STOP_WORKTREE_STATUS) {
   };
 }
 
+// HOOK_STOP_WORKTREE_REMOVE=SIGNAL: stop before the first git worktree remove runs,
+// after the removal has passed its checks and released the state lock.
+if (env.HOOK_STOP_WORKTREE_REMOVE) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function hookedExecFileSync(file, args, ...rest) {
+    if (args[0] === 'worktree' && args[1] === 'remove' && first('worktree-remove')) stop(env.HOOK_STOP_WORKTREE_REMOVE);
+    return orig.call(this, file, args, ...rest);
+  };
+}
+
 if (env.HOOK_REVIEW_DIFF_REPORT || env.HOOK_STOP_REVIEW_DIFF) {
   const orig = cp.execFileSync;
   cp.execFileSync = function reviewDiff(file, args, ...rest) {

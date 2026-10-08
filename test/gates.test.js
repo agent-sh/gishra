@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 const { makeRepo, ROOT, real, HOOKS } = require('./helpers');
@@ -937,4 +938,41 @@ test('a task sent back and claimed after merge looked at its worktree keeps the 
   const kept = readEvents(h).find((e) => e.cmd === 'worktree kept');
   assert.equal(kept.task, 'T1');
   assert.equal(kept.detail.reason, 'the task changed before its worktree was removed');
+});
+
+test('merge refuses rework and claim while it removes the task worktree', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const wt = acceptedWithWorktree(h);
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates, { recursive: true });
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+
+  // Merge pauses after its locked check of the worktree, with the lock released and before git removes it.
+  const paused = path.join(h.base, 'paused');
+  const merge = cli.start(['merge', 'T1'], {
+    GATE_OUT: path.join(h.base, 'gate.json'), GATE_OK: '1', HOOK_STOP_WORKTREE_REMOVE: paused,
+  });
+  assert.ok(await waitFor(paused), 'merge reached git worktree remove');
+  const sent = await h.runAsync(['rework', 'T1', '--reason', 'racing the removal']);
+  const claimed = await h.runAsync(['claim', 'T1', '--agent', 'w-2']);
+  fs.writeFileSync(`${paused}.go`, '');
+  const merged = await merge.result;
+
+  assert.equal(sent.code, 1, 'rework refuses a worktree being removed');
+  assert.match(sent.stderr, /being removed/);
+  assert.equal(claimed.code, 1, 'claim refuses it too');
+  assert.match(claimed.stderr, /being removed/);
+  assert.equal(merged.code, 0, merged.stderr);
+  assert.ok(!fs.existsSync(wt.path), 'the removal finishes for the accepted task');
+  const task = h.readState('tasks.json').tasks[0];
+  assert.equal(task.status, 'accepted');
+  assert.equal(task.retiring, undefined, 'the marker is cleared once the removal ends');
+  assert.equal(readEvents(h).find((e) => e.cmd === 'worktree removed').task, 'T1');
+
+  // A marker whose process has exited is what a crash leaves; it holds nothing.
+  const state = h.readState('tasks.json');
+  state.tasks[0].retiring = { since: new Date().toISOString(), pid: 999999, host: os.hostname() };
+  h.writeState('tasks.json', state);
+  h.ok(['rework', 'T1', '--reason', 'after a crash']);
 });
