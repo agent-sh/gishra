@@ -344,7 +344,7 @@ test('a generated orchestrator identity may interrupt; an expired lease needs no
   h.ok(['task', 'add', '--title', 'Coordinate', '--acceptance', 'coordinates']);
   h.ok(['brief', 'set', 'T2', '-'], { input: 'Coordinate the worker.\n' });
   h.ok(['ladder', 'set', 'orchestrator', '--harness', 'command', '--clear', 'profile', '--clear', 'effort', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]);
+    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}'])]);
   const orchestrator = h.json(['spawn', '--task', 'T2', '--role', 'orchestrator', '--wait']);
   h.ok(['claim', 'T1', '--agent', 'manual-worker']);
   h.ok(['interrupt', 'T1', '--agent', orchestrator.agent]);

@@ -32,6 +32,10 @@ test('browser kit is an owner-controlled user setting, defaults to playwright an
   const before = h.run(['browser-kit', 'set', '--servers', '["visual","playwright"]', '--agent', 'worker']);
   assert.notEqual(before.code, 0);
   assert.match(before.stderr, /only the owner/);
+  const escalated = h.run(['browser-kit', 'set', '--servers', '["visual"]', '--agent', 'orchestrator']);
+  assert.equal(escalated.code, 1, escalated.stderr);
+  assert.match(escalated.stderr, /browser_kit is owner-required; opened D1 for the owner/);
+  assert.equal(fs.existsSync(h.userConfig), false);
   h.ok(['browser-kit', 'set', '--servers', '["visual","playwright","visual"]']);
   assert.deepEqual(JSON.parse(fs.readFileSync(h.userConfig, 'utf8')).browser_kit, ['visual', 'playwright']);
   h.ok(['ladder', 'save-user']);
