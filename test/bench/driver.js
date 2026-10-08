@@ -63,12 +63,12 @@ class Path {
   think() { this.op('M'); }
 
   async rect(selector) {
-    return this.b.inPage(`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
+    return this.b.call((sel) => {
+      const el = document.querySelector(sel);
       if (!el) return null;
       const r = el.getBoundingClientRect();
       return { x: r.left, y: r.top, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
-    })()`);
+    }, selector);
   }
 
   // Scrolls with the wheel over the target's own scroll container until the
@@ -77,8 +77,8 @@ class Path {
     for (let i = 0; i < 60; i++) {
       const r = await this.rect(selector);
       if (!r) throw new Error(`no element ${selector}`);
-      const box = await this.b.inPage(`(() => {
-        const el = document.querySelector(${JSON.stringify(selector)});
+      const box = await this.b.call((sel) => {
+        const el = document.querySelector(sel);
         let p = el.parentElement;
         while (p && p !== document.body) {
           const s = getComputedStyle(p);
@@ -86,7 +86,7 @@ class Path {
           p = p.parentElement;
         }
         return { x: 0, y: 0, w: innerWidth, h: innerHeight };
-      })()`);
+      }, selector);
       const top = Math.max(0, box.y);
       const bottom = Math.min(r.vh, box.y + box.h);
       if (r.y >= top && r.y + r.h <= bottom && r.h > 0) return r;

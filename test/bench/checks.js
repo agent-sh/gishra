@@ -51,11 +51,11 @@ const contrast = `(() => { ${LIB}
 })()`;
 
 // Every glyph that carries a status has a name or sits beside its word.
-const colorAlone = (glyphs, words) => `(() => { ${LIB}
-  const words = ${JSON.stringify(words)};
+// Called with (glyphs, words).
+const colorAlone = `(glyphs, words) => { ${LIB}
   const unlabeled = [];
   let checked = 0;
-  for (const g of document.querySelectorAll(${JSON.stringify(glyphs)})) {
+  for (const g of document.querySelectorAll(glyphs)) {
     if (!g.getClientRects().length || g.closest('[hidden]') || getComputedStyle(g).display === 'none' || g.closest('.sheet:not(.open):not(:target)')) continue;
     checked++;
     const named = g.getAttribute('aria-label') || g.querySelector('title');
@@ -64,7 +64,7 @@ const colorAlone = (glyphs, words) => `(() => { ${LIB}
     if (!named && !words.some((w) => text.includes(w))) unlabeled.push((row ? row.textContent : '').trim().slice(0, 50));
   }
   return { pass: unlabeled.length === 0, checked, unlabeled: unlabeled.length, samples: unlabeled.slice(0, 5) };
-})()`;
+}`;
 
 // WCAG 2.5.8: 24 by 24, or spaced so a 24 px circle on each does not meet
 // another; links inside a sentence are exempt. Buttons are 32 px tall.
@@ -135,10 +135,10 @@ const readability = `(() => { ${LIB}
 
 // Share of the first viewport covered by content: a grid of points, each
 // covered when what it hits has text, a control or a drawn surface of its own
-// below the page's layout wrappers.
-const density = (wrappers) => `(() => {
+// below the page's layout wrappers. Called with (wrappers).
+const density = `(wrappers) => {
   const skip = new Set(['HTML', 'BODY', 'MAIN']);
-  const wrap = (el) => el.matches(${JSON.stringify(wrappers)});
+  const wrap = (el) => el.matches(wrappers);
   const drawn = (el) => { const s = getComputedStyle(el); return (s.backgroundColor && !/rgba\\(0, 0, 0, 0\\)|transparent/.test(s.backgroundColor)) || parseFloat(s.borderTopWidth) > 0 || parseFloat(s.borderLeftWidth) > 0; };
   let covered = 0; let n = 0;
   for (let y = 45; y < innerHeight; y += 90) for (let x = 40; x < innerWidth; x += 80) {
@@ -153,7 +153,7 @@ const density = (wrappers) => `(() => {
   }
   const share = Math.round((covered / n) * 1000) / 10;
   return { pass: share >= 70, share };
-})()`;
+}`;
 
 // One h1, landmarks, a polite live region, and named controls from the AX tree.
 async function names(b) {

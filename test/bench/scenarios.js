@@ -22,9 +22,13 @@ async function waitFor(fn, ms = 20000, step = 250) {
   }
 }
 
+// Page functions; selectors reach them as arguments (browser.call).
+const textOf = (sel) => (document.querySelector(sel) || {}).textContent || '';
+const exists = (sel) => !!document.querySelector(sel);
+
 // Fully inside the viewport and inside every scrolling ancestor's visible box.
-const shown = (sel) => `(() => {
-  const el = document.querySelector(${JSON.stringify(sel)});
+const shown = (sel) => {
+  const el = document.querySelector(sel);
   if (!el || !el.getClientRects().length || getComputedStyle(el).visibility !== 'visible') return false;
   const r = el.getBoundingClientRect();
   if (r.top < 0 || r.bottom > innerHeight + 0.5 || r.left < 0 || r.right > innerWidth + 0.5) return false;
@@ -33,7 +37,7 @@ const shown = (sel) => `(() => {
     if (/(auto|scroll|hidden)/.test(s.overflowY) && p.scrollHeight > p.clientHeight + 1) { const q = p.getBoundingClientRect(); if (r.top < q.top - 0.5 || r.bottom > q.bottom + 0.5) return false; }
   }
   return true;
-})()`;
+};
 
 // What needs the owner in a state, independent of any build: open decisions,
 // owner tasks, messages to the owner since the owner last wrote, and claims
@@ -64,8 +68,8 @@ async function h1(ctx) {
   const items = [];
   for (const key of keys) {
     const sel = itemSel(T, key);
-    const present = await b.inPage(`!!document.querySelector(${JSON.stringify(sel)})`);
-    const first = present && await b.inPage(shown(sel));
+    const present = await b.call(exists, sel);
+    const first = present && await b.call(shown, sel);
     items.push({ key, present, first_viewport: !!first });
   }
   const title = await b.inPage('document.title');
@@ -105,7 +109,7 @@ async function h2(ctx) {
 async function h2a(ctx) {
   const { b, T, url } = ctx;
   await D.load(b, url);
-  const text = await b.inPage(`(document.querySelector(${JSON.stringify(T.item('D3'))}) || {}).textContent || ''`);
+  const text = await b.call(textOf, T.item('D3'));
   const sentence = /admin merges/i.test(text) && /\boff\b/i.test(text) && /\bon\b/i.test(text);
   const raw = /\{"merge-admin"/.test(text) && !sentence;
   return { sentence, raw_json: raw, applied: null, pass: false, note: 'approving applies the recorded request only with T89/T91 (not on this base): the owner makes the change and answers' };
@@ -121,7 +125,7 @@ async function h3(ctx) {
   await wait(300);
   await p.reveal(T.finding(id));
   p.think();
-  const finding = await b.inPage(`(document.querySelector(${JSON.stringify(T.finding(id))}) || {}).textContent || ''`);
+  const finding = await b.call(textOf, T.finding(id));
   await p.click(T.rework(id));
   await p.type('ignore 429s from paused endpoints and honor Retry-After');
   await p.click(T.reworkSend(id));
@@ -161,7 +165,7 @@ async function h4(ctx) {
   const spawned = s.spawnAgent({ steps: 40, per: 1000000, every: 1000 });
   ctx.cleanup.push(() => killTree(spawned.pid));
   const readings = [];
-  const rowText = () => b.inPage(`(document.querySelector(${JSON.stringify(T.agentTokens(id))}) || {}).textContent || ''`);
+  const rowText = () => b.call(textOf, T.agentTokens(id));
   const exited = () => s.events().some((e) => e.cmd === 'spawn exit' && e.task === id);
   // The rule's own threshold for this tier, from the project's history.
   const norms = require('../../lib/runaway').calibrate({ tasks: s.read('tasks.json') });
@@ -173,7 +177,7 @@ async function h4(ctx) {
     readings.push(await rowText());
     const live = s.events().filter((e) => e.cmd === 'spend live' && e.task === id && e.detail.tokens > threshold);
     if (!crossedAt && live.length) crossedAt = Date.parse(live[0].at);
-    if (T.runaway && !flaggedAt && await b.inPage(`!!document.querySelector(${JSON.stringify(T.runaway(id))})`)) flaggedAt = Date.now();
+    if (T.runaway && !flaggedAt && await b.call(exists, T.runaway(id))) flaggedAt = Date.now();
     if (flaggedAt || (crossedAt && Date.now() - crossedAt > 15000)) break;
     await wait(500);
   }
@@ -189,7 +193,7 @@ async function h4(ctx) {
     r = p.result();
     stopped = await waitFor(() => { const e = s.events(); return e.some((x) => x.cmd === 'budget stop' && x.task === id) && e.some((x) => x.cmd === 'spawn exit' && x.task === id) && e; }, 30000);
     // The row's own words for each state it passes through.
-    words = await waitFor(async () => { const t = await b.inPage(`((document.querySelector(${JSON.stringify(T.agentRow(id))}) || document.querySelector('[data-key="stopped-${id}"]') || {}).querySelector?.('.stopstate') || {}).textContent || ''`); if (t && !rowWords.includes(t.trim())) rowWords.push(t.trim()); return /stopped/i.test(t) && t; }, 30000);
+    words = await waitFor(async () => { const t = await b.call((row, stopped) => ((document.querySelector(row) || document.querySelector(stopped) || {}).querySelector?.('.stopstate') || {}).textContent || '', T.agentRow(id), `[data-key="stopped-${id}"]`); if (t && !rowWords.includes(t.trim())) rowWords.push(t.trim()); return /stopped/i.test(t) && t; }, 30000);
     if (ctx.shots) await D.shot(b, ctx.shots('H4-stopped'));
     reconciled = await waitFor(() => { const t = s.read('tasks.json').tasks.find((x) => x.id === id); return t.spend.entries.length && t.spend.entries.every((e) => !e.live) && t; }, 30000);
     if (!words) rowWords.push('(no stopped state shown)');
@@ -218,11 +222,11 @@ async function h4s(ctx) {
     if (phase) try { process.kill(phase.detail.monitor_pid, 'SIGKILL'); } catch { /* gone */ }
   }
   const want = variant === 'stale' ? /stale/i : /unknown until exit|unavailable/i;
-  const text = await waitFor(async () => { const t = await b.inPage(`(document.querySelector(${JSON.stringify(T.agentRow(id))}) || {}).textContent || ''`); return want.test(t) && t; }, 30000);
-  const row = text || await b.inPage(`(document.querySelector(${JSON.stringify(T.agentRow(id))}) || {}).textContent || ''`);
+  const text = await waitFor(async () => { const t = await b.call(textOf, T.agentRow(id)); return want.test(t) && t; }, 30000);
+  const row = text || await b.call(textOf, T.agentRow(id));
   const zero = /(^|\s)0 tokens/.test(row);
-  const flagged = T.runaway ? await waitFor(() => b.inPage(`!!document.querySelector(${JSON.stringify(T.runaway(id))})`), variant === 'stale' ? 8000 : 2000) : false;
-  const sentence = T.sentence ? await b.inPage(`(document.querySelector(${JSON.stringify(T.sentence)}) || {}).textContent || ''`) : '';
+  const flagged = T.runaway ? await waitFor(() => b.call(exists, T.runaway(id)), variant === 'stale' ? 8000 : 2000) : false;
+  const sentence = T.sentence ? await b.call(textOf, T.sentence) : '';
   const counted = /not counted/i.test(sentence);
   if (ctx.shots) await D.shot(b, ctx.shots(`H4s-${variant}`));
   killTree(spawned.pid);
@@ -240,8 +244,8 @@ async function h5(ctx) {
   const parts = {};
   for (const [k, sel] of Object.entries({ used: T.spend.used, rate: T.spend.rate, projection: T.spend.projection, top: T.spend.top })) {
     if (!sel) { parts[k] = { shown: false, text: '' }; continue; }
-    const text = await b.inPage(`(document.querySelector(${JSON.stringify(sel)}) || {}).textContent || ''`);
-    parts[k] = { shown: !!(await b.inPage(shown(sel))), text: text.replace(/\s+/g, ' ').trim().slice(0, 120) };
+    const text = await b.call(textOf, sel);
+    parts[k] = { shown: !!(await b.call(shown, sel)), text: text.replace(/\s+/g, ' ').trim().slice(0, 120) };
   }
   const fresh = /live|s old|s ago|min old/i.test(Object.values(parts).map((x) => x.text).join(' '));
   if (ctx.shots) await D.shot(b, ctx.shots('H5'));
@@ -278,19 +282,22 @@ async function h7(ctx) {
     if (['ask', 'answer'].includes(e.cmd)) want.add(e.detail.decision || e.detail.id);
   }
   const key = `tower-crane:seen:${s.read('project.json').name}:/`;
-  const { identifier } = await b.send('Page.addScriptToEvaluateOnNewDocument', { source: `try { localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(mark)}); } catch (e) {}` });
-  await D.load(b, url);
-  await b.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
-  const text = await b.inPage(`(document.querySelector(${JSON.stringify(T.digest)}) || {}).textContent || ''`);
+  // Written from a same-origin page that runs no board script, so the board's
+  // own pagehide write cannot replace the mark before the next load reads it.
+  const look = async (at) => {
+    await b.goto(new URL('/bench-storage', url).href);
+    await b.call((k, v) => localStorage.setItem(k, v), key, at);
+    await D.load(b, url);
+  };
+  await look(mark);
+  const text = await b.call(textOf, T.digest);
   const named = [...want].filter((x) => new RegExp(`\\b${x}\\b`).test(text));
-  const grouped = await b.inPage(`document.querySelectorAll(${JSON.stringify(`${T.digest} [data-group]`)}).length`);
+  const grouped = await b.call((sel) => document.querySelectorAll(sel).length, `${T.digest} [data-group]`);
   if (ctx.shots) await D.shot(b, ctx.shots('H7'));
   // Nothing new: the heading and the list must agree.
   const newest = events.at(-1).at;
-  const { identifier: id2 } = await b.send('Page.addScriptToEvaluateOnNewDocument', { source: `try { localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(newest)}); } catch (e) {}` });
-  await D.load(b, url);
-  await b.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: id2 });
-  const calmText = await b.inPage(`(document.querySelector(${JSON.stringify(T.digest)}) || {}).textContent || ''`);
+  await look(newest);
+  const calmText = await b.call(textOf, T.digest);
   const contradiction = /nothing new/i.test(calmText) && /since you looked/i.test(calmText) && /\bsince now\b/i.test(calmText);
   const pass = named.length === want.size && grouped > 0 && !contradiction;
   return { expected: [...want], named, grouped_by_meaning: grouped > 0, heading_contradiction: contradiction, pass };
@@ -300,10 +307,10 @@ async function h8(ctx) {
   const { b, T, url } = ctx;
   await D.load(b, url);
   await wait(1500);
-  const hues = await b.inPage(`(() => {
+  const hues = await b.call((attention) => {
     const root = getComputedStyle(document.documentElement);
     const probe = document.createElement('i'); document.body.appendChild(probe);
-    const tokens = ${JSON.stringify(T.attention)}.map((t) => { probe.style.color = root.getPropertyValue(t).trim(); const c = getComputedStyle(probe).color; return [t, c]; }).filter(([, c]) => c && c !== 'rgb(0, 0, 0)' || false);
+    const tokens = attention.map((t) => { probe.style.color = root.getPropertyValue(t).trim(); const c = getComputedStyle(probe).color; return [t, c]; }).filter(([, c]) => c && c !== 'rgb(0, 0, 0)' || false);
     probe.remove();
     const hits = [];
     for (const el of document.querySelectorAll('body *')) {
@@ -317,9 +324,9 @@ async function h8(ctx) {
       for (const [t, c] of tokens) if (used.includes(c)) hits.push(t + ' on ' + (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || el.tagName));
     }
     return [...new Set(hits)];
-  })()`);
+  }, T.attention);
   const m = await b.inPage(C.motion);
-  const sentence = T.sentence ? await b.inPage(`(document.querySelector(${JSON.stringify(T.sentence)}) || {}).textContent || ''`) : await b.inPage(`(document.querySelector('.col-need') || {}).textContent || ''`);
+  const sentence = T.sentence ? await b.call(textOf, T.sentence) : await b.call(textOf, '.col-need');
   const calmWords = /nothing needs you/i.test(sentence);
   if (ctx.shots) await D.shot(b, ctx.shots('H8'));
   return { hue_hits: hues.slice(0, 6), hues: hues.length, motion_after_load: m.running, motion_samples: m.samples, says_nothing_needs_you: calmWords, pass: hues.length === 0 && m.running === 0 && calmWords };
@@ -361,8 +368,9 @@ function same(a, b) {
 async function oneRoom(ctx) {
   const { b, T, url, s } = ctx;
   const failures = [];
-  const displayed = () => b.inPage(`[...document.querySelectorAll(${JSON.stringify(T.roomSelector)})].filter((el) => getComputedStyle(el).display !== 'none').map((el) => el.id)`);
-  const topIn = (room) => b.inPage(`(() => { const r = document.querySelector(${JSON.stringify(T.room(room))}).getBoundingClientRect(); return r.top >= -1 && r.top < innerHeight; })()`);
+  const displayed = () => b.call((sel) => [...document.querySelectorAll(sel)].filter((el) => getComputedStyle(el).display !== 'none').map((el) => el.id), T.roomSelector);
+  const topIn = (room) => b.call((sel) => { const r = document.querySelector(sel).getBoundingClientRect(); return r.top >= -1 && r.top < innerHeight; }, T.room(room));
+  const click = (sel) => b.call((q) => document.querySelector(q).click(), sel);
   const check = async (room, how) => {
     const d = await displayed();
     const top = await topIn(room);
@@ -374,14 +382,14 @@ async function oneRoom(ctx) {
     await check(room, 'direct link');
     for (const other of T.rooms) {
       if (other === room) continue;
-      await b.inPage(`document.querySelector(${JSON.stringify(T.nav(other))}).click()`);
+      await click(T.nav(other));
       await wait(150);
-      await b.inPage(`document.querySelector(${JSON.stringify(T.nav(room))}).click()`);
+      await click(T.nav(room));
       await wait(150);
       break;
     }
     await check(room, 'nav');
-    const link = await b.inPage(`(() => { const a = [...document.querySelectorAll(${JSON.stringify(`${T.room(room)} a[href^="#T"], ${T.room(room)} a[href*="#T"]`)})].find((x) => x.getClientRects().length); if (!a) return null; a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (location.hash !== a.getAttribute('href')) location.hash = a.getAttribute('href'); return a.getAttribute('href'); })()`);
+    const link = await b.call((sel) => { const a = [...document.querySelectorAll(sel)].find((x) => x.getClientRects().length); if (!a) return null; a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); if (location.hash !== a.getAttribute('href')) location.hash = a.getAttribute('href'); return a.getAttribute('href'); }, `${T.room(room)} a[href^="#T"], ${T.room(room)} a[href*="#T"]`);
     if (link) {
       await wait(250);
       await check(room, 'sheet opened inside');
@@ -392,7 +400,8 @@ async function oneRoom(ctx) {
     await wait(200);
     await check(room, 'cleared fragment');
     s.ok(['task', 'note', 'T1', `one room ${room} ${n++}`, '--agent', 'orchestrator']);
-    await b.until(`document.documentElement.hasAttribute('data-position-restored') && document.body.textContent.includes(${JSON.stringify(`one room ${room} ${n - 1}`)})`, 'the live update', 20000).catch(() => failures.push({ room, how: 'live update', error: 'no update' }));
+    const note = `one room ${room} ${n - 1}`;
+    if (!await waitFor(() => b.call((t) => document.documentElement.hasAttribute('data-position-restored') && document.body.textContent.includes(t), note).catch(() => false), 20000, 50)) failures.push({ room, how: 'live update', error: 'no update' });
     await wait(200);
     await check(room, 'live update');
   }
@@ -410,15 +419,14 @@ async function keyboard(ctx) {
   const p = new D.Path(b);
   for (let i = 0; i < 260 && reached.size < want.length; i++) {
     await p.key('Tab');
-    const hit = await b.inPage(`(() => {
+    const hit = await b.call((sels) => {
       const a = document.activeElement; if (!a) return null;
-      const sels = ${JSON.stringify(want)};
       const i = sels.findIndex((x) => a.matches(x));
       if (i < 0) return null;
       const st = getComputedStyle(a);
       const ring = (st.outlineStyle !== 'none' && parseFloat(st.outlineWidth) >= 2) || (st.boxShadow && st.boxShadow !== 'none');
       return [i, ring];
-    })()`);
+    }, want);
     if (hit) reached.set(hit[0], hit[1]);
   }
   const missing = want.filter((_, i) => !reached.has(i));
@@ -437,7 +445,7 @@ async function checks(ctx) {
   const { b, T } = ctx;
   return {
     contrast: await b.inPage(C.contrast),
-    color_alone: await b.inPage(C.colorAlone(T.glyphs, ['ready', 'blocked', 'in progress', 'submitted', 'rework', 'accepted', 'cancelled', 'working', 'stopped', 'paused', 'now', 'your turn', 'stale', 'live'])),
+    color_alone: await b.call(C.colorAlone, T.glyphs, ['ready', 'blocked', 'in progress', 'submitted', 'rework', 'accepted', 'cancelled', 'working', 'stopped', 'paused', 'now', 'your turn', 'stale', 'live']),
     targets: await b.inPage(C.targets),
     names: await C.names(b),
     readability: await b.inPage(C.readability),

@@ -248,6 +248,25 @@ test('the snapshot opens offline in a browser, with and without scripts, and req
   assert.deepEqual(urls.filter((u) => !u.startsWith(file.split('#')[0]) && !u.startsWith('data:')), [], 'nothing but the file itself and data: icons');
 });
 
+test('the snapshot page timer runs without errors when there is no live source', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  populate(h);
+  const b = await openBrowser(t);
+  await b.send('Runtime.enable');
+  await b.goto(`${pathToFileURL(path.join(h.state, 'sketch.html')).href}#now`);
+  await b.until(`document.documentElement.classList.contains('js')`, 'the snapshot script');
+  // Virtual time runs the page's 5 s refresh timer twice without a real wait.
+  const expired = b.seen.length;
+  await b.send('Emulation.setVirtualTimePolicy', { policy: 'advance', budget: 11000 });
+  for (const end = Date.now() + 15000; !b.seen.slice(expired).some((m) => m.method === 'Emulation.virtualTimeBudgetExpired');) {
+    assert.ok(Date.now() < end, 'virtual time passed');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const thrown = b.seen.filter((m) => m.method === 'Runtime.exceptionThrown').map((m) => m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
+  assert.deepEqual(thrown, [], 'no uncaught page errors');
+});
+
 test('in a browser, JS displays only the routed view by nav and direct hash at desktop and mobile sizes', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
   const h = makeRepo(t);
   h.init();

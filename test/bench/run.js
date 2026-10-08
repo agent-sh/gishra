@@ -34,7 +34,9 @@ if (!T || !opt.tree || !opt.out) {
 const bin = path.resolve(opt.tree, 'bin', 'tower-crane.js');
 const out = path.resolve(opt.out);
 const shotsDir = path.join(out, build);
-const scratch = path.resolve(opt.scratch || path.join(process.env.TOWER_CRANE_TEST_TMP || require('node:os').tmpdir(), 'tower-crane-bench', build));
+// Without --scratch the states go in a private directory made for this run
+// and removed after it; --scratch keeps them for inspection.
+const scratch = opt.scratch ? path.resolve(opt.scratch) : fs.mkdtempSync(path.join(process.env.TOWER_CRANE_TEST_TMP || require('node:os').tmpdir(), `tower-crane-bench-${build}-`));
 const only = opt.only ? new Set(opt.only.split(',')) : null;
 const want = (k) => !only || only.has(k);
 fs.mkdirSync(shotsDir, { recursive: true });
@@ -85,12 +87,12 @@ async function main() {
             await D.load(b, url);
             await D.shot(b, path.join(shotsDir, `front-${key}.webp`));
             results.checks[`front ${key}`] = await step(`checks ${key}`, () => H.checks(ctxFor(busy, url, size, theme)));
-            if (size[0] === 3840) results.checks[`front ${key}`].density = await b.inPage(require('./checks').density(T.wrappers));
+            if (size[0] === 3840) results.checks[`front ${key}`].density = await b.call(require('./checks').density, T.wrappers);
           }
           if (want('H2') && size[0] > 500) {
             await D.load(b, url);
             // H2's controls must be reachable without a scroll at desktop sizes.
-            results.scenarios[`H2 reach ${key}`] = { pass: await b.inPage(`(() => { const el = document.querySelector(${JSON.stringify(T.option('D1', 'postgres'))}); if (!el) return false; const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()`) };
+            results.scenarios[`H2 reach ${key}`] = { pass: await b.call((sel) => { const el = document.querySelector(sel); if (!el) return false; const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }, T.option('D1', 'postgres')) };
           }
         }
       }
@@ -204,6 +206,7 @@ async function main() {
   } finally {
     for (const fn of cleanup) fn();
     await b.close();
+    if (!opt.scratch) fs.rmSync(scratch, { recursive: true, force: true });
   }
   results.finished_at = new Date().toISOString();
   fs.writeFileSync(path.join(out, `results-${build}.json`), JSON.stringify(results, null, 2) + '\n');
