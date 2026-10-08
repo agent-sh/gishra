@@ -13,7 +13,7 @@ function serve(h, agent) {
     child.stdout.on('data', (d) => {
       buf += d;
       const nl = buf.indexOf('\n');
-      if (nl >= 0) resolve({ child, url: JSON.parse(buf.slice(0, nl)).url });
+      if (nl >= 0) { const o = JSON.parse(buf.slice(0, nl)); resolve({ child, url: o.url, open: o.open }); }
     });
     child.on('error', reject);
     setTimeout(() => reject(new Error('serve did not start')), 10000);
@@ -57,13 +57,16 @@ async function main() {
     const s2 = await serve(h, 'owner');
     kids.push(s2.child);
     const page2 = await request(`${s2.url}settings`);
-    const tok2 = tokenOf(page2);
-    r = await request(`${s2.url}api/decisions/D1/answer`, { method: 'POST', headers: { ...json, origin: 'http://evil.example', 'x-tower-crane-token': tok2 }, body: '{"choice":"yes"}' });
+    const tok2 = tokenOf(page2) || '';
+    // W3 and W5 test other defenses, so they send the token of the owner's
+    // one-time link; W6 and W7 have only what a page without it carries.
+    const keyed = tokenOf(await request(s2.open)) || '';
+    r = await request(`${s2.url}api/decisions/D1/answer`, { method: 'POST', headers: { ...json, origin: 'http://evil.example', 'x-tower-crane-token': keyed }, body: '{"choice":"yes"}' });
     rec('W3', 'board', 'serve as owner; POST answer with the right token and Origin: http://evil.example', '403', `${r.code} ${r.body}`, r.code === 403 ? 'held' : 'CONFIRMED');
     const port = new URL(s2.url).port;
     r = await request(`${s2.url}settings`, { headers: { host: `rebound.example:${port}` } });
     rec('W4', 'board', 'serve as owner; GET /settings with Host: rebound.example (DNS rebinding)', '403', `${r.code} ${r.body.slice(0, 80)}`, r.code === 403 ? 'held' : 'CONFIRMED');
-    r = await request(`${s2.url}api/decisions/D1/answer`, { method: 'POST', headers: { 'content-type': 'text/plain', 'x-tower-crane-token': tok2 }, body: '{"choice":"yes"}' });
+    r = await request(`${s2.url}api/decisions/D1/answer`, { method: 'POST', headers: { 'content-type': 'text/plain', 'x-tower-crane-token': keyed }, body: '{"choice":"yes"}' });
     rec('W5', 'board', 'serve as owner; POST answer as text/plain with the token', '415', `${r.code} ${r.body}`, r.code === 415 ? 'held' : 'CONFIRMED');
     r = await request(`${s2.url}api/decisions/D1/answer`, { method: 'POST', headers: { ...json, 'x-tower-crane-token': tok2 }, body: '{"choice":"yes","note":"answered by a local process, not the owner"}' });
     const d1 = h.readState('decisions.json').decisions.find((d) => d.id === 'D1');
