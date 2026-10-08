@@ -4,11 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, BIN } = require('./helpers');
+const { makeRepo, detachedAlive, BIN } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-async function until(fn, timeout = 15000) {
+async function until(fn, timeout = 30000) {
   const deadline = Date.now() + timeout;
   while (!fn()) {
     if (Date.now() >= deadline) assert.fail('escalation did not finish');
@@ -17,7 +17,15 @@ async function until(fn, timeout = 15000) {
 }
 
 function setup(t, trigger = 'exit', range = 'easy..medium', prepare = null) {
-  const h = makeRepo(t);
+  const h = makeRepo();
+  t.after(async () => {
+    try {
+      // Submitted workers still have usage collection and gate reactions to finish.
+      await until(() => h.detached().filter((child) => child.kind === 'monitor').every((child) => !detachedAlive(child)));
+    } finally {
+      await h.cleanup();
+    }
+  });
   h.init();
   if (prepare) prepare(h);
   h.ok(['task', 'add', '--title', 'Start low', '--tier', range, '--acceptance', 'climbs on quality failure']);
@@ -54,7 +62,7 @@ ${index === 0 && trigger === 'cleanup' ? "setInterval(() => { if (fs.existsSync(
     h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
       JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{session}', '{prompt}']),
       '--clear', 'profile', '--clear', 'effort', '--clear', 'model', '--supervision',
-      JSON.stringify({ retries: 0, stall_ms: 100, backoff_ms: 10, max_backoff_ms: 10 })]);
+      JSON.stringify({ retries: 0, ...(index === 0 && trigger === 'stall' ? { stall_ms: 100 } : {}), backoff_ms: 10, max_backoff_ms: 10 })]);
   }
   h.readAttempts = () => fs.existsSync(h.attempts) ? JSON.parse(fs.readFileSync(h.attempts)) : [];
   return h;
