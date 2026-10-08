@@ -81,13 +81,13 @@ const args = process.argv.slice(2);
 const env = { ...process.env, PATH: ${JSON.stringify(parentPath)} };
 if (args[0] === 'push') {
   const target = args.find((a, i) => i > 0 && !a.startsWith('-')) || 'origin';
-  const remote = cp.spawnSync('git', ['remote', 'get-url', '--push', target], { env, encoding: 'utf8', timeout: 10000 });
+  const remote = cp.spawnSync('git', ['remote', 'get-url', '--push', target], { env, encoding: 'utf8' });
   if (/^(?:https?|ssh|git):|^[^/]*@/.test(target) || /^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
     process.stderr.write('fixture remote unavailable\\n');
     process.exit(1);
   }
 }
-const result = cp.spawnSync('git', args, { env, stdio: 'inherit', timeout: 10000 });
+const result = cp.spawnSync('git', args, { env, stdio: 'inherit' });
 process.exit(result.status ?? 1);
 `, { mode: 0o755 });
   const out = path.join(h.base, 'stub.json');
@@ -141,6 +141,39 @@ function spawn(h, u, role, env = {}, opts = {}) {
   }
   const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { ...opts, env: { ...u.env, ...env } });
   assert.equal(r.code, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+
+// The shim's decision for each command under each job's policy, as the spawn
+// writes it to policy.json, in one node process: 126 for a refusal, ALLOW for
+// a push or gh call the shim would hand on, and otherwise the exit code of
+// the git command, which runs so later decisions see the config it changes.
+const ALLOW = 'allow';
+const DECIDE = `
+const cp = require('node:child_process');
+const { gitDenied, ghDenied, findReal } = require(process.argv[1]);
+const { policies, cases } = JSON.parse(process.argv[2]);
+const ALLOW = ${JSON.stringify(ALLOW)};
+// The git the shim hands calls to, past any parent agent's shim.
+const git = findReal('git', '');
+const out = cases.map(([tool, ...args]) => {
+  const push = tool === 'git' && args.includes('push');
+  const seen = policies.map((policy) => {
+    const pushArgs = [];
+    const why = tool === 'git' ? gitDenied(args, policy, git, pushArgs) : ghDenied(args, policy);
+    return { why, pushArgs };
+  });
+  let code = null;
+  if (!push && tool === 'git' && seen.some((s) => !s.why)) code = cp.spawnSync(git, args, { stdio: 'ignore' }).status;
+  return seen.map(({ why, pushArgs }) => ({ argv: [tool, ...args], code: why ? 126 : code ?? ALLOW, why, pushArgs }));
+});
+process.stdout.write(JSON.stringify(out));
+`;
+function decide(h, cwd, jobs, branch, cases) {
+  const policies = jobs.map((job) => ({ ...A.policy(A.load(job)), branch, repo: 'acme/app' }));
+  const r = cp.spawnSync(process.execPath, ['-e', DECIDE, path.join(ROOT, 'lib', 'shim.js'), JSON.stringify({ policies, cases })],
+    { cwd, env: h.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
   return JSON.parse(r.stdout);
 }
 
@@ -623,7 +656,8 @@ test('the next spawn removes an exited agent\'s cache even when it holds read-on
 
 test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
-  const own = `HEAD:refs/heads/${h.git(['branch', '--show-current'], wt)}`;
+  const branch = h.git(['branch', '--show-current'], wt);
+  const own = `HEAD:refs/heads/${branch}`;
   const local = path.join(h.base, 'local.git');
   h.git(['init', '-q', '--bare', local]);
   // A remote on another machine; nothing listens there, so a push the shim
@@ -634,9 +668,9 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['git', 'status'], 0, 0],
     [['git', '-C', wt, 'log', '-1'], 0, 0],
     [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 0],
-    [['git', 'push', local, '+HEAD:refs/heads/fixture'], 0, 0],
+    [['git', 'push', local, '+HEAD:refs/heads/fixture'], ALLOW, ALLOW],
     [['git', 'push', '--force', local, 'HEAD:refs/heads/fixture'], 126, 126],
-    [['git', 'push', local, ':refs/heads/fixture'], 0, 0],
+    [['git', 'push', local, ':refs/heads/fixture'], ALLOW, ALLOW],
     [['git', 'push', 'origin', ':refs/heads/gone'], 126, 126],
     [['git', 'push', 'origin', '--delete', 'gone'], 126, 126],
     [['git', 'push', '-d', 'origin', 'gone'], 126, 126],
@@ -646,22 +680,22 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     ...['--del', '--pru', '--forc', '--mir', '--all', '--tags', '--no-verify'].map((o) => [['git', 'push', o, 'origin', 'HEAD:refs/heads/x'], 126, 126]),
     [['git', 'push', '-o', 'x', 'origin', 'HEAD:refs/heads/x'], 126, 126],
     [['git', 'push', 'origin', '--del', 'x'], 126, 126],
-    [['git', 'push', '-u', 'origin', own], 'net', 126],
-    [['git', 'push', '--set-upstream', '-q', 'origin', own], 'net', 126],
+    [['git', 'push', '-u', 'origin', own], ALLOW, 126],
+    [['git', 'push', '--set-upstream', '-q', 'origin', own], ALLOW, 126],
     // Configuration that turns a plain push into a mirror.
     ...['true', 'yes', 'on', '1'].flatMap((v) => [
       [['git', 'config', 'remote.origin.mirror', v], 0, 0],
       [['git', 'push', 'origin', own], 126, 126],
       [['git', 'config', '--unset', 'remote.origin.mirror'], 0, 0],
     ]),
-    [['git', 'push', 'origin', own], NET, 126],
+    [['git', 'push', 'origin', own], ALLOW, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
     [['git', 'push', 'origin', '+HEAD:refs/heads/forced'], 126, 126],
     [['git', '-c', 'alias.p=push', 'p', 'origin', 'HEAD:refs/heads/alias'], 126, 126],
     [['git', 'p'], 126, 126],
-    [['gh', 'pr', 'view', '1'], 0, 0],
-    [['gh', 'pr', 'create', '--fill'], 0, 126],
+    [['gh', 'pr', 'view', '1'], ALLOW, ALLOW],
+    [['gh', 'pr', 'create', '--fill'], ALLOW, 126],
     [['gh', '--repo', 'o/r', 'pr', 'merge', '1'], 126, 126],
     [['gh', 'pr', '-R', 'o/r', 'merge', '1'], 126, 126],
     [['gh', 'pr', 'lock', '1'], 126, 126],
@@ -669,28 +703,43 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['gh', 'cache', 'delete', 'x'], 126, 126],
     [['gh', 'co', '1'], 126, 126],
   ];
-  for (const harness of ['claude', 'codex']) {
-    for (const [rung, column] of [['hard', 1], ['small', 2]]) {
-      isolated(h, rung, harness);
-      spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
-      const ran = u.report().ran;
-      const codes = ran.map((r, i) => (cases[i][column] === NET && r.code !== 126 && r.code !== 0 ? NET : r.code));
-      assert.deepEqual(codes, cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
-    }
+  const decided = decide(h, wt, ['worker', 'small'], branch, cases.map((c) => c[0]));
+  for (const [column, job] of [[1, 'worker'], [2, 'small']]) {
+    const ran = decided.map((r) => r[column - 1]);
+    assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[column]), `${job}: ${JSON.stringify(ran.map((r) => [r.argv, r.why]))}`);
   }
   // A mirror key with no value, which git reads as true.
   const config = path.join(h.repo, '.git', 'config');
   const before = fs.readFileSync(config, 'utf8');
   fs.appendFileSync(config, '[remote "origin"]\n\tmirror\n');
-  isolated(h, 'hard', 'codex');
-  spawn(h, u, 'hard', { STUB_RUN: JSON.stringify([['git', 'push', 'origin', 'HEAD:refs/heads/ok']]) });
-  assert.deepEqual(u.report().ran.map((r) => r.code), [126], 'a valueless mirror key');
+  assert.deepEqual(decide(h, wt, ['worker'], branch, [['git', 'push', 'origin', 'HEAD:refs/heads/ok']])[0].map((r) => r.code), [126], 'a valueless mirror key');
   fs.writeFileSync(config, before);
+  // Each harness and rung reaches git and gh through the shim with its job's
+  // policy, and an allowed call runs the real program.
+  const probes = [
+    [['git', 'status'], 0, 0],
+    [['git', 'push', local, '+HEAD:refs/heads/fixture'], 0, 0],
+    [['git', 'push', '--force', local, 'HEAD:refs/heads/fixture'], 126, 126],
+    [['git', 'push', '-u', 'origin', own], NET, 126],
+    [['gh', 'pr', 'view', '1'], 0, 0],
+    [['gh', 'pr', 'create', '--fill'], 0, 126],
+  ];
+  for (const harness of ['claude', 'codex']) {
+    for (const [rung, column] of [['hard', 1], ['small', 2]]) {
+      isolated(h, rung, harness);
+      spawn(h, u, rung, { STUB_RUN: JSON.stringify(probes.map((c) => c[0])) });
+      const ran = u.report().ran;
+      const codes = ran.map((r, i) => (probes[i][column] === NET && r.code !== 126 && r.code !== 0 ? NET : r.code));
+      assert.deepEqual(codes, probes.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+    }
+  }
 });
 
-test('remote pushes publish only the task branch, including configured and implicit destinations', { skip: NO_STUBS }, (t) => {
-  const { h, u, wt } = setup(t);
-  const branch = h.git(['branch', '--show-current'], wt);
+test('remote pushes publish only the task branch, including configured and implicit destinations', (t) => {
+  const h = makeRepo(t);
+  h.init(['--repo', 'acme/app']);
+  h.ok(['task', 'add', '--title', 'Publish', '--acceptance', 'only this branch']);
+  const { path: wt, branch } = h.json(['worktree', 'T1']);
   const own = `refs/heads/${branch}`;
   h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
   h.git(['remote', 'add', 'elsewhere', 'https://github.com/acme/app.git']);
@@ -706,7 +755,7 @@ test('remote pushes publish only the task branch, including configured and impli
   push(['origin', `HEAD:${own}`], 126);
   unset('remote.origin.pushurl');
   config('remote.origin.pushurl', 'https://github.com/acme/app.git');
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   cases.push([['git', 'config', '--add', 'remote.origin.pushurl', 'https://github.com/acme/another.git'], 0]);
   push(['origin', `HEAD:${own}`], 126);
   unset('remote.origin.pushurl');
@@ -715,14 +764,14 @@ test('remote pushes publish only the task branch, including configured and impli
   config('remote.origin.url', 'https://github.com.evil.invalid/acme/app.git');
   push(['origin', `HEAD:${own}`], 126);
   config('remote.origin.url', 'git@github.com:acme/app.git');
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   config('remote.origin.url', 'https://github.com/acme/app.git');
   config('remote.pushDefault', 'elsewhere');
   push([], 126);
   unset('remote.pushDefault');
   config(`branch.${branch}.pushRemote`, 'elsewhere');
   push([], 126);
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   unset(`branch.${branch}.pushRemote`);
   config('url.https://github.com/acme/another.git.pushInsteadOf', 'https://github.com/acme/app.git');
   push(['origin', `HEAD:${own}`], 126);
@@ -738,18 +787,18 @@ test('remote pushes publish only the task branch, including configured and impli
   push(['origin', 'v9.9.9'], 126);
   push(['origin', ':'], 126);
   for (const ref of ['HEAD', branch, own, `HEAD:${branch}`, `HEAD:${own}`, `main:${own}`]) {
-    push(['-u', 'origin', ref], 1);
+    push(['-u', 'origin', ref], ALLOW);
   }
-  push(['origin', `HEAD:${own}`, `${branch}:${own}`], 1);
-  push(['origin'], 1);
-  push([], 1);
+  push(['origin', `HEAD:${own}`, `${branch}:${own}`], ALLOW);
+  push(['origin'], ALLOW);
+  push([], ALLOW);
   config('remote.origin.push', 'HEAD:main');
   push(['origin'], 126);
   push([], 126);
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   unset('remote.origin.push');
   config('remote.origin.push', `HEAD:${own}`);
-  push(['origin'], 1);
+  push(['origin'], ALLOW);
   cases.push([['git', 'config', '--add', 'remote.origin.push', 'HEAD:refs/tags/v9.9.9'], 0]);
   push(['origin'], 126);
   unset('remote.origin.push');
@@ -764,22 +813,22 @@ test('remote pushes publish only the task branch, including configured and impli
   config('push.default', 'upstream');
   push(['origin'], 126);
   config('push.default', 'current');
-  push(['origin'], 1);
+  push(['origin'], ALLOW);
   config('push.default', 'matching');
   push(['origin'], 126);
   unset('push.default');
   config(`branch.${branch}.merge`, own);
   cases.push([['git', 'checkout', '-q', '-B', 'another-task'], 0]);
   push(['origin', 'HEAD'], 126);
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   cases.push([['git', 'checkout', '-q', branch], 0]);
-  for (const harness of ['claude', 'codex']) {
-    isolated(h, 'hard', harness);
-    // The full push matrix starts several guarded Git processes per case.
-    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(cases.map(([args]) => args)) }, { timeout: 120000 });
-    const ran = u.report().ran;
-    assert.deepEqual(ran.map((r) => r.code), cases.map(([, code]) => code),
-      `${harness}: ${JSON.stringify(ran.map((r) => ({ args: r.argv, code: r.code, stderr: r.stderr })))}`);
+  const ran = decide(h, wt, ['worker'], branch, cases.map(([args]) => args)).map(([r]) => r);
+  assert.deepEqual(ran.map((r) => r.code), cases.map(([, code]) => code),
+    JSON.stringify(ran.map((r) => ({ args: r.argv, code: r.code, why: r.why }))));
+  // What the shim hands on names only the task branch as a destination.
+  for (const r of ran.filter((x) => x.code === ALLOW)) {
+    const words = r.pushArgs.slice(r.pushArgs.indexOf('push') + 1).filter((a) => !a.startsWith('-'));
+    assert.ok(words.length > 1 && words.slice(1).every((ref) => ref.endsWith(`:${own}`)), JSON.stringify(r));
   }
 });
 
@@ -810,7 +859,7 @@ results.push({ why: gitDenied(['push', 'origin', 'HEAD'], policy, 'git') });
 process.stdout.write(JSON.stringify(results));
 `;
   const result = cp.spawnSync(process.execPath, ['-e', script, path.join(ROOT, 'lib', 'shim.js'), branch],
-    { cwd: wt, env: h.env, encoding: 'utf8', timeout: 15000 });
+    { cwd: wt, env: h.env, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const probes = JSON.parse(result.stdout);
   for (const index of [0, 1, 5, 6, 7, 8, 9, 10]) assert.ok(probes[index].why, `probe ${index} must be refused`);
@@ -1033,8 +1082,8 @@ test('a gh token in the spawning environment passes through, and the keyring is 
   }
 });
 
-test('a push counts as local only when every URL git would use is local, so rewriting cannot reach another machine', { skip: NO_STUBS }, (t) => {
-  const { h, u } = setup(t);
+test('a push counts as local only when every URL git would use is local, so rewriting cannot reach another machine', (t) => {
+  const h = makeRepo(t);
   const local = path.join(h.base, 'local.git');
   h.git(['init', '-q', '--bare', local]);
   const away = 'https://127.0.0.1:9/away.git';
@@ -1050,32 +1099,25 @@ test('a push counts as local only when every URL git would use is local, so rewr
   h.git(['-C', fx, 'remote', 'add', 'up', away]);
   const rewritten = path.join(h.base, 'rewritten.git');
   const cases = [
-    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/plain'], 0, 0],
-    [['git', '-C', fx, 'push', 'loc', 'HEAD:refs/heads/named'], 0, 0],
+    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/plain'], ALLOW],
+    [['git', '-C', fx, 'push', 'loc', 'HEAD:refs/heads/named'], ALLOW],
     // An abbreviated option takes the next argument as its value; any option
     // voids the local exception, so `loc` cannot vouch for `up`.
-    [['git', '-C', fx, 'push', '--push-opt', 'loc', 'up', 'HEAD:refs/heads/x', '--force'], 126, 126],
-    [['git', '-C', fx, '-c', `url.${away}.insteadOf=${rewritten}`, 'push', rewritten, 'HEAD:refs/heads/x'], 126, 126],
-    [['git', '-C', fx, '-c', 'remote.two.pushurl=' + away, 'push', 'two', 'HEAD'], 126, 126],
-    [['git', '-C', fx, 'config', `url.${away}.insteadOf`, rewritten], 0, 0],
-    [['git', '-C', fx, 'push', rewritten, '+HEAD:refs/heads/x'], 126, 126],
-    [['git', '-C', fx, 'push', 'two', '+HEAD:refs/heads/x'], 126, 126],
-    [['git', '-C', fx, 'config', '--unset', `url.${away}.insteadOf`], 0, 0],
-    [['git', '-C', fx, 'config', `url.${away}.pushInsteadOf`, local], 0, 0],
-    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/x'], 126, 126],
+    [['git', '-C', fx, 'push', '--push-opt', 'loc', 'up', 'HEAD:refs/heads/x', '--force'], 126],
+    [['git', '-C', fx, '-c', `url.${away}.insteadOf=${rewritten}`, 'push', rewritten, 'HEAD:refs/heads/x'], 126],
+    [['git', '-C', fx, '-c', 'remote.two.pushurl=' + away, 'push', 'two', 'HEAD'], 126],
+    [['git', '-C', fx, 'config', `url.${away}.insteadOf`, rewritten], 0],
+    [['git', '-C', fx, 'push', rewritten, '+HEAD:refs/heads/x'], 126],
+    [['git', '-C', fx, 'push', 'two', '+HEAD:refs/heads/x'], 126],
+    [['git', '-C', fx, 'config', '--unset', `url.${away}.insteadOf`], 0],
+    [['git', '-C', fx, 'config', `url.${away}.pushInsteadOf`, local], 0],
+    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/x'], 126],
   ];
-  for (const harness of ['claude', 'codex']) {
-    for (const rung of ['hard', 'small']) {
-      try {
-        h.git(['-C', fx, 'config', '--unset-all', `url.${away}.pushInsteadOf`]);
-      } catch {
-        // Not set yet.
-      }
-      isolated(h, rung, harness);
-      spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
-      const ran = u.report().ran;
-      assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[rung === 'hard' ? 1 : 2]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
-    }
+  // Both a job that may push its branch and one that may not.
+  const decided = decide(h, h.base, ['worker', 'small'], 'tower-crane/T1-probe', cases.map((c) => c[0]));
+  for (const [n, job] of ['worker', 'small'].entries()) {
+    const ran = decided.map((r) => r[n]);
+    assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[1]), `${job}: ${JSON.stringify(ran.map((r) => [r.argv, r.why]))}`);
   }
 });
 
