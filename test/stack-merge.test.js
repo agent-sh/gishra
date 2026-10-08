@@ -246,6 +246,46 @@ test('a task changed during the lower merge stops before the upper merge', (t) =
   assert.equal(f.h.json(['task', 'show', 'T1']).stack_disabled, undefined);
 });
 
+// The hook binding a spawned worker writes into its own agent home.
+function hookTool(f, id) {
+  const home = path.join(f.h.state, 'homes', `worker-${id}`);
+  fs.mkdirSync(home, { recursive: true });
+  const binding = path.join(home, 'hook.json');
+  fs.writeFileSync(binding, JSON.stringify({ agent: `worker-${id}`, task: id, state: f.h.state, harness: 'codex', attempt: 1 }) + '\n');
+  return ['hook', 'tool', '--binding', binding, '--agent', `worker-${id}`];
+}
+
+test('unrelated workers logging hook progress during the final head checks do not stop the stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.add('unrelated');
+  f.write((d) => { d.during = { 'pr view': [hookTool(f, 'T3')] }; });
+  f.h.ok(['merge', 'T2']);
+  assert.equal(f.read().calls.filter((c) => c.args[1] === 'merge').length, 2);
+  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+});
+
+test('stack members logging hook progress during the final head checks do not stop the stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.during = { 'pr view': [hookTool(f, 'T2')] }; });
+  f.h.ok(['merge', 'T2']);
+  assert.equal(f.read().calls.filter((c) => c.args[1] === 'merge').length, 2);
+});
+
+test('a member event during the final head checks still stops the stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.during = { 'pr view': [['task', 'note', 'T1', 'progress', '--agent', 'worker-T1']] }; });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /changed during stack head checks/);
+  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+});
+
 test('three dependent PRs form one stack and all accepted lower tasks get merge evidence', (t) => {
   const f = stacked(t);
   f.add('third', 'T2');
