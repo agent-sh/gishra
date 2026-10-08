@@ -276,6 +276,65 @@ test('concurrent event consumers execute each submission gate only once', async 
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.map((e) => e.type), ['tests', 'clean', 'ci']);
 });
 
+// A slow stub suite records each run's start and end, so the log shows how
+// many gate executors ran at once across every consumer process.
+function slowSuite(h, { executors, crash = false } = {}) {
+  const runs = path.join(h.base, 'suite-runs.log');
+  const suite = path.join(h.base, 'tools', 'slow-suite.js');
+  fs.writeFileSync(suite, `const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(runs)}, '+\\n');
+const crash = ${JSON.stringify(crash ? path.join(h.base, 'crashed') : null)};
+if (crash && !fs.existsSync(crash)) {
+  fs.writeFileSync(crash, '');
+  const events = fs.readFileSync(${JSON.stringify(path.join(h.state, 'events.jsonl'))}, 'utf8').trim().split('\\n').map(JSON.parse);
+  process.kill(events.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running').detail.pid, 'SIGKILL');
+}
+setTimeout(() => fs.appendFileSync(${JSON.stringify(runs)}, '-\\n'), 2500);
+`);
+  h.ok(['project', 'set', '--tests-cmd', `node ${JSON.stringify(suite)}`, '--tests-mode', 'run-only',
+    ...(executors ? ['--executors', String(executors)] : []), '--agent', 'orchestrator']);
+  for (const id of ['T1', 'T2', 'T3']) {
+    if (id !== 'T1') h.ok(['task', 'add', '--title', `Change ${id}`, '--acceptance', 'it works', '--kind', 'code']);
+    h.ok(['claim', id, '--agent', 'worker']);
+    h.ok(['submit', id, '--sha', h.sha, '--agent', 'worker']);
+  }
+  return () => {
+    let now = 0;
+    let peak = 0;
+    const marks = fs.existsSync(runs) ? fs.readFileSync(runs, 'utf8').trim().split('\n') : [];
+    for (const mark of marks) peak = Math.max(peak, now += mark === '+' ? 1 : -1);
+    return { starts: marks.filter((m) => m === '+').length, peak };
+  };
+}
+
+test('gate executors across several watchers stay within gates.executors and queue the rest in order', async (t) => {
+  const h = setup(t);
+  const runs = slowSuite(h);
+  assert.match(h.ok(['project', 'show']), /gates\.executors: 2/);
+  const results = await Promise.all([0, 1, 2].map(() =>
+    h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator'])));
+  assert.ok(results.every((r) => r.code === 2), JSON.stringify(results));
+  assert.deepEqual(runs(), { starts: 3, peak: 2 });
+  const queued = h.logs().filter((e) => e.cmd === 'automation queued' && e.detail.executors === 2);
+  assert.ok(queued.some((e) => e.task === 'T3'), JSON.stringify(queued));
+  const started = h.logs().filter((e) => e.cmd === 'automation' && e.detail.phase === 'running').map((e) => e.task);
+  assert.equal(started.at(-1), 'T3', 'the queued submission runs after a slot frees');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => [e.type, e.ok]), [['tests', true], ['clean', true]], task.id);
+  }
+});
+
+test('a killed executor releases its gate executor slot', (t) => {
+  const h = setup(t);
+  const runs = slowSuite(h, { executors: 1, crash: true });
+  assert.notEqual(h.consume().code, 2, 'the suite kills the first executor');
+  h.consume();
+  assert.equal(runs().starts, 4, 'the killed run is retried and the other two run');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => e.type), ['tests', 'clean'], task.id);
+  }
+});
+
 for (const reason of ['unknown mergeability', 'transport error']) {
   test(`startup retries ${reason} without a new lifecycle event`, (t) => {
     const h = setup(t, { kind: 'docs' });
