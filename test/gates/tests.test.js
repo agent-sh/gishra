@@ -384,7 +384,8 @@ test('the tests policy decides how many times the suite runs', async () => {
     if (runs === 0) assert.match(r.summary, /mode none/);
     if (tests.expensive && runs === 1) {
       assert.match(r.summary, /scoped proof/);
-      assert.deepEqual(r.receipt, { proof_tests: ['test/add.test.js'] });
+      assert.deepEqual(r.receipt.proof_tests, ['test/add.test.js']);
+      assert.equal(r.receipt.head_mode, 'full');
     }
     assertCleanedUp();
   }
