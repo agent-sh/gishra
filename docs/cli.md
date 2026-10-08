@@ -197,7 +197,7 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters. For a task with a recorded PR, an open PR blocks changing its PR number or head branch. After it is closed or merged, a new PR supplies its head branch unless `--branch` is given and matches it |
 | | |
-| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC \| --follow]` | block until one matching event; print one JSON line (timeout exits 2); --follow prints an id-only line per event until interrupted |
+| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC \| --follow] [--observe]` | block until one matching event; print one JSON line (timeout exits 2); --follow prints an id-only line per event until interrupted |
 <!-- commands:Run:end -->
 
 `task add --lock lab/rdma --lock gpu/0 --environment lab` stores exclusive resource names and an informational environment label. Names are case-sensitive, trimmed and deduplicated. Tasks with any shared lock cannot hold worker leases or dispatch reservations at the same time, regardless of `limits.workers` or environment labels. Claim, worker spawn and expired renewal check under the state lock and name the holding task and agent on refusal. An unclaimed spawn reserves its locks with its worker slot, including retry backoff; its generated agent consumes that reservation on claim. Reviewer and other non-worker dispatches do not acquire resource locks. Environment labels do not select a harness or change its environment variables.
@@ -279,6 +279,14 @@ consumers serialize per task and reuse completed event receipts; commands
 execute outside the state lock. Deferred or errored reactions remain
 retryable at watcher startup. Accepted PRs already merged remotely are
 confirmed through the merge gate, preserving the accepted head check.
+`merge ID` holds the same task reservation as reactions. It waits while
+an observable reaction runs on the task, then merges or, when the reaction
+already merged, confirms the accepted head through the merge gate. A
+reaction that starts during a manual merge queues; the merge drains it
+after releasing the task, and it finds the task merged. A reservation
+held by an unobservable executor refuses the merge.
+The merge queue takes the same reservation for the head of the line
+around its merge, since the queue can run under another task's reaction.
 Supervisors use the dispatcher's PATH and an explicit trusted
 authorization context; workers and reviewers keep their restrictive
 command shims. Software reactions may finish their
@@ -321,10 +329,11 @@ In Claude Code, arm the mod once after the startup snapshot: the model calls the
 
 A push carries ids, never content: one line per event (`- E…: decision-answer D5 from owner`, `- E…: worker-message T3 from worker-T3-1`), then `Read each with tower-crane event <id>` and the cursor. Spawned orchestrator homes acknowledge what they delivered with `hook inbox` receipts and count events from the log offset their home was built at (`after` in `hook.json`).
 
-`tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC | --follow]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
+`tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC | --follow] [--observe]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
 
 - `--after` is an event `id` or a byte `offset` returned by a previous wait. The default, `now`, starts at the log's current end; `0` replays from the beginning. Cursors are exclusive. A numeric cursor must be zero or immediately after a complete line, within the current log. Unknown ids and invalid offsets exit 2.
 - `--for` defaults to `orchestrator`. A message addressed to the waiter's own agent name also wakes it, and every event recorded as `owner` wakes an `orchestrator` waiter whoever it was addressed to (an owner message to a worker included). `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types; `all` adds the bookkeeping the default skips: `hook progress`, `hook report`, `hook inbox`, `renew`, `spend` and `spawn session`. The orchestrator never needs a type list. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner`, `via: automation` and engine observations (`worker-exited` and `stall`). Owner input and automatic results reach the waiter that shares their actor, and observations wake their observer too.
+- `--observe` watches without software reactions: no startup reconciliation and no automatic gates, review dispatch, accepts or merges. Use it for a waiter that must not act, such as a second observer or a test of manual commands.
 - No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is `{"type":"timeout","offset":N}` followed by a newline and the exit code is 2. The offset follows the last complete line scanned, including filtered events. Interrupting the wait exits 130 and closes its watchers.
 - An event line contains `id`, `type`, `to`, `at`, `agent`, `cmd`, `task`, `detail`, and `offset`. `offset` is the byte position after that event's newline. Use either returned cursor for the next wait to retain events that arrived while handling the first.
 - `--follow` never exits on an event: it prints `{"type":"ready","offset":N}` once its cursor is set, then one line per matching event with `id`, `type`, `to`, `agent`, `task`, `offset`, `decision` for decision events and `steer: true` for a steered message, and no `detail`. It runs until interrupted or until its reader closes stdout, and refuses `--timeout`.

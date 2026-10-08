@@ -552,6 +552,14 @@ only after verifying the caller's authority or entering from the trusted
 supervisor. Supervisors restore the dispatcher's command PATH for these
 operations; agent commands retain their restrictive Git and GitHub shims.
 This provenance does not replace gate command receipts.
+`merge ID` takes the same reservation with source `merge:<uuid>`, waits
+while a running executor is observable and records `done`, or `error` when
+it refuses, as its release. It drains reactions queued behind it, as an
+executor does. The merge queue takes the head of the line's reservation
+with source `queue:<uuid>` around its merge, unless its own process
+already holds it. Stack head checks ignore `automation`,
+`automation queued` and `automation reconcile` events, which change no
+task state.
 An accepted PR already merged remotely goes through the merge gate's
 confirmation path. It records the matching accepted head without merging
 again, including after an executor dies before writing its receipt.
