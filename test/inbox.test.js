@@ -139,6 +139,13 @@ test('review replacement, capped revuto, old CodeQL heads and unavailable GitHub
   assert.equal(h.run(['inbox', '--agent', 'worker']).code, 1);
   assert.equal(h.run(['release', '--dead', '--agent', 'worker']).code, 1);
   assert.equal(h.run(['spawn', '--ready', '--agent', 'worker']).code, 1);
+  github.fail = false;
+  github.prs[8].headRefOid = 'f'.repeat(40);
+  h.save(github);
+  const moved = h.inbox().items.find((i) => i.kind === 'head_changed');
+  h.ok([...moved.action.argv, '--agent', 'orchestrator']);
+  assert.equal(h.json(['task', 'show', id]).status, 'rework');
+  assert.equal(h.json(['task', 'show', id]).sha, h.sha, 'a new remote head does not become reviewed evidence');
 });
 
 test('ready dispatch respects worker slots and unobservable processes cannot be released or replaced', (t) => {
