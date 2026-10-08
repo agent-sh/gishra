@@ -4,7 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { spawn } = require('node:child_process');
+const { makeRepo, HOOKS } = require('./helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
@@ -214,6 +215,99 @@ test('many writers breaking one dead lock at once all write, once each', async (
     assert.ok(!fs.existsSync(path.join(h.state, 'lock')), `round ${round}: the lock is released`);
   }
   assert.deepEqual(fs.readdirSync(h.state).filter((f) => f.startsWith('lock')), [], 'no prepared lock is left behind');
+});
+
+for (const aged of [false, true]) {
+  test(`concurrent processes acquire and release for seconds${aged ? ' while live staging looks old' : ''}`, async (t) => {
+    const h = makeRepo(t);
+    h.init();
+    h.ok(['task', 'add', '--title', 'Concurrent notes', '--acceptance', 'no lost writes']);
+    const barrier = path.join(h.base, 'stress-barrier');
+    fs.mkdirSync(barrier);
+    const children = Array.from({ length: 6 }, () => {
+      const child = spawn(process.execPath, ['--require', HOOKS, path.join(__dirname, 'fixtures', 'lock-stress.js')], {
+        cwd: h.repo,
+        env: {
+          ...h.env, HOOK_STATE: h.state, HOOK_JITTER_MS: '2',
+          LOCK_STRESS_BARRIER: barrier, LOCK_STRESS_AGE_STAGING: aged ? '1' : '',
+        },
+        timeout: 30000,
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (data) => { stdout += data; });
+      child.stderr.on('data', (data) => { stderr += data; });
+      const done = new Promise((resolve, reject) => {
+        child.on('error', reject);
+        child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+      });
+      return { child, done };
+    });
+    let results;
+    try {
+      await Promise.all(children.map(({ child }) => waitForFile(path.join(barrier, String(child.pid)))));
+      fs.writeFileSync(path.join(barrier, 'go'), '');
+      results = await Promise.all(children.map(({ done }) => done));
+    } finally {
+      for (const { child } of children) child.kill();
+      await Promise.allSettled(children.map(({ done }) => done));
+    }
+    let writes = 0;
+    for (const result of results) {
+      assert.equal(result.code, 0, `signal ${result.signal}: ${result.stderr}`);
+      assert.doesNotMatch(result.stderr, /ENOENT/);
+      const count = JSON.parse(result.stdout.trim().split('\n').at(-1)).writes;
+      assert.ok(count > 0, 'every process acquired and released the lock');
+      writes += count;
+    }
+    const notes = h.readState('tasks.json').tasks[0].notes;
+    assert.equal(notes.length, writes, 'every successful CLI write survived');
+    assert.equal(new Set(notes.map((note) => note.text)).size, writes, 'no note was written twice');
+    assert.equal(h.run(['validate']).code, 0);
+    assert.deepEqual(fs.readdirSync(h.state).filter((name) => name.startsWith('lock')), [], 'no lock or staging directory was left');
+  });
+}
+
+for (const point of ['mkdir', 'write', 'rename']) {
+  test(`a cleanup race during staging ${point} retries with a private directory`, (t) => {
+    const h = makeRepo(t);
+    h.init();
+    h.ok(['task', 'add', '--title', 'Retry cleanup', '--acceptance', 'note survives']);
+    const attempts = path.join(h.base, 'attempts');
+    const hook = path.join(__dirname, 'fixtures', 'lock-cleanup-race.js');
+    h.ok(['task', 'note', 'T1', 'after cleanup'], { env: {
+      NODE_OPTIONS: `--require=${JSON.stringify(hook)}`,
+      LOCK_RACE_POINT: point, LOCK_RACE_ATTEMPTS: attempts,
+    } });
+    assert.equal(fs.readFileSync(attempts, 'utf8').trim().split('\n').length, 1, 'the cleanup race was exercised');
+    assert.deepEqual(h.readState('tasks.json').tasks[0].notes.map((note) => note.text), ['after cleanup']);
+    assert.deepEqual(fs.readdirSync(h.state).filter((name) => name.startsWith('lock')), []);
+  });
+}
+
+test('continuous staging cleanup times out with exit 3 and bounded backoff', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const attempts = path.join(h.base, 'attempts');
+  const hook = path.join(__dirname, 'fixtures', 'lock-cleanup-race.js');
+  const started = Date.now();
+  const result = h.run(['task', 'add', '--title', 'Never staged', '--acceptance', 'bounded'], {
+    env: {
+      NODE_OPTIONS: `--require=${JSON.stringify(hook)}`,
+      LOCK_RACE_POINT: 'write', LOCK_RACE_ATTEMPTS: attempts, LOCK_RACE_ALWAYS: '1',
+    },
+    timeout: 25000,
+  });
+  const waited = Date.now() - started;
+  assert.equal(result.code, 3, result.stderr);
+  assert.ok(waited >= 9500 && waited < 20000, `waited ${waited} ms`);
+  assert.doesNotMatch(result.stderr, /ENOENT/);
+  const names = fs.readFileSync(attempts, 'utf8').trim().split('\n');
+  assert.ok(names.length >= 5 && names.length <= 400, `${names.length} attempts: cleanup retries back off`);
+  assert.equal(new Set(names).size, names.length, 'each retry used a fresh directory');
+  for (const name of names) assert.match(name, /^lock\.\d+\.[0-9a-f]{16}\.new$/);
+  assert.equal(h.readState('tasks.json').tasks.length, 0);
+  assert.deepEqual(fs.readdirSync(h.state).filter((name) => name.startsWith('lock')), []);
 });
 
 test('a stale lock that cannot be removed still times out with exit 3', (t) => {
