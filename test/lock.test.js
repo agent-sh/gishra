@@ -53,11 +53,57 @@ function killHolder(h) {
   assert.ok(fs.existsSync(path.join(h.state, 'lock')), 'the dead holder left its lock');
 }
 
-test('a known live holder keeps an old marker until the waiter times out', (t) => {
+for (const field of ['start_ticks', 'boot_id']) {
+  test(`a reused PID with mismatched ${field} is reclaimed`, { skip: process.platform !== 'linux' }, (t) => {
+    const h = makeRepo(t);
+    h.init();
+    const lock = S.acquireLock(h.state);
+    try {
+      const marker = JSON.parse(fs.readFileSync(lock.file, 'utf8'));
+      marker[field] = field === 'start_ticks' ? '0' : '00000000-0000-0000-0000-000000000000';
+      if (field === 'boot_id') marker.pidns = 'pid:[0]';
+      fs.writeFileSync(lock.file, JSON.stringify(marker));
+      const result = h.run(['task', 'add', '--title', 'reclaimed PID', '--acceptance', 'write survives'], {
+        env: { NODE_OPTIONS: `--require=${JSON.stringify(SHORT_WAIT)}` },
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(h.readState('tasks.json').tasks.map((task) => task.title), ['reclaimed PID']);
+      assert.deepEqual(fs.readdirSync(h.state).filter((name) => name.startsWith('lock')), []);
+    } finally {
+      S.releaseLock(lock);
+    }
+  });
+}
+
+test('an old marker without process identity cannot be kept alive by a reused PID', (t) => {
   const h = makeRepo(t);
   h.init();
   const lock = S.acquireLock(h.state);
   try {
+    const marker = JSON.parse(fs.readFileSync(lock.file, 'utf8'));
+    delete marker.start_ticks;
+    delete marker.boot_id;
+    fs.writeFileSync(lock.file, JSON.stringify(marker));
+    const old = new Date(Date.now() - 120000);
+    fs.utimesSync(lock.file, old, old);
+    const result = h.run(['task', 'add', '--title', 'legacy reclaim', '--acceptance', 'age fallback'], {
+      env: { NODE_OPTIONS: `--require=${JSON.stringify(SHORT_WAIT)}` },
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(h.readState('tasks.json').tasks.map((task) => task.title), ['legacy reclaim']);
+  } finally {
+    S.releaseLock(lock);
+  }
+});
+
+test('a known live holder keeps an old marker until the waiter times out', { skip: process.platform !== 'linux' }, (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const lock = S.acquireLock(h.state);
+  try {
+    const marker = JSON.parse(fs.readFileSync(lock.file, 'utf8'));
+    assert.equal(marker.start_ticks, require('../lib/processes').identity(process.pid).start_ticks);
+    assert.equal(marker.boot_id, fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim());
     const old = new Date(Date.now() - 120000);
     fs.utimesSync(lock.file, old, old);
     const result = h.run(['task', 'add', '--title', 'must wait', '--acceptance', 'holder protected'], {
