@@ -26,7 +26,7 @@ function setup(t, harness, supervision = {}) {
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
   h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'dispatch-model', '--clear', 'profile', '--clear', 'effort',
-    '--supervision', JSON.stringify({ usage_ms: 100, stall_ms: 60000, ...supervision })]);
+    '--supervision', JSON.stringify({ usage_ms: 500, stall_ms: 60000, ...supervision })]);
   h.done = path.join(h.base, 'done');
   h.liveEnv = (extra = {}) => ({
     PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
@@ -42,8 +42,8 @@ for (const [harness, scope] of [['claude', 'project'], ['codex', 'task']]) {
     const h = setup(t, harness);
     if (scope === 'project') h.ok(['project', 'set', '--budget-tokens', '3500']);
     else h.ok(['task', 'update', 'T1', '--budget-tokens', '3500']);
-    // 60 steps of 1000 tokens over about 6 s; the budget falls at step 4.
-    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '60', LIVE_STEP_TOKENS: '1000', LIVE_EVERY: '100' }) });
+    // 60 steps of 1000 tokens over about 18 s; the budget falls at step 4.
+    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '60', LIVE_STEP_TOKENS: '1000', LIVE_EVERY: '300' }) });
     await until(() => exited(h, spawned.agent), 'the agent was not stopped');
     assert.equal(fs.existsSync(h.done), false, 'the agent was stopped before it finished on its own');
 
@@ -117,6 +117,8 @@ test('live usage shows its freshness: live, stale when no reading arrives, unava
   assert.deepEqual(status.spend.live.map((l) => [l.task, l.agent, l.state]), [['T1', spawned.agent, 'live']]);
   assert.match(h.ok(['status']), new RegExp(`live spend: T1 ${spawned.agent}: 1400 tokens, live`));
   assert.match(h.ok(['task', 'show', 'T1']), /live spend: .*1400 tokens, live/);
+  // A write re-renders after it releases the lock, so read a render of our own.
+  h.ok(['render']);
   assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /data-live-state="live"/);
 
   // An hour without a new reading, as when the supervisor is gone.
@@ -132,7 +134,7 @@ test('live usage shows its freshness: live, stale when no reading arrives, unava
 test('a harness without live usage is shown unavailable, never as zero', async (t) => {
   const h = setup(t, 'claude');
   const script = "require('node:child_process').execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']); setTimeout(() => {}, 60000);";
-  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, require('./helpers').BIN])]);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, require('./helpers').BIN, '{prompt}'])]);
   const spawned = h.json(['spawn', '--task', 'T1']);
   await until(() => h.json(['status']).spend.live.length === 1, 'no live state was recorded');
   const [live] = h.json(['status']).spend.live;
@@ -147,7 +149,7 @@ test('a budget lowered during retry backoff cancels the relaunch, records the st
   const attempts = path.join(h.base, 'attempts');
   const script = "const fs = require('node:fs'); fs.appendFileSync(process.argv[2], 'x');"
     + " require('node:child_process').execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']); process.exit(75);";
-  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, require('./helpers').BIN, attempts])]);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, require('./helpers').BIN, attempts, '{prompt}'])]);
   h.ok(['spend', 'T1', '--agent', 'earlier', '--tokens', '5000']);
   const spawned = h.json(['spawn', '--task', 'T1']);
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'retry was not scheduled');

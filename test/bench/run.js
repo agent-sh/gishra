@@ -43,9 +43,13 @@ fs.mkdirSync(scratch, { recursive: true });
 const log = (...m) => process.stderr.write(`[${new Date().toISOString().slice(11, 19)}] ${m.join(' ')}\n`);
 const sizeName = ([w, h]) => `${w}x${h}`;
 
-async function withServe(s, fn) {
+async function withServe(b, s, fn) {
   const srv = D.serve(s, bin);
-  try { return await fn(await srv.url); } finally { await srv.stop(); }
+  try {
+    const { url, open } = await srv.links;
+    if (open !== url) await D.load(b, open, false);
+    return await fn(url);
+  } finally { await srv.stop(); }
 }
 
 async function main() {
@@ -67,7 +71,7 @@ async function main() {
     // Read-only: the busy run at every size and theme.
     log('busy fixture');
     const busy = F.busy(scratch, bin);
-    await withServe(busy, async (url) => {
+    await withServe(b, busy, async (url) => {
       for (const size of D.SIZES) {
         await D.setSize(b, size);
         for (const theme of D.THEMES) {
@@ -150,7 +154,7 @@ async function main() {
     for (const [name, fn] of [['H2', H.h2], ['H3', H.h3], ['H6', H.h6]]) {
       if (!want(name)) continue;
       log(name);
-      results.scenarios[name] = await step(name, async () => { const s = F.busy(scratch, bin); return withServe(s, (url) => fn(ctxFor(s, url, [1920, 1080], 'light'))); });
+      results.scenarios[name] = await step(name, async () => { const s = F.busy(scratch, bin); return withServe(b, s, (url) => fn(ctxFor(s, url, [1920, 1080], 'light'))); });
     }
     if (want('H9')) {
       log('H9');
@@ -160,13 +164,13 @@ async function main() {
 
     if (want('H4')) {
       log('H4');
-      results.scenarios.H4 = await step('H4', async () => { const s = F.runaway(scratch, bin); return withServe(s, (url) => H.h4(ctxFor(s, url, [1920, 1080], 'light'))); });
+      results.scenarios.H4 = await step('H4', async () => { const s = F.runaway(scratch, bin); return withServe(b, s, (url) => H.h4(ctxFor(s, url, [1920, 1080], 'light'))); });
       for (const fn of cleanup.splice(0)) fn();
     }
     if (want('H4s')) {
       for (const variant of ['stale', 'unavailable']) {
         log('H4s', variant);
-        results.scenarios[`H4s ${variant}`] = await step(`H4s ${variant}`, async () => { const s = F.runaway(scratch, bin, { variant }); return withServe(s, (url) => H.h4s(ctxFor(s, url, [1920, 1080], 'light', { variant }))); });
+        results.scenarios[`H4s ${variant}`] = await step(`H4s ${variant}`, async () => { const s = F.runaway(scratch, bin, { variant }); return withServe(b, s, (url) => H.h4s(ctxFor(s, url, [1920, 1080], 'light', { variant }))); });
         for (const fn of cleanup.splice(0)) fn();
       }
     }
@@ -174,7 +178,7 @@ async function main() {
       log('H5');
       await step('H5', async () => {
         const s = F.budget(scratch, bin);
-        await withServe(s, async (url) => {
+        await withServe(b, s, async (url) => {
           for (const size of D.SIZES) {
             await D.setSize(b, size);
             results.scenarios[`H5 ${sizeName(size)}`] = await step(`H5 ${sizeName(size)}`, () => H.h5(ctxFor(s, url, size, 'light')));
@@ -188,7 +192,7 @@ async function main() {
       log('H8');
       await step('H8', async () => {
         const s = F.calm(scratch, bin);
-        await withServe(s, async (url) => {
+        await withServe(b, s, async (url) => {
           for (const theme of D.THEMES) {
             await D.setMedia(b, { theme });
             results.scenarios[`H8 ${theme}`] = await step(`H8 ${theme}`, () => H.h8(ctxFor(s, url, [1920, 1080], theme)));

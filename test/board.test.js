@@ -33,6 +33,11 @@ function populate(h) {
 // serve runs in the repository, and Windows cannot delete a directory a live
 // process runs in, so every server stops before makeRepo's cleanup: each
 // test closes its servers in a finally block.
+// The one-time link each server printed, by its URL: only a page loaded from
+// it carries the write token.
+const links = new Map();
+const keyed = (url) => links.get(url);
+
 async function startServe(servers, h, agent = 'owner') {
   const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json', '--agent', agent], { cwd: h.repo, env: h.env });
   const exited = new Promise((resolve) => server.on('exit', resolve));
@@ -41,7 +46,10 @@ async function startServe(servers, h, agent = 'owner') {
     let out = '';
     server.stdout.on('data', (d) => {
       out += d;
-      if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]).url);
+      if (!out.includes('\n')) return;
+      const { url, open } = JSON.parse(out.split('\n')[0]);
+      links.set(url, open);
+      resolve(url);
     });
     server.on('exit', (code) => reject(new Error(`serve exited ${code}`)));
   });
@@ -56,7 +64,7 @@ async function withServers(fn) {
   }
 }
 
-const tokenOf = (page) => /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
+const tokenOf = (page) => /<meta name="tower-crane-token" content="([0-9a-f]{48})?">/.exec(page)[1] || '';
 const post = (url, token, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tower-crane-token': token }, body: JSON.stringify(body) });
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
@@ -290,7 +298,7 @@ test('serve sends a submitted or accepted task back for rework only as the owner
     assert.equal((await post(`${viewer}api/tasks/T5/rework`, tokenOf(viewerPage), { reason: 'forged' })).status, 403);
 
     const url = await startServe(servers, h);
-    const page = await (await fetch(url)).text();
+    const page = await (await fetch(keyed(url))).text();
     assert.match(page, /data-api="\/api\/tasks\/T5\/rework"/);
     assert.doesNotMatch(page, /data-api="\/api\/tasks\/T1\/rework"/, 'a claimed task cannot be sent back');
     const token = tokenOf(page);
@@ -316,8 +324,9 @@ test('in a browser, every board write goes through its form: answer, comments, o
   await withServers(async (servers) => {
     const url = await startServe(servers, h);
     const b = await openBrowser(t);
-    await b.goto(url);
+    await b.goto(keyed(url));
     await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+    assert.equal(await b.inPage('location.search'), '', 'the page drops the one-time key from the address bar');
     const events = () => log(h).length;
 
     // Answer with the option button, as a person would.
@@ -669,7 +678,7 @@ test('live updates match task sheet buttons by form and fall back when the focus
       h.ok(['task', 'add', '--title', 'Dashboard access', '--acceptance', 'access granted', '--needs-owner', 'grant dashboard access']);
       await withServers(async (servers) => {
         const url = await startServe(servers, h);
-        await b.goto(`${url}#T1`);
+        await b.goto(`${keyed(url)}#T1`);
         await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
         const button = JSON.stringify(`#T1 form[data-api="/api/tasks/T1/${action}"] button[type="submit"]`);
         await b.inPage(`document.querySelector(${button}).focus({ preventScroll: true })`);
@@ -939,10 +948,14 @@ test('serve messages the claimant and caps a task budget only as the owner, thro
     assert.doesNotMatch(viewerPage, /data-api="\/api\/tasks\/T1\/(message|budget)"/, 'no message or stop form without the owner');
     assert.equal((await post(`${viewer}api/tasks/T1/message`, tokenOf(viewerPage), { text: 'forged' })).status, 403);
     const url = await startServe(servers, h);
-    const page = await (await fetch(url)).text();
+    const before = log(h).length;
+    const unkeyed = tokenOf(await (await fetch(url)).text());
+    assert.equal(unkeyed, '', 'a page opened without the one-time link carries no token');
+    assert.equal((await post(`${url}api/tasks/T1/message`, unkeyed, { text: 'forged' })).status, 403);
+    assert.equal((await post(`${url}api/tasks/T1/budget`, unkeyed, { tokens: '1' })).status, 403);
+    const page = await (await fetch(keyed(url))).text();
     assert.match(page, /data-api="\/api\/tasks\/T1\/message"/, 'the claimed task offers a message on its row');
     const token = tokenOf(page);
-    const before = log(h).length;
     assert.equal((await post(`${url}api/tasks/T4/message`, token, { text: 'nobody holds T4' })).status, 400, 'an unclaimed task has nobody to message');
     assert.equal((await post(`${url}api/tasks/T1/budget`, token, { tokens: 'lots' })).status, 400);
     assert.equal(log(h).length, before, 'refused writes record nothing');

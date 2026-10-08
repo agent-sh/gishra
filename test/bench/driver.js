@@ -22,15 +22,19 @@ function serve(s, bin, agent = 'owner') {
   let err = '';
   child.stderr.on('data', (d) => { err += d; });
   const exited = new Promise((resolve) => child.on('exit', resolve));
-  const url = new Promise((resolve, reject) => {
+  // An owner serve prints a one-time link (open) whose page hands the write
+  // token to this origin's storage; a build before that link has only url.
+  const links = new Promise((resolve, reject) => {
     let out = '';
     child.stdout.on('data', (d) => {
       out += d;
-      if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]).url);
+      if (!out.includes('\n')) return;
+      const j = JSON.parse(out.split('\n')[0]);
+      resolve({ url: j.url, open: j.open || j.url });
     });
     child.on('exit', (code) => reject(new Error(`serve exited ${code}: ${err}`)));
   });
-  return { url, stop: async () => { child.kill(); await exited; } };
+  return { links, stop: async () => { child.kill(); await exited; } };
 }
 
 async function browser() {
