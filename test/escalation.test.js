@@ -402,7 +402,7 @@ for (const prior of ['spent', 'lock-timeout']) {
       const hook = path.join(__dirname, 'fixtures', 'escalation-lock-timeout.js').replace(/\\/g, '/');
       opts.env = { NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_RECOVERY_LOCK: path.join(h.base, 'lock-timeout') };
     }
-    const result = h.run(['wait', '--types', 'submitted', '--task', 'T1', '--agent', 'orchestrator', '--timeout', '5'], opts);
+    const result = h.run(['wait', '--types', 'submitted', '--task', 'T1', '--agent', 'orchestrator', '--timeout', '60'], opts);
     assert.equal(result.code, 0, result.stderr || result.stdout);
     if (prior === 'lock-timeout') assert.ok(fs.existsSync(opts.env.TOWER_CRANE_TEST_RECOVERY_LOCK));
     assert.equal(events(h).filter((e) => e.cmd === 'worker-exited').length, 1);

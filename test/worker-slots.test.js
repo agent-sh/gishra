@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { cachedFixture, BIN } = require('./helpers');
+const P = require('../lib/processes');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 
@@ -132,6 +133,29 @@ test('an unclaimed exit and a failed launch both free the reserved slot', async 
   fs.writeFileSync(path.join(h.base, 'T1.exit'), '');
   await until(() => events(h).some((e) => e.cmd === 'spawn exit' && e.detail.agent === spawned.agent), 'exit was not recorded');
   h.ok(['claim', 'T2', '--agent', 'manual']);
+});
+
+// Linux only: the group probe reads /proc, so elsewhere the reservation stays held.
+test('spawn refuses a task with a live reservation and clears one whose processes are gone', { skip: process.platform !== 'linux' && 'the process-group probe reads /proc' }, async (t) => {
+  const h = setup(t, 2, 2);
+  controlledHarness(h);
+  const spawned = h.json(['spawn', '--task', 'T1']);
+  await until(() => fs.existsSync(path.join(h.base, 'T1.started')), 'worker did not start');
+  const refused = h.run(['spawn', '--task', 'T1']);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /T1.*worker-T1-1.*reservation/);
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn').length, 1, 'the refused spawn records nothing');
+  // The monitor dies first so it cannot record the exit, then the worker's group.
+  process.kill(spawned.monitor_pid, 'SIGKILL');
+  process.kill(-spawned.pid, 'SIGKILL');
+  const gone = () => P.processState({ host: spawned.host, pid: spawned.monitor_pid }) === 'exited'
+    && P.processGroupState({ host: spawned.host, pid: spawned.pid }) === 'exited';
+  await until(gone, 'worker processes did not exit');
+  const replacement = h.json(['spawn', '--task', 'T1']);
+  assert.equal(replacement.agent, 'worker-T1-2');
+  assert.ok(events(h).some((e) => e.cmd === 'reservation clear' && e.detail.agent === spawned.agent && e.detail.attempt === spawned.attempt),
+    'the cleared reservation is recorded');
+  fs.writeFileSync(path.join(h.base, 'T1.exit'), '');
 });
 
 test('reviewer dispatch is unaffected when worker reservations fill the limit', async (t) => {

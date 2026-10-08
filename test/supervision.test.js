@@ -401,6 +401,18 @@ test('progress paths and CPU detect a stalled process without dropping its live 
   assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
 });
 
+test('a worker that never claims is stopped at its claim window, reports why and frees its slot', (t) => {
+  const h = setup(t, { claim: false, failures: 0, hold: 60000, config: { claim_ms: 1000 } });
+  const result = h.spawn(undefined, 20000);
+  assert.equal(result.code, 1, result.stderr);
+  const blocked = log(h).findLast((e) => e.cmd === 'spawn phase' && e.detail.phase === 'blocked');
+  assert.match(blocked.detail.reason, /no lease: no claim within 1 s of launch/);
+  assert.equal(log(h).filter((e) => e.cmd === 'spawn').length, 1, 'the unclaimed worker is not relaunched');
+  assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0, 'and is not rerun');
+  assert.ok(log(h).some((e) => e.cmd === 'spawn exit' && e.detail.availability_failure === false), 'a missing claim is not an outage');
+  h.ok(['claim', 'T1', '--agent', 'manual']);
+});
+
 test('submitted-task reviewers resume transient exits and show their phase', (t) => {
   const h = setup(t, { claim: false });
   const sha = gateFixture(h);
