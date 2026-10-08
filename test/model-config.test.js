@@ -59,6 +59,8 @@ test('model selections live only in BUILTIN or configuration documentation', () 
     { cwd: ROOT, encoding: 'utf8' }).split('\0').filter(Boolean);
   const violations = [];
   for (const file of new Set(files)) {
+    // Recorded research results document historical runs, not executable fixtures.
+    if (file.startsWith('research/') && /\/results\/[^/]+\.json$/.test(file)) continue;
     if ((file.startsWith('docs/') && file !== 'docs/cli.md') || file === 'README.md' || file === 'CHANGELOG.md'
       || file.startsWith('changelog.d/') || file === 'test/fixtures/usage/README.md') continue;
     let text = fs.readFileSync(path.join(ROOT, file), 'utf8');

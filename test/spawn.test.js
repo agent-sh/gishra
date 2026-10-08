@@ -28,7 +28,10 @@ function setRung(h, rung, flags) {
   pinRung(h, rung, fields);
 }
 
-const commandRung = (h, rung, argv) => setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(argv)]);
+const commandRung = (h, rung, argv) => {
+  const command = argv.some((arg) => /\{(prompt|brief)\}/.test(arg)) ? argv : [...argv, '{prompt}'];
+  setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(command)]);
+};
 
 for (const harness of ['claude', 'codex', 'opencode', 'agy', 'pi']) {
   test(`a ${harness} rung spawns with an arbitrary model ID`, (t) => {
@@ -62,7 +65,7 @@ test('design tasks dispatch without a kit on unsupported worker, review and smal
   for (const harness of ['pi', 'opencode', 'command']) {
     for (const role of ['medium', 'review', 'small']) {
       setRung(h, role, harness === 'command'
-        ? ['--harness', harness, '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]
+        ? ['--harness', harness, '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}'])]
         : ['--harness', harness, '--model', 'fixture']);
       const seen = dry(h, role);
       assert.deepEqual(seen.home.mcp, []);
@@ -83,7 +86,7 @@ test('design tasks dispatch without a kit on unsupported worker, review and smal
 test('explicit browser needs refuse only when no route can provide the kit', (t) => {
   const h = setup(t);
   h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
-  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const missing = h.run(['spawn', '--task', 'T1', '--dry-run']);
   assert.notEqual(missing.code, 0);
   assert.match(missing.stderr, /browser/);
@@ -636,7 +639,7 @@ const leftover = (h) => path.join(h.base, 'repo-worktrees', 'T1-idempotency-key-
 
 test('a spawn whose program fails to start records nothing and leaves its worktree for the next spawn', (t) => {
   const h = setup(t);
-  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks, events } = footprint(h);
   for (const mode of [[], ['--wait']]) {
     const r = h.run(['spawn', '--role', 'small', '--task', 'T1', ...mode], { hooks: { HOOK_SPAWN_FAIL: '1' } });
@@ -656,7 +659,7 @@ test('a spawn whose program fails to start records nothing and leaves its worktr
 
 test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', async (t) => {
   const h = setup(t);
-  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks } = footprint(h);
   const paused = path.join(h.base, 'holder');
   const holder = h.runAsync(['task', 'note', 'T1', 'holding the lock'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
@@ -757,7 +760,7 @@ test('spawn runs the rung of the tier and ladder it finds under the lock, not th
   h.git(['worktree', 'remove', '--force', ev.detail.cwd]);
   const b = h.runAsync(['spawn', '--task', 'T1', '--wait'], { hooks: { HOOK_STOP_WORKTREE_ADD: stopped2 } });
   await waitForFile(stopped2);
-  setRung(h, 'hard', ['--harness', 'command', '--command', JSON.stringify([path.join(h.base, 'no-such-program')])]);
+  setRung(h, 'hard', ['--harness', 'command', '--command', JSON.stringify([path.join(h.base, 'no-such-program'), '{prompt}'])]);
   fs.writeFileSync(`${stopped2}.go`, '');
   const rb = await b;
   assert.equal(rb.code, 1);

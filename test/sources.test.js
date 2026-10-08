@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { makeRepo } = require('./helpers');
+const { changeKind } = require('./gate-helpers');
 
 async function fixture(t, tier) {
   const requests = [];
@@ -239,16 +240,17 @@ test('sources gate follows research kind when kind changes without moving the ta
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--kind', 'docs', '--title', 'Worker task', '--acceptance', 'reviewed']);
+  // A submitted task refuses a kind change, so the kind moves while the task is still todo.
+  h.ok(['task', 'update', 'T1', '--kind', 'research']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha]);
   h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha]);
-  h.ok(['task', 'update', 'T1', '--kind', 'research']);
   assert.equal(h.json(['task', 'show', 'T1']).tier, 'medium');
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
   h.ok(['task', 'update', 'T1', '--tier', 'research']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find(g => g.type === 'sources').ok, false);
-  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+  changeKind(h, 'docs');
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
 });
 
