@@ -139,4 +139,14 @@ function gateEvidence(h, type, agent, ok = true) {
   return r;
 }
 
-module.exports = { gateFixture, gateEvidence };
+// A submitted task keeps its kind, so a kind change goes through rework and a
+// new submission of the same head, as an agent would make it.
+function changeKind(h, kind) {
+  const { sha, submitted_by: agent } = h.json(['task', 'show', 'T1']);
+  h.ok(['rework', 'T1', '--reason', `kind ${kind}`, '--agent', 'owner']);
+  h.ok(['task', 'update', 'T1', '--kind', kind]);
+  h.ok(['claim', 'T1', '--agent', agent]);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', agent]);
+}
+
+module.exports = { gateFixture, gateEvidence, changeKind };
