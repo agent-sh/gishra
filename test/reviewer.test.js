@@ -151,6 +151,49 @@ test('a claude reviewer prefix over 32 KB stays off the command line', (t) => {
   assert.ok(out.argv.map((arg) => `"${arg}"`).join(' ').length < 32767);
 });
 
+test('a fallback reviewer on a large diff keeps the task context and gate results', {
+  skip: process.platform === 'win32' && 'the stub uses a shebang executable',
+}, (t) => {
+  const h = setup(t);
+  fs.writeFileSync(path.join(h.repo, 'large.txt'), 'LARGE_DIFF_LINE\n'.repeat(1500));
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'large change']);
+  h.sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--agent', h.builder, '--sha', h.sha, '--branch', 'fixture-change']);
+  ready(h);
+  const bin = path.join(h.base, 'harness-bin');
+  fs.mkdirSync(bin);
+  const captures = path.join(h.base, 'captures.jsonl');
+  fs.writeFileSync(path.join(bin, 'claude'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const model = args[args.indexOf('--model') + 1];
+fs.appendFileSync(${JSON.stringify(captures)}, JSON.stringify({ model, args }) + '\\n');
+if (model === 'first') console.log(JSON.stringify({ type: 'assistant', message: { stop_reason: 'refusal', content: [] } }));
+console.log(JSON.stringify({ type: 'result', is_error: false, model, usage: { input_tokens: 1, output_tokens: 1 } }));
+`, { mode: 0o755 });
+  h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'first', '--clear', 'profile', '--clear', 'args']);
+  h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices, small_lines: 5000, small_files: 5 })]);
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { easy: { fallbacks: [{ harness: 'claude', model: 'second' }] } } }));
+  const caller = path.join(h.base, 'caller');
+  fs.mkdirSync(path.join(caller, '.claude'), { recursive: true });
+  const result = h.run(['spawn', '--task', 'T1', '--role', 'review', '--wait'], {
+    env: { HOME: caller, CLAUDE_CONFIG_DIR: path.join(caller, '.claude'), XDG_CACHE_HOME: path.join(caller, 'cache'),
+      PATH: bin + path.delimiter + (h.env.PATH || '') }, timeout: 20000 });
+  assert.equal(result.code, 0, result.stderr);
+  const rows = fs.readFileSync(captures, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(rows.map((r) => r.model), ['first', 'second']);
+  const prompts = rows.map((r) => r.args.find((arg) => arg.includes('## Task')));
+  for (const user of prompts) {
+    assert.ok(!user.includes('LARGE_DIFF_LINE'), 'the diff stays in the packet file');
+    assert.ok(!user.includes('undefined'));
+    assert.match(user, /## Gate results/);
+    assert.match(user, new RegExp(`Read .+ for the diff at ${h.sha}`));
+  }
+  assert.equal(prompts[1], prompts[0]);
+});
+
 test('stub reviewers 2 through 4 reuse the static prefix across tasks and fresh homes', {
   skip: process.platform === 'win32' && 'the stub uses a shebang executable',
 }, (t) => {
