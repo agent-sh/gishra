@@ -328,16 +328,21 @@ test('opencode renders worker path, web, skill, git and gh permission decisions'
 });
 
 for (const rung of ['medium', 'small']) {
-  test(`opencode ${rung} Bash bypasses file-tool paths and remains classified as unconfined`, { skip: NO_STUBS }, (t) => {
+  test(`opencode ${rung} Bash asks before interpreter and absolute-path commands`, { skip: NO_STUBS }, (t) => {
     const f = setup(t, rung);
     const canary = path.join(f.h.base, 'outside-bash-canary.txt');
     const preview = dry(f);
-    spawn(f, { STUB_BASH_CANARY: canary, STUB_PROBES: JSON.stringify([['edit', canary]]) });
+    const probes = [['edit', canary], ...[
+      'node -e "process.exit(0)"', 'python3 -c "pass"', 'curl https://example.invalid',
+      '/usr/bin/git push origin HEAD', '/usr/bin/gh pr merge 1',
+    ].map((command) => ['bash', command])];
+    spawn(f, { STUB_BASH_CANARY: canary, STUB_PROBES: JSON.stringify(probes) });
     const report = f.report();
-    assert.deepEqual(report.probes, ['deny']);
-    assert.equal(report.bash.decision, 'allow');
-    assert.equal(report.bash.code, 0, report.bash.stderr);
-    assert.equal(fs.readFileSync(canary, 'utf8'), 'BASH-CANARY');
+    assert.deepEqual(report.probes, ['deny', 'ask', 'ask', 'ask', 'ask', 'ask']);
+    assert.equal(report.permission.bash['*'], 'ask');
+    assert.equal(report.bash.decision, 'ask');
+    assert.equal(report.bash.code, undefined);
+    assert.throws(() => fs.readFileSync(canary, 'utf8'), { code: 'ENOENT' });
     assert.equal(preview.env.TOWER_CRANE_SANDBOX, '0');
     assert.deepEqual(A.CAPABILITIES.opencode, { sandbox: false, osSandbox: false });
     assert.equal(A.sandboxed(rung === 'small' ? 'small' : 'worker', 'opencode'), false);
