@@ -252,21 +252,31 @@ for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
   test(`a confirmed ${route} gate failure climbs and reaches the owner at the range ceiling`, async (t) => {
     const h = setup(t, 'review', 'easy..medium', (repo) => {
       gateFixture(repo);
+      // Spawn exit runs every software gate, so each fails only where the check asks it to.
+      const exit = "process.exit(process.env.FIXTURE_GATE_OK === '0' ? 1 : 0)";
       repo.ok(['project', 'set', '--repo', 'acme/demo', '--tests-mode', 'run-only',
-        '--tests-cmd', 'node -e "process.exit(1)"']);
+        '--tests-cmd', `node -e "${exit}"`]);
       if (route === 'local-ci') repo.ok(['project', 'set', '--ci-local', JSON.stringify({
-        command: [process.execPath, '-e', 'process.exit(1)'], timeout: 5,
+        command: [process.execPath, '-e', exit], timeout: 5,
       })]);
     });
+    // The monitor runs automated gates after spawn exit; check only once each reaction has ended.
+    const settled = (agent) => {
+      const log = events(h);
+      const exit = log.findIndex((e) => e.cmd === 'spawn exit' && e.detail.agent === agent);
+      const runs = log.filter((e) => e.cmd === 'automation' && e.detail.phase === 'running');
+      return exit >= 0 && log.slice(exit).some((e) => runs.includes(e))
+        && runs.every((r) => log.some((e) => e.cmd === 'automation' && e.detail.source === r.detail.source && e.detail.phase !== 'running'));
+    };
     h.ok(['spawn', '--task', 'T1']);
-    await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+    await until(() => settled('worker-T1-1'));
     for (const rung of ['medium', null]) {
       const result = h.run(['check', type, 'T1'], { env: { FIXTURE_GATE_OK: '0' } });
       assert.equal(result.code, 1, result.stderr);
       if (rung) {
         await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
         assert.equal(h.json(['task', 'show', 'T1']).tier, rung);
-        await until(() => events(h).some((e) => e.cmd === 'spawn exit' && e.detail.agent === 'worker-T1-2'));
+        await until(() => settled('worker-T1-2'));
       } else {
         await until(() => h.json(['decisions', '--open']).length === 1);
       }
@@ -274,7 +284,8 @@ for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
     const task = h.json(['task', 'show', 'T1']);
     assert.deepEqual(task.escalations.map((e) => e.trigger), [type, type]);
     assert.deepEqual(task.escalations.map((e) => e.to), ['medium', null]);
-    assert.ok(task.evidence.filter((e) => e.type === type).every((e) => e.confirmed_failure === true));
+    assert.ok(task.evidence.filter((e) => e.type === type && !e.ok).every((e) => e.confirmed_failure === true));
+    assert.equal(task.evidence.filter((e) => e.type === type && !e.ok).length, 2);
     assert.equal(h.readAttempts().length, 2);
   });
 }
