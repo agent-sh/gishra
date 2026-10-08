@@ -98,6 +98,7 @@ process.exit(result.status ?? 1);
   for (const k of ['GH_TOKEN', 'GITHUB_TOKEN']) runEnv[k] = '';
   runEnv.CLAUDE_CONFIG_DIR = '';
   runEnv.CODEX_HOME = '';
+  runEnv.XDG_CACHE_HOME = '';
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
 }
 
