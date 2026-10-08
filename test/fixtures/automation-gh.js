@@ -8,18 +8,23 @@ const file = process.env.AUTOMATION_GITHUB;
 const state = JSON.parse(fs.readFileSync(file, 'utf8'));
 state.calls ||= [];
 state.calls.push(args);
+// Write through a rename so a test reading the file never sees it truncated.
+const save = () => {
+  fs.writeFileSync(`${file}.${process.pid}`, JSON.stringify(state));
+  fs.renameSync(`${file}.${process.pid}`, file);
+};
 let out = '';
 if (args[0] === 'pr') {
   const pr = state.prs[args[2]];
   if (!pr) throw new Error(`unknown fixture PR ${args[2]}`);
-  if (args[1] === 'view' && state.failView) {
-    fs.writeFileSync(file, JSON.stringify(state));
-    console.error('GitHub transport unavailable');
+  if (args[1] === 'view' && (state.failView || pr.failView)) {
+    save();
+    console.error(pr.failView ? `Could not resolve PullRequest number ${args[2]}` : 'GitHub transport unavailable');
     process.exit(1);
   }
   if (args[1] === 'merge') {
     if (state.refuseMerge) {
-      fs.writeFileSync(file, JSON.stringify(state));
+      save();
       console.error('merge refused by fixture policy');
       process.exit(1);
     }
@@ -27,17 +32,18 @@ if (args[0] === 'pr') {
     pr.mergeCommit = { oid: pr.headRefOid };
     if (state.advanceBase) cp.execFileSync('git', ['-C', state.root, 'update-ref', 'refs/heads/main', pr.headRefOid]);
     if (process.env.AUTOMATION_CRASH_AFTER_MERGE) {
-      fs.writeFileSync(file, JSON.stringify(state));
+      save();
       const events = fs.readFileSync(path.join(state.root, '.tower-crane', 'events.jsonl'), 'utf8')
         .trim().split('\n').map(JSON.parse);
       const executor = events.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running');
       process.kill(executor.detail.pid, 'SIGKILL');
+      // The killed executor is the test's CLI call, so the test resumes now.
       // The test reads the file as soon as the executor dies; a second write
       // from this orphaned call could truncate it under that read.
       process.exit(0);
     }
   } else {
-    out = JSON.stringify(pr);
+    out = pr.invalidView ? '{' : JSON.stringify(pr);
     if (state.becomeMergeableAfterView) {
       pr.mergeable = 'MERGEABLE';
       pr.mergeStateStatus = 'CLEAN';
@@ -54,5 +60,5 @@ if (args[0] === 'pr') {
     conclusion: status === 'pending' ? null : status,
   });
 }
-fs.writeFileSync(file, JSON.stringify(state));
+save();
 console.log(out);

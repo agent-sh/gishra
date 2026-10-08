@@ -1232,7 +1232,7 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     assert.deepEqual(ran.map((r) => r.code), [...cases, named].map((c) => c[1]), `${harness}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
     assert.match(ran[1].stderr, /owner acts from an interactive terminal/);
     assert.match(ran[2].stderr, /works on T1 only, not T2/);
-    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, hook, not task add/);
+    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, answer, hook, not task add/);
     assert.match(ran[11].stderr, /uses its own hook binding only/);
     assert.match(ran[7].stderr, /without its token/);
     assert.match(ran[12].stderr, /owner acts from an interactive terminal/);
