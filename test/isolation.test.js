@@ -132,7 +132,7 @@ function noSecretsCopied(h) {
   for (const f of walk(h.state)) assert.ok(!fs.readFileSync(f, 'utf8').includes(SECRET), `${f} holds a copied credential`);
 }
 
-function spawn(h, u, role, env = {}) {
+function spawn(h, u, role, env = {}, opts = {}) {
   if (role === 'review' && h.readState('tasks.json').tasks[0].status !== 'submitted') {
     h.ok(['task', 'update', 'T1', '--kind', 'docs']);
     h.ok(['claim', 'T1', '--agent', 'builder']);
@@ -142,7 +142,7 @@ function spawn(h, u, role, env = {}) {
   if (['easy', 'medium', 'hard', 'research'].includes(role) && h.readState('tasks.json').tasks[0].status === 'submitted') {
     h.ok(['rework', 'T1', '--reason', `probe the ${role} rung`]);
   }
-  const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { env: { ...u.env, ...env } });
+  const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { ...opts, env: { ...u.env, ...env } });
   assert.equal(r.code, 0, r.stderr);
   return JSON.parse(r.stdout);
 }
@@ -151,6 +151,108 @@ const isolated = (h, rung, harness) => {
   const model = harness === 'claude' ? ['--model', 'opus', '--clear', 'profile'] : ['--profile', 'sol', '--clear', 'model'];
   h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
+
+test('codex worker configs keep named provider and MCP fields without copying credentials', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = Object.fromEntries(['apikey', 'key', 'bearer', 'api_key', 'opaque_value'].map(k => [k, `${SECRET}-${k}`]));
+  const provider = {
+    name: 'P', base_url: 'https://provider.example/v1', env_key: 'P_KEY', wire_api: 'responses',
+    requires_openai_auth: false, request_max_retries: 3, stream_max_retries: 4, stream_idle_timeout_ms: 1000,
+    env_http_headers: { 'X-Provider': 'PROVIDER_HEADER' },
+  };
+  const server = {
+    command: 'planted-mcp', args: ['x'], cwd: '/server', url: 'https://mcp.example',
+    env_vars: ['MCP_KEY'], env_http_headers: { Authorization: 'MCP_AUTH' }, bearer_token_env_var: 'MCP_BEARER',
+    enabled: true, required: false, startup_timeout_sec: 10, tool_timeout_sec: 20,
+    enabled_tools: ['read'], disabled_tools: ['write'], default_tools_approval_mode: 'prompt',
+    tools: { read: { enabled: true, approval_mode: 'prompt' } },
+  };
+  const doc = {
+    model_provider: 'p',
+    model_providers: {
+      p: { ...provider, ...credentials, metadata: { opaque_value: SECRET } },
+      malformed: { name: { opaque_value: SECRET }, request_max_retries: { key: SECRET } },
+    },
+    mcp_servers: {
+      planted: {
+        ...server, ...credentials, env: { MCP_KEY: SECRET }, http_headers: { Authorization: SECRET },
+        tools: { read: { ...server.tools.read, ...credentials, metadata: { opaque_value: SECRET } } },
+      },
+      malformed: { args: [{ opaque_value: SECRET }], env_vars: [{ opaque_value: SECRET }] },
+    },
+  };
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(doc));
+  }
+  isolated(h, 'medium', 'codex');
+  h.ok(['ladder', 'set', 'medium', '--mcp', '["planted","malformed"]']);
+  const started = spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    const config = JSON.parse(JSON.stringify(TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, file), 'utf8'))));
+    assert.deepEqual(config.model_providers, { p: provider, malformed: {} }, file);
+    assert.deepEqual(config.mcp_servers, { planted: server, malformed: {} }, file);
+  }
+});
+
+test('codex spawns reject credential tables in scalar settings in base and every profile layout', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = { apikey: `${SECRET}-APIKEY`, key: `${SECRET}-KEY`, bearer: `${SECRET}-BEARER` };
+  const safe = {
+    review_model: 'review', model_context_window: 64000, model_auto_compact_token_limit: 32000,
+    model_supports_reasoning_summaries: true, cli_auth_credentials_store: 'keyring',
+  };
+  const malformed = { model: [credentials], model_reasoning_effort: 7, model_verbosity: true };
+  const doc = { ...safe, ...malformed, profiles: { safe: { model: 'legacy', ...safe }, malformed } };
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(doc));
+  }
+  isolated(h, 'medium', 'codex');
+  const started = spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    const config = JSON.parse(JSON.stringify(TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, file), 'utf8'))));
+    for (const [key, value] of Object.entries(safe)) assert.equal(config[key], value, `${file}: ${key}`);
+    for (const key of Object.keys(malformed)) assert.equal(config[key], undefined, `${file}: ${key}`);
+    assert.deepEqual(config.profiles, { safe: { model: 'legacy', ...safe }, malformed: {} }, file);
+  }
+});
+
+test('claude spawns reject credential tables and non-string values in opted-in MCP fields', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = { apikey: `${SECRET}-APIKEY`, key: `${SECRET}-KEY`, bearer: `${SECRET}-BEARER` };
+  const safe = { type: 'stdio', command: 'safe-mcp', args: ['--headless'], url: 'https://mcp.example' };
+  const mcpServers = {
+    nested: { command: 'nested-mcp', args: [credentials], type: credentials, url: credentials },
+    mixed: { command: 'mixed-mcp', args: ['--headless', credentials] },
+    malformed: { type: true, command: credentials, args: [1], url: ['https://mcp.example'] },
+    safe,
+  };
+  fs.writeFileSync(path.join(u.home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers }));
+  isolated(h, 'medium', 'claude');
+  h.ok(['ladder', 'set', 'medium', '--mcp', JSON.stringify(Object.keys(mcpServers))]);
+  spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  assert.deepEqual(u.report().mcp, { nested: { command: 'nested-mcp' }, mixed: { command: 'mixed-mcp' }, malformed: {}, safe });
+});
+
+test('codex config allowlists also filter inline tables on Windows', () => {
+  const doc = TOML.parse([
+    `model_providers = { p = { name = "P", apikey = "${SECRET}", key = "${SECRET}", bearer = "${SECRET}", opaque_value = "${SECRET}" }, malformed = { name = ["${SECRET}"], env_http_headers = { Authorization = { value = "${SECRET}" } } } }`,
+    `mcp_servers = { planted = { command = "mcp", args = ["x"], apikey = "${SECRET}", key = "${SECRET}", bearer = "${SECRET}", opaque_value = "${SECRET}", tools = { read = { enabled = true, approval_mode = "prompt", opaque_value = "${SECRET}" } } }, malformed = { args = [{ value = "${SECRET}" }], env_http_headers = { Authorization = { value = "${SECRET}" } } } }`,
+  ].join('\n'));
+  const filtered = A.codexConfig(doc, ['planted', 'malformed']);
+  assert.deepEqual(filtered, {
+    doc: {
+      model_providers: { p: { name: 'P' }, malformed: {} },
+      mcp_servers: { planted: { command: 'mcp', args: ['x'], tools: { read: { enabled: true, approval_mode: 'prompt' } } }, malformed: {} },
+    },
+    found: ['planted', 'malformed'],
+  });
+  assert.ok(!TOML.stringify(filtered.doc).includes(SECRET));
+  const arrays = Object.fromEntries(require('../lib/ladder').CODEX_KEYS.map(key => [key, [{ apikey: SECRET, key: SECRET, bearer: SECRET }]]));
+  assert.deepEqual(A.codexConfig(TOML.parse(TOML.stringify({ ...arrays, profiles: { malformed: arrays } })), []).doc, { profiles: { malformed: {} } });
+});
 
 test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
@@ -678,7 +780,8 @@ test('remote pushes publish only the task branch, including configured and impli
   cases.push([['git', 'checkout', '-q', branch], 0]);
   for (const harness of ['claude', 'codex']) {
     isolated(h, 'hard', harness);
-    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(cases.map(([args]) => args)) });
+    // The full push matrix starts several guarded Git processes per case.
+    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(cases.map(([args]) => args)) }, { timeout: 120000 });
     const ran = u.report().ran;
     assert.deepEqual(ran.map((r) => r.code), cases.map(([, code]) => code),
       `${harness}: ${JSON.stringify(ran.map((r) => ({ args: r.argv, code: r.code, stderr: r.stderr })))}`);
