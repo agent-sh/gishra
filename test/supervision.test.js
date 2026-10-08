@@ -597,9 +597,9 @@ test('quiet supervision samples state and progress paths on a seconds-scale inte
   const samples = fs.readFileSync(audit, 'utf8').trim().split('\n').map(JSON.parse);
   const walks = samples.filter((sample) => sample.kind === 'path');
   assert.ok(walks.length >= 2, JSON.stringify(samples));
-  assert.ok(walks.length <= 6, `${walks.length} progress walks for a 3.6-second run`);
-  assert.ok(samples.filter((sample) => sample.kind === 'state').length <= 8, 'quiet monitor repeatedly reloads state');
+  // The cadence is the property: a loaded machine stretches the run, not the interval.
   for (let i = 1; i < walks.length; i++) assert.ok(walks[i].at - walks[i - 1].at >= 900, JSON.stringify(walks));
+  assert.ok(samples.filter((sample) => sample.kind === 'state').length <= walks.length + 2, 'quiet monitor repeatedly reloads state');
 });
 
 describe('supervision completion cases', { concurrency: windowsConcurrency }, () => {

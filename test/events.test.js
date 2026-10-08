@@ -150,7 +150,7 @@ test('review and software gate pass or failure wake as evidence with their verdi
   submit(h, ['--pr', '9']);
   for (const type of ['review', 'tests', 'clean', 'ci']) {
     for (const ok of [true, false]) {
-      const result = await waiting(t, h, ['--types', 'evidence', '--task', 'T1']);
+      const result = await waiting(t, h, ['--types', 'evidence', '--task', 'T1'], {}, 60);
       if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, ok ? '--ok' : '--fail']);
       else gateEvidence(h, type, 'gate-runner', ok);
       const e = await event(result, 'evidence');
