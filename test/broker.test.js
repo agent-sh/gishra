@@ -57,6 +57,45 @@ test('the broker rejects an identity that differs from its spawn', () => {
   }
 });
 
+for (const role of ['worker', 'reviewer', 'small']) test(`a sandboxed ${role} answers through the CLI and broker only after owner delegation`, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Choose a store', '--acceptance', 'answer is authorized']);
+  h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--blocks', 'T1']);
+  const job = {
+    state: h.state, task: 'T1', agent: `${role}-T1-1`, role, harness: 'codex',
+    cwd: h.repo, broker: path.join(h.base, 'brokers', `${role}-T1-1`, B.FILE),
+  };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const env = { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task };
+  const log = () => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const before = log();
+  const denied = await h.runAsync(['answer', 'D1', '--choice', 'redis'], { env });
+  assert.equal(denied.code, 1, denied.stderr);
+  assert.equal(log(), before, 'a refused brokered answer writes no event');
+  assert.equal(h.readState('decisions.json').decisions[0].status, 'open');
+
+  h.ok(['decision', 'delegate', 'D1', '--answerers', JSON.stringify([job.agent]), '--agent', 'owner']);
+  const answered = await h.runAsync(['answer', 'D1', '--choice', 'redis'], { env });
+  assert.equal(answered.code, 0, answered.stderr);
+  assert.match(denied.stderr, /only the owner with explicit identity/);
+  const granted = log();
+  const forged = await h.runAsync(['answer', 'D1', '--choice', 'redis', '--agent', 'worker-other'], { env });
+  assert.equal(forged.code, 1, forged.stderr);
+  assert.match(forged.stderr, /cannot act as worker-other/);
+  assert.equal(log(), granted, 'the broker refuses another identity even after delegation');
+  const decision = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([decision.status, decision.answered_by, decision.answer_rule], [
+    'answered', job.agent, 'owner-named-agent',
+  ]);
+  const event = log().trim().split('\n').map(JSON.parse).findLast((entry) => entry.cmd === 'answer');
+  assert.deepEqual([event.agent, event.via, event.detail.answered_by, event.detail.answer_rule], [
+    job.agent, 'broker', job.agent, 'owner-named-agent',
+  ]);
+  assert.equal(h.readState('tasks.json').tasks[0].notes.at(-1).agent, job.agent);
+});
+
 test('closing the broker stops the commands it is running and what they started', async (t) => {
   const { base, state, job } = scratch(t);
   const pids = path.join(base, 'pids.json');

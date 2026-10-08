@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, BIN } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { waitFor } = require('./canary');
 const { shellQuote } = require('../lib/gates/common');
 
 const ghStub = path.join(__dirname, 'fixtures', 'automation-gh.js');
@@ -277,6 +278,111 @@ test('concurrent event consumers execute each submission gate only once', async 
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.map((e) => e.type), ['tests', 'clean', 'ci']);
 });
 
+// A slow stub suite records each run's start and end, so the log shows how
+// many gate executors ran at once across every consumer process.
+function slowSuite(h, { executors, crash = false } = {}) {
+  const runs = path.join(h.base, 'suite-runs.log');
+  const suite = path.join(h.base, 'tools', 'slow-suite.js');
+  fs.writeFileSync(suite, `const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(runs)}, '+\\n');
+const crash = ${JSON.stringify(crash ? path.join(h.base, 'crashed') : null)};
+if (crash && !fs.existsSync(crash)) {
+  fs.writeFileSync(crash, '');
+  const events = fs.readFileSync(${JSON.stringify(path.join(h.state, 'events.jsonl'))}, 'utf8').trim().split('\\n').map(JSON.parse);
+  process.kill(events.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running').detail.pid, 'SIGKILL');
+}
+setTimeout(() => fs.appendFileSync(${JSON.stringify(runs)}, '-\\n'), 2500);
+`);
+  h.ok(['project', 'set', '--tests-cmd', `node ${JSON.stringify(suite)}`, '--tests-mode', 'run-only',
+    ...(executors ? ['--executors', String(executors)] : []), '--agent', 'orchestrator']);
+  for (const id of ['T1', 'T2', 'T3']) {
+    if (id !== 'T1') h.ok(['task', 'add', '--title', `Change ${id}`, '--acceptance', 'it works', '--kind', 'code']);
+    h.ok(['claim', id, '--agent', 'worker']);
+    h.ok(['submit', id, '--sha', h.sha, '--agent', 'worker']);
+  }
+  return () => {
+    let now = 0;
+    let peak = 0;
+    const marks = fs.existsSync(runs) ? fs.readFileSync(runs, 'utf8').trim().split('\n') : [];
+    for (const mark of marks) peak = Math.max(peak, now += mark === '+' ? 1 : -1);
+    return { starts: marks.filter((m) => m === '+').length, peak };
+  };
+}
+
+test('gate executors across several watchers stay within gates.executors and queue the rest in order', async (t) => {
+  const h = setup(t);
+  const runs = slowSuite(h);
+  assert.match(h.ok(['project', 'show']), /gates\.executors: 2/);
+  const results = await Promise.all([0, 1, 2].map(() =>
+    h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator'])));
+  assert.ok(results.every((r) => r.code === 2), JSON.stringify(results));
+  assert.deepEqual(runs(), { starts: 3, peak: 2 });
+  const queued = h.logs().filter((e) => e.cmd === 'automation queued' && e.detail.executors === 2);
+  assert.ok(queued.some((e) => e.task === 'T3'), JSON.stringify(queued));
+  const started = h.logs().filter((e) => e.cmd === 'automation' && e.detail.phase === 'running').map((e) => e.task);
+  assert.equal(started.at(-1), 'T3', 'the queued submission runs after a slot frees');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => [e.type, e.ok]), [['tests', true], ['clean', true]], task.id);
+  }
+});
+
+test('a killed executor releases its gate executor slot', (t) => {
+  const h = setup(t);
+  const runs = slowSuite(h, { executors: 1, crash: true });
+  assert.notEqual(h.consume().code, 2, 'the suite kills the first executor');
+  h.consume();
+  assert.equal(runs().starts, 4, 'the killed run is retried and the other two run');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => e.type), ['tests', 'clean'], task.id);
+  }
+});
+
+test('older queued work takes a freed executor slot before a newer arrival', async (t) => {
+  const h = setup(t);
+  const events = path.join(h.state, 'events.jsonl');
+  const suite = path.join(h.base, 'tools', 'stall-suite.js');
+  // The first run holds the only slot until T2 is queued behind it, then
+  // dies, leaving a free slot and T2 still waiting.
+  fs.writeFileSync(suite, `const fs = require('node:fs');
+const flag = ${JSON.stringify(path.join(h.base, 'stalled'))};
+if (fs.existsSync(flag)) process.exit(0);
+fs.writeFileSync(flag, '');
+const read = () => fs.readFileSync(${JSON.stringify(events)}, 'utf8').trim().split('\\n').map(JSON.parse);
+const until = Date.now() + 20000;
+const poll = () => {
+  const log = read();
+  if (log.some((e) => e.cmd === 'automation queued' && e.task === 'T2') || Date.now() > until) {
+    process.kill(log.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running').detail.pid, 'SIGKILL');
+    process.exit(1);
+  }
+  setTimeout(poll, 50);
+};
+poll();
+`);
+  h.ok(['project', 'set', '--tests-cmd', `node ${JSON.stringify(suite)}`, '--tests-mode', 'run-only',
+    '--executors', '1', '--agent', 'orchestrator']);
+  h.ok(['task', 'add', '--title', 'Change T2', '--acceptance', 'it works', '--kind', 'code']);
+  h.ok(['task', 'add', '--title', 'Change T3', '--acceptance', 'it works', '--kind', 'code']);
+  for (const id of ['T1', 'T2']) {
+    h.ok(['claim', id, '--agent', 'worker']);
+    h.ok(['submit', id, '--sha', h.sha, '--agent', 'worker']);
+  }
+  const holder = h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  assert.notEqual(await waitFor(path.join(h.base, 'stalled')), null, 'the first executor starts');
+  h.consume();
+  assert.notEqual((await holder).code, 2, 'the stalled executor is killed');
+  assert.ok(h.logs().some((e) => e.cmd === 'automation queued' && e.task === 'T2' && e.detail.executors === 1));
+  const offset = fs.statSync(events).size;
+  h.ok(['claim', 'T3', '--agent', 'worker']);
+  h.ok(['submit', 'T3', '--sha', h.sha, '--agent', 'worker']);
+  h.run(['wait', '--after', String(offset), '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  const started = h.logs().filter((e) => e.cmd === 'automation' && e.detail.phase === 'running').map((e) => e.task);
+  assert.deepEqual(started, ['T1', 'T1', 'T2', 'T3'], 'queued T1 and T2 run before the newer T3');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => [e.type, e.ok]), [['tests', true], ['clean', true]], task.id);
+  }
+});
+
 for (const reason of ['unknown mergeability', 'transport error']) {
   test(`startup retries ${reason} without a new lifecycle event`, (t) => {
     const h = setup(t, { kind: 'docs' });
@@ -393,6 +499,22 @@ test('a worker identity cannot authorize reactions by passing the orchestrator n
     { env: { TOWER_CRANE_AGENT: 'worker', TOWER_CRANE_TASK: 'T1' } });
   assert.equal(result.code, 2);
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
+});
+
+test('a worker that names its own identity cannot complete CI or run reactions as the orchestrator', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.submit();
+  const worker = { env: { TOWER_CRANE_AGENT: 'worker-T1-1' } };
+  const completed = h.run(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'worker-T1-1'], worker);
+  assert.equal(completed.code, 1, completed.stderr);
+  assert.match(completed.stderr, /ci completed is an orchestrator or owner command/);
+  const waited = h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'worker-T1-1'], worker);
+  assert.equal(waited.code, 2, waited.stderr);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
+  assert.equal(h.logs().filter((e) => e.cmd === 'ci completed').length, 0);
+  h.consume();
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.map((e) => e.type), ['tests', 'clean', 'ci'],
+    'the orchestrator still runs the reactions');
 });
 
 test('supervisor reactions pin unconfigured gates and bypass the real restrictive agent shims', async (t) => {
