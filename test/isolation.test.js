@@ -409,6 +409,48 @@ test('browser spawns use the original user kit through a nested isolated home an
   assert.deepEqual(h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '' } }).home.mcp, []);
 });
 
+test('claude and codex sandboxes hide the user\'s credential stores and keep the agent\'s home, house rules and gh token', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const stores = ['.config/gh/hosts.yml', '.claude/.credentials.json', '.claude/settings.json', '.claude.json', '.codex/auth.json',
+    '.codex/.env', '.codex/config.toml', '.docker/config.json', '.npmrc', '.pypirc', '.cargo/credentials.toml', '.netrc',
+    '.git-credentials', '.config/git/credentials', '.kube/config', '.config/gcloud/credentials.db', '.azure/msal_token_cache.json',
+    '.ssh/id_ed25519', '.aws/credentials'].map((p) => path.join(u.home, p));
+  for (const f of stores.filter((f) => !fs.existsSync(f))) {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, `${SECRET}-STORE\n`);
+  }
+  const under = (p, dirs) => dirs.some((d) => p === d || p.startsWith(d + path.sep));
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    const started = spawn(h, u, 'hard');
+    const seen = u.report();
+    const home = path.join(h.state, 'homes', started.agent);
+    // The house rules files the prompt names, ~/.claude/CLAUDE.md or
+    // ~/.codex/AGENTS.md, stay readable inside their hidden store.
+    const rules = path.join(u.home, harness === 'claude' ? '.claude/CLAUDE.md' : '.codex/AGENTS.md');
+    let hidden;
+    if (harness === 'claude') {
+      const box = seen.settings.sandbox.filesystem;
+      hidden = (p) => under(p, box.denyRead) && !under(p, box.allowRead);
+      assert.ok(under(path.join(home, 'home'), box.allowRead), 'claude: its own home is reopened');
+    } else {
+      const fsRules = seen.config.permissions['tower-crane'].filesystem;
+      const none = Object.keys(fsRules).filter((k) => fsRules[k] === 'none');
+      const write = Object.keys(fsRules).filter((k) => fsRules[k] === 'write');
+      // A writable rule under a hidden directory is the only way back in.
+      hidden = (p) => none.some((d) => under(p, [d]) && !write.some((w) => w.startsWith(d + path.sep) && under(p, [w])));
+      assert.equal(fsRules[home], 'read', 'codex: its own home is readable');
+    }
+    for (const f of stores) assert.ok(hidden(f), `${harness}: ${path.relative(u.home, f)} is hidden`);
+    for (const p of [rules, path.join(home, 'home', '.gitconfig'), path.join(h.state, 'brokers', started.agent, 'broker.json')]) {
+      assert.ok(!hidden(p), `${harness}: ${p} stays readable`);
+    }
+    assert.equal(seen.ghToken, 'stub-gh-token', `${harness}: gh gets its token`);
+    assert.ok(!fs.existsSync(path.join(home, 'home', '.config', 'gh')), `${harness}: gh reads GH_TOKEN, not a config it may not read`);
+    assert.equal(fs.readlinkSync(path.join(home, 'home', '.gitconfig')), path.join(u.home, '.gitconfig'));
+  }
+});
+
 test('a codex agent writes only where its agent file says; a worker writes its git metadata, reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   // A worker fetches, adds, commits and pushes: it writes the repository's
