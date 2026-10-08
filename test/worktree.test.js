@@ -459,3 +459,25 @@ test('cancelling keeps a worktree while its worker process is still running', (t
   assert.equal(kept.task, 'T1');
   assert.equal(kept.detail.reason, 'an agent is still running on the task');
 });
+
+test('cancelling keeps a worktree while the monitor of an exited reviewer still runs', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Reviewed', '--acceptance', 'not needed']);
+  const wt = h.json(['worktree', 'T1']);
+  const at = new Date().toISOString();
+  // The reviewer process has exited; its monitor, this test's parent, is alive and runs in the worktree.
+  const detail = { agent: 'r-1', role: 'reviewer', rung: 'review', pid: 999999, attempt: 1 };
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), [
+    { at, agent: 'orchestrator', cmd: 'spawn', task: 'T1', detail },
+    { at, agent: 'orchestrator', cmd: 'spawn phase', task: 'T1', detail: { ...detail, phase: 'running', monitor_pid: process.ppid, active: true } },
+  ].map((e) => `${JSON.stringify(e)}\n`).join(''));
+
+  h.ok(['task', 'update', 'T1', '--status', 'cancelled']);
+
+  assert.ok(fs.existsSync(wt.path), 'the worktree stays while its monitor runs');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const kept = events.find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.task, 'T1');
+  assert.equal(kept.detail.reason, 'an agent is still running on the task');
+});
