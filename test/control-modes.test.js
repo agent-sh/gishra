@@ -1,8 +1,8 @@
 'use strict';
 
 // The owner runs a project either from the board or by telling the
-// orchestrator. Both reach every row of the authority table through the same
-// check, and every change they make is audited the same way.
+// orchestrator. Every row of the authority table has a CLI path, the board's
+// writes use the same check, and every change is audited the same way.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -151,9 +151,11 @@ test('an approved waiver lets the orchestrator accept, and only that approval ma
   assert.equal(asked.code, 1, asked.stderr);
   assert.deepEqual(decisions(h)[0].escalation, { settings: ['waive.tests'], change: { accept: 'T1', sha, waive: ['tests'], reason: 'no harness yet' } });
   h.ok(['answer', 'D1', '--choice', 'approve']);
-  // A failed gate keeps the approval for the next try.
-  assert.equal(h.run(waive, { env: { TOWER_CRANE_AGENT: 'orchestrator', FIXTURE_GATE_OK: '0' } }).code, 1);
+  // A failed gate keeps the approval for the next try, and failed tries audit nothing.
+  const waivers = () => audits(h).filter((e) => e.detail.settings['waive.tests']);
+  for (let i = 0; i < 2; i++) assert.equal(h.run(waive, { env: { TOWER_CRANE_AGENT: 'orchestrator', FIXTURE_GATE_OK: '0' } }).code, 1);
   assert.equal(decisions(h)[0].applied, undefined);
+  assert.equal(waivers().length, 0);
   h.ok(['check', 'clean', 'T1'], as('orchestrator'));
   h.ok(waive, as('orchestrator'));
   const task = h.readState('tasks.json').tasks[0];
@@ -161,6 +163,16 @@ test('an approved waiver lets the orchestrator accept, and only that approval ma
   assert.deepEqual(task.evidence.filter((e) => e.waived).map((e) => [e.type, e.agent, e.approved_by]), [['tests', 'orchestrator', 'D1']]);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
   assert.equal(decisions(h)[0].applied.by, 'orchestrator');
+  assert.deepEqual(waivers().map((e) => [e.detail.command, e.detail.actor, e.detail.approved_by]), [['accept', 'orchestrator', 'D1']]);
+  // The approval names T1 at its sha; the same waiver copied onto another task does not count.
+  h.ok(['task', 'add', '--title', 'Other', '--acceptance', 'it works']);
+  h.ok(['claim', 'T2', '--agent', 'w-2']);
+  h.ok(['submit', 'T2', '--sha', sha, '--agent', 'w-2']);
+  const copied = h.readState('tasks.json');
+  const t2 = copied.tasks.find((x) => x.id === 'T2');
+  t2.evidence.push({ ...task.evidence.find((e) => e.waived), revision: t2.revision });
+  h.writeState('tasks.json', copied);
+  assert.equal(h.json(['task', 'show', 'T2']).gates.gates.find((g) => g.type === 'tests').ok, false);
   // A waiver naming a decision the owner never approved does not count.
   const tasks = h.readState('tasks.json');
   tasks.tasks[0].evidence.find((e) => e.waived).approved_by = 'D2';
