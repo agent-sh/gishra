@@ -224,7 +224,7 @@ test('a manual merge racing the merge queue under another task\'s reaction: one 
     while (!log(h).some((e) => e.type === 'merged' && e.task === lower) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    await new Promise((resolve) => setTimeout(resolve, Math.random() * 600));
+    await new Promise((resolve) => setTimeout(resolve, (i % 5) * 120));
     const manual = await h.runAsync(['merge', upper], { hooks: jitter });
     assert.equal(manual.code, 0, `${upper}: ${manual.stderr}`);
     await event(automatic, 'merged', upper);
@@ -270,8 +270,11 @@ test('a manual merge racing an automatic merge of the same task: one merges, the
     // The waiter's startup reconciliation merges the accepted task while the
     // manual merge starts, so both reach the merge gate together. The cursor
     // keeps a manual merge that finishes before the waiter starts visible.
+    // Odd rounds start together; even rounds stagger the manual merge, so
+    // either side reaches GitHub first.
     const after = String(fs.statSync(path.join(h.state, 'events.jsonl')).size);
     const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--after', after, '--task', id, '--types', 'merged', '--timeout', '30']);
+    await new Promise((resolve) => setTimeout(resolve, i % 2 ? 0 : (i % 10) * 20));
     const manual = await h.runAsync(['merge', id]);
     assert.equal(manual.code, 0, `${id}: ${manual.stderr}`);
     const woke = await event(automatic, 'merged', id);
