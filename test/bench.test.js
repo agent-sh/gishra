@@ -10,6 +10,99 @@ const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
 const C = 'c'.repeat(40);
 
+function recordedHistory(h, records) {
+  h.init();
+  h.ok(['task', 'add', '--title', 'Recorded results', '--acceptance', 'done']);
+  const evidence = [];
+  const events = records.map(([cmd, detail, summary], i) => {
+    const time = Date.parse('2026-10-07T00:00:00Z') + i * 1000;
+    if (summary !== undefined) evidence.push({ ...detail, agent: 'orchestrator', revision: 1, at: new Date(time).toISOString(), summary });
+    return { task: 'T1', cmd, detail, agent: 'orchestrator', at: new Date(time + 3).toISOString() };
+  });
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const doc = h.readState('tasks.json');
+  doc.tasks[0].evidence = evidence;
+  h.writeState('tasks.json', doc);
+}
+
+test('bench includes sources passes contradicted by review and overturned sources failures', (t) => {
+  const h = makeRepo(t);
+  t.after(h.cleanup);
+  recordedHistory(h, [
+    ['check sources', { type: 'sources', ok: false, sha: A }],
+    ['check sources', { type: 'sources', ok: true, sha: A }],
+    ['evidence', { type: 'review', ok: false, sha: A }],
+    ['check sources', { type: 'sources', ok: false, sha: B }],
+    ['submit', { sha: C }],
+    ['check sources', { type: 'sources', ok: true, sha: C }],
+    ['evidence', { type: 'review', ok: true, sha: C }],
+    ['evidence', { type: 'sources', ok: true, sha: B }],
+  ]);
+  const result = h.json(['bench', 'gates']);
+  const sources = result.gates.find((g) => g.gate === 'sources');
+  assert.ok(sources, 'sources has a gate-table row');
+  assert.deepEqual([sources.runs, sources.tp, sources.fp, sources.fn, sources.tn], [4, 1, 1, 1, 1]);
+  assert.deepEqual([sources.precision, sources.recall], [0.5, 0.5]);
+  assert.equal(result.labels.filter((r) => r.gate === 'sources').length, 4);
+  assert.match(h.ok(['bench', 'gates']), /^sources\s+4/m);
+});
+
+test('bench keeps CI checks first reported by later polls without counting repeated checks twice', (t) => {
+  const h = makeRepo(t);
+  t.after(h.cleanup);
+  recordedHistory(h, [
+    ['check ci', { type: 'ci', ok: false, sha: A }, 'failing: lint (failure)'],
+    ['check ci', { type: 'ci', ok: false, sha: A }, 'failing: lint (failure), revuto-review (failure)'],
+    ['check ci', { type: 'ci', ok: false, sha: A }, 'failing: revuto-review (failure)'],
+    ['check ci', { type: 'ci', ok: true, sha: A }],
+    ['check ci', { type: 'ci', ok: false, sha: B }, 'failing: lint (failure)'],
+    ['submit', { sha: C }],
+  ]);
+  const result = h.json(['bench', 'gates']);
+  assert.deepEqual(result.ci_checks, [
+    { check: 'lint', fails: 2, tp: 1, fp: 1, open: 0, precision: 0.5 },
+    { check: 'revuto-review', fails: 1, tp: 0, fp: 1, open: 0, precision: 0 },
+  ]);
+  assert.equal(result.gates.find((g) => g.gate === 'ci').results, 3, 'gate results still dedupe whole verdicts');
+});
+
+test('bench labels confirmed local CI execution failures and excludes local observation failures', (t) => {
+  const h = makeRepo(t);
+  t.after(h.cleanup);
+  const local = (exit, signal = null, confirmed = true) => ({
+    type: 'ci', ok: false, sha: A, confirmed_failure: confirmed,
+    receipt: { variant: 'default', command: ['node', 'check.js'], head_sha: A, exit, signal, duration_ms: 10 },
+  });
+  recordedHistory(h, [
+    ['check tests', { type: 'tests', ok: true, sha: A }],
+    // Local receipts identify the failed execution without any hosted summary.
+    ['check ci', local(1)],
+    ['submit', { sha: B }],
+  ]);
+  let result = h.json(['bench', 'gates']);
+  assert.equal(result.gates.find((g) => g.gate === 'tests').fn, 1);
+  assert.equal(result.gates.find((g) => g.gate === 'ci').tp, 1);
+  assert.deepEqual(result.ci_checks, [
+    { check: 'local CI (default)', fails: 1, tp: 1, fp: 0, open: 0, precision: 1 },
+  ]);
+  const eventFile = path.join(h.state, 'events.jsonl');
+  const events = fs.readFileSync(eventFile, 'utf8').trim().split('\n').map(JSON.parse);
+  const failed = events.find((e) => e.cmd === 'check ci');
+  for (const detail of [local(0), local(null), local(126), local(127), local(9009), local(1, 'SIGTERM'), local(1, null, false)]) {
+    failed.detail = detail;
+    fs.writeFileSync(eventFile, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    result = h.json(['bench', 'gates']);
+    assert.equal(result.gates.find((g) => g.gate === 'ci').noncode, 1);
+    assert.equal(result.gates.find((g) => g.gate === 'tests').fn, 0);
+  }
+  failed.detail = local(1);
+  events.push({ cmd: 'check ci', task: 'T1', at: '2026-10-07T00:00:04Z', detail: { type: 'ci', ok: true, sha: A } });
+  fs.writeFileSync(eventFile, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  result = h.json(['bench', 'gates']);
+  assert.equal(result.gates.find((g) => g.gate === 'ci').fp, 1);
+  assert.equal(result.gates.find((g) => g.gate === 'tests').fn, 0);
+});
+
 function history(h) {
   h.init();
   for (const title of ['one', 'two', 'three']) h.ok(['task', 'add', '--title', title, '--acceptance', 'done']);
@@ -120,7 +213,9 @@ test('bench tokens reports accepted-task tokens and cost by rung and escalation 
   h.init();
   for (const title of ['climbed', 'direct', 'open']) h.ok(['task', 'add', '--title', title, '--acceptance', 'done']);
   const spend = (task, rung, model, tokens, cached) => h.ok(['spend', task, '--tokens', String(tokens), '--input', String(tokens - 10),
-    '--cached', String(cached), '--output', '10', '--rung', rung, '--model', model, '--harness', 'codex']);
+    '--cached', String(cached), '--output', '10', '--rung', rung, '--model', model, '--harness', 'codex', '--agent', `${rung}-${task}`]);
+  const spawn = (task, rung) => JSON.stringify({ at: '2026-10-07T00:00:00Z', agent: 'orchestrator', cmd: 'spawn', task, detail: { role: 'worker', rung, agent: `${rung}-${task}` } });
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), [spawn('T1', 'easy'), spawn('T1', 'easy'), spawn('T1', 'medium'), spawn('T2', 'medium')].join('\n') + '\n');
   spend('T1', 'easy', 'openai.gpt-6-luna', 1000010, 0);
   spend('T1', 'medium', 'openai.gpt-6.1-sol', 3000010, 2000000);
   spend('T1', 'review', 'openai.gpt-6.1-sol', 500010, 0);
@@ -129,8 +224,6 @@ test('bench tokens reports accepted-task tokens and cost by rung and escalation 
   spend('T3', 'easy', 'openai.gpt-6-luna', 7000010, 0);
   // Minute-only manual records are not missing telemetry.
   h.ok(['spend', 'T2', '--minutes', '5']);
-  const spawn = (task, rung) => JSON.stringify({ at: new Date().toISOString(), agent: 'orchestrator', cmd: 'spawn', task, detail: { role: 'worker', rung, agent: `worker-${task}` } });
-  fs.appendFileSync(path.join(h.state, 'events.jsonl'), [spawn('T1', 'easy'), spawn('T1', 'easy'), spawn('T1', 'medium'), spawn('T2', 'medium')].join('\n') + '\n');
   const doc = h.readState('tasks.json');
   doc.tasks[0].status = 'accepted';
   doc.tasks[1].status = 'accepted';
@@ -156,4 +249,60 @@ test('bench tokens reports accepted-task tokens and cost by rung and escalation 
   assert.match(text, /accepted tasks: 2, with complete token records: 2/);
   assert.match(text, /easy>medium\s+1\s+4\.50M/);
   assert.match(text, /unpriced entries by model: global\.anthropic\.claude-opus-5-5\[1m\] 1/);
+});
+
+test('bench excludes accepted tasks missing worker, reviewer or resumed-session usage from medians', (t) => {
+  const h = makeRepo(t);
+  t.after(h.cleanup);
+  h.init();
+  for (const title of ['missing review', 'missing worker', 'complete', 'missing resumed usage']) {
+    h.ok(['task', 'add', '--title', title, '--acceptance', 'done']);
+  }
+  const events = [];
+  for (const task of ['T1', 'T2', 'T3', 'T4']) {
+    for (const role of ['worker', 'reviewer']) {
+      events.push({ at: '2026-10-07T00:00:00Z', cmd: 'spawn', task, detail: { agent: `${role}-${task}`, role, rung: role === 'worker' ? 'easy' : 'review' } });
+    }
+  }
+  events.push({ at: '2026-10-07T00:01:00Z', cmd: 'spawn', task: 'T4',
+    detail: { agent: 'worker-T4', role: 'worker', rung: 'easy', resumed: true, attempt: 2 } });
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const doc = h.readState('tasks.json');
+  for (const task of doc.tasks) {
+    task.status = 'accepted';
+    task.spend.entries = ['worker', 'reviewer'].filter((role) => !(task.id === 'T1' && role === 'reviewer') && !(task.id === 'T2' && role === 'worker'))
+      .map((role) => ({ at: '2026-10-07T00:00:30Z', minutes: 0, agent: `${role}-${task.id}`, source: `spawn:${role}-${task.id}`, tokens: 100, input: 90, cached: 0,
+        output: 10, cost_usd: 1, harness: null, model: null, profile: null, rung: role === 'worker' ? 'easy' : 'review' }));
+  }
+  h.writeState('tasks.json', doc);
+  h.ok(['spend', 'T1', '--minutes', '2', '--agent', 'reviewer-T1']);
+  let result = h.json(['bench', 'tokens']);
+  assert.deepEqual([result.accepted, result.complete, result.overall.priced_tasks], [4, 1, 1]);
+  assert.equal(result.by_rung.easy.tasks, 1);
+  assert.equal(result.by_path.easy.tasks, 1);
+  assert.equal(result.all_tasks_tokens, 600, 'partial recorded spend still contributes to total cost');
+  assert.deepEqual(result.tasks.map((row) => row.missing_spawns), [
+    ['spawn:reviewer-T1'], ['spawn:worker-T2'], [], ['spawn:worker-T4:attempt:2'],
+  ]);
+  // A matching native token report completes the reviewer; minute-only spend did not.
+  h.ok(['spend', 'T1', '--tokens', '0', '--agent', 'reviewer-T1']);
+  result = h.json(['bench', 'tokens']);
+  assert.equal(result.complete, 2);
+  const routes = [
+    ['spawn fallback', { route_index: 1 }],
+    ['spawn retry', { route_index: 1, retry: 1, fresh: true }],
+    ['spawn retry', { route_index: 1, retry: 2, fresh: false }],
+  ].map(([cmd, detail]) => ({ cmd, task: 'T3', at: '2026-10-07T00:00:20Z', detail: { agent: 'worker-T3', ...detail } }));
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), routes.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  result = h.json(['bench', 'tokens']);
+  const missing = result.tasks.find((row) => row.id === 'T3').missing_spawns;
+  assert.deepEqual(missing, ['spawn:worker-T3:route:1', 'spawn:worker-T3:route:1:retry:1']);
+  assert.equal(result.complete, 1, 'resumable retries share usage; fresh routes need their own records');
+  const updated = h.readState('tasks.json');
+  for (const source of missing) updated.tasks[2].spend.entries.push({
+    ...updated.tasks[2].spend.entries[0], source, tokens: 0, input: 0, cached: 0, output: 0, cost_usd: 0,
+  });
+  h.writeState('tasks.json', updated);
+  result = h.json(['bench', 'tokens']);
+  assert.equal(result.complete, 2);
 });
