@@ -98,6 +98,8 @@ process.exit(result.status ?? 1);
   for (const k of ['GH_TOKEN', 'GITHUB_TOKEN']) runEnv[k] = '';
   runEnv.CLAUDE_CONFIG_DIR = '';
   runEnv.CODEX_HOME = '';
+  // Agent caches go under the fixture's ~/.cache, not a cache the caller set.
+  runEnv.XDG_CACHE_HOME = '';
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
 }
 
