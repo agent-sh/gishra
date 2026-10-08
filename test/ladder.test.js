@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, fixtureLadder, ROOT } = require('./helpers');
+const L = require('../lib/ladder');
 
 const PINNED = fixtureLadder().ladder;
 
@@ -21,7 +22,8 @@ test('BUILTIN matches the documented defaults and init fallback', (t) => {
   h.init();
   const expected = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs', 'builtin-ladder.json'), 'utf8'));
   const p = h.readState('project.json');
-  assert.deepEqual({ harness: p.harness, ladder: p.ladder }, expected);
+  assert.deepEqual({ harness: p.harness, ladder: p.ladder }, { harness: expected.harness, ladder: expected.ladder });
+  assert.deepEqual(L.BUILTIN.claude_aliases, expected.claude_aliases);
   const show = h.json(['ladder', 'show']);
   assert.equal(show.harness_from, 'project');
   assert.equal(show.user_file, h.userConfig);

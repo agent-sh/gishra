@@ -9,7 +9,7 @@ const { ROOT, makeRepo, makeProjectRepo, makeTaskRepo, fixtureLadder } = require
 
 // Harness file names are not model selections.
 const harnessNames = new Set(['claude-plugin', 'claude-config', 'claude-error', 'claude-global',
-  'claude-only', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
+  'claude-only', 'claude-provider', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
 const selections = /\b(?:claude-[\w.-]+|gpt-[\w.-]+|opus|sonnet|haiku|sol|luna|astra)\b/gi;
 
 test('cached project and task fixtures pin their ladder and keep copies independent', (t) => {
@@ -59,8 +59,8 @@ test('model selections live only in BUILTIN or configuration documentation', () 
     { cwd: ROOT, encoding: 'utf8' }).split('\0').filter(Boolean);
   const violations = [];
   for (const file of new Set(files)) {
-    // Recorded research results document historical runs, not executable fixtures.
-    if (file.startsWith('research/') && /\/results\/[^/]+\.json$/.test(file)) continue;
+    // Research records quote sources and document historical runs, not executable fixtures.
+    if (file.startsWith('research/') && file.endsWith('.json')) continue;
     if ((file.startsWith('docs/') && file !== 'docs/cli.md') || file === 'README.md' || file === 'CHANGELOG.md'
       || file.startsWith('changelog.d/') || file === 'test/fixtures/usage/README.md') continue;
     let text = fs.readFileSync(path.join(ROOT, file), 'utf8');

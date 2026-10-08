@@ -173,8 +173,8 @@ test('a stronger model wins only when its median priced review cost is no higher
 });
 
 test('review selection matches Claude provider aliases to recorded provider spend', (t) => {
-  const bedrock = 'global.anthropic.claude-opus-5-5';
-  const anthropic = 'claude-opus-5-5';
+  const anthropic = 'fixture-claude';
+  const bedrock = `global.anthropic.${anthropic}`;
   for (const tier of ['medium', 'hard']) {
     const h = setup(t, tier);
     const bin = path.join(h.base, 'bin');
@@ -183,11 +183,11 @@ test('review selection matches Claude provider aliases to recorded provider spen
     const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
       AWS_REGION: 'eu-west-1', AWS_BEARER_TOKEN_BEDROCK: 'stub-secret-bedrock',
       ANTHROPIC_API_KEY: 'stub-secret-anthropic' };
-    h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--provider', 'bedrock', '--model', 'opus']);
-    h.ok(['ladder', 'set', 'research', '--harness', 'claude', '--provider', 'anthropic', '--model', 'opus']);
-    h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [bedrock]: prices[anthropic] } })]);
+    h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--provider', 'bedrock', '--model', anthropic]);
+    h.ok(['ladder', 'set', 'research', '--harness', 'claude', '--provider', 'anthropic', '--model', anthropic]);
+    h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [anthropic]: prices['fixture-large'], [bedrock]: prices['fixture-large'] } })]);
     ready(h);
-    sample(h, tier === 'medium' ? 'sol' : bedrock, 1000000, 0, 0);
+    sample(h, tier === 'medium' ? 'fixture-main' : bedrock, 1000000, 0, 0);
     sample(h, tier === 'medium' ? bedrock : anthropic, 0, 0, 1);
     const promoted = choice(h, env);
     assert.equal(promoted.review_rung, tier === 'medium' ? 'hard' : 'research');
