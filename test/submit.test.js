@@ -203,7 +203,7 @@ test('review evidence must pin the reviewed sha when a worker resubmits during r
   const h = makeRepo(t);
   h.init();
   h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
-    '--command', '["tower-crane-no-such-reviewer"]']);
+    '--command', '["tower-crane-no-such-reviewer","{prompt}"]']);
   h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   const reviewedSha = h.git(['rev-parse', 'HEAD']);

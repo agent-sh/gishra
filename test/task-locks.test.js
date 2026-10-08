@@ -49,7 +49,7 @@ const timer = setInterval(() => {
 }, 25);
 `);
   h.ok(['ladder', 'set', 'easy', '--harness', 'command',
-    '--command', JSON.stringify([process.execPath, script, h.base]),
+    '--command', JSON.stringify([process.execPath, script, h.base, '{prompt}']),
     '--clear', 'model', '--clear', 'profile', '--clear', 'effort']);
 }
 
