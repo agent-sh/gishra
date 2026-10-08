@@ -303,6 +303,8 @@ For a supervised claude exit without a result, the supervisor reads the session 
 
 Submitting ends lease renewal and retries; live usage collection and budget enforcement continue until the harness closes. Missing telemetry retains known spend and marks it stale. A fresh reading restores live status. The open board updates telemetry age, freshness and spend summaries each second, even when no state change arrives.
 
+`supervision.usage_ms` defaults to 30000 ms and is clamped to a minimum of 1000 ms at runtime. State-file notifications cannot shorten that interval. Unchanged readings write no usage event and retain their age. Each completed attempt is also sampled before a retry or fallback, and the launch checks its budget under the state lock. An initial read failure appears as unavailable telemetry with an error class, without the message or session path.
+
 ## Decisions
 
 <!-- commands:Decisions:start -->

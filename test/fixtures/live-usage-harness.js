@@ -13,9 +13,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 if (path.resolve(process.argv[1] || '') !== __filename) {
+  if (path.basename(process.argv[1] || '') === 'spawn-monitor.js' && process.env.LIVE_READS) {
+    const read = fs.readFileSync;
+    fs.readFileSync = function (file, ...args) {
+      if (typeof file === 'string' && /[\\/]projects[\\/].+\.jsonl$/.test(file)) {
+        fs.appendFileSync(process.env.LIVE_READS, `${Date.now()}\n`);
+      }
+      return read.call(this, file, ...args);
+    };
+  }
   const spawn = cp.spawn;
   cp.spawn = function liveHarness(file, args, options) {
-    if (['codex', 'claude'].includes(file) && process.env.LIVE_STEPS) {
+    if (['codex', 'claude', 'opencode', 'pi', 'agy'].includes(file) && process.env.LIVE_STEPS) {
       return spawn.call(this, process.execPath, [__filename, file, ...args], options);
     }
     return spawn.call(this, file, args, options);
@@ -24,30 +33,36 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   const harness = process.argv[2];
   const args = process.argv.slice(3);
   const env = process.env;
-  cp.execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'bin', 'tower-crane.js'), 'claim', env.TOWER_CRANE_TASK], { stdio: 'ignore' });
+  if (env.LIVE_ATTEMPTS) fs.appendFileSync(env.LIVE_ATTEMPTS, `${harness}\n`);
+  if (!env.LIVE_NO_CLAIM) cp.execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'bin', 'tower-crane.js'), 'claim', env.TOWER_CRANE_TASK], { stdio: 'ignore' });
   const steps = Number(env.LIVE_STEPS);
   const per = Number(env.LIVE_STEP_TOKENS || 1000);
   let file;
   if (harness === 'claude') {
     const id = args[args.indexOf('--session-id') + 1];
     file = path.join(env.CLAUDE_CONFIG_DIR, 'projects', process.cwd().replace(/[^A-Za-z0-9]/g, '-'), `${id}.jsonl`);
-  } else {
+  } else if (harness === 'codex') {
     const id = '01a11297-1067-7831-a3bc-2c04eac9aaef';
     console.log(JSON.stringify({ type: 'thread.started', thread_id: id }));
     file = path.join(env.CODEX_HOME, 'sessions', '2026', '10', '07', `rollout-2026-10-07T00-00-00-${id}.jsonl`);
   }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (file) fs.mkdirSync(path.dirname(file), { recursive: true });
   if (env.LIVE_FILE) fs.writeFileSync(env.LIVE_FILE, file);
   let step = 0;
   const write = (final = false) => {
     step += 1;
     const output = Math.floor(per / 10);
-    const record = harness === 'claude'
-      ? { type: 'assistant', message: { id: `msg-${step}`, model: 'live-model', usage: { input_tokens: per - output, output_tokens: output } } }
-      : { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: {
+    const record = {
+      claude: { type: 'assistant', message: { id: `msg-${step}`, model: 'live-model', usage: { input_tokens: per - output, output_tokens: output } } },
+      codex: { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: {
         input_tokens: step * (per - output), cached_input_tokens: 0, output_tokens: step * output, total_tokens: step * per,
-      } } } };
-    fs.appendFileSync(file, JSON.stringify(record) + '\n');
+      } } } },
+      opencode: { type: 'step_finish', part: { id: `step-${step}`, tokens: { input: per - output, output } } },
+      pi: { type: 'message_end', message: { role: 'assistant', usage: { input: per - output, output } } },
+      agy: { usage: { input_tokens: step * (per - output), output_tokens: step * output } },
+    }[harness];
+    if (file && !env.LIVE_LOG_ONLY) fs.appendFileSync(file, JSON.stringify(record) + '\n');
+    if (!file || env.LIVE_LOG_ONLY) console.log(JSON.stringify(record));
     if (final) {
       fs.writeFileSync(env.LIVE_DONE, String(step));
       process.exit(70);
@@ -61,12 +76,19 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
     } else if (step < steps) setTimeout(write, Number(env.LIVE_EVERY || 100));
     else {
       setTimeout(() => {
+        if (env.LIVE_RESULT && harness === 'claude') console.log(JSON.stringify({
+          type: 'result', usage: { input_tokens: step * (per - output), output_tokens: step * output },
+        }));
+        if (env.LIVE_OUTAGE) console.error('HTTP 503 service unavailable');
         fs.writeFileSync(env.LIVE_DONE, String(step));
-        process.exit(0);
+        process.exit(Number(env.LIVE_EXIT || 0));
       }, Number(env.LIVE_HOLD || 0));
     }
   };
-  write();
+  if (env.LIVE_UNREADABLE) {
+    fs.mkdirSync(file);
+    setTimeout(() => process.exit(0), 60000);
+  } else write();
   if (env.LIVE_FINISH) {
     setInterval(() => {
       if (fs.existsSync(env.LIVE_FINISH)) write(true);
