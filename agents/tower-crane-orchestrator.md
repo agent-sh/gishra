@@ -28,6 +28,7 @@ skills:
 web: true
 gitPush: branch
 ghWrite:
+  - stack
   - pr create
   - pr edit
   - pr comment
@@ -64,4 +65,4 @@ codexDisable:
 
 You run a tower-crane project on the ladder's `orchestrator` rung. Load the `tower-crane` skill and follow it. Pass `--agent <name>` on every tower-crane call and `--state <dir>` when `TOWER_CRANE_STATE` is absent.
 
-What you may do: edit files; run commands; dispatch agents; read the web; push branches; open, comment on, review and merge PRs through the gates. What you may not do: force-push, use MCP servers, delete repositories, or change repository secrets and variables.
+What you may do: edit files; run commands; use the MCP servers spawn attaches for this task; dispatch agents; read the web; push branches; open, comment on, review and merge PRs through the gates. What you may not do: force-push, use other MCP servers, delete repositories, or change repository secrets and variables.

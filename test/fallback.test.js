@@ -1,13 +1,19 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, makeProjectRepo, makeTaskRepo } = require('./helpers');
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const supervision = { retries: 2, backoff_ms: 10, max_backoff_ms: 20, stall_ms: 60000 };
+
+function setFallbacks(h, routes, rung = 'easy') {
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { [rung]: { fallbacks: routes } } }));
+}
 
 async function until(fn, message) {
   const deadline = Date.now() + 12000;
@@ -17,21 +23,28 @@ async function until(fn, message) {
   }
 }
 
-function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false } = {}) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Fallback routes', '--tier', 'easy', '--acceptance', 'fresh fallback session']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Complete the original task brief.\n' });
+function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false,
+  rung = 'easy', webMcp, fallbackWebMcp } = {}) {
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Fallback routes', '--tier', rung,
+      '--kind', rung === 'research' ? 'research' : 'code', '--acceptance', 'fresh fallback session'],
+    brief: 'Complete the original task brief.\n',
+  }]);
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
-  for (const harness of ['codex', 'claude', 'agy']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-  const routes = [{ harness: nextHarness, model: 'second', env: { ROUTE_ENV: 'fallback' } }];
+  // A gh on PATH and no token in the environment make every route ask gh for
+  // one, as on a CI runner; that must happen outside the state lock.
+  for (const harness of ['codex', 'claude', 'agy', 'gh']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
+  const routes = [{ harness: nextHarness, model: 'second', env: { ROUTE_ENV: 'fallback', NODE_TEST_CONTEXT: 'child-v8' } }];
+  if (fallbackWebMcp) routes[0].web_mcp = fallbackWebMcp;
   if (chain) routes.push({ harness: 'claude', model: 'third' });
-  h.ok(['ladder', 'set', 'easy', '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
-    '--env', '{"ROUTE_ENV":"primary"}', '--supervision', JSON.stringify(supervision), '--fallbacks', JSON.stringify(routes)]);
+  h.ok(['ladder', 'set', rung, '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
+    '--env', '{"ROUTE_ENV":"primary","NODE_TEST_WORKER_ID":"outer-worker"}', '--supervision', JSON.stringify(supervision),
+    ...(webMcp ? ['--web-mcp', JSON.stringify(webMcp)] : [])]);
+  setFallbacks(h, routes, rung);
   h.file = path.join(h.base, 'attempts.json');
   h.spawnEnv = {
-    PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
+    PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), GH_TOKEN: '', GITHUB_TOKEN: '',
     NODE_OPTIONS: `--require "${path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/')}"`,
     TOWER_CRANE_TEST_FALLBACK_FILE: h.file, TOWER_CRANE_TEST_FALLBACK_REASON: reason,
     ...(chain ? { TOWER_CRANE_TEST_FALLBACK_CHAIN: '1' } : {}),
@@ -41,6 +54,38 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   return h;
 }
 
+for (const explicit of [false, true]) {
+  test(`research Claude fallback ${explicit ? 'sets' : 'inherits'} web MCP tools and worker confinement on Bedrock`, async (t) => {
+    const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
+    const override = { name: 'backup-web', command: 'node', args: ['/web/backup.mjs'] };
+    const h = setup(t, { rung: 'research', primaryHarness: 'claude', nextHarness: 'claude',
+      reason: 'refusal', webMcp: server, ...(explicit ? { fallbackWebMcp: override } : {}) });
+    const cache = path.join(h.base, 'cache');
+    fs.mkdirSync(cache);
+    h.spawnEnv.XDG_CACHE_HOME = cache;
+    h.spawnEnv.LOCALAPPDATA = cache;
+    h.spawnEnv.CLAUDE_CODE_USE_BEDROCK = '1';
+    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.spawnEnv });
+    const result = await h.runAsync(['wait', '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '20']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).detail.agent, spawned.agent);
+    const [primary, fallback] = h.attempts();
+    assert.equal(fallback.model, 'second');
+    const web = explicit ? override : server;
+    assert.deepEqual(fallback.mcp, { [web.name]: { command: web.command, args: web.args } });
+    const tools = fallback.args[fallback.args.indexOf('--allowedTools') + 1].split(',');
+    assert.ok(tools.includes(`mcp__${web.name}__websearch`));
+    assert.ok(tools.includes(`mcp__${web.name}__webfetch`));
+    assert.ok(!tools.includes('WebSearch') && !tools.includes('WebFetch'));
+    assert.ok(fallback.args.includes('--strict-mcp-config'));
+    assert.deepEqual(fallback.sandbox, primary.sandbox);
+    assert.deepEqual(fallback.policy, primary.policy);
+    assert.equal(fallback.policy.gitPush, 'branch');
+    assert.deepEqual(fallback.sandbox.network.allowedDomains, ['*']);
+  });
+}
+
+describe('independent fallback routes', { concurrency: windowsConcurrency }, () => {
 for (const nextHarness of ['codex', 'claude']) {
   test(`outage exhausts same-route retries before a fresh ${nextHarness} fallback and records route spend`, async (t) => {
     const h = setup(t, { nextHarness });
@@ -62,6 +107,7 @@ for (const nextHarness of ['codex', 'claude']) {
     assert.notEqual(attempts[3].session, attempts[2].session);
     assert.ok(attempts[3].args.some((a) => a.includes('Complete the original task brief.')));
     assert.deepEqual(attempts.map((a) => a.env), ['primary', 'primary', 'primary', 'fallback']);
+    assert.ok(attempts.every((a) => a.node_test.length === 0), 'initial, retry and fallback environments exclude Node test runner context');
     for (const attempt of attempts) assert.deepEqual(attempt.claim, attempts[0].claim);
     const switches = events(h).filter((e) => e.cmd === 'spawn fallback');
     assert.equal(switches.length, 1);
@@ -83,6 +129,24 @@ for (const nextHarness of ['codex', 'claude']) {
     assert.equal(preview.resumed, false, 'the original route must not resume a fallback session');
   });
 }
+
+test('a browser-capable route can fall back to an unsupported harness without blocking dispatch', (t) => {
+  const h = setup(t, { primaryHarness: 'claude', nextHarness: 'agy' });
+  h.ok(['task', 'update', 'T1', '--kind', 'design', '--needs', '["browser"]']);
+  const home = path.join(h.base, 'browser-user');
+  const claude = path.join(home, '.claude');
+  fs.mkdirSync(claude, { recursive: true });
+  fs.writeFileSync(path.join(claude, 'mcp.json'), JSON.stringify({ mcpServers: { playwright: { command: 'browser-server' } } }));
+  Object.assign(h.spawnEnv, { HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claude, CODEX_HOME: path.join(home, '.codex') });
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.attempts().map((a) => a.harness), ['claude', 'claude', 'claude', 'agy']);
+  assert.match(result.stderr, /browser kit.*agy.*without it/);
+  const fallback = events(h).find((e) => e.cmd === 'spawn fallback');
+  assert.deepEqual(fallback.detail.browser_kit.attached, []);
+  assert.deepEqual(fallback.detail.browser_kit.omitted, ['playwright']);
+  assert.match(fallback.detail.browser_kit.warning, /agy.*without it/);
+});
 
 test('policy refusal on a successful exit advances the ordered routes without outage retries', (t) => {
   const h = setup(t, { reason: 'refusal', chain: true });
@@ -141,6 +205,7 @@ for (const primaryHarness of ['agy', 'claude']) {
     assert.equal(events(h).filter((e) => e.cmd === 'spend').length, spendEvents);
   });
 }
+});
 
 test('rework during a live fallback refuses a second worker until the previous attempt exits', async (t) => {
   const h = setup(t);
@@ -151,7 +216,15 @@ test('rework during a live fallback refuses a second worker until the previous a
   });
   const wake = await waiting;
   assert.equal(wake.code, 0, wake.stderr);
-  await until(() => h.attempts().length === 4, 'fallback worker did not start');
+  // The harness truncates and rewrites attempts.json between fallback routes.
+  await until(() => {
+    try {
+      return h.attempts().length === 4;
+    } catch (error) {
+      if (error instanceof SyntaxError) return false;
+      throw error;
+    }
+  }, 'fallback worker did not start');
   h.ok(['submit', 'T1', '--agent', 'worker-T1-1', '--sha', 'abcdef1']);
   h.ok(['rework', 'T1', '--reason', 'fix while worker is finishing']);
   for (const flags of [['--dry-run'], []]) {
@@ -166,11 +239,16 @@ test('rework during a live fallback refuses a second worker until the previous a
   assert.equal(preview.resumed, false);
 });
 
+describe('remaining fallback routes', { concurrency: windowsConcurrency }, () => {
 test('Codex profile and provider arguments change without carrying the old session or route flags', (t) => {
   const h = setup(t);
   h.ok(['ladder', 'set', 'easy', '--profile', 'first', '--clear', 'model',
-    '--args', '["-c","model_provider=bedrock"]', '--fallbacks',
-    '[{"profile":"second","args":["-c","model_provider=openai"]}]']);
+    '--args', '["-c","model_provider=bedrock"]']);
+  setFallbacks(h, [{ profile: 'second', args: ['-c', 'model_provider=openai'] }]);
+  const codex = path.join(h.base, 'codex');
+  fs.mkdirSync(codex);
+  fs.writeFileSync(path.join(codex, 'config.toml'), '[profiles.first]\nmodel = "first"\n[profiles.second]\nmodel = "second"\n');
+  h.spawnEnv.CODEX_HOME = codex;
   assert.equal(h.spawn().code, 0);
   const attempts = h.attempts();
   assert.equal(attempts[2].args[attempts[2].args.indexOf('-p') + 1], 'first');
@@ -208,7 +286,7 @@ test('an outage before session creation reruns fresh within the same budget befo
 for (const reason of ['outage', 'refusal']) {
   test(`exhausted ${reason} fallback leaves a blocked claim and records the final route exit`, (t) => {
     const h = setup(t, { reason, chain: true });
-    h.ok(['ladder', 'set', 'easy', '--fallbacks', '[{"harness":"codex","model":"second"}]']);
+    setFallbacks(h, [{ harness: 'codex', model: 'second' }]);
     assert.equal(h.spawn().code, 1);
     const task = h.json(['task', 'show', 'T1']);
     assert.equal(task.run.phase, 'blocked');
@@ -238,20 +316,133 @@ test('agent output quoting outage and refusal does not switch routes', (t) => {
   assert.equal(events(h).filter((e) => e.cmd === 'spawn fallback').length, 0);
 });
 
-test('fallback configuration validates every route and remains owner guarded', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  for (const value of [{}, [null], [{ harness: 'pi', profile: 'sol' }], [{ profile: 'sol', fallbacks: [] }]]) {
-    assert.notEqual(h.run(['ladder', 'set', 'easy', '--fallbacks', JSON.stringify(value)]).code, 0);
+test('user fallback configuration validates route shapes without project flags', (t) => {
+  const h = makeProjectRepo(t);
+  for (const value of [{}, [null], [{ profile: 'sol', fallbacks: [] }]]) {
+    setFallbacks(h, value);
+    assert.notEqual(h.run(['ladder', 'show']).code, 0);
   }
-  assert.equal(h.run(['ladder', 'set', 'easy', '--fallbacks', '[{"profile":"sol"}]', '--agent', 'worker']).code, 1);
-  h.ok(['ladder', 'set', 'easy', '--fallbacks', '[{"profile":"sol"}]']);
-  assert.match(h.ok(['ladder', 'show']), /fallbacks/);
+  setFallbacks(h, [{ profile: 'sol' }]);
+  assert.match(h.ok(['ladder', 'show']), /fallback 1.*from user file/);
   assert.deepEqual(h.json(['ladder', 'show']).ladder.easy.fallbacks, [{ profile: 'sol' }]);
   h.ok(['ladder', 'save-user']);
   assert.deepEqual(JSON.parse(fs.readFileSync(h.userConfig, 'utf8')).ladder.easy.fallbacks, [{ profile: 'sol' }]);
-  h.ok(['ladder', 'set', 'easy', '--clear', 'fallbacks']);
-  assert.equal(h.json(['ladder', 'show']).ladder.easy.fallbacks, undefined);
+  setFallbacks(h, []);
+  assert.deepEqual(h.json(['ladder', 'show']).ladder.easy.fallbacks, []);
+});
+
+test('a project hard rung uses personal fallbacks and skips unavailable routes', (t) => {
+  const h = setup(t);
+  h.ok(['ladder', 'set', 'hard', '--harness', 'codex', '--model', 'first', '--clear', 'effort',
+    '--supervision', JSON.stringify(supervision)]);
+  h.ok(['task', 'update', 'T1', '--tier', 'hard']);
+  const codex = path.join(h.base, 'codex');
+  fs.mkdirSync(codex);
+  h.spawnEnv.CODEX_HOME = codex;
+  const unavailable = path.join(h.base, 'missing-harness');
+  setFallbacks(h, [
+    { harness: 'command', command: [unavailable] },
+    { harness: 'codex', profile: 'missing' },
+    { harness: 'claude' },
+    { harness: 'pi', profile: 'sol' },
+    { harness: 'claude', model: 'second' },
+  ], 'hard');
+  const shown = h.json(['ladder', 'show'], { env: h.spawnEnv });
+  assert.equal(shown.ladder.hard.model, 'first');
+  assert.equal(shown.ladder.hard.fallbacks_from, 'user');
+  assert.equal(shown.problems.length, 4);
+  assert.match(shown.problems.join('\n'), /no executable.*missing-harness/);
+  assert.match(shown.problems.join('\n'), /profile missing is not configured/);
+  assert.match(shown.problems.join('\n'), /needs a model/);
+  assert.equal(h.json(['validate']).ok, true, 'unavailable personal routes do not invalidate the project');
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /skipping fallback 1/);
+  assert.deepEqual(h.attempts().map((a) => [a.harness, a.model]), [
+    ['codex', 'first'], ['codex', 'first'], ['codex', 'first'], ['claude', 'second'],
+  ]);
+  assert.equal(events(h).find((e) => e.cmd === 'spawn fallback').detail.route_index, 5);
+});
+
+test('exhaustion with only unavailable personal fallbacks records a normal blocked exit', (t) => {
+  const h = setup(t, { reason: 'refusal' });
+  setFallbacks(h, [{ harness: 'command', command: [path.join(h.base, 'missing')] }]);
+  const result = h.spawn();
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /skipping fallback/);
+  assert.equal(h.attempts().length, 1);
+  assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'blocked');
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn exit').length, 1);
+});
+
+for (const harness of ['claude', 'codex']) {
+  for (const config of ['default', 'override']) {
+    test(`a spawned ${harness} orchestrator dispatches with personal fallbacks from the ${config} user path`, (t) => {
+      const h = setup(t, { reason: 'refusal' });
+      const userHome = path.join(h.base, 'user-home');
+      fs.mkdirSync(userHome);
+      h.env.HOME = userHome;
+      h.env.USERPROFILE = userHome;
+      if (config === 'default') {
+        delete h.env.TOWER_CRANE_CONFIG;
+        h.userConfig = path.join(userHome, '.config', 'tower-crane', 'config.json');
+      } else {
+        h.env.TOWER_CRANE_CONFIG = path.relative(h.repo, h.userConfig);
+      }
+      setFallbacks(h, [{ harness: 'claude', model: 'second' }], 'hard');
+      h.ok(['ladder', 'set', 'orchestrator', '--harness', harness, '--model', 'orchestrator', '--clear', 'effort']);
+      h.ok(['ladder', 'set', 'hard', '--harness', 'codex', '--model', 'first', '--clear', 'effort',
+        '--supervision', JSON.stringify(supervision)]);
+      h.ok(['task', 'add', '--title', 'Nested worker', '--tier', 'hard', '--acceptance', 'uses personal fallback']);
+      h.ok(['brief', 'set', 'T2', '-'], { input: 'Dispatch with personal fallback routes.\n' });
+      const nested = path.join(h.base, 'nested.json');
+      const result = h.run(['spawn', '--task', 'T1', '--role', 'orchestrator', '--wait'], {
+        env: { ...h.spawnEnv, TOWER_CRANE_TEST_NESTED_DISPATCH: nested }, timeout: 25000,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      const seen = JSON.parse(fs.readFileSync(nested, 'utf8'));
+      assert.equal(seen.home, path.join(h.state, 'homes', 'orchestrator-T1-1', 'home'));
+      assert.equal(seen.config, h.userConfig);
+      assert.deepEqual(seen.ladder.ladder.hard.fallbacks, [{ harness: 'claude', model: 'second' }]);
+      assert.equal(seen.dispatch.code, 0);
+      assert.deepEqual(h.attempts().map((a) => a.model), ['first', 'second']);
+      assert.equal(events(h).find((e) => e.cmd === 'spawn fallback').task, 'T2');
+    });
+  }
+}
+
+test('command fallback executable placeholders are expanded before availability checks', (t) => {
+  const h = setup(t, { reason: 'refusal' });
+  const scripts = path.join(h.repo, 'scripts');
+  fs.mkdirSync(scripts);
+  fs.writeFileSync(path.join(scripts, process.platform === 'win32' ? 'fallback.exe' : 'fallback'), '', { mode: 0o755 });
+  h.git(['add', 'scripts']);
+  h.git(['commit', '-m', 'Add fallback executable']);
+  setFallbacks(h, [{ harness: 'command', command: ['{cwd}/scripts/fallback', 'second', '{prompt}'] }]);
+  assert.deepEqual(h.json(['ladder', 'show'], { env: h.spawnEnv }).problems, []);
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.attempts().map((a) => [a.harness, a.model]), [['codex', 'first'], ['command', 'second']]);
+  assert.match(h.attempts()[1].args[1], /Complete the original task brief/);
+  const switched = events(h).find((e) => e.cmd === 'spawn fallback');
+  assert.equal(switched.detail.harness, 'command');
+  assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'waiting');
+});
+
+test('missing expanded command fallback executables are skipped during preparation', (t) => {
+  const h = setup(t, { reason: 'refusal' });
+  setFallbacks(h, [
+    { harness: 'command', command: ['{cwd}/scripts/missing', '{prompt}'] },
+    { harness: 'claude', model: 'second' },
+  ]);
+  assert.deepEqual(h.json(['ladder', 'show'], { env: h.spawnEnv }).problems, []);
+  const result = h.spawn();
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /could not start .*scripts[/\\]missing/);
+  assert.equal(result.stderr.includes('{cwd}'), false);
+  assert.deepEqual(h.attempts().map((a) => a.model), ['first', 'second']);
+  assert.equal(events(h).find((e) => e.cmd === 'spawn fallback').detail.route_index, 2);
+});
 });
 
 test('a detached switch wakes a live waiter, keeps its lease, and collects route usage on exit', async (t) => {

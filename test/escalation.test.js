@@ -50,7 +50,7 @@ ${index === 0 && ['stall', 'hold', 'orphan'].includes(trigger) ? 'setInterval(()
 ${index === 0 && trigger === 'cleanup' ? "setInterval(() => { if (fs.existsSync(process.argv[2] + '.exit')) process.exit(0); }, 25);" : ''}
 `;
     h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
-      JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{session}']),
+      JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{session}', '{prompt}']),
       '--clear', 'profile', '--clear', 'effort', '--clear', 'model', '--supervision',
       JSON.stringify({ retries: 0, stall_ms: 100, backoff_ms: 10, max_backoff_ms: 10 })]);
   }
@@ -74,6 +74,20 @@ test('tier ranges start low; invalid and reversed ranges are refused without sta
   const plan = [{ title: 'Imported range', tier: 'medium..research', acceptance: ['starts medium'] }];
   h.ok(['plan', 'import', '-'], { input: JSON.stringify(plan) });
   assert.equal(h.json(['task', 'show', 'T2']).tier, 'medium');
+});
+
+test('manual range changes use tier authority even when clearing the range at its current rung', (t) => {
+  const h = setup(t);
+  const before = events(h).length;
+  for (const tier of ['easy', 'easy..hard']) {
+    const result = h.run(['task', 'update', 'T1', '--tier', tier, '--agent', 'worker-bounds']);
+    assert.equal(result.code, 1, 'workers must not change a planned range');
+    assert.match(result.stderr, /task.tier.*operational/);
+  }
+  assert.equal(events(h).length, before);
+  assert.deepEqual(h.json(['task', 'show', 'T1']).tier_range, { min: 'easy', max: 'medium' });
+  h.ok(['task', 'update', 'T1', '--tier', 'easy', '--agent', 'orchestrator']);
+  assert.equal(h.json(['task', 'show', 'T1']).tier_range, undefined);
 });
 
 for (const trigger of ['exit', 'preclaim', 'stall', 'review']) {

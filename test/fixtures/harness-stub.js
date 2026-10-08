@@ -29,6 +29,30 @@ const files = (dir, ext) => {
     return [];
   }
 };
+// claude's @path imports, followed five hops deep from each memory file.
+const withImports = (file, depth = 0) => {
+  const text = read(file);
+  if (text === null) return [];
+  const found = [...text.matchAll(/(?:^|\s)@(?:"((?:\\.|[^"\\])*)"|((?:\\\s|\S)+))/g)].map((m) => {
+    const raw = (m[1] ?? m[2]).replace(/\\([\\"\s])/g, '$1').replace(/[),.;:]+$/, '');
+    return raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : path.resolve(path.dirname(file), raw);
+  });
+  return [text, ...(depth < 5 ? found.flatMap((f) => withImports(f, depth + 1)) : [])];
+};
+// Instruction files in dir and each directory above it, up to stop.
+const walkUp = (dir, names, stop = null) => {
+  const out = [];
+  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
+    for (const n of names) {
+      const file = path.join(d, n);
+      if (read(file) !== null) {
+        out.unshift(...(stop ? [read(file)] : withImports(file)));
+        if (stop) break;
+      }
+    }
+    if (d === stop || path.dirname(d) === d) return out;
+  }
+};
 const hookCommands = (settings) => Object.values(settings.hooks || {}).flat().flatMap((h) => (h.hooks || []).map((x) => x.command));
 
 module.exports = function stub(harness) {
@@ -45,8 +69,12 @@ module.exports = function stub(harness) {
   if (harness === 'claude') {
     const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
     const global = process.env.CLAUDE_CONFIG_DIR ? path.join(dir, '.claude.json') : path.join(os.homedir(), '.claude.json');
-    report.memory = [read(path.join(dir, 'CLAUDE.md')), ...files(path.join(dir, 'rules'), '.md')].filter(Boolean);
     const sources = (after('--setting-sources') || 'user,project,local').split(',');
+    // User memory follows its imports; project memory loads only with the
+    // project source.
+    report.memory = [...withImports(path.join(dir, 'CLAUDE.md')), ...files(path.join(dir, 'rules'), '.md'),
+      ...(sources.includes('project') ? walkUp(process.cwd(), ['CLAUDE.md']) : [])].filter(Boolean);
+    report.prompt = after('-p');
     const sourceFiles = { user: path.join(dir, 'settings.json'), project: '.claude/settings.json', local: '.claude/settings.local.json' };
     const settings = json(sourceFiles.user);
     for (const s of sources) report.hooks.push(...hookCommands(json(sourceFiles[s])));
@@ -55,7 +83,7 @@ module.exports = function stub(harness) {
     if (!args.includes('--strict-mcp-config')) Object.assign(report.mcp, json(global).mcpServers || {});
     if (after('--mcp-config')) Object.assign(report.mcp, json(after('--mcp-config')).mcpServers || {});
     report.auth = read(path.join(dir, '.credentials.json'));
-  } else {
+  } else if (harness === 'codex') {
     const dir = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
     const disabled = args.filter((a, i) => args[i - 1] === '--disable');
     const config = toml(path.join(dir, 'config.toml'));
@@ -65,6 +93,10 @@ module.exports = function stub(harness) {
       ...[config.model_instructions_file, profile.model_instructions_file].filter(Boolean).map(read),
       ...(disabled.includes('memories') ? [] : files(path.join(dir, 'memories'), '.md')),
     ].filter(Boolean);
+    // codex reads AGENTS.md from the git root down to its working directory.
+    const top = cp.spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim();
+    report.projectDocs = top ? walkUp(process.cwd(), ['AGENTS.override.md', 'AGENTS.md'], path.resolve(top)) : [];
+    report.prompt = args.find((a) => a.includes('## Task')) || null;
     report.rules = files(path.join(dir, 'rules'), '.rules');
     // codex finds skills in its home and in the user's ~/.agents/skills.
     report.skills = [...skillsIn(path.join(dir, 'skills')), ...skillsIn(path.join(os.homedir(), '.agents', 'skills'))];
@@ -83,6 +115,8 @@ module.exports = function stub(harness) {
       process.stdout.write(`${JSON.stringify({ type: 'thread.started', thread_id: id })}\n`);
     }
     report.sessions = fs.existsSync(sessions) ? fs.readdirSync(sessions) : [];
+  } else {
+    report.prompt = args.find((a) => a.includes('## Task')) || null;
   }
   for (const argv of JSON.parse(process.env.STUB_RUN || '[]')) {
     const r = cp.spawnSync(argv[0], argv.slice(1), { encoding: 'utf8' });

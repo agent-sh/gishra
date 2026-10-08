@@ -1,14 +1,16 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, BIN } = require('./helpers');
+const { makeRepo, makeTaskRepo, BIN } = require('./helpers');
 const Sessions = require('../lib/spawn-session');
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 
+describe('spawn resume integration cases', { concurrency: windowsConcurrency }, () => {
 test('isolated Codex session lookup matches the recorded rollout id', (t) => {
   const h = makeRepo(t);
   const codexHome = path.join(h.base, 'homes', '.codex');
@@ -22,10 +24,10 @@ test('isolated Codex session lookup matches the recorded rollout id', (t) => {
 });
 
 function setup(t, format = 'codex', session = true) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Resume worker', '--acceptance', 'rework resumes']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Implement the acceptance.\n' });
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Resume worker', '--acceptance', 'rework resumes'],
+    brief: 'Implement the acceptance.\n',
+  }]);
   const script = path.join(h.base, 'harness.js');
   const seen = path.join(h.base, 'seen.json');
   fs.writeFileSync(script, `
@@ -561,4 +563,5 @@ test('a failed resume launch leaves the task, claim and receipts unchanged', (t)
   assert.deepEqual(h.readState('tasks.json'), before);
   assert.deepEqual(events(h), audit);
   assert.equal(h.json(['spawn', '--task', 'T1', '--wait']).resumed, true);
+});
 });

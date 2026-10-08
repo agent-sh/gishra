@@ -146,15 +146,92 @@ const isolated = (h, rung, harness) => {
   h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
 
-test('a spawned claude agent loads none of the user memory, settings hooks, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
+test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
+  isolated(h, 'hard', 'claude');
+  spawn(h, u, 'hard');
+  const worker = u.report();
+  const filesystem = report => {
+    const { allowRead, ...shared } = report.settings.sandbox.filesystem;
+    const ownHome = path.dirname(report.home);
+    assert.deepEqual(allowRead, [ownHome, path.join(h.state, 'brokers', path.basename(ownHome))]);
+    assert.ok(shared.denyWrite.includes(h.state));
+    return shared;
+  };
+  isolated(h, 'research', 'claude');
+  const dry = h.json(['spawn', '--role', 'research', '--task', 'T1', '--dry-run'], { env: u.env });
+  assert.match(dry.home.agent_file, /tower-crane-researcher\.md$/);
+  spawn(h, u, 'research');
+  const native = u.report();
+  assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebSearch'));
+  assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebFetch'));
+  assert.deepEqual(filesystem(native), filesystem(worker));
+  assert.deepEqual(native.settings.sandbox.network.allowedDomains, ['*']);
+  assert.ok(native.memory.join('\n').includes('Use the network'));
+  h.ok(['ladder', 'set', 'research', '--web-mcp', '{"name":"harness-web","command":"node","args":["/configured/server.mjs"]}']);
+  spawn(h, u, 'research');
+  const web = u.report();
+  assert.deepEqual(web.mcp, { 'harness-web': { command: 'node', args: ['/configured/server.mjs'] } });
+  assert.ok(web.args.includes('--strict-mcp-config'));
+  assert.ok(web.args.includes('--mcp-config'));
+  const allowed = web.args[web.args.indexOf('--allowedTools') + 1].split(',');
+  assert.ok(allowed.includes('mcp__harness-web__websearch'));
+  assert.ok(allowed.includes('mcp__harness-web__webfetch'));
+  assert.ok(!allowed.includes('mcp__harness-web'));
+  assert.deepEqual(filesystem(web), filesystem(worker));
+  noSecretsCopied(h);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[],"env":{"TOKEN":"secret"}}']).code, 2);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[]}', '--agent', 'worker-T1-1']).code, 1);
+});
+
+test('research Codex explicitly enables live search with worker file and git confinement', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
+  isolated(h, 'hard', 'codex');
+  spawn(h, u, 'hard');
+  const worker = u.report();
+  assert.ok(worker.args.includes('web_search="disabled"'));
+  isolated(h, 'research', 'codex');
+  spawn(h, u, 'research');
+  const researcher = u.report();
+  assert.ok(researcher.args.includes('web_search="live"'));
+  const workerFs = worker.config.permissions['tower-crane'].filesystem;
+  const researchFs = researcher.config.permissions['tower-crane'].filesystem;
+  for (const [report, rules] of [[worker, workerFs], [researcher, researchFs]]) {
+    const ownHome = path.dirname(report.home);
+    const sessions = path.join(h.state, 'homes', '.codex', path.basename(ownHome));
+    assert.equal(rules[path.join(h.state, 'homes')], 'none');
+    assert.equal(rules[ownHome], 'read');
+    assert.equal(rules[sessions], 'write');
+    assert.equal(rules[report.home], 'write');
+    const broker = path.join(h.state, 'brokers', path.basename(ownHome));
+    assert.equal(rules[h.state], 'read');
+    assert.equal(rules[path.join(h.state, 'brokers')], 'none');
+    assert.equal(rules[broker], 'write');
+    delete rules[ownHome];
+    delete rules[sessions];
+    delete rules[report.home];
+    delete rules[broker];
+  }
+  assert.deepEqual(researchFs, workerFs);
+  assert.deepEqual(researcher.rules, worker.rules);
+  noSecretsCopied(h);
+});
+
+test('a spawned claude agent imports the user\'s global rules by path, loads none of the user settings hooks, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   isolated(h, 'small', 'claude');
   const dry = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
   assert.ok(!JSON.stringify(dry).includes(SECRET), 'no credential in the command or its env');
   const started = spawn(h, u, 'small');
   const seen = u.report();
-  assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'user memory stays out');
-  assert.match(seen.memory.join('\n'), /^# tower-crane-small/m, 'the role instructions load instead');
+  assert.match(seen.memory.join('\n'), /^# tower-crane-small/m, 'the role instructions load');
+  const home = path.join(h.state, 'homes', started.agent);
+  const instructions = fs.readFileSync(path.join(home, 'CLAUDE.md'), 'utf8');
+  assert.ok(instructions.split('\n').includes(`@${path.join(u.home, '.claude', 'CLAUDE.md')}`), 'the user\'s global rules are imported by path');
+  assert.ok(!instructions.includes('PLANTED-MEMORY'), 'their text is not copied');
+  assert.ok(seen.memory.join('\n').includes('PLANTED-MEMORY'), 'claude loads the user\'s global rules through the import');
   assert.deepEqual(Object.keys(seen.settings.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
   assert.ok(!JSON.stringify(seen.hooks).includes('planted'), 'no user, project or local hooks');
   assert.deepEqual(seen.mcp, {}, 'no MCP server');
@@ -164,7 +241,6 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   // The helper is named, not copied, and still yields the user's credential.
   const helper = cp.execSync(seen.settings.apiKeyHelper, { encoding: 'utf8', env: u.env }).trim();
   assert.equal(helper, `${SECRET}-HELPER`);
-  const home = path.join(h.state, 'homes', started.agent);
   assert.ok(fs.lstatSync(path.join(home, '.credentials.json')).isSymbolicLink(), 'credentials are linked');
   assert.equal(fs.statSync(home).mode & 0o777, 0o700, 'the home is private');
   assert.equal(fs.statSync(path.join(home, 'settings.json')).mode & 0o777, 0o600);
@@ -188,14 +264,15 @@ test('a spawned claude agent loads none of the user memory, settings hooks, MCP 
   noSecretsCopied(h);
 });
 
-test('a spawned codex agent loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
+test('a spawned codex agent is pointed at the user\'s global rules, loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   isolated(h, 'small', 'codex');
   const dry = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
   assert.ok(!JSON.stringify(dry).includes(SECRET), 'no credential in the command or its env');
   const started = spawn(h, u, 'small');
   const seen = u.report();
-  assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'user instructions, instruction files and memories stay out');
+  assert.ok(!seen.memory.join('\n').includes('PLANTED'), 'user instruction files and memories stay out of its home');
+  assert.ok(seen.prompt.includes(`- ${path.join(u.home, '.codex', 'AGENTS.md')} (global, read it)`), 'the prompt names the user\'s global rules for the agent to read');
   assert.match(seen.memory.join('\n'), /^# tower-crane-small/m);
   assert.deepEqual(seen.mcp, {}, 'no MCP server');
   assert.ok(!seen.rules.join('\n').includes('planted-rule'), 'no approved-command rules');
@@ -235,10 +312,101 @@ test('every spawn gets a fresh home, and an exited agent\'s home is removed', { 
     const second = spawn(h, u, 'small').agent;
     assert.notEqual(second, first);
     const seen = u.report();
-    assert.ok(!seen.memory.join('\n').includes('PLANTED'), `${harness}: nothing carries over`);
+    assert.ok(!seen.memory.join('\n').includes('PLANTED-BY-AGENT'), `${harness}: nothing carries over`);
     assert.ok(!seen.rules.join('\n').includes('planted-by-agent'), `${harness}: no rules carry over`);
     assert.ok(!fs.existsSync(old), `${harness}: the exited agent's home is gone`);
   }
+});
+
+test('only sandboxed claude and codex dispatches mark commands for nested Chrome', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const output = path.join(wt, 'sandbox-marker.json');
+  const script = `require('node:fs').writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.env.TOWER_CRANE_SANDBOX))`;
+  for (const harness of ['claude', 'codex']) {
+    for (const [role, expected] of [['hard', '1'], ['orchestrator', '0']]) {
+      isolated(h, role, harness);
+      spawn(h, u, role, {
+        TOWER_CRANE_SANDBOX: expected === '1' ? '0' : '1',
+        STUB_RUN: JSON.stringify([[process.execPath, '-e', script]]),
+      });
+      assert.equal(u.report().ran[0].code, 0);
+      assert.equal(JSON.parse(fs.readFileSync(output, 'utf8')), expected, `${harness} ${role} replaces an inherited marker`);
+    }
+  }
+});
+
+test('browser tasks attach the user kit on every rung with approved tools and no copied secrets', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const definitions = {
+    playwright: { command: 'browser-mcp', args: ['--headless'], env: { TOKEN: SECRET }, headers: { Authorization: SECRET } },
+    visual: { command: 'visual-mcp', args: [], env: { TOKEN: SECRET }, headers: { Authorization: SECRET } },
+  };
+  fs.writeFileSync(path.join(u.home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers: definitions }));
+  const config = path.join(u.home, '.codex', 'config.toml');
+  fs.appendFileSync(config, '\n' + TOML.stringify({ mcp_servers: definitions }));
+  fs.appendFileSync(path.join(u.home, '.codex', 'sol.config.toml'), '\n' + TOML.stringify({
+    mcp_servers: { playwright: {
+      command: 'profile-browser-mcp', enabled: false, default_tools_approval_mode: 'prompt',
+      env_vars: [SECRET], env_http_headers: { Authorization: SECRET },
+      tools: { browser_navigate: { approval_mode: 'prompt' } },
+    } },
+  }));
+  for (const harness of ['claude', 'codex']) {
+    for (const declaration of [['--kind', 'design', '--needs', '[]'], ['--kind', 'code', '--needs', '["browser"]']]) {
+      h.ok(['task', 'update', 'T1', ...declaration]);
+      for (const role of ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']) {
+        isolated(h, role, harness);
+        const dry = h.json(['spawn', '--role', role, '--task', 'T1', '--dry-run'], { env: u.env });
+        assert.deepEqual(dry.home.mcp, ['playwright'], `${harness} ${role} ${declaration}`);
+        if (harness === 'claude') assert.match(dry.argv[dry.argv.indexOf('--allowedTools') + 1], /mcp__playwright/);
+      }
+    }
+    const started = spawn(h, u, 'hard');
+    const seen = u.report();
+    assert.match(seen.memory.join('\n'), /Approved MCP servers for this dispatch: playwright/);
+    if (harness === 'claude') assert.deepEqual(seen.mcp, { playwright: { command: 'browser-mcp', args: ['--headless'] } });
+    else {
+      assert.deepEqual(seen.config.mcp_servers.playwright, {
+        command: 'browser-mcp', args: ['--headless'], enabled: true, default_tools_approval_mode: 'approve',
+      });
+      const profile = TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, 'sol.config.toml'), 'utf8')).mcp_servers.playwright;
+      assert.equal(profile.enabled, true);
+      assert.equal(profile.default_tools_approval_mode, 'approve');
+      assert.equal(profile.tools.browser_navigate.approval_mode, 'approve');
+      assert.equal(profile.env_vars, undefined);
+      assert.equal(profile.env_http_headers, undefined);
+    }
+    noSecretsCopied(h);
+    h.ok(['browser-kit', 'set', '--servers', '["visual","playwright"]']);
+    const custom = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
+    assert.deepEqual(custom.home.mcp, ['visual', 'playwright']);
+    h.ok(['task', 'update', 'T1', '--needs', '[]']);
+    const plain = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: u.env });
+    assert.deepEqual(plain.home.mcp, [], 'a plain code task gets no kit');
+    h.ok(['browser-kit', 'set', '--servers', '["playwright"]']);
+  }
+});
+
+test('browser spawns use the original user kit through a nested isolated home and refuse missing servers', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const userFile = path.join(u.home, '.config', 'tower-crane', 'config.json');
+  fs.mkdirSync(path.dirname(userFile), { recursive: true });
+  fs.writeFileSync(userFile, JSON.stringify({ browser_kit: ['planted'] }));
+  h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
+  isolated(h, 'hard', 'codex');
+  const parent = spawn(h, u, 'hard', { TOWER_CRANE_CONFIG: '' });
+  const generated = path.join(h.state, 'homes', parent.agent);
+  const nestedEnv = { ...u.env, HOME: path.join(generated, 'home'), CODEX_HOME: generated, TOWER_CRANE_CONFIG: '' };
+  assert.deepEqual(h.json(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: nestedEnv }).home.mcp, ['planted']);
+  fs.writeFileSync(userFile, JSON.stringify({ browser_kit: ['missing-browser'] }));
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'small', harness);
+    const result = h.run(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '' } });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /missing-browser.*(?:mcp\.json|config\.toml)/);
+  }
+  h.ok(['task', 'update', 'T1', '--needs', '[]']);
+  assert.deepEqual(h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...u.env, TOWER_CRANE_CONFIG: '' } }).home.mcp, []);
 });
 
 test('a codex agent writes only where its agent file says; a worker writes its git metadata, reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
@@ -372,6 +540,31 @@ test('an isolated Codex worker can publish its task branch with an allow rule an
   assert.equal(h.git(['--git-dir', remote, 'rev-parse', `refs/heads/${branch}`]), h.git(['rev-parse', 'HEAD'], wt));
   spawn(h, u, 'review');
   assert.doesNotMatch(u.report().rules.join('\n'), /decision = "allow"/);
+});
+
+test('the orchestrator can run gh-stack atomic pushes while direct forced pushes and worker stack commands stay refused', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const bin = path.join(h.base, 'bin');
+  const git = path.join(bin, 'git');
+  const text = fs.readFileSync(git, 'utf8');
+  fs.writeFileSync(git, text.replace('const args = process.argv.slice(2);',
+    `const args = process.argv.slice(2);
+if (args[0] === 'push' && args.includes('--atomic')) process.exit(0);`));
+  fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === 'auth') { console.log('stub-gh-token'); process.exit(0); }
+const r = cp.spawnSync('git', ['push', '--atomic', '--force-with-lease', 'origin', 'HEAD:refs/heads/stack'], {stdio: 'inherit'});
+process.exit(r.status ?? 1);
+`);
+  for (const [rung, allowed] of [['orchestrator', true], ['hard', false]]) {
+    isolated(h, rung, 'codex');
+    spawn(h, u, rung, { STUB_RUN: JSON.stringify([
+      ['git', 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/stack'],
+      ['gh', 'stack', 'sync'],
+    ]) });
+    assert.deepEqual(u.report().ran.map((r) => r.code), [126, allowed ? 0 : 126]);
+  }
 });
 
 test('an isolated reviewer posts through gh, records evidence in a symlinked state dir and runs a git fixture', { skip: NO_STUBS }, (t) => {
@@ -526,7 +719,7 @@ test('a sandboxed role cannot write the state directory itself', () => {
   const text = fs.readFileSync(A.file('worker'), 'utf8').replace(/^writeOutside:(\r?\n)/m, 'writeOutside:$1  - state$1');
   assert.match(text, /- state/);
   assert.throws(() => A.parse(text, 'worker.md'), /state needs sandbox: false/);
-  for (const job of ['worker', 'reviewer', 'small']) assert.ok(!A.load(job).writeOutside.includes('state'), job);
+  for (const job of ['worker', 'researcher', 'reviewer', 'small']) assert.ok(!A.load(job).writeOutside.includes('state'), job);
 });
 
 test('a gh token in the spawning environment passes through, and the keyring is asked only without one', { skip: NO_STUBS }, (t) => {
@@ -662,17 +855,20 @@ test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-r
   assert.match(pi.stderr, /tools applies only to claude and codex, mcp applies only to claude and codex/);
 });
 
-test('only the owner widens a rung, and args hold only allowlisted flags', (t) => {
+test('only the orchestrator or the owner widens a rung, a command needs the owner, and args hold only allowlisted flags', (t) => {
   const { h } = setup(t);
   isolated(h, 'small', 'claude');
   const as = (agent, flags) => h.run(['ladder', 'set', 'small', ...flags, '--agent', agent]);
   for (const flags of [['--tools', '["Agent"]'], ['--mcp', '["planted"]'], ['--args', '["--verbose"]'], ['--harness', 'command', '--command', '["sh"]', '--clear', 'model']]) {
     const r = as('worker-T1-1', flags);
     assert.equal(r.code, 1, flags.join(' '));
-    assert.match(r.stderr, /only the owner can change a rung's harness, args, command, tools, mcp/);
+    assert.match(r.stderr, flags.includes('--command') ? /only the owner with an explicit identity can change ladder\.command/ : /operational: only the orchestrator or the owner/);
   }
-  h.ok(['ladder', 'set', 'small', '--model', 'sonnet', '--agent', 'orchestrator-1']);
-  assert.equal(as('owner', ['--tools', '["Agent"]']).code, 0);
+  const command = as('orchestrator', ['--harness', 'command', '--command', '["sh"]', '--clear', 'model']);
+  assert.equal(command.code, 1);
+  assert.match(command.stderr, /ladder\.command, ladder\.reach are owner-required; opened D1/);
+  h.ok(['ladder', 'set', 'small', '--model', 'sonnet', '--agent', 'orchestrator']);
+  assert.equal(as('orchestrator', ['--tools', '["Agent"]']).code, 0);
   assert.equal(as('owner', ['--args', '["--verbose","--max-turns","40"]']).code, 0);
   const refused = [
     ['claude', '["--dangerously-skip-permissions"]'], ['claude', '["--settings","{}"]'], ['claude', '["--setting-sources=user,project"]'],
