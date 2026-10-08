@@ -563,8 +563,11 @@ already holds it. Stack head checks ignore `automation`,
 `automation queued` and `automation reconcile` events, which change no
 task state.
 An accepted PR already merged remotely goes through the merge gate's
-confirmation path. It records the matching accepted head without merging
-again, including after an executor dies before writing its receipt.
+confirmation path. It records the matching accepted head and the PR's merge
+commit without merging again, including after an executor dies before
+writing its receipt. A non-stacked PR GitHub reports merged at the accepted
+head needs no current gate evidence or CI receipt base, so tasks accepted
+before merge evidence existed are confirmed rather than refused.
 Waiters retain automatic events even when their actor matches the waiter.
 Reactions run before event output filters, and active PRs catch up at
 watcher startup except a default zero-timeout cursor snapshot.
@@ -581,7 +584,14 @@ or fallback tick without holding the wait timeout.
 executor `pid`, `host` and Linux `start_ticks`, `requested` from a reaction
 that found a live executor, then `done`, or `error` with `error`. `done` and
 `error` also record `blocked`: `null` when the line drained, or
-`{task, reason}` naming the head that stopped it. A `requested` after the
+`{task, reason}` naming the first head of the pass that did not merge, and
+`skipped`: the `{task, reason}` heads passed over in the pass. A head
+waiting on GitHub's mergeability stops the line. A head refused for any
+other reason (a closed PR, a moved or differently merged head, failing
+gates, a refused merge or head check) is passed over for the rest of the
+pass and the next entry takes the line; each later pass tries it again.
+`queue skipped` records `{sha, revision, reason}` on that task once per
+sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain
 again. The line holds one entry per accepted, unmerged PR task with no
 unmerged task below it, extended up its stack by the accepted, linked tasks

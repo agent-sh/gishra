@@ -484,6 +484,9 @@ function queueFixture(t) {
   fs.writeFileSync(suite, `const fs = require('node:fs'), path = require('node:path');
 const gh = JSON.parse(fs.readFileSync(${JSON.stringify(h.env.AUTOMATION_GITHUB)}, 'utf8'));
 fs.appendFileSync(${JSON.stringify(h.suiteLog)}, JSON.stringify({ pr7: gh.prs['7'].state }) + '\\n');
+// A gate run that fails once, as gates did for tasks accepted before evidence.
+const failOnce = ${JSON.stringify(path.join(h.base, 'fail-once'))};
+if (fs.existsSync(failOnce)) { fs.rmSync(failOnce); process.exit(1); }
 // One run moves main while it runs, as another merge landing would.
 if (fs.existsSync(${JSON.stringify(path.join(h.base, 'move-main-once'))})) {
   fs.rmSync(${JSON.stringify(path.join(h.base, 'move-main-once'))});
@@ -688,4 +691,46 @@ process.exitCode = 1;
   h.consume();
   assert.deepEqual(headChecks(h).map((e) => [e.detail.command, e.detail.ok]), [[cmd, false], [`${cmd} again`, true]]);
   assert.equal(h.github().prs['7'].state, 'MERGED');
+});
+
+test('an accepted PR that already merged without current evidence is confirmed and the PR behind it merges', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  // T1 is a legacy task: its tests evidence no longer passes and its PR
+  // landed on GitHub before tower-crane recorded merge evidence.
+  fs.writeFileSync(path.join(h.base, 'fail-once'), '');
+  h.run(['check', 'tests', 'T1', '--agent', 'orchestrator']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
+  const github = h.github();
+  github.prs['7'].state = 'MERGED';
+  github.prs['7'].mergeCommit = { oid: 'c'.repeat(40) };
+  h.saveGithub(github);
+  h.consume();
+  const [t1, t2] = h.readState('tasks.json').tasks;
+  const receipt = t1.evidence.at(-1);
+  assert.deepEqual([receipt.type, receipt.ok, receipt.sha, receipt.ref], ['merge', true, h.sha, 'c'.repeat(40)]);
+  assert.equal(t2.evidence.at(-1).type, 'merge');
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8'], 'the landed PR is not merged again');
+  assert.equal(h.logs().filter((e) => e.cmd === 'queue skipped').length, 0);
+});
+
+test('a head the queue cannot advance is reported once and the PR behind it merges', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  const github = h.github();
+  github.prs['7'].state = 'MERGED';
+  github.prs['7'].headRefOid = 'f'.repeat(40);
+  h.saveGithub(github);
+  h.consume();
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+  assert.equal(h.readState('tasks.json').tasks[1].evidence.at(-1).type, 'merge');
+  const done = h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+  assert.equal(done.detail.blocked.task, 'T1');
+  assert.deepEqual(done.detail.skipped.map((s) => s.task), ['T1']);
+  h.ok(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'orchestrator']);
+  const skips = h.logs().filter((e) => e.cmd === 'queue skipped');
+  assert.deepEqual(skips.map((e) => [e.task, e.detail.sha]), [['T1', h.sha]], 'a later pass does not report the same head again');
+  assert.match(skips[0].detail.reason, /merged with head f+, not the accepted/);
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
 });
