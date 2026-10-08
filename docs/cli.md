@@ -177,11 +177,13 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; repeating it as the live claimant renews the lease. Refused if another agent holds it, the task is not ready, a resource lock is held, or the workers limit is reached (live leases and unclaimed worker spawns); consumes that agent's reservation for this task |
 | | |
+| `event ID` | print one event with its detail, as a wake line names it |
+| | |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `sources`, `ci` and `merge` for every agent and either verdict; use the gate commands |
 | | |
 | `hook ACTION --binding FILE [--payload JSON\|-]` | deliver harness messages and record activity under the home identity |
 | | |
-| `msg --to NAME [--task ID] TEXT` | send a worker message through the event log |
+| `msg --to NAME [--task ID] [--steer] TEXT` | send a worker message through the event log |
 | | |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner |
 | | |
@@ -197,7 +199,7 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters. For a task with a recorded PR, an open PR blocks changing its PR number or head branch. After it is closed or merged, a new PR supplies its head branch unless `--branch` is given and matches it |
 | | |
-| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` | block until one matching event; print one JSON line (timeout exits 2) |
+| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC \| --follow]` | block until one matching event; print one JSON line (timeout exits 2); --follow prints an id-only line per event until interrupted |
 <!-- commands:Run:end -->
 
 `task add --lock lab/rdma --lock gpu/0 --environment lab` stores exclusive resource names and an informational environment label. Names are case-sensitive, trimmed and deduplicated. Tasks with any shared lock cannot hold worker leases or dispatch reservations at the same time, regardless of `limits.workers` or environment labels. Claim, worker spawn and expired renewal check under the state lock and name the holding task and agent on refusal. An unclaimed spawn reserves its locks with its worker slot, including retry backoff; its generated agent consumes that reservation on claim. Reviewer and other non-worker dispatches do not acquire resource locks. Environment labels do not select a harness or change its environment variables.
@@ -277,18 +279,35 @@ An orchestrator still requires both technical settings when listed in `answerers
 
 ## Event wakeups
 
-`tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
+The orchestrator does not run a waiter of its own. Its harness delivers events into the session (table below); `tower-crane wait` is the interface underneath and the fallback for a harness with nothing better.
+
+| Orchestrator harness | Busy | Idle |
+| --- | --- | --- |
+| Claude Code, interactive, with this plugin | The mod `hooks/tower-crane.mjs` runs one `wait --follow` child per session and turns each line into a prompt with `$.prompt.submit`, queued until the turn ends; events arriving meanwhile go out together. An owner message sent with `--steer` joins the running turn (`$.session.append`) and is pushed again after the turn if the turn made no further model request | The queued prompt starts a turn |
+| Claude (`claude -p`) spawned on the orchestrator rung | Home `PostToolUse` and `UserPromptSubmit` hooks return the notice as `additionalContext` | Home `Stop` returns `decision: block` with pending events; with none and a task still open it blocks in `tower-crane wait` (hook timeout one day) and then blocks with the event |
+| Codex spawned on the orchestrator rung | The same home hooks in `config.toml` | The same blocking `Stop`; Codex has no asynchronous rewake |
+| pi, OpenCode | Their home adapters add the notice at tool boundaries (and OpenCode on `session.idle`) | Unsupported: no idle hold; use `tower-crane wait` |
+| agy, command | Unsupported: use `tower-crane wait` | Unsupported: use `tower-crane wait` |
+
+In Claude Code, arm the mod once after the startup snapshot: the model calls the `mcp__tower-crane__watch` tool with `after` set to the snapshot's offset (and `agent` or `state` when they differ from `TOWER_CRANE_AGENT`, `TOWER_CRANE_STATE` or the state found from the working directory), or the person runs `/tower-crane-watch [cursor]`. A session started with `TOWER_CRANE_AGENT=orchestrator` arms itself at session start. Arming again restarts the follower from the given cursor or from where the last one stopped. If the follower exits, a toast says so and names the command.
+
+A push carries ids, never content: one line per event (`- E…: decision-answer D5 from owner`, `- E…: worker-message T3 from worker-T3-1`), then `Read each with tower-crane event <id>` and the cursor. Spawned orchestrator homes acknowledge what they delivered with `hook inbox` receipts and count events from the log offset their home was built at (`after` in `hook.json`).
+
+`tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC | --follow]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
 
 - `--after` is an event `id` or a byte `offset` returned by a previous wait. The default, `now`, starts at the log's current end; `0` replays from the beginning. Cursors are exclusive. A numeric cursor must be zero or immediately after a complete line, within the current log. Unknown ids and invalid offsets exit 2.
-- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner`, `via: automation` and engine observations (`worker-exited` and `stall`). Owner input and automatic results reach the waiter that shares their actor.
+- `--for` defaults to `orchestrator`. A message addressed to the waiter's own agent name also wakes it, and every event recorded as `owner` wakes an `orchestrator` waiter whoever it was addressed to (an owner message to a worker included). `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types; `all` adds the bookkeeping the default skips: `hook progress`, `hook report`, `hook inbox`, `renew`, `spend` and `spawn session`. The orchestrator never needs a type list. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner`, `via: automation` and engine observations (`worker-exited` and `stall`). Owner input and automatic results reach the waiter that shares their actor, and observations wake their observer too.
 - No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is `{"type":"timeout","offset":N}` followed by a newline and the exit code is 2. The offset follows the last complete line scanned, including filtered events. Interrupting the wait exits 130 and closes its watchers.
 - An event line contains `id`, `type`, `to`, `at`, `agent`, `cmd`, `task`, `detail`, and `offset`. `offset` is the byte position after that event's newline. Use either returned cursor for the next wait to retain events that arrived while handling the first.
+- `--follow` never exits on an event: it prints `{"type":"ready","offset":N}` once its cursor is set, then one line per matching event with `id`, `type`, `to`, `agent`, `task`, `offset`, `decision` for decision events and `steer: true` for a steered message, and no `detail`. It runs until interrupted or until its reader closes stdout, and refuses `--timeout`.
+
+`tower-crane event ID` prints one event with its detail and offset, for a pushed id. It only reads.
 
 On startup or resume without a saved cursor, run `tower-crane wait --timeout 0` once. It exits 2 with a timeout and the current cursor, without observing worker exits or stalls. Save that offset, read state once, then start the background wait with `--after <offset>`. Events during the state read remain available, and the blocking wait observes current exits and stalls. With an explicit earlier `--after`, a zero timeout returns an already available matching event or a timeout cursor.
 
-Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review and gate results). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
+Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review, CI and gate results, and the CI gate's conflict refusal). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
 
-`tower-crane msg --to NAME [--task ID] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes.
+`tower-crane msg --to NAME [--task ID] [--steer] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes, and the orchestrator too when the sender is `owner`. `--steer` records `steer: true`: a harness that can join a running turn delivers it there instead of after the turn. The orchestrator answers the owner with `msg --to owner`, which reaches the owner's channel on `serve` (below).
 
 Spawned harnesses deliver messages automatically through the adapters below. Messages are addressed to the generated agent name, across all tasks. `wait` remains the orchestrator's event interface.
 
@@ -362,7 +381,9 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 | `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request, with the owner forms when serve runs as the owner |
 | `GET /settings` | the Settings view |
 | any page with `?key=<key>` | the first request with the one-time key serve printed also carries the run's token in `<meta name="tower-crane-token">`; the key is then spent. Every other page has that tag empty |
-| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
+| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state; `wake` for each new event on the owner channel, with data `{ "id", "type", "to", "offset" }` and no content |
+| `GET /api/messages?after=OFFSET` | the owner channel from a byte offset (default 0): `{ "messages": [event, ...], "cursor": N }`, where messages are `msg` events to or from `owner`, `decision-opened` and `decision-answer`, each with its detail and `offset`. Pass `cursor` as the next `after` |
+| `POST /api/messages` | owner only: `{ "text", "mode": "queue" \| "steer", "task" }` sends `msg --to orchestrator` as the owner; `steer` sets `--steer`. The reply is `{ "ok": true, "message": {...} }` |
 | `POST /api/ladder` | owner only: change the default harness and rungs, as `ladder harness` and `ladder set` do |
 | `POST /api/tiers` | owner only: change task tiers, as `task update --tier` does |
 
@@ -373,6 +394,10 @@ Every POST needs:
 - an `Origin`, if the browser sends one, of `http://127.0.0.1:<port>` or `http://localhost:<port>`.
 
 serve answers any request only when its `Host` is `127.0.0.1:<port>` or `localhost:<port>`, so a page on another site cannot reach it through a name rebound to 127.0.0.1 and read the token.
+
+### Owner channel
+
+The owner talks to the orchestrator the way a phone client talks to an agent: a message stream, push wake-ups and the decisions to approve. A client reads the token from the board's `<meta name="tower-crane-token">`, keeps an `EventSource` on `/events`, and on each `wake` fetches `/api/messages?after=<cursor>` for the text, so a wake-up never carries content. It sends with `POST /api/messages` (`queue` waits for the orchestrator's turn to end, `steer` joins the running one) and answers a decision with `POST /api/decisions/D<n>/answer`, the board's own route. Both wake the orchestrator session through its harness delivery; the orchestrator replies with `tower-crane msg --to owner`, which arrives on the same stream. Board comments and answers take the same path.
 
 `POST /api/ladder` body, with `harness` and `rungs` optional but at least one change, and `base` required:
 
