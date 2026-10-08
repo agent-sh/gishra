@@ -136,8 +136,10 @@ Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   let started = [];
   t.after(() => {
     for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    // Only a test that failed leaves them running.
-    for (const pid of started.filter((p) => detachedAlive({ pid: p }))) process.kill(pid, 'SIGKILL');
+    // Read the file, not `started`: a test that fails before reading it still leaves them running.
+    const text = fs.existsSync(pids) ? fs.readFileSync(pids, 'utf8') : '';
+    const recorded = text ? JSON.parse(text) : [];
+    for (const pid of recorded.filter((p) => detachedAlive({ pid: p }))) process.kill(pid, 'SIGKILL');
   });
 
   const broker = await B.start(job);

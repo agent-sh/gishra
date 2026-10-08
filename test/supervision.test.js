@@ -689,8 +689,10 @@ if (!fs.existsSync(file)) {
   h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, groupFile, '{prompt}'])]);
   let group;
   t.after(() => {
-    if (!group) return;
-    try { process.kill(-group.parent, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+    // Read the file, not `group`: a spawn that throws before returning still leaves the group running.
+    const recorded = fs.existsSync(groupFile) ? JSON.parse(fs.readFileSync(groupFile, 'utf8')) : null;
+    if (!recorded) return;
+    try { process.kill(-recorded.parent, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   });
   // The rerun waits out the previous child's SIGTERM grace, so allow for a loaded machine.
   const result = h.spawn(undefined, 60000);
