@@ -614,7 +614,7 @@ process.stdout.write(JSON.stringify(results));
   for (const index of [0, 1, 5]) assert.ok(probes[index].why, `probe ${index} must be refused`);
   for (const index of [2, 3, 4]) {
     assert.equal(probes[index].why, null);
-    assert.deepEqual(probes[index].args, ['push', '--recurse-submodules=no', 'origin', `HEAD:refs/heads/${branch}`]);
+    assert.deepEqual(probes[index].args, ['push', '--no-follow-tags', '--recurse-submodules=no', 'origin', `HEAD:refs/heads/${branch}`]);
   }
 });
 
