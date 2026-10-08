@@ -72,6 +72,26 @@ function setup(t, rung = 'medium', inheritedPathName = null) {
 const dry = (f) => f.h.json(['spawn', '--task', 'T1', '--role', f.rung, '--dry-run'], { env: f.env });
 const spawn = (f, env = {}) => f.h.ok(['spawn', '--task', 'T1', '--role', f.rung, '--wait'], { env: { ...f.env, ...env } });
 
+for (const [name, content] of [
+  ['__proto__', '{"__proto__":{"default_agent":"polluted-agent"},"normal":{"enabled":true}}'],
+  ['constructor', '{"constructor":{"prototype":{"default_agent":"polluted-agent"}},"normal":{"enabled":true}}'],
+  ['nested keys', '{"normal":{"enabled":true,"__proto__":{"default_agent":"polluted-agent"},"constructor":{"prototype":{"default_agent":"polluted-agent"}},"prototype":{"unsafe":true}}}'],
+]) {
+  test(`opencode stub ignores ${name} without changing object prototypes`, (t) => {
+    const f = setup(t);
+    const result = cp.spawnSync(process.execPath, [STUB], {
+      cwd: f.h.repo, env: { ...f.env, OPENCODE_CONFIG_CONTENT: content },
+      encoding: 'utf8', timeout: 10000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const report = f.report();
+    assert.equal(report.name, 'build');
+    assert.deepEqual(report.config.normal, { enabled: true });
+    assert.ok(!Object.hasOwn(report.config, '__proto__'));
+    assert.ok(!Object.hasOwn(report.config, 'constructor'));
+  });
+}
+
 test('opencode dry-run preserves Git lookup with an inherited mixed-case Path', (t) => {
   const f = setup(t, 'small', 'Path');
   // Node on Windows sorts environment keys and passes only the first
@@ -162,9 +182,19 @@ test('opencode excludes credential-triggered remote instructions, plugins and MC
   assert.ok(!report.memory.some((text) => text.includes('REMOTE-INSTRUCTION-CANARY')));
   assert.ok(!report.config.plugin.includes('remote-plugin-canary'));
   assert.deepEqual(report.mcp, {});
-  assert.equal(fs.statSync(report.authSource).ino, fs.statSync(authPath).ino);
-  fs.writeFileSync(report.authPath, '{"oauth":{"type":"oauth","access":"refreshed"}}');
-  assert.deepEqual(JSON.parse(fs.readFileSync(authPath)), auth, 'agent auth writes must not alter the source credential store');
+  const source = fs.openSync(authPath, 'r');
+  try {
+    const linked = fs.openSync(report.authSource, 'r');
+    try {
+      assert.equal(fs.fstatSync(linked).ino, fs.fstatSync(source).ino);
+    } finally {
+      fs.closeSync(linked);
+    }
+    fs.writeFileSync(report.authPath, '{"oauth":{"type":"oauth","access":"refreshed"}}');
+    assert.deepEqual(JSON.parse(fs.readFileSync(source, 'utf8')), auth, 'agent auth writes must not alter the source credential store');
+  } finally {
+    fs.closeSync(source);
+  }
   const visible = JSON.stringify(preview) + result.stdout
     + fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8')
     + fs.readFileSync(path.join(path.dirname(report.home), 'opencode.json'), 'utf8');

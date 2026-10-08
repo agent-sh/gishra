@@ -13,6 +13,7 @@ const json = (file) => JSON.parse(read(file) || '{}');
 const flag = (name) => ['1', 'true'].includes(process.env[name]);
 const merge = (a, b) => {
   for (const [k, v] of Object.entries(b)) {
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
     if (Array.isArray(v)) a[k] = ['instructions', 'plugin'].includes(k) ? [...new Set([...(a[k] || []), ...v])] : v;
     else if (v && typeof v === 'object') a[k] = merge(a[k] || {}, v);
     else a[k] = v;
