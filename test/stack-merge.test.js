@@ -6,6 +6,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { setup, stacked } = require('./stack-fixture');
 
+// Every merge request the stub received, as 'pr N' for gh pr merge, 'async N' for
+// GitHub's asynchronous merge API and 'stack N' for gh stack merge.
+const merges = (f) => f.read().calls.flatMap((c) => {
+  if (['pr', 'stack'].includes(c.args[0]) && c.args[1] === 'merge') return [{ route: `${c.args[0]} ${c.args[2]}`, args: c.args }];
+  const post = c.args[0] === 'api' && c.args.includes('POST') && /pulls\/(\d+)\/merge-async$/.exec(c.args[1]);
+  return post ? [{ route: `async ${post[1]}`, args: c.args }] : [];
+});
+const routes = (f) => merges(f).map((m) => m.route);
+
 test('a stack that adds then modifies the same file merges without changing accepted heads', (t) => {
   const f = setup(t);
   const wt = f.h.json(['worktree', 'T2']);
@@ -64,7 +73,7 @@ test('a later head race stops the chain and records only the accepted lower merg
   f.write((d) => { d.moveOnMerge = { pr: 12, head: moved, onPr: 12 }; });
   const r = f.h.run(['merge', 'T2']);
   assert.equal(r.code, 1);
-  assert.match(r.stdout, /head commit does not match/);
+  assert.match(r.stdout, /Head branch was modified/);
   const data = f.read();
   assert.equal(data.prs[11].state, 'MERGED');
   assert.equal(data.prs[11].headRefOid, f.sha);
@@ -119,22 +128,23 @@ test('stack merge rechecks every accepted head and records evidence for all merg
   const moved = f.h.run(['merge', 'T2']);
   assert.equal(moved.code, 1);
   assert.match(moved.stdout, /T1: PR head moved/);
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
   f.write((d) => { d.prs[11].headRefOid = f.sha; });
   f.h.ok(['merge', 'T2', '--method', 'merge']);
-  const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
-  assert.deepEqual(merges.map((c) => c.args.slice(0, 3)), [['pr', 'merge', '11'], ['pr', 'merge', '12']]);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
   for (const [index, head] of [f.sha, f.upper.sha].entries()) {
-    assert.equal(merges[index].args[merges[index].args.indexOf('--match-head-commit') + 1], head);
-    assert.ok(merges[index].args.includes('--merge'));
-    assert.ok(!merges[index].args.includes('--delete-branch'));
+    const { args } = merges(f)[index];
+    assert.ok(args.includes(`expected_head_sha=${head}`));
+    assert.ok(args.includes('merge_method=merge'));
   }
+  const polls = f.read().calls.filter((c) => c.args[0] === 'api' && /merge-async\/m\d+$/.test(c.args[1]));
+  assert.deepEqual(polls.map((c) => c.args[1].match(/pulls\/(\d+)/)[1]), ['11', '12']);
   assert.equal(f.read().prs[12].baseRefName, 'main');
-  for (const id of ['T1', 'T2']) {
+  for (const [id, head] of [['T1', f.sha], ['T2', f.upper.sha]]) {
     const task = f.h.json(['task', 'show', id]);
     const evidence = task.evidence.findLast((e) => e.type === 'merge');
     assert.equal(evidence.ok, true);
-    assert.ok(evidence.commands.some((c) => c.args[0] === 'pr' && c.args[1] === 'merge' && c.args.includes('--match-head-commit')));
+    assert.ok(evidence.commands.some((c) => c.args[0] === 'api' && c.args.includes(`expected_head_sha=${head}`)));
     assert.match(task.phase?.label || f.h.ok(['task', 'show', id]), /merged/);
   }
   const upper = f.h.git(['rev-parse', 'HEAD'], f.h.json(['worktree', 'T2']).path);
@@ -143,7 +153,7 @@ test('stack merge rechecks every accepted head and records evidence for all merg
   f.write((d) => { d.linked = false; });
   f.h.ok(['merge', 'T1']);
   f.h.ok(['merge', 'T2']);
-  assert.equal(f.read().calls.filter((c) => c.args[1] === 'merge').length, 2);
+  assert.equal(routes(f).length, 2);
 });
 
 test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents stack merge', (t) => {
@@ -157,7 +167,7 @@ test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents 
   assert.equal(f.read().calls.some((c) => c.args[1] === 'sync'), false);
   f.write((d) => { d.order.shift(); d.prs[11].autoMergeRequest = {}; });
   assert.match(f.h.run(['merge', 'T2']).stdout, /without auto-merge/);
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
 });
 
 test('queued stack merges are not evidence of a merge', (t) => {
@@ -180,8 +190,21 @@ test('queued stack merges are not evidence of a merge', (t) => {
   f.h.git(['push', 'origin', `${base}:main`]);
   f.h.ok(['merge', 'T2']);
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
-  const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
-  assert.deepEqual(merges.map((c) => c.args.slice(0, 3)), [['pr', 'merge', '11']]);
+  assert.deepEqual(routes(f), ['async 11']);
+});
+
+test('an asynchronous merge that GitHub reports failed stops the chain after the confirmed lower merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.asyncFail = 12; });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /asynchronous merge of PR #12 ended failed: Merge conflict in T2\.txt/);
+  assert.equal(f.read().prs[11].state, 'MERGED');
+  assert.equal(f.read().prs[12].state, 'OPEN');
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge' && e.ok), false);
 });
 
 test('linked stacks refuse squash and rebase to preserve accepted dependency ancestry', (t) => {
@@ -193,7 +216,7 @@ test('linked stacks refuse squash and rebase to preserve accepted dependency anc
     assert.equal(r.code, 1);
     assert.match(r.stdout, /stack merges use merge commits/);
   }
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
 });
 
 test('a refused upper merge retains lower evidence and retries without merging the lower PR again', (t) => {
@@ -209,9 +232,7 @@ test('a refused upper merge retains lower evidence and retries without merging t
   assert.equal(f.read().prs[12].state, 'OPEN');
   f.write((d) => { delete d.refuseMergePr; });
   f.h.ok(['merge', 'T2']);
-  const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
-  assert.deepEqual(merges.map((c) => c.args.slice(0, 3)),
-    [['pr', 'merge', '11'], ['pr', 'merge', '12'], ['pr', 'merge', '12']]);
+  assert.deepEqual(routes(f), ['async 11', 'async 12', 'async 12']);
   assert.equal(f.h.json(['task', 'show', 'T2']).evidence.findLast((e) => e.type === 'merge').ok, true);
 });
 
@@ -233,12 +254,12 @@ test('a task changed during the lower merge stops before the upper merge', (t) =
   f.accept('T1');
   f.accept('T2');
   f.write((d) => {
-    d.during = { 'pr merge': [['rework', 'T2', '--reason', 'another worker takes over'], ['claim', 'T2', '--agent', 'worker-new']] };
+    d.during = { 'merge-async': [['rework', 'T2', '--reason', 'another worker takes over'], ['claim', 'T2', '--agent', 'worker-new']] };
   });
   const r = f.h.run(['merge', 'T2']);
   assert.equal(r.code, 1);
   assert.match(r.stdout, /changed during stack head checks/);
-  assert.deepEqual(f.read().calls.filter((c) => c.args[1] === 'merge').map((c) => c.args.slice(0, 3)), [['pr', 'merge', '11']]);
+  assert.deepEqual(routes(f), ['async 11']);
   const task = f.h.json(['task', 'show', 'T2']);
   assert.equal(task.claim.agent, 'worker-new');
   assert.equal(task.stack.linked, true);
@@ -267,14 +288,13 @@ test('admin merge requires unstacking, then lower tasks land before upper PRs ta
   f.accept('T2');
   f.h.ok(['project', 'set', '--merge-admin', 'true']);
   assert.match(f.h.run(['merge', 'T2']).stdout, /cannot use --admin/);
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
   f.h.ok(['stack', 'unstack', 'T2']);
   assert.match(f.h.run(['merge', 'T2']).stdout, /waits for every lower task/);
   f.h.ok(['merge', 'T1']);
   f.h.ok(['merge', 'T2']);
-  const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
-  assert.deepEqual(merges.map((c) => c.args.slice(0, 3)), [['pr', 'merge', '11'], ['pr', 'merge', '12']]);
-  assert.ok(merges.every((c) => c.args.includes('--admin') && c.args.includes('--match-head-commit')));
+  assert.deepEqual(routes(f), ['pr 11', 'pr 12']);
+  assert.ok(merges(f).every((m) => m.args.includes('--admin') && m.args.includes('--match-head-commit')));
   assert.equal(f.read().prs[12].baseRefName, 'main');
 });
 
@@ -300,7 +320,7 @@ test('lower acceptance cannot hide failing current gate evidence', (t) => {
   f.accept('T2');
   f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
   assert.match(f.h.run(['merge', 'T2']).stdout, /T1.*passing gates/);
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
 });
 
 test('local CI covers each dependency base and merge rechecks lower receipts', (t) => {
@@ -317,7 +337,7 @@ test('local CI covers each dependency base and merge rechecks lower receipts', (
   const r = f.h.run(['merge', 'T2']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /check ci T1 before merging/);
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
 });
 
 test('stacks disabled after acceptance select ordinary merge gates and keep dependency ordering', (t) => {
@@ -345,7 +365,7 @@ test('relinking after capability recovery restores the stack gate and refuses ad
   assert.equal(f.h.json(['task', 'show', 'T2']).stack_disabled, undefined);
   f.h.ok(['project', 'set', '--merge-admin', 'true']);
   assert.match(f.h.run(['merge', 'T2']).stdout, /cannot use --admin/);
-  assert.equal(f.read().calls.some((c) => c.args[0] === 'pr' && c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
   f.h.ok(['project', 'set', '--merge-admin', 'false']);
   f.h.ok(['merge', 'T2']);
 });
