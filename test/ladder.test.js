@@ -262,6 +262,29 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   assert.deepEqual(harnessEvents, ['pi', 'codex']);
 });
 
+test('Claude providers and pi tool opt-ins validate independently', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  for (const provider of ['bedrock', 'anthropic']) {
+    h.ok(['ladder', 'set', 'hard', '--provider', provider]);
+    assert.equal(h.readState('project.json').ladder.hard.provider, provider);
+  }
+  h.ok(['ladder', 'set', 'medium', '--harness', 'pi', '--model', 'stub-model', '--provider', 'custom-pi-provider',
+    '--tools', '["ls"]', '--clear', 'profile']);
+  assert.deepEqual(h.readState('project.json').ladder.medium.tools, ['ls']);
+  const before = projectText(h);
+  for (const [args, message] of [
+    [['hard', '--provider', 'openai'], /claude provider must be anthropic or bedrock/],
+    [['medium', '--mcp', '["planted"]'], /MCP opt-ins are unsupported on pi/],
+    [['medium', '--tools', '["WebSearch"]'], /pi tools must be built-ins/],
+  ]) {
+    const result = h.run(['ladder', 'set', ...args]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, message);
+    assert.equal(projectText(h), before);
+  }
+});
+
 test('ladder writes are validated, and a refused one leaves project.json as it was', (t) => {
   const h = makeRepo(t);
   h.init();
