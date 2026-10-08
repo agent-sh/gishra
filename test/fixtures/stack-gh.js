@@ -41,6 +41,14 @@ cp.spawnSync = function stackGh(command, args, opts) {
     if (r.status !== 0) throw new Error(String(r.stderr));
     return String(r.stdout).trim();
   };
+  // A fast-forward when main has not moved, otherwise a squash commit on it.
+  const land = (branch) => {
+    const head = git(['rev-parse', `refs/heads/${branch}`]);
+    const main = git(['ls-remote', 'origin', 'refs/heads/main']).split(/\s/)[0];
+    if (git(['merge-base', head, main]) === main) return git(['push', 'origin', `${head}:refs/heads/main`]);
+    const tree = git(['merge-tree', '--write-tree', main, head]).split('\n')[0];
+    git(['push', 'origin', `${git(['commit-tree', tree, '-p', main, '-m', `squash ${branch}`])}:refs/heads/main`]);
+  };
   if (args[1] === 'merge' && data.moveOnMerge && (!data.moveOnMerge.onPr || Number(args[2]) === data.moveOnMerge.onPr)) {
     const { pr, head } = data.moveOnMerge;
     data.prs[pr].headRefOid = head;
@@ -106,7 +114,7 @@ cp.spawnSync = function stackGh(command, args, opts) {
       data.prs[n].state = 'MERGED';
       data.prs[n].mergeCommit = { oid: data.prs[n].headRefOid };
     }
-    git(['push', 'origin', `${data.prs[args[2]].headRefName}:main`]);
+    land(data.prs[args[2]].headRefName);
     return finish();
   }
   if (args[1] === 'sync') {
