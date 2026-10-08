@@ -11,6 +11,7 @@ const { CHROME, openBrowser } = require('./browser');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const { preserve } = require('../lib/board/identity');
 const { POSITION } = require('../lib/board/position');
+const B = require('../lib/broker');
 
 // A project with something in every column: a decision, an owner task, a
 // claimed task with a message, a submitted task, and work ready and blocked.
@@ -884,4 +885,21 @@ test('phone gates keep whole names and states in both themes without horizontal 
     assert.equal(gates.fits, true, `gates fit in ${theme}`);
     for (const [label, lines] of gates.cells) assert.equal(lines, 1, `${label} stays whole in ${theme}`);
   }
+});
+
+test('the board shows a refused brokered message as trouble, without its text', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'one', '--acceptance', 'noted']);
+  h.ok(['task', 'add', '--title', 'two', '--acceptance', 'noted']);
+  const job = { state: h.state, task: 'T2', agent: 'worker-T2-1', role: 'worker', cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T2-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const refused = await B.forward(job.broker, ['msg', '--to', 'worker-T1-1', 'text the board must not show'], h.state);
+  assert.equal(refused.code, 1, refused.stderr);
+  const board = require('../lib/board/model').build(require('../lib/state').loadState(h.state));
+  const item = board.history.find((e) => e.cmd === 'msg refused');
+  assert.deepEqual([item.kind, item.tone], ['trouble', 'fault']);
+  assert.match(item.text, /worker-T2-1 tried to message worker-T1-1; the broker refused it/);
+  assert.ok(!JSON.stringify(board).includes('text the board must not show'), 'the board never shows the refused text');
 });
