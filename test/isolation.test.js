@@ -554,8 +554,13 @@ test('browser tasks attach the user kit on every rung with approved tools and no
       for (const role of ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']) {
         isolated(h, role, harness);
         const dry = h.json(['spawn', '--role', role, '--task', 'T1', '--dry-run'], { env: u.env });
-        assert.deepEqual(dry.home.mcp, ['playwright'], `${harness} ${role} ${declaration}`);
-        if (harness === 'claude') assert.match(dry.argv[dry.argv.indexOf('--allowedTools') + 1], /mcp__playwright/);
+        const servers = role === 'orchestrator' ? ['playwright', 'tower-crane'] : ['playwright'];
+        assert.deepEqual(dry.home.mcp, servers, `${harness} ${role} ${declaration}`);
+        if (harness === 'claude') {
+          const allowed = dry.argv[dry.argv.indexOf('--allowedTools') + 1];
+          assert.match(allowed, /mcp__playwright/);
+          assert.equal(allowed.includes('mcp__tower-crane'), role === 'orchestrator');
+        }
       }
     }
     const started = spawn(h, u, 'hard');
@@ -1186,7 +1191,7 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     assert.deepEqual(ran.map((r) => r.code), [...cases, named].map((c) => c[1]), `${harness}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
     assert.match(ran[1].stderr, /owner acts from an interactive terminal/);
     assert.match(ran[2].stderr, /works on T1 only, not T2/);
-    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, hook, not task add/);
+    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, answer, hook, not task add/);
     assert.match(ran[11].stderr, /uses its own hook binding only/);
     assert.match(ran[7].stderr, /without its token/);
     assert.match(ran[12].stderr, /owner acts from an interactive terminal/);
