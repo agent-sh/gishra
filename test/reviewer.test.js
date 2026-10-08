@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, makeProjectRepo, makeTaskRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
-const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { gateFixture, gateEvidence, changeKind } = require('./gate-helpers');
 
 const prices = {
   'openai.gpt-6-luna': { input: 0.10, cache_write: 0.125, cache_read: 0.01, output: 0.50 },
@@ -187,7 +187,7 @@ test('escalation starts above the actual dispatched reviewer rung', (t) => {
 const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--fail', '--sha', ${JSON.stringify(h.sha)}], {env: process.env});
 process.exit(r.status ?? 1);`;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', script])]);
+    '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}'])]);
   const dispatched = h.json(['spawn', '--task', 'T1', '--role', 'review', '--wait']);
   assert.equal(dispatched.review_rung, 'easy');
   assert.equal(choice(h).review_rung, 'medium');
@@ -245,7 +245,7 @@ test('review dispatch computes its diff once outside the state lock', (t) => {
 test('review dispatch refuses a submitted head or configured base changed after diff preparation', async (t) => {
   for (const change of ['head', 'base']) {
     const h = setup(t);
-    h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+    changeKind(h, 'docs');
     commandReviewer(h, path.join(h.base, 'context.txt'));
     h.git(['commit', '--allow-empty', '-qm', 'next head']);
     const next = h.git(['rev-parse', 'HEAD']);
@@ -324,7 +324,7 @@ test('accept reuses an active review and direct dispatch refuses a duplicate', (
   const h = setup(t);
   ready(h);
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)'])]);
+    '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)', '{prompt}'])]);
   const first = h.json(['accept', 'T1']);
   const second = h.json(['accept', 'T1']);
   assert.equal(second.reviewer, first.reviewer);
@@ -335,11 +335,11 @@ test('accept reuses an active review and direct dispatch refuses a duplicate', (
 
 test('large review diffs use a context file and a short argv', (t) => {
   const h = setup(t);
+  changeKind(h, 'docs');
   fs.writeFileSync(path.join(h.repo, 'large.md'), 'A focused review reads this diff.\n'.repeat(1000));
   h.git(['add', 'large.md']);
   h.git(['commit', '-qm', 'large diff']);
   h.sha = h.git(['rev-parse', 'HEAD']);
-  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
   h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha]);
   const out = path.join(h.base, 'large-prompt.txt');
   commandReviewer(h, out);
@@ -357,6 +357,7 @@ test('large review diffs use a context file and a short argv', (t) => {
 
 test('the review packet flags changed files outside the paths the brief names', (t) => {
   const h = setup(t);
+  changeKind(h, 'docs');
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Only `docs/` changes.\n\n## Reviewer\nREVIEWER-ONLY instruction\n' });
   fs.mkdirSync(path.join(h.repo, 'docs'));
   fs.writeFileSync(path.join(h.repo, 'docs', 'note.md'), 'note\n');
@@ -364,7 +365,6 @@ test('the review packet flags changed files outside the paths the brief names', 
   h.git(['add', '.']);
   h.git(['commit', '-qm', 'docs and a stray file']);
   h.sha = h.git(['rev-parse', 'HEAD']);
-  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
   h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha]);
   commandReviewer(h, path.join(h.base, 'prompt.txt'));
   h.json(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
