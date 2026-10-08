@@ -139,6 +139,10 @@ test('technical delegation recognizes generated orchestrators by their recorded 
   h.init();
   h.ok(['task', 'add', '--title', 'Answer a technical decision', '--acceptance', 'answer is authorized']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
+  // Spawn records its receipt under the home's cache, so the test gets a home that has one.
+  const home = path.join(h.base, 'home');
+  fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+  Object.assign(h.env, { HOME: home, USERPROFILE: home });
   const spawned = {};
   for (const rung of ['easy', 'orchestrator']) {
     h.ok(['ladder', 'set', rung, '--harness', 'command',
