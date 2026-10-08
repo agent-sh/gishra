@@ -190,6 +190,14 @@ test('opencode and pi global discovery follows their configured directories and 
     h.ok(['ladder', 'set', 'small', '--harness', harness, '--model', 'stub', '--clear', 'profile', '--clear', 'effort', '--clear', 'args']);
     const dry = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], { env: { ...env, [key]: dir } });
     assert.ok(dry.startup.rules.some((f) => f.path === file && f.scope === 'global' && f.loaded === 'read'));
+    if (harness === 'pi') {
+      h.json(['spawn', '--role', 'small', '--task', 'T1', '--wait'], { env: { ...env, [key]: dir } });
+      const nested = h.json(['spawn', '--role', 'small', '--task', 'T1', '--dry-run'], {
+        env: { ...env, HOME: dry.env.HOME, USERPROFILE: dry.env.HOME, [key]: dry.env.PI_CODING_AGENT_DIR },
+      });
+      assert.ok(nested.startup.rules.some((f) => f.path === file && f.scope === 'global' && f.loaded === 'read'));
+      assert.ok(!nested.startup.rules.some((f) => f.path.startsWith(dry.home.path + path.sep)));
+    }
   }
 });
 

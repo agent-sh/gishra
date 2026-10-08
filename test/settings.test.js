@@ -7,7 +7,8 @@ const path = require('node:path');
 const http = require('node:http');
 const cp = require('node:child_process');
 const { makeRepo, BIN } = require('./helpers');
-const { CHROME, openBrowser } = require('./browser');
+const { CHROME, openBrowser, closeBrowser } = require('./browser');
+test.after(closeBrowser);
 
 async function startServe(h) {
   const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json', '--agent', 'owner'], { cwd: h.repo, env: h.env });

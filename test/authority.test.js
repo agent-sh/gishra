@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, cachedFixture } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 const A = require('../lib/agents');
 const L = require('../lib/ladder');
@@ -36,11 +36,11 @@ function writeUser(h, doc) {
 }
 
 function setup(t) {
-  const h = makeRepo(t);
-  harnessConfig(h);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'done', '--needs-owner', 'approve access']);
-  return h;
+  return cachedFixture(t, 'owner task', (h) => {
+    harnessConfig(h);
+    h.init();
+    h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'done', '--needs-owner', 'approve access']);
+  });
 }
 
 const OPERATIONAL = [
@@ -185,9 +185,11 @@ test('only a real orchestrator identity acts as orchestrator', (t) => {
   const r = h.run(args, as('orchestrator'));
   assert.equal(r.code, 1, r.stderr);
   assert.match(r.stderr, /msg --to orchestrator/);
-  // Brokered commands are a sandboxed agent's.
-  const brokered = h.run(args, { env: { TOWER_CRANE_AGENT: 'orchestrator-T1-1', TOWER_CRANE_VIA: 'broker' } });
+  // Brokered commands are a sandboxed agent's, even under an orchestrator's
+  // spawned name. A broker passes --state, since it runs no git.
+  const brokered = h.run([...args, '--state', h.state], { env: { TOWER_CRANE_AGENT: 'orchestrator-T1-1', TOWER_CRANE_VIA: 'broker' } });
   assert.equal(brokered.code, 1, brokered.stderr);
+  assert.match(brokered.stderr, /limits\.workers is operational/);
 });
 
 test('owner-required changes by the orchestrator open one decision and change nothing; the owner makes them', (t) => {
