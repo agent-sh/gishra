@@ -114,6 +114,7 @@ for (const trigger of ['exit', 'preclaim', 'stall', 'review']) {
     h.ok(['spawn', '--task', 'T1']);
     if (trigger === 'review') {
       await until(() => h.json(['task', 'show', 'T1']).status === 'submitted');
+      h.reviewer('T1', 'reviewer');
       h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer']);
       h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
         '--agent', 'worker-T1-1']);
@@ -222,11 +223,12 @@ test('a failed review waits for the monitor to finish cleaning submitted worker 
   const h = setup(t, 'cleanup');
   h.ok(['spawn', '--task', 'T1']);
   await until(() => fs.existsSync(h.attempts + '.ready') && h.json(['task', 'show', 'T1']).status === 'submitted');
+  h.reviewer('T1', 'reviewer');
   h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
     '--agent', 'reviewer', '--summary', 'wrong result']);
   fs.writeFileSync(h.attempts + '.exit', '');
   await until(() => fs.existsSync(h.attempts + '.term'));
-  assert.equal(events(h).filter((e) => e.cmd === 'spawn exit').length, 0);
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn exit' && e.detail.agent === 'worker-T1-1').length, 0);
   h.ok(['recover', 'T1', '--agent', 'orchestrator']);
   assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy', 'the parent exit cannot release a live process group');
   await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
@@ -241,6 +243,7 @@ test('rework records the review climb before pending worker cleanup finishes', {
   const h = setup(t, 'cleanup');
   h.ok(['spawn', '--task', 'T1']);
   await until(() => fs.existsSync(h.attempts + '.ready') && h.json(['task', 'show', 'T1']).status === 'submitted');
+  h.reviewer('T1', 'reviewer');
   h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
     '--agent', 'reviewer', '--summary', 'wrong result']);
   h.ok(['rework', 'T1', '--reason', 'correct the reviewed result', '--agent', 'orchestrator']);
@@ -374,6 +377,7 @@ test('a later eligible passing review supersedes a failure before worker exit', 
   await until(() => h.readAttempts().length === 1);
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', spawn.agent]);
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer', '--summary', 'first verdict']);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer', '--summary', 'corrected verdict']);
   h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer']);
@@ -417,6 +421,7 @@ test('a sandboxed reviewer waits for a hidden live worker to exit before climbin
   await until(() => h.readAttempts().length === 1);
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', spawn.agent]);
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer',
     '--summary', 'wrong result'], {
     hooks: { HOOK_HIDDEN_PIDS: JSON.stringify([spawn.pid, spawn.monitor_pid]) },
@@ -437,6 +442,7 @@ test('a reviewer without permission to create a worker home leaves the climb for
   const h = setup(t, 'review');
   h.ok(['spawn', '--task', 'T1']);
   await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+  h.reviewer('T1', 'reviewer');
   const homes = path.join(h.state, 'homes');
   fs.chmodSync(homes, 0o500);
   try {
@@ -455,6 +461,7 @@ test('a brokered failed review records the climb and leaves dispatch to its host
   const h = setup(t, 'review');
   const spawn = h.json(['spawn', '--task', 'T1']);
   await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+  h.reviewer('T1', 'reviewer-T1-1');
   const B = require('../lib/broker');
   const binding = path.join(h.base, 'review-broker', B.FILE);
   const broker = await B.start({
@@ -483,6 +490,7 @@ test('a resource lock delays dispatch while retaining the recorded climb for wai
   h.ok(['task', 'update', 'T1', '--lock', 'lab']);
   h.ok(['task', 'add', '--title', 'Hold the lab', '--lock', 'lab', '--acceptance', 'exclusive use']);
   h.ok(['claim', 'T2', '--agent', 'lab-holder']);
+  h.reviewer('T1', 'reviewer');
   h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
     '--agent', 'reviewer', '--summary', 'wrong result']);
   const task = h.json(['task', 'show', 'T1']);
