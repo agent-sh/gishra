@@ -587,19 +587,29 @@ process.exit(1);
 });
 
 test('quiet supervision samples state and progress paths on a seconds-scale interval', async (t) => {
-  const h = setup(t, { failures: 0, hold: 3600, config: { progress_paths: ['progress.txt'] } });
+  const h = setup(t, { failures: 0, waitForFinish: true, config: { progress_paths: ['progress.txt'] } });
   const audit = path.join(h.base, 'samples.jsonl');
   const hook = path.join(__dirname, 'fixtures', 'supervision-samples.js').replace(/\\/g, '/');
   h.json(['spawn', '--task', 'T1'], { env: {
     NODE_OPTIONS: `--require "${hook}"`, TOWER_CRANE_TEST_SAMPLES: audit,
   } });
-  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'quiet worker did not finish');
-  const samples = fs.readFileSync(audit, 'utf8').trim().split('\n').map(JSON.parse);
-  const walks = samples.filter((sample) => sample.kind === 'path');
-  assert.ok(walks.length >= 2, JSON.stringify(samples));
-  // The cadence is the property: a loaded machine stretches the run, not the interval.
-  for (let i = 1; i < walks.length; i++) assert.ok(walks[i].at - walks[i - 1].at >= 900, JSON.stringify(walks));
-  assert.ok(samples.filter((sample) => sample.kind === 'state').length <= walks.length + 2, 'quiet monitor repeatedly reloads state');
+  const read = () => fs.existsSync(audit) ? fs.readFileSync(audit, 'utf8').split('\n').slice(0, -1).map(JSON.parse) : [];
+  try {
+    await until(() => fs.existsSync(h.attempts), 'quiet worker did not finish claiming');
+    await until(() => read().filter((sample) => sample.kind === 'path').length >= 2, 'quiet sampling did not start');
+    h.ok(['task', 'note', 'T1', 'wake the state observer']);
+    await until(() => read().filter((sample) => sample.kind === 'path').length >= 4, 'quiet sampling did not continue');
+    const samples = read();
+    const walks = samples.filter((sample) => sample.kind === 'path');
+    // Startup and shutdown have their own state writes; inspect the live interval.
+    const states = samples.filter((sample) => sample.kind === 'state' && sample.at > walks[0].at && sample.at <= walks.at(-1).at);
+    assert.ok(states.length > 0, 'the state observer saw the note');
+    assert.equal(new Set(states.map((sample) => sample.version)).size, states.length, JSON.stringify(states));
+    for (let i = 1; i < walks.length; i++) assert.ok(walks[i].at - walks[i - 1].at >= 900, JSON.stringify(walks));
+  } finally {
+    fs.writeFileSync(h.attempts + '.finish', '');
+  }
+  await until(() => log(h).some((e) => e.cmd === 'spawn phase' && e.detail.phase === 'waiting'), 'quiet worker did not finish');
 });
 
 describe('supervision completion cases', { concurrency: windowsConcurrency }, () => {

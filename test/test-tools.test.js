@@ -63,7 +63,9 @@ test('mutation fallback requires a green baseline in a copy containing all test 
   ], { env: { ...h.env, TOWER_CRANE_TEST_TMP: h.base }, encoding: 'utf8', timeout: 60000 });
 
   write('test/fallback.test.js', baseline + `
-    test('unaccepted lower', () => assert.equal(require('../lib/gates/merge')({ id: 'T1', status: 'submitted' }, { mergedIds: ['T1'] }), false));
+    test('unaccepted lower', () => {
+      assert.equal(require('../lib/gates/merge')({ id: 'T1', status: 'submitted' }, { mergedIds: ['T1'] }), false);
+    });
   `);
   const caught = run();
   assert.equal(caught.status, 0, caught.stdout + caught.stderr);
