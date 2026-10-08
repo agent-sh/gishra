@@ -4,6 +4,14 @@ const cp = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
+if (process.env.TOWER_CRANE_TEST_CLAUDE_PROVIDER && path.basename(process.argv[1] || '') === 'spawn-monitor.js') {
+  // Provider assertions cover retries and routing without a backoff deadline.
+  // Use the pinned runtime so fallback routes receive the same override.
+  const ladder = require(path.join(path.dirname(process.argv[1]), 'ladder.js'));
+  const supervision = ladder.supervision;
+  ladder.supervision = (rung) => ({ ...supervision(rung), backoff_ms: 0, max_backoff_ms: 0 });
+}
+
 if (path.resolve(process.argv[1] || '') !== __filename) {
   const spawn = cp.spawn;
   cp.spawn = function offlineHarness(file, args, options) {
@@ -18,7 +26,7 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   const args = process.argv.slice(3);
   const file = process.env.TOWER_CRANE_TEST_FALLBACK_FILE;
   const cli = (argv) => cp.execFileSync(process.execPath, [path.join(__dirname, '..', '..', 'bin', 'tower-crane.js'), ...argv], {
-    encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'],
+    encoding: 'utf8', timeout: process.env.TOWER_CRANE_TEST_CLAUDE_PROVIDER ? 0 : 15000, stdio: ['pipe', 'pipe', 'pipe'],
   });
   if (process.env.TOWER_CRANE_TEST_NESTED_DISPATCH && process.env.TOWER_CRANE_AGENT.startsWith('orchestrator-')) {
     const ladder = JSON.parse(cli(['ladder', 'show', '--json']));

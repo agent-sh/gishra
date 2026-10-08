@@ -4,13 +4,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeTaskRepo } = require('./helpers');
+const { makeRepo } = require('./helpers');
 
 function setup(t) {
-  const h = makeTaskRepo(t, [{
-    args: ['--title', 'Claude provider switch', '--tier', 'hard', '--acceptance', 'fresh provider session'],
-    brief: 'Build with the original brief.\n',
-  }]);
+  const h = makeRepo(t);
+  // Completion and attempt records decide success; CI owns the suite deadline.
+  const run = h.run;
+  h.run = (args, options = {}) => run(args, { ...options, timeout: 0 });
   const home = path.join(h.base, 'user-home');
   const claude = path.join(home, '.claude');
   const aws = path.join(home, '.aws');
@@ -20,25 +20,16 @@ function setup(t) {
   for (const key of Object.keys(h.env)) {
     if (/^(AWS_|ANTHROPIC_|CLAUDE_)/.test(key)) delete h.env[key];
   }
-  const backoff = path.join(h.base, 'zero-backoff.cjs');
-  // Provider tests exercise retry and routing decisions without waiting on backoff.
-  // Load the monitor's pinned ladder module so fallback routes use the same override.
-  fs.writeFileSync(backoff, `
-const path = require('node:path');
-if (path.basename(process.argv[1] || '') === 'spawn-monitor.js') {
-  const ladder = require(path.join(path.dirname(process.argv[1]), 'ladder.js'));
-  const supervision = ladder.supervision;
-  ladder.supervision = (rung) => ({ ...supervision(rung), backoff_ms: 0, max_backoff_ms: 0 });
-}
-`);
   Object.assign(h.env, {
     HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claude,
     PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
-    NODE_OPTIONS: [path.join(__dirname, 'fixtures', 'fallback-harness.js'), backoff]
-      .map((file) => `--require "${file.replace(/\\/g, '/')}"`).join(' '),
+    NODE_OPTIONS: `--require "${path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/')}"`,
     TOWER_CRANE_TEST_FALLBACK_FILE: path.join(h.base, 'attempts.json'),
     TOWER_CRANE_TEST_CLAUDE_PROVIDER: '1',
   });
+  h.init();
+  h.ok(['task', 'add', '--title', 'Claude provider switch', '--tier', 'hard', '--acceptance', 'fresh provider session']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Build with the original brief.\n' });
   h.primary = (provider, model = 'opus') => h.ok([
     'ladder', 'set', 'hard', '--provider', provider, '--model', model,
     '--supervision', '{"retries":1,"backoff_ms":10,"max_backoff_ms":10,"stall_ms":60000}',
@@ -85,7 +76,7 @@ for (const [provider, other, model, plain] of [
     h.primary(provider, model);
     h.fallbacks([{ provider: other, model }]);
     assert.deepEqual(h.json(['ladder', 'show']).problems, []);
-    const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+    const result = h.run(['spawn', '--task', 'T1', '--wait']);
     assert.equal(result.code, 0, result.stderr);
     const attempts = h.attempts();
     assert.deepEqual(attempts.map((a) => a.provider), [provider, provider, other]);
@@ -142,7 +133,7 @@ test('ladder show marks missing Claude provider config and the supervisor skips 
   const shown = h.json(['ladder', 'show']);
   assert.match(shown.problems.join('\n'), /hard fallback 1.*bedrock.*region.*skipped/);
   assert.match(shown.problems.join('\n'), /credentials/);
-  const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+  const result = h.run(['spawn', '--task', 'T1', '--wait']);
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /skipping fallback 1.*bedrock/);
   assert.deepEqual(h.attempts().map((a) => a.provider), ['anthropic', 'anthropic']);
@@ -159,7 +150,7 @@ test('missing first-party credentials are reported for primaries and skipped as 
   h.fallbacks([{ provider: 'anthropic', model: 'opus' }]);
   assert.match(h.ok(['ladder', 'show']), /cannot run: hard fallback 1.*anthropic.*credentials.*skipped/);
   h.env.TOWER_CRANE_TEST_FAIL_PROVIDER = 'bedrock';
-  const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+  const result = h.run(['spawn', '--task', 'T1', '--wait']);
   assert.equal(result.code, 1, result.stderr);
   assert.match(result.stderr, /skipping fallback 1.*anthropic/);
   assert.deepEqual(h.attempts().map((a) => [a.provider, a.retry]), [['bedrock', '0'], ['bedrock', '1']]);
@@ -211,7 +202,7 @@ for (const provider of ['anthropic', 'bedrock']) {
     assert.deepEqual(h.json(['ladder', 'show']).problems, []);
     const preview = h.json(['spawn', '--task', 'T1', '--dry-run']);
     assert.equal(JSON.stringify(preview).includes('stub-secret'), false);
-    const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+    const result = h.run(['spawn', '--task', 'T1', '--wait']);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(h.attempts()[0].provider, provider);
     if (provider === 'bedrock') assert.equal(h.attempts()[0].provider_env.AWS_REGION, 'eu-west-1');
@@ -227,11 +218,11 @@ test('Bedrock env_file readiness is deferred without reading the file during a d
   assert.deepEqual(h.json(['ladder', 'show']).problems, []);
   const preview = h.json(['spawn', '--task', 'T1', '--dry-run']);
   assert.equal(preview.env.CLAUDE_CODE_USE_BEDROCK, '1');
-  const missing = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+  const missing = h.run(['spawn', '--task', 'T1', '--wait']);
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /cannot read env_file/);
   fs.writeFileSync(file, 'AWS_REGION=eu-west-1\nAWS_BEARER_TOKEN_BEDROCK=stub-secret-file-value\n');
-  const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+  const result = h.run(['spawn', '--task', 'T1', '--wait']);
   assert.equal(result.code, 0, result.stderr);
   assert.equal(h.attempts()[0].provider_env.AWS_REGION, 'eu-west-1');
   const stored = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8')
@@ -260,7 +251,7 @@ for (const source of ['project env', 'rung env', 'env_file']) {
     }
     h.fallbacks([route]);
     assert.deepEqual(h.json(['ladder', 'show']).problems, []);
-    const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
+    const result = h.run(['spawn', '--task', 'T1', '--wait']);
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(h.attempts().map((a) => a.provider), ['anthropic', 'anthropic', 'bedrock']);
     assert.deepEqual(h.attempts().map((a) => a.retry), ['0', '1', '0']);
