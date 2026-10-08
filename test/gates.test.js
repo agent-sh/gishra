@@ -15,6 +15,8 @@ function cliCopy(h) {
   const dir = path.join(h.base, 'cli');
   const gatesDir = path.join(ROOT, 'lib', 'gates');
   fs.cpSync(path.join(ROOT, 'bin'), path.join(dir, 'bin'), { recursive: true });
+  // The board view reads the package bin name from package.json when it renders the sketch.
+  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(dir, 'package.json'));
   fs.cpSync(path.join(ROOT, 'lib'), path.join(dir, 'lib'), {
     recursive: true,
     filter: (src) => src !== gatesDir && !src.startsWith(gatesDir + path.sep),
@@ -137,8 +139,8 @@ function installTestsGate(cli) {
   }
 }
 
-function submitTestsFixture(h, sha, keep) {
-  h.init(['--repo', 'acme/demo', '--base', 'main', '--tests-cmd', `${shellQuote(process.execPath)} verify-build.js`]);
+function submitTestsFixture(h, sha, keep, settings = []) {
+  h.init(['--repo', 'acme/demo', '--base', 'main', '--tests-cmd', `${shellQuote(process.execPath)} verify-build.js`, ...settings]);
   if (keep) h.ok(['project', 'set', '--tests-keep', JSON.stringify(keep)]);
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'test the behavior']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
@@ -347,6 +349,240 @@ test('run-only still fails when the suite fails at the submitted head', (t) => {
   assert.match(evidence.summary, /at [a-f0-9]+: exit 1/);
   assert.equal(evidence.commands.filter((c) => c.command === cmd).length, 1);
   assert.deepEqual(fs.readdirSync(h.env.TOWER_CRANE_TMP), []);
+});
+
+test('failed tests evidence records TAP and spec names with a bounded output tail', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {
+    'test/failure.test.js': `const test = require('node:test');
+const assert = require('node:assert/strict');
+test('named regression failure', () => {
+  console.log('${'noise line '.repeat(1500)} tail marker');
+  assert.equal('actual', 'expected');
+});
+`,
+  } });
+  submitTestsFixture(h, sha);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+
+  for (const reporter of ['tap', 'spec']) {
+    const cmd = `${shellQuote(process.execPath)} --test --test-reporter=${reporter} test/failure.test.js`;
+    h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+    const result = h.run(['check', 'tests', 'T1', '--agent', 'checker']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+
+    const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+    assert.equal(evidence.ok, false);
+    assert.ok(evidence.test_failure.names.some((name) => name.includes('named regression failure')));
+    assert.ok(evidence.test_failure.output_tail.includes('tail marker'));
+    assert.ok(evidence.test_failure.output_tail.length <= 8192);
+    assert.ok(evidence.test_failure.output_tail.length > 8000);
+    assert.match(evidence.summary, /Failing tests:/);
+    assert.match(evidence.summary, /Output tail \(last 40 lines, max 8192 characters\):/);
+    assert.match(result.stdout, /named regression failure/);
+    assert.match(result.stdout, /tail marker/);
+
+    const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8')
+      .trim().split('\n').map(JSON.parse);
+    assert.deepEqual(events.at(-1).detail.test_failure, evidence.test_failure);
+  }
+});
+
+test('failed tests evidence names the failing tests when the spec reporter is colored', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {
+    'test/failure.test.js': `const test = require('node:test');
+const assert = require('node:assert/strict');
+test('colored regression failure', () => {
+  assert.equal('actual', 'expected');
+});
+`,
+  } });
+  submitTestsFixture(h, sha);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+  const cmd = `${shellQuote(process.execPath)} --test --test-reporter=spec test/failure.test.js`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker'], { env: { FORCE_COLOR: '1' } });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.equal(evidence.test_failure.names.length, 1);
+  assert.match(evidence.test_failure.names[0], /^colored regression failure \(/);
+  assert.match(evidence.summary, /Failing tests:\n- colored regression failure \(/);
+  assert.equal(evidence.test_failure.output_tail.includes('\u001b'), false);
+  assert.match(result.stdout, /colored regression failure/);
+});
+
+test('failed test diagnostics redact process, project, rung and env_file secrets everywhere', (t) => {
+  const h = makeRepo(t);
+  const token = (...parts) => parts.join('');
+  const chars = (...codes) => String.fromCharCode(...codes);
+  const canaries = {
+    process: token(chars(103, 104, 112, 95), 'T83ProcessCanary0123456789abcdef123456'),
+    project: token(chars(115, 107, 45, 112, 114, 111, 106, 45), 'T83ProjectCanary0123456789abcdef123456'),
+    projectFile: token(chars(120, 111, 120, 98, 45), 'T83ProjectFileCanary-0123456789abcdef'),
+    rung: token(chars(65, 75, 73, 65), '1234567890ABCDEF'),
+    rungFile: '0123456789abcdef0123456789abcdef0123456789abcdef',
+  };
+  const commonTokens = [
+    token(chars(103, 104, 111, 95), 'T83GenericCanary0123456789abcdef'),
+    token(chars(115, 107, 45), 'T83GenericSecret0123456789abcdef'),
+    token(chars(65, 75, 73, 65), 'ABCDEFGHIJKLMNOP'),
+    token(chars(120, 111, 120, 112, 45), 'T83GenericSlack-0123456789abcdef'),
+    token('Authorization: Bearer ', 'T83GenericAuth0123456789abcdef'),
+  ];
+  const projectEnvFile = path.join(h.base, 'project.env');
+  const rungEnvFile = path.join(h.base, 'rung.env');
+  fs.writeFileSync(projectEnvFile, `T83_PROJECT_FILE_CANARY=${canaries.projectFile}\n`);
+  fs.writeFileSync(rungEnvFile, `T83_RUNG_FILE_TOKEN=${canaries.rungFile}\n`);
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  const defaultEasy = require('../lib/ladder').resolve({}, h.env).ladder.easy.own;
+  fs.writeFileSync(h.userConfig, JSON.stringify({
+    ladder: { easy: {
+      ...defaultEasy,
+      env: { T83_RUNG_CANARY: canaries.rung },
+      env_file: rungEnvFile,
+    } },
+  }));
+
+  const literals = [canaries.project, canaries.projectFile, canaries.rung, canaries.rungFile, ...commonTokens];
+  const testFile = `const test = require('node:test');
+const assert = require('node:assert/strict');
+const report = [process.env.T83_PROCESS_TOKEN, ${literals.map((value) => JSON.stringify(value)).join(', ')}].join(' ');
+test('failure ' + process.env.T83_PROCESS_TOKEN, () => {
+  console.log(report);
+  assert.fail('fixture failure');
+});
+`;
+  const sha = manifestTask(h, { submitted: { 'test/failure.test.js': testFile } });
+  submitTestsFixture(h, sha, null, [
+    '--env', JSON.stringify({ T83_PROJECT_CANARY: canaries.project }),
+    '--env_file', projectEnvFile,
+  ]);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+
+  const cmd = `${shellQuote(process.execPath)} --test --test-reporter=tap test/failure.test.js`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker', '--json'], {
+    env: { T83_PROCESS_TOKEN: canaries.process },
+  });
+  assert.equal(result.code, 1, result.stderr + result.stdout);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.ok(evidence.test_failure.names.some((name) => name.includes('[redacted:T83_PROCESS_TOKEN]')));
+  assert.ok(evidence.test_failure.output_tail.includes('[redacted:T83_PROCESS_TOKEN]'));
+  assert.ok(evidence.summary.includes('[redacted:T83_PROCESS_TOKEN]'));
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_PROJECT_CANARY\]/);
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_PROJECT_FILE_CANARY\]/);
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_RUNG_CANARY\]/);
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_RUNG_FILE_TOKEN\]/);
+  for (const label of ['GITHUB_TOKEN', 'API_KEY', 'AWS_ACCESS_KEY_ID', 'SLACK_TOKEN', 'AUTHORIZATION']) {
+    assert.ok(evidence.test_failure.output_tail.includes(`[redacted:${label}]`), label);
+  }
+
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const taskText = h.ok(['task', 'show', 'T1']);
+  const taskJson = JSON.stringify(h.json(['task', 'show', 'T1']));
+  const output = [result.stdout, result.stderr, JSON.stringify(evidence), events, taskText, taskJson].join('\n');
+  for (const secret of [...Object.values(canaries), ...commonTokens]) {
+    assert.equal(output.includes(secret), false, `raw canary leaked: ${secret}`);
+  }
+});
+
+test('paths, long file names, commit SHAs and ordinary env values survive a failed test run', (t) => {
+  const h = makeRepo(t);
+  const file = 'test/T83-long-file-name-kept-intact-for-diagnostics.test.js';
+  const fullSha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+  const worktree = '/home/builder/worktrees/T83-gate-command-errors-name-the-real-cause/checkout';
+  const literals = [file, fullSha, worktree].map((value) => JSON.stringify(value)).join(', ');
+  const testFile = `const test = require('node:test');
+const assert = require('node:assert/strict');
+test('NODE_ENV is ' + process.env.NODE_ENV, () => {
+  console.log([${literals}, process.env.NODE_ENV, process.env.CI, process.env.LOG_LEVEL].join(' '));
+  assert.fail('fixture failure');
+});
+`;
+  const sha = manifestTask(h, { submitted: { [file]: testFile } });
+  submitTestsFixture(h, sha, null, ['--env', JSON.stringify({ NODE_ENV: 'test' })]);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+
+  const cmd = `${shellQuote(process.execPath)} --test --test-reporter=tap ${shellQuote(file)}`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker'], {
+    env: { NODE_ENV: 'test', CI: 'true', LOG_LEVEL: 'debug' },
+  });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.equal(evidence.test_failure.names.length, 1);
+  assert.match(evidence.test_failure.names[0], /^NODE_ENV is test\b/);
+  const output = evidence.test_failure.output_tail;
+  assert.ok(output.includes(file), 'the test file name stays whole');
+  assert.ok(output.includes(fullSha), 'the commit SHA stays whole');
+  assert.ok(output.includes(worktree), 'the worktree path stays whole');
+  assert.match(output, / test true debug/);
+  assert.equal(output.includes('[redacted:'), false, output);
+});
+
+test('credential-named variables with numeric, boolean or short values leave the output intact', (t) => {
+  const h = makeRepo(t);
+  const testFile = `const test = require('node:test');
+const assert = require('node:assert/strict');
+test('budget ' + process.env.MAX_THINKING_TOKENS, () => {
+  console.log(['test/a.test.js:12:3', 'ok: true', process.env.MAX_THINKING_TOKENS, process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, process.env.X_COOKIE_ENABLED].join(' '));
+  assert.fail('fixture failure');
+});
+`;
+  const sha = manifestTask(h, { submitted: { 'test/a.test.js': testFile } });
+  submitTestsFixture(h, sha);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+
+  const cmd = `${shellQuote(process.execPath)} --test --test-reporter=tap test/a.test.js`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker'], {
+    env: { MAX_THINKING_TOKENS: '1', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000', X_COOKIE_ENABLED: 'true' },
+  });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.deepEqual(evidence.test_failure.names, ['budget 1']);
+  assert.match(evidence.test_failure.output_tail, /not ok 1 - budget 1/);
+  assert.match(evidence.test_failure.output_tail, /test\/a\.test\.js:12:3 ok: true 1 32000 true/);
+  assert.equal(evidence.test_failure.output_tail.includes('[redacted:'), false, evidence.test_failure.output_tail);
+  assert.match(result.stdout, /budget 1/);
+  assert.equal(result.stdout.includes('[redacted:'), false, result.stdout);
+});
+
+test('a token that straddles the output tail cut is redacted, not kept as a fragment', (t) => {
+  const h = makeRepo(t);
+  const body = 'T83BoundaryBody0123456789';
+  // After the marker the tail keeps 8167 characters of this one line, so the cut falls right after
+  // the "sk-" prefix. Spaces keep the body out of any longer run.
+  const line = `${' '.repeat(100)}sk-${body}${' '.repeat(8166 - body.length)}!`;
+  const sha = manifestTask(h, { submitted: {
+    'print-leak.js': `process.stdout.write(${JSON.stringify(line)});\nprocess.exit(1);\n`,
+  } });
+  submitTestsFixture(h, sha);
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', `${shellQuote(process.execPath)} print-leak.js`]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker']);
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.match(evidence.test_failure.output_tail, /\[redacted:API_KEY\]/);
+  assert.ok(evidence.test_failure.output_tail.length <= 8192);
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const output = [result.stdout, result.stderr, JSON.stringify(evidence), events, h.ok(['task', 'show', 'T1'])].join('\n');
+  assert.equal(output.includes(body), false, 'the token body leaked past the output tail cut');
 });
 
 test('none mode for docs and ops needs no command but still verifies the submitted sha', (t) => {

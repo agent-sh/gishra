@@ -350,3 +350,70 @@ test('relinking after capability recovery restores the stack gate and refuses ad
   f.h.ok(['project', 'set', '--merge-admin', 'false']);
   f.h.ok(['merge', 'T2']);
 });
+
+// Code tasks with a suite that logs which task files and base files its tree
+// holds, open PRs GitHub reports mergeable, and main moved on the remote.
+function queued(t) {
+  const f = stacked(t);
+  const { shellQuote } = require('../lib/gates/common');
+  const log = path.join(f.h.base, 'suites.jsonl');
+  const suite = path.join(f.h.base, 'suite.js');
+  fs.writeFileSync(suite, `require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(
+  ['T1.txt', 'T2.txt', 'moved.txt'].filter((f) => require('node:fs').existsSync(f))) + '\\n');\n`);
+  f.h.ok(['project', 'set', '--tests-cmd', `${shellQuote(process.execPath)} ${shellQuote(suite)}`]);
+  // The shared stack template submits docs tasks, and a submitted task's kind
+  // cannot change, so these copies are written as code tasks.
+  const tasks = f.h.readState('tasks.json');
+  for (const task of tasks.tasks) task.kind = 'code';
+  f.h.writeState('tasks.json', tasks);
+  f.write((d) => { for (const n of [11, 12]) Object.assign(d.prs[n], { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
+  fs.writeFileSync(path.join(f.h.repo, 'moved.txt'), 'main moved\n');
+  f.h.git(['add', 'moved.txt']);
+  f.h.git(['commit', '-qm', 'main moves']);
+  f.h.git(['push', 'origin', 'main']);
+  f.main = f.h.git(['rev-parse', 'main']);
+  f.acceptCode = (id) => f.h.ok(['accept', id, '--waive', 'tests', '--waive', 'clean', '--waive', 'review', '--waive', 'ci',
+    '--reason', 'offline stack fixture']);
+  f.consume = () => f.h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  f.suites = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse) : []);
+  f.checks = () => fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    .filter((e) => e.cmd === 'head check');
+  f.merges = () => f.read().calls.filter((c) => c.args[1] === 'merge').map((c) => c.args.slice(0, 3).join(' '));
+  return f;
+}
+
+test('a stack is one queue entry: its upper task waits for the lower one and the chain is checked against current main', (t) => {
+  const f = queued(t);
+  f.acceptCode('T2');
+  f.consume();
+  assert.deepEqual(f.merges(), [], 'an upper task never heads the line before its lower task is accepted');
+  assert.deepEqual(f.checks(), []);
+  f.acceptCode('T1');
+  f.consume();
+  assert.deepEqual(f.checks().map((e) => [e.task, e.detail.members, e.detail.base_sha, e.detail.ok]),
+    [['T2', ['T1', 'T2'], f.main, true]], 'one check at the top of the chain merged with main');
+  assert.deepEqual(f.suites(), [['T1.txt', 'T2.txt', 'moved.txt']]);
+  assert.deepEqual(f.merges(), ['pr merge 11', 'pr merge 12']);
+  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+});
+
+test('after the lower task merges alone, the upper head check runs against main, not the deleted lower branch', (t) => {
+  const f = queued(t);
+  const scratch = path.join(f.upper.wt.path, 'scratch.txt');
+  // A dirty upper worktree defers stack sync, so T2 still names the lower branch.
+  fs.writeFileSync(scratch, 'local edit\n');
+  f.acceptCode('T1');
+  f.consume();
+  assert.deepEqual(f.merges(), ['pr merge 11']);
+  assert.equal(f.h.json(['task', 'show', 'T2']).stack.base, f.lower.branch);
+  f.h.git(['push', 'origin', `:${f.lower.branch}`]);
+  f.h.git(['update-ref', '-d', `refs/remotes/origin/${f.lower.branch}`]);
+  f.write((d) => { d.prs[12].baseRefName = 'main'; });
+  const main = f.h.git(['ls-remote', 'origin', 'refs/heads/main']).split(/\s/)[0];
+  f.acceptCode('T2');
+  f.consume();
+  assert.deepEqual(f.checks().map((e) => [e.task, e.detail.members, e.detail.base_sha]),
+    [['T1', ['T1'], f.main], ['T2', ['T2'], main]]);
+  assert.deepEqual(f.merges(), ['pr merge 11', 'pr merge 12']);
+  assert.equal(f.suites().length, 2, 'the upper task runs one check, against main');
+});

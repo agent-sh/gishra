@@ -86,6 +86,199 @@ process.exit(r.status ?? 1);`;
 }
 
 describe('reviewer integration cases', { concurrency: windowsConcurrency }, () => {
+test('reviewers share static system instructions and receive audited gates in the user prompt', (t) => {
+  const h = setup(t);
+  h.ok(['submit', 'T1', '--agent', h.builder, '--sha', h.sha, '--pr', '42']);
+  ready(h);
+  gateEvidence(h, 'ci', 'gates');
+  fs.writeFileSync(path.join(h.repo, 'AGENTS.md'), 'REPO_REVIEW_RULE\n');
+  fs.mkdirSync(path.join(h.repo, 'docs'));
+  fs.writeFileSync(path.join(h.repo, 'docs', 'state.md'), '### Acceptance gates\nSTATE_REVIEW_CONTRACT\n\n## Next\nUNNEEDED_STATE_DOC\n');
+  fs.writeFileSync(path.join(h.repo, 'docs', 'cli.md'), '## Gates\nCLI_REVIEW_CONTRACT\n\n## Next\nUNNEEDED_CLI_DOC\n');
+  const standards = path.join(h.repo, 'review-standards.md');
+  fs.writeFileSync(standards, 'REVIEW_STANDARDS\n');
+  h.ok(['project', 'set', '--standards', standards]);
+  for (const harness of ['claude', 'codex']) {
+    if (harness === 'codex') fs.writeFileSync(path.join(h.repo, 'AGENTS.override.md'), 'CODEX_REVIEW_RULE\n');
+    h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'fixture', '--clear', 'profile', '--clear', 'args']);
+    if (harness === 'claude') h.ok(['ladder', 'set', 'easy', '--args', '["--append-system-prompt","CUSTOM_REVIEW_RULE"]']);
+    const out = choice(h, { FORCE_PROMPT_CACHING_5M: '0' });
+    assert.ok(out.startup.rules.every((r) => r.loaded === 'system'));
+    const user = out.argv.find((arg) => arg.includes('## Task'));
+    assert.ok(!user.includes('Role instructions'), 'the role skill is static');
+    assert.ok(!user.includes('## House rules'), 'house rules are static');
+    assert.match(user, /## Gate results/);
+    for (const type of ['tests', 'clean', 'ci']) assert.ok(user.includes(`"type": "${type}"`), type);
+    assert.match(user, /"commands":/);
+    assert.match(user, /"sha":/);
+    assert.match(user, /"tests_mode": "prove"/);
+    assert.match(user, /Do not re-run the full suite/);
+    if (harness === 'claude') {
+      const system = out.system;
+      assert.ok(out.argv.includes('--exclude-dynamic-system-prompt-sections'));
+      assert.equal(out.env.FORCE_PROMPT_CACHING_5M, '1');
+      assert.ok(!out.argv.includes('--append-system-prompt'));
+      assert.equal(out.argv[out.argv.indexOf('--append-system-prompt-file') + 1], path.join(out.home.path, 'system.md'));
+      for (const text of ['Role instructions', 'REPO_REVIEW_RULE', 'STATE_REVIEW_CONTRACT', 'CLI_REVIEW_CONTRACT', 'REVIEW_STANDARDS', 'CUSTOM_REVIEW_RULE']) {
+        assert.ok(system.includes(text), text);
+      }
+      for (const text of ['## Task', 'REVIEWER-ONLY', 'UNNEEDED_STATE_DOC', 'UNNEEDED_CLI_DOC', h.repo]) assert.ok(!system.includes(text), text);
+      const second = choice(h);
+      assert.equal(second.system, system);
+    } else {
+      assert.ok(out.startup.instructions_file.endsWith('AGENTS.md'));
+      assert.ok(out.startup.system_bytes > 0);
+      assert.ok(out.startup.rules.some((r) => r.path === path.join(h.repo, 'AGENTS.override.md')));
+      assert.ok(!out.startup.rules.some((r) => r.path === path.join(h.repo, 'AGENTS.md')));
+    }
+  }
+});
+
+test('a claude reviewer prefix over 32 KB stays off the command line', (t) => {
+  const h = setup(t);
+  h.ok(['submit', 'T1', '--agent', h.builder, '--sha', h.sha, '--pr', '42']);
+  ready(h);
+  gateEvidence(h, 'ci', 'gates');
+  const standards = path.join(h.repo, 'review-standards.md');
+  fs.writeFileSync(standards, `LARGE_STANDARDS\n${'Each finding names a file and line.\n'.repeat(1200)}`);
+  h.ok(['project', 'set', '--standards', standards]);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'fixture', '--clear', 'profile', '--clear', 'args']);
+  const out = choice(h);
+  assert.ok(Buffer.byteLength(out.system) > 32 * 1024, 'the fixture prefix is over 32 KB');
+  assert.match(out.system, /LARGE_STANDARDS/);
+  assert.ok(!out.argv.some((arg) => arg.includes('LARGE_STANDARDS')));
+  // Windows CreateProcess caps the whole command line at 32,767 characters.
+  assert.ok(out.argv.map((arg) => `"${arg}"`).join(' ').length < 32767);
+});
+
+test('a fallback reviewer on a large diff keeps the task context and gate results', {
+  skip: process.platform === 'win32' && 'the stub uses a shebang executable',
+}, (t) => {
+  const h = setup(t);
+  fs.writeFileSync(path.join(h.repo, 'large.txt'), 'LARGE_DIFF_LINE\n'.repeat(1500));
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'large change']);
+  h.sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--agent', h.builder, '--sha', h.sha, '--branch', 'fixture-change']);
+  ready(h);
+  const bin = path.join(h.base, 'harness-bin');
+  fs.mkdirSync(bin);
+  const captures = path.join(h.base, 'captures.jsonl');
+  fs.writeFileSync(path.join(bin, 'claude'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const model = args[args.indexOf('--model') + 1];
+fs.appendFileSync(${JSON.stringify(captures)}, JSON.stringify({ model, args }) + '\\n');
+if (model === 'first') console.log(JSON.stringify({ type: 'assistant', message: { stop_reason: 'refusal', content: [] } }));
+console.log(JSON.stringify({ type: 'result', is_error: false, model, usage: { input_tokens: 1, output_tokens: 1 } }));
+`, { mode: 0o755 });
+  h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'first', '--clear', 'profile', '--clear', 'args']);
+  h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices, small_lines: 5000, small_files: 5 })]);
+  fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+  fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { easy: { fallbacks: [{ harness: 'claude', model: 'second' }] } } }));
+  const caller = path.join(h.base, 'caller');
+  fs.mkdirSync(path.join(caller, '.claude'), { recursive: true });
+  const result = h.run(['spawn', '--task', 'T1', '--role', 'review', '--wait'], {
+    env: { HOME: caller, CLAUDE_CONFIG_DIR: path.join(caller, '.claude'), XDG_CACHE_HOME: path.join(caller, 'cache'),
+      PATH: bin + path.delimiter + (h.env.PATH || '') }, timeout: 20000 });
+  assert.equal(result.code, 0, result.stderr);
+  const rows = fs.readFileSync(captures, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(rows.map((r) => r.model), ['first', 'second']);
+  const prompts = rows.map((r) => r.args.find((arg) => arg.includes('## Task')));
+  for (const user of prompts) {
+    assert.ok(!user.includes('LARGE_DIFF_LINE'), 'the diff stays in the packet file');
+    assert.ok(!user.includes('undefined'));
+    assert.match(user, /## Gate results/);
+    assert.match(user, new RegExp(`Read .+ for the diff at ${h.sha}`));
+  }
+  assert.equal(prompts[1], prompts[0]);
+});
+
+test('stub reviewers 2 through 4 reuse the static prefix across tasks and fresh homes', {
+  skip: process.platform === 'win32' && 'the stub uses a shebang executable',
+}, (t) => {
+  const h = setup(t);
+  ready(h);
+  h.ok(['task', 'add', '--title', 'Another review', '--acceptance', 'same repository rules', '--kind', 'docs', '--tier', 'easy']);
+  h.ok(['brief', 'set', 'T2', '-'], { input: '## Reviewer\nSECOND_TASK_CONTEXT\n' });
+  h.ok(['claim', 'T2', '--agent', 'another-builder']);
+  h.ok(['submit', 'T2', '--agent', 'another-builder', '--sha', h.sha]);
+  const bin = path.join(h.base, 'harness-bin');
+  fs.mkdirSync(bin);
+  const captures = path.join(h.base, 'captures.jsonl');
+  const checkpoint = path.join(h.base, 'prefix.json');
+  const stub = `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const args = process.argv.slice(2);
+const claude = path.basename(process.argv[1]) === 'claude';
+const system = claude ? fs.readFileSync(args[args.indexOf('--append-system-prompt-file') + 1], 'utf8')
+  : fs.readFileSync(path.join(process.env.CODEX_HOME, 'AGENTS.md'), 'utf8');
+const configHome = process.env[claude ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'];
+const policy = JSON.parse(fs.readFileSync(path.join(configHome, 'policy.json'), 'utf8'));
+const hash = crypto.createHash('sha256').update(system).digest('hex');
+const previous = fs.existsSync(${JSON.stringify(checkpoint)}) ? JSON.parse(fs.readFileSync(${JSON.stringify(checkpoint)})) : {};
+const tokens = Math.ceil(Buffer.byteLength(system) / 4);
+const hit = previous[claude ? 'claude' : 'codex'] === hash;
+previous[claude ? 'claude' : 'codex'] = hash;
+fs.writeFileSync(${JSON.stringify(checkpoint)}, JSON.stringify(previous));
+fs.appendFileSync(${JSON.stringify(captures)}, JSON.stringify({
+  harness: claude ? 'claude' : 'codex', system, args, cwd: process.cwd(),
+  repo: policy.repo,
+  home: process.env.HOME, cache_read: hit ? tokens : 0, cache_write: hit ? 0 : tokens,
+  cache: process.env.XDG_CACHE_HOME,
+  tool_caches: [process.env.GOCACHE, process.env.GOMODCACHE, process.env.npm_config_cache],
+  ttl: process.env.FORCE_PROMPT_CACHING_5M,
+  memory: claude ? fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'CLAUDE.md'), 'utf8') : null,
+}) + '\\n');
+console.log(JSON.stringify({type:'result', result:'cache probe', usage: {
+  input_tokens: 1, cache_read_input_tokens: hit ? tokens : 0,
+  cache_creation_input_tokens: hit ? 0 : tokens, output_tokens: 1,
+}}));
+`;
+  for (const harness of ['claude', 'codex']) fs.writeFileSync(path.join(bin, harness), stub, { mode: 0o755 });
+  const caller = path.join(h.base, 'caller');
+  for (const dir of ['.claude', '.codex']) fs.mkdirSync(path.join(caller, dir), { recursive: true });
+  fs.writeFileSync(path.join(caller, '.claude', 'CLAUDE.md'), 'STUB_GLOBAL_RULE\n');
+  fs.writeFileSync(path.join(caller, '.codex', 'AGENTS.md'), 'STUB_GLOBAL_RULE\n');
+  const env = { HOME: caller, CLAUDE_CONFIG_DIR: path.join(caller, '.claude'), CODEX_HOME: path.join(caller, '.codex'),
+    XDG_CACHE_HOME: path.join(caller, 'cache'),
+    PATH: bin + path.delimiter + (h.env.PATH || ''), FORCE_PROMPT_CACHING_5M: '0' };
+  for (const harness of ['claude', 'codex']) {
+    h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'fixture', '--clear', 'profile']);
+    for (const task of ['T1', 'T2', 'T1', 'T2']) h.json(['spawn', '--task', task, '--role', 'review', '--wait'], { env });
+  }
+  const rows = fs.readFileSync(captures, 'utf8').trim().split('\n').map(JSON.parse);
+  for (const harness of ['claude', 'codex']) {
+    const runs = rows.filter((r) => r.harness === harness);
+    assert.ok(runs[0].cache_write > 0);
+    assert.equal(runs[0].cache_read, 0);
+    assert.notEqual(runs[0].cwd, runs[1].cwd);
+    assert.equal(new Set(runs.map((r) => r.home)).size, 4);
+    assert.equal(new Set(runs.map((r) => r.cache)).size, 4, 'reviewer filesystem caches are isolated');
+    for (const row of runs.slice(1)) {
+      assert.equal(row.system, runs[0].system);
+      assert.equal(row.cache_read, runs[0].cache_write);
+      assert.equal(row.cache_write, 0);
+    }
+    for (const row of runs) {
+      assert.equal(row.repo, 'acme/demo', 'reviewer shims retain the recorded repository');
+      assert.match(row.system, /Role instructions: tower-crane-review/);
+      assert.ok(!row.system.includes('## Task'));
+      assert.ok(row.cache.startsWith(path.join(caller, 'cache') + path.sep));
+      assert.deepEqual(row.tool_caches, ['go-build', 'go-mod', 'npm'].map((dir) => path.join(row.cache, dir)));
+      assert.ok(!row.system.includes(row.cache), 'per-agent filesystem paths stay out of the shared prefix');
+      if (harness === 'claude') {
+        assert.equal(row.ttl, '1');
+        assert.equal(row.memory, '');
+        assert.ok(row.args.includes('--exclude-dynamic-system-prompt-sections'));
+      }
+    }
+    t.diagnostic(`${harness} stub first-turn prefix tokens: ${JSON.stringify(runs.map(({ cache_read, cache_write }) => ({ cache_read, cache_write })))}`);
+  }
+});
+
 test('review selection also uses tier and diff defaults without a price table', (t) => {
   const h = setup(t);
   h.ok(['project', 'set', '--review-policy', 'null']);
@@ -272,6 +465,50 @@ test('review dispatch computes its diff once outside the state lock', (t) => {
 });
 });
 
+test('real Haiku reviewers expose first-turn cache reads and writes across worktrees', {
+  skip: process.env.TOWER_CRANE_LIVE_REVIEW_CACHE !== '1' && 'set TOWER_CRANE_LIVE_REVIEW_CACHE=1 for the paid Haiku probe',
+  timeout: 300000,
+}, async (t) => {
+  const h = setup(t);
+  ready(h);
+  h.ok(['project', 'set', '--goal', 'Measure reviewer prompt cache reuse']);
+  const instruction = '## Reviewer\nThis is an owner-authorized cache probe, not a code review. Use no tools, change no files, and do not record review evidence. Reply with CACHE_PROBE_OK and stop after one answer.\n';
+  h.ok(['brief', 'set', 'T1', '-'], { input: instruction });
+  h.ok(['task', 'add', '--title', 'Cache validation', '--acceptance', 'one answer', '--kind', 'docs', '--tier', 'easy']);
+  h.ok(['brief', 'set', 'T2', '-'], { input: instruction });
+  h.ok(['claim', 'T2', '--agent', 'another-builder']);
+  h.ok(['submit', 'T2', '--agent', 'another-builder', '--sha', h.sha]);
+  h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'claude-haiku-5-5', '--clear', 'profile',
+    '--args', '["--max-turns","1"]']);
+  const liveHome = process.env.TOWER_CRANE_LIVE_REVIEW_HOME || require('node:os').homedir();
+  const env = { HOME: liveHome, CODEX_HOME: path.join(liveHome, '.codex'),
+    CLAUDE_CONFIG_DIR: process.env.TOWER_CRANE_LIVE_REVIEW_CLAUDE_CONFIG || path.join(liveHome, '.claude') };
+  const rows = [];
+  for (const task of ['T1', 'T2', 'T1', 'T2']) {
+    const out = await h.runAsync(['spawn', '--task', task, '--role', 'review', '--wait', '--json'], { env });
+    assert.equal(out.code, 0, out.stderr);
+    const launch = JSON.parse(out.stdout);
+    const log = fs.readFileSync(launch.log, 'utf8');
+    const result = log.split('\n').map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).findLast((e) => e?.type === 'result');
+    assert.ok(result?.result?.includes('CACHE_PROBE_OK'), log.slice(-2000));
+    const usage = result.usage;
+    assert.ok(usage, 'Haiku returned usage');
+    const startup = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+      .findLast((e) => e.cmd === 'startup' && e.detail.agent === launch.agent);
+    rows.push({ task, agent: launch.agent, system_bytes: startup.detail.system_bytes,
+      model: result.modelUsage, usage, total_cost_usd: result.total_cost_usd });
+  }
+  t.diagnostic(`Haiku first-turn cache probe: ${JSON.stringify(rows)}`);
+  assert.equal(new Set(rows.map((r) => r.system_bytes)).size, 1, 'system context size is stable across worktrees');
+  assert.ok(rows.slice(1).every((r) => r.usage.cache_read_input_tokens > 0), 'warm reviewer first turns read the cache');
+  for (const row of rows) {
+    assert.equal(row.usage.cache_creation.ephemeral_1h_input_tokens, 0);
+    assert.equal(row.usage.cache_creation.ephemeral_5m_input_tokens, row.usage.cache_creation_input_tokens);
+  }
+});
+
 test('review dispatch refuses a submitted head or configured base changed after diff preparation', async (t) => {
   for (const change of ['head', 'base']) {
     const h = setup(t);
@@ -365,18 +602,22 @@ test('accept reuses an active review and direct dispatch refuses a duplicate', (
 
 test('large review diffs use a context file and a short argv', (t) => {
   const h = setup(t);
-  changeKind(h, 'docs');
   fs.writeFileSync(path.join(h.repo, 'large.md'), 'A focused review reads this diff.\n'.repeat(1000));
   h.git(['add', 'large.md']);
   h.git(['commit', '-qm', 'large diff']);
   h.sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha]);
+  ready(h);
   const out = path.join(h.base, 'large-prompt.txt');
   commandReviewer(h, out);
   const preview = choice(h);
   const packet = path.join(h.state, 'reviews', `T1-${h.sha}.md`);
   assert.ok(!fs.existsSync(packet), 'a dry run writes no packet');
   assert.ok(preview.argv.join(' ').length < 16000);
+  const user = preview.argv.find((arg) => arg.includes('## Task'));
+  assert.match(user, /## Gate results/);
+  assert.match(user, /"type": "tests"/);
+  assert.match(user, /"type": "clean"/);
   h.json(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
   assert.match(fs.readFileSync(out, 'utf8'), /reviews/);
   const fullPacket = fs.readFileSync(packet, 'utf8');
