@@ -98,13 +98,27 @@ test('reviewers share static system instructions and receive audited gates in th
   const standards = path.join(h.repo, 'review-standards.md');
   fs.writeFileSync(standards, 'REVIEW_STANDARDS\n');
   h.ok(['project', 'set', '--standards', standards]);
-  for (const harness of ['claude', 'codex']) {
+  for (const harness of ['claude', 'codex', 'pi']) {
     if (harness === 'codex') fs.writeFileSync(path.join(h.repo, 'AGENTS.override.md'), 'CODEX_REVIEW_RULE\n');
     h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'fixture', '--clear', 'profile', '--clear', 'args']);
     if (harness === 'claude') h.ok(['ladder', 'set', 'easy', '--args', '["--append-system-prompt","CUSTOM_REVIEW_RULE"]']);
     const out = choice(h, { FORCE_PROMPT_CACHING_5M: '0' });
-    assert.ok(out.startup.rules.every((r) => r.loaded === 'system'));
     const user = out.argv.find((arg) => arg.includes('## Task'));
+    if (harness === 'pi') {
+      assert.equal(out.sandbox, false);
+      assert.equal(out.startup.sandbox, false);
+      assert.equal(out.startup.confinement, 'unconfined');
+      assert.ok(out.startup.rules.every((r) => r.loaded === 'read'));
+      assert.ok(out.startup.rules.some((r) => r.path === path.join(h.repo, 'AGENTS.md')));
+      assert.match(user, /## House rules/);
+      assert.match(user, /## Gate results/);
+      assert.equal(out.startup.system_bytes, undefined);
+      assert.equal(out.system, undefined);
+      assert.ok(out.argv.includes('--no-context-files'));
+      assert.equal(out.argv[out.argv.indexOf('--append-system-prompt') + 1], path.join(out.home.path, 'AGENTS.md'));
+      continue;
+    }
+    assert.ok(out.startup.rules.every((r) => r.loaded === 'system'));
     assert.ok(!user.includes('Role instructions'), 'the role skill is static');
     assert.ok(!user.includes('## House rules'), 'house rules are static');
     assert.match(user, /## Gate results/);
