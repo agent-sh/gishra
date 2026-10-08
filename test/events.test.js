@@ -62,11 +62,15 @@ async function created(file) {
   }
 }
 
-async function waiting(t, h, args = [], hooks = {}) {
+// A waiter runs software reactions unless it observes. Each test chooses, so a
+// test asserting on manual commands never races an automatic one by accident.
+async function waiting(t, h, { automation, args = [], hooks = {} }) {
+  if (typeof automation !== 'boolean') throw new Error('waiting needs automation: true or false');
   const signal = path.join(h.base, `watch-${require('node:crypto').randomUUID()}`);
   const ready = created(signal);
   const actor = args.includes('--agent') ? [] : ['--agent', 'orchestrator'];
-  const c = child(t, h, ['wait', ...actor, '--timeout', '5', ...args], { ...hooks, HOOK_WATCH_READY: signal });
+  const observe = automation ? [] : ['--observe'];
+  const c = child(t, h, ['wait', ...actor, ...observe, '--timeout', '5', ...args], { ...hooks, HOOK_WATCH_READY: signal });
   // A baseline CLI that lacks wait closes immediately; never wait for a marker
   // it cannot write.
   await Promise.race([ready, c.result.then((r) => { throw new Error(`wait exited before watch setup: ${r.code} ${r.stderr}`); })]);
@@ -121,7 +125,7 @@ test('readiness observes a CLI marker without directory watch notifications', as
 test('submitted wakes a live waiter with one event JSON line, even with --json', async (t) => {
   const h = setup(t);
   h.ok(['claim', 'T1', '--agent', 'worker']);
-  const result = await waiting(t, h, ['--types', 'submitted', '--json']);
+  const result = await waiting(t, h, { automation: false, args: ['--types', 'submitted', '--json'] });
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', 'abcdef1']);
   const e = await event(result, 'submitted');
   assert.equal(e.detail.sha, 'abcdef1');
@@ -133,7 +137,7 @@ test('accepted wakes after gates pass; a refused accept emits nothing', async (t
   h.sha = gateFixture(h);
   submit(h);
   h.ok(['project', 'set', '--tests-cmd', 'null']);
-  const result = await waiting(t, h, ['--types', 'accepted']);
+  const result = await waiting(t, h, { automation: true, args: ['--types', 'accepted'] });
   const count = log(h).length;
   assert.equal(h.run(['accept', 'T1']).code, 1);
   assert.equal(log(h).length, count);
@@ -148,7 +152,7 @@ test('review and software gate pass or failure wake as evidence with their verdi
   submit(h, ['--pr', '9']);
   for (const type of ['review', 'tests', 'clean', 'ci']) {
     for (const ok of [true, false]) {
-      const result = await waiting(t, h, ['--types', 'evidence', '--task', 'T1']);
+      const result = await waiting(t, h, { automation: false, args: ['--types', 'evidence', '--task', 'T1'] });
       if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, ok ? '--ok' : '--fail']);
       else gateEvidence(h, type, 'gate-runner', ok);
       const e = await event(result, 'evidence');
@@ -168,7 +172,7 @@ test('review and software gate pass or failure wake as evidence with their verdi
 test('rework wakes and carries the reason', async (t) => {
   const h = setup(t);
   submit(h);
-  const result = await waiting(t, h, ['--types', 'rework']);
+  const result = await waiting(t, h, { automation: false, args: ['--types', 'rework'] });
   h.ok(['rework', 'T1', '--reason', 'simplify it']);
   assert.equal((await event(result, 'rework')).detail.reason, 'simplify it');
 });
@@ -184,7 +188,7 @@ test('confirmed merge gate wakes; a failed gate never produces merged', async (t
   fs.cpSync(path.join(ROOT, 'bin'), path.join(dir, 'bin'), { recursive: true });
   fs.cpSync(path.join(ROOT, 'lib'), path.join(dir, 'lib'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'lib', 'gates', 'merge.js'), 'exports.run = async () => ({ ok: false, summary: "refused merge" });\n');
-  const result = await waiting(t, h, ['--types', 'merged']);
+  const result = await waiting(t, h, { automation: false, args: ['--types', 'merged'] });
   const r = cp.spawnSync(process.execPath, [path.join(dir, 'bin', 'tower-crane.js'), 'merge', 'T1'], { cwd: h.repo, env: h.env, encoding: 'utf8', timeout: 10000 });
   assert.equal(r.status, 1, r.stderr);
   assert.ok(!log(h).some((e) => e.type === 'merged'));
@@ -192,9 +196,44 @@ test('confirmed merge gate wakes; a failed gate never produces merged', async (t
   assert.equal((await event(result, 'merged')).detail.ref, h.sha);
 });
 
+test('a manual merge racing an automatic merge of the same task: one merges, the other confirms, 30 of 30', async (t) => {
+  const h = setup(t);
+  h.sha = gateFixture(h);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
+  h.env.FIXTURE_GH_LOG = path.join(h.base, 'gh.jsonl');
+  const winners = { automation: 0, manual: 0 };
+  h.ok(['plan', 'import', '-'], { input: JSON.stringify(Array.from({ length: 29 }, (_, i) => ({ title: `Change ${i + 2}`, acceptance: ['works'] }))) });
+  for (let i = 1; i <= 30; i++) {
+    const id = `T${i}`;
+    h.env.FIXTURE_MERGED = path.join(h.base, `merged-${i}`);
+    h.ok(['claim', id, '--agent', 'worker']);
+    h.ok(['submit', id, '--agent', 'worker', '--sha', h.sha, '--pr', String(i)]);
+    h.ok(['accept', id, '--agent', 'owner', '--reason', 'race fixture',
+      ...['tests', 'clean', 'review', 'ci'].flatMap((type) => ['--waive', type])]);
+    // The waiter's startup reconciliation merges the accepted task while the
+    // manual merge starts, so both reach the merge gate together.
+    const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--task', id, '--types', 'merged', '--timeout', '9']);
+    const manual = await h.runAsync(['merge', id]);
+    assert.equal(manual.code, 0, `${id}: ${manual.stderr}`);
+    const woke = await event(automatic, 'merged', id);
+    assert.equal(woke.detail.ref, h.sha);
+    const calls = fs.readFileSync(h.env.FIXTURE_GH_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(calls.filter((a) => a[0] === 'pr' && a[1] === 'merge' && a[2] === String(i)).length, 1, `${id}: GitHub merged once`);
+    const task = h.readState('tasks.json').tasks.find((x) => x.id === id);
+    const merges = task.evidence.filter((e) => e.type === 'merge');
+    assert.ok(merges.length && merges.every((e) => e.ok), `${id}: ${JSON.stringify(merges)}`);
+    assert.match(merges[0].summary, /^merged PR/);
+    if (merges.length > 1) assert.match(merges[1].summary, /already merged/, 'the later merge confirms the head');
+    winners[merges[0].via === 'automation' ? 'automation' : 'manual']++;
+    const receipts = log(h).filter((e) => e.cmd === 'automation' && e.task === id && e.detail.phase !== 'running');
+    assert.deepEqual(receipts.filter((e) => e.detail.phase !== 'done'), [], `${id}: no automatic failure`);
+  }
+  t.diagnostic(`merged first: automation ${winners.automation}, manual ${winners.manual}`);
+});
+
 test('worker messages use recipient and task filters, and can resume by id or offset', async (t) => {
   const h = setup(t);
-  const result = await waiting(t, h, ['--task', 'T1', '--types', 'worker-message']);
+  const result = await waiting(t, h, { automation: false, args: ['--task', 'T1', '--types', 'worker-message'] });
   h.ok(['msg', '--agent', 'worker', '--task', 'T1', '--to', 'another-agent', 'other recipient']);
   h.ok(['msg', '--agent', 'worker', '--to', 'orchestrator', 'other task']);
   h.ok(['msg', '--agent', 'worker', '--to', 'orchestrator', 'need input\nnext line'], { env: { TOWER_CRANE_TASK: 'T1' } });
@@ -212,7 +251,7 @@ test('worker messages use recipient and task filters, and can resume by id or of
 
 test('owner task comment wakes, worker progress notes are not owner comments', async (t) => {
   const h = setup(t);
-  const result = await waiting(t, h, ['--types', 'owner-comment']);
+  const result = await waiting(t, h, { automation: false, args: ['--types', 'owner-comment'] });
   h.ok(['task', 'note', 'T1', 'progress', '--agent', 'worker']);
   h.ok(['task', 'note', 'T1', 'please explain this', '--agent', 'owner']);
   assert.equal((await event(result, 'owner-comment')).detail.text, 'please explain this');
@@ -221,7 +260,7 @@ test('owner task comment wakes, worker progress notes are not owner comments', a
 test('owner decision comment wakes its blocked task', async (t) => {
   const h = setup(t);
   h.ok(['ask', '--question', 'which?', '--blocks', 'T1']);
-  const result = await waiting(t, h, ['--task', 'T1', '--types', 'owner-comment']);
+  const result = await waiting(t, h, { automation: false, args: ['--task', 'T1', '--types', 'owner-comment'] });
   h.ok(['decision', 'note', 'D1', 'new context', '--agent', 'owner']);
   const e = await event(result, 'owner-comment', null);
   assert.equal(e.detail.decision, 'D1');
@@ -231,7 +270,7 @@ test('owner decision comment wakes its blocked task', async (t) => {
 test('decision answer wakes its blocked task with the answer', async (t) => {
   const h = setup(t);
   h.ok(['ask', '--question', 'which?', '--option', 'a', '--option', 'b', '--blocks', 'T1']);
-  const result = await waiting(t, h, ['--task', 'T1', '--types', 'decision-answer']);
+  const result = await waiting(t, h, { automation: false, args: ['--task', 'T1', '--types', 'decision-answer'] });
   h.ok(['answer', 'D1', '--choice', 'b']);
   assert.equal((await event(result, 'decision-answer', null)).detail.choice, 'b');
 });
@@ -239,7 +278,7 @@ test('decision answer wakes its blocked task with the answer', async (t) => {
 test('owner-done wakes and clears the owner request', async (t) => {
   const h = setup(t);
   h.ok(['task', 'update', 'T1', '--needs-owner', 'credentials']);
-  const result = await waiting(t, h, ['--types', 'owner-done']);
+  const result = await waiting(t, h, { automation: false, args: ['--types', 'owner-done'] });
   assert.equal(h.run(['owner-done', 'T1', '--agent', 'worker']).code, 1);
   h.ok(['owner-done', 'T1', '--note', 'provided']);
   assert.equal((await event(result, 'owner-done')).detail.note, 'provided');
@@ -248,14 +287,14 @@ test('owner-done wakes and clears the owner request', async (t) => {
 
 test('worker progress, decision requests and releases wake without a notification allowlist', async (t) => {
   const h = setup(t);
-  const progress = await waiting(t, h);
+  const progress = await waiting(t, h, { automation: false });
   h.ok(['task', 'note', 'T1', 'progress', '--agent', 'worker']);
   assert.equal((await event(progress, 'task note')).agent, 'worker');
   h.ok(['claim', 'T1', '--agent', 'worker']);
-  const request = await waiting(t, h, ['--task', 'T1', '--types', 'decision-opened']);
+  const request = await waiting(t, h, { automation: false, args: ['--task', 'T1', '--types', 'decision-opened'] });
   h.ok(['ask', '--question', 'Need owner input', '--option', 'yes', '--option', 'no', '--blocks', 'T1', '--agent', 'worker']);
   assert.equal((await event(request, 'decision-opened', null)).detail.decision, 'D1');
-  const release = await waiting(t, h, ['--task', 'T1', '--types', 'released']);
+  const release = await waiting(t, h, { automation: false, args: ['--task', 'T1', '--types', 'released'] });
   h.ok(['release', 'T1', '--reason', 'waiting on D1', '--agent', 'worker']);
   await event(release, 'released');
   assert.equal(h.readState('tasks.json').tasks[0].status, 'todo');
@@ -277,7 +316,7 @@ setInterval(() => {}, 1000);\n`);
   h.workerPids.push(spawned.pid);
   await created(claimed);
   assert.equal(h.run(['release', 'T1', '--reason', 'recover', '--agent', 'orchestrator']).code, 1, 'another agent cannot release a live worker');
-  const [a, b] = await Promise.all([waiting(t, h, ['--types', 'worker-exited']), waiting(t, h, ['--types', 'worker-exited'])]);
+  const [a, b] = await Promise.all([waiting(t, h, { automation: false, args: ['--types', 'worker-exited'] }), waiting(t, h, { automation: false, args: ['--types', 'worker-exited'] })]);
   process.kill(spawned.pid, 'SIGKILL');
   h.workerPids.length = 0;
   const [ea, eb] = await Promise.all([event(a, 'worker-exited'), event(b, 'worker-exited')]);
@@ -289,7 +328,7 @@ setInterval(() => {}, 1000);\n`);
   assert.equal(log(h).filter((e) => e.type === 'worker-exited').length, 1);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'in_progress');
   assert.equal(h.run(['wait', '--agent', 'orchestrator', '--types', 'worker-exited', '--timeout', '0.1']).code, 2);
-  const recovery = await waiting(t, h, ['--types', 'released', '--agent', 'observer']);
+  const recovery = await waiting(t, h, { automation: false, args: ['--types', 'released', '--agent', 'observer'] });
   h.ok(['release', 'T1', '--reason', 'spawned worker exited', '--agent', 'orchestrator']);
   assert.equal((await event(recovery, 'released')).detail.exited_spawn.pid, spawned.pid);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'todo');
@@ -349,7 +388,7 @@ test('a spawned worker that exits before claiming wakes without waiting for a le
   const h = setup(t);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
   commandWorker(h, [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
-  const result = await waiting(t, h, ['--types', 'worker-exited']);
+  const result = await waiting(t, h, { automation: false, args: ['--types', 'worker-exited'] });
   const started = h.json(['spawn', '--task', 'T1', '--wait']);
   const e = await event(result, 'worker-exited');
   assert.equal(e.detail.pid, started.pid);
@@ -394,7 +433,7 @@ test('a lease stale without progress emits stall only once across waiters', asyn
   const start = Date.now();
   fs.writeFileSync(clock, String(start));
   h.ok(['claim', 'T1', '--lease', '1', '--agent', 'worker'], { hooks: { HOOK_CLOCK_FILE: clock } });
-  const result = await waiting(t, h, ['--types', 'stall'], { HOOK_CLOCK_FILE: clock });
+  const result = await waiting(t, h, { automation: false, args: ['--types', 'stall'], hooks: { HOOK_CLOCK_FILE: clock } });
   fs.writeFileSync(clock, String(start + 60001));
   const e = await event(result, 'stall');
   assert.equal(e.detail.agent, 'worker');
@@ -583,7 +622,7 @@ test('owner identity waits retain owner comments, answers, owner-done and messag
 for (const hook of ['HOOK_NO_WATCH', 'HOOK_SILENT_WATCH']) {
   test(`stat fallback wakes when directory notifications fail (${hook})`, async (t) => {
     const h = setup(t);
-    const result = await waiting(t, h, ['--types', 'worker-message'], { [hook]: '1' });
+    const result = await waiting(t, h, { automation: false, args: ['--types', 'worker-message'], hooks: { [hook]: '1' } });
     h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'fallback']);
     await event(result, 'worker-message');
   });
@@ -639,7 +678,7 @@ for (const agent of ['orchestrator', 'owner']) {
       ['decisions/D1/answer', { choice: 'b', note: 'UI answer' }, 'decision-answer', null],
       ['tasks/T1/owner-done', { note: 'UI done' }, 'owner-done', 'T1'],
     ]) {
-      const result = await waiting(t, h, ['--agent', agent, '--task', 'T1', '--types', type]);
+      const result = await waiting(t, h, { automation: false, args: ['--agent', agent, '--task', 'T1', '--types', type] });
       const response = await fetch(`${url}api/${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tower-crane-token': token }, body: JSON.stringify(body) });
       assert.equal(response.status, 200, await response.text());
       assert.equal((await event(result, type, task)).agent, 'owner');
@@ -670,7 +709,7 @@ test('serve preserves an owner comment fragmented inside UTF-8 bytes', async (t)
   const text = 'שלום 😀';
   const body = Buffer.from(JSON.stringify({ text }));
   const split = body.indexOf(Buffer.from('😀')) + 1;
-  const result = await waiting(t, h, ['--types', 'owner-comment']);
+  const result = await waiting(t, h, { automation: false, args: ['--types', 'owner-comment'] });
   const reply = await new Promise((resolve, reject) => {
     const req = http.request(`${url}api/tasks/T1/comments`, {
       method: 'POST',
