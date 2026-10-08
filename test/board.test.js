@@ -416,6 +416,8 @@ test('live CLI writes keep Plan, its task sheet, scroll and the focused control 
       await b.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await b.goto(`${url}#plan`);
       await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+      // The load handler resets the fragment scroll on its next frame.
+      await b.inPage(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
       await b.inPage(`(() => {
         window.firstLoad = true;
         document.querySelector(${link}).focus({ preventScroll: true });

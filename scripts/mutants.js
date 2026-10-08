@@ -41,11 +41,11 @@ const MUTANTS = [
   { id: 'spawned-agent-is-orchestrator', area: 'authority', file: 'lib/authority.js',
     from: "if (jobs.length) return jobs.every((role) => role === 'orchestrator');", to: 'if (jobs.length) return true;', tests: ['test/authority.test.js'] },
   { id: 'brokered-command-has-authority', area: 'authority', file: 'lib/authority.js',
-    from: "if (!ctx.agentExplicit || ctx.env?.TOWER_CRANE_VIA === 'broker') return null;", to: 'if (!ctx.agentExplicit) return null;', tests: ['test/authority.test.js', 'test/broker.test.js'] },
+    from: 'if (broker && isOrchestrator(identity, events)) return null;', to: '', tests: ['test/authority.test.js', 'test/broker.test.js'] },
   { id: 'orchestrator-makes-owner-changes', area: 'authority', file: 'lib/authority.js',
     from: "if (who === 'orchestrator' && !owner.length) return who;", to: "if (who === 'orchestrator') return who;", tests: ['test/authority.test.js'] },
   { id: 'terminal-fallback-is-owner', area: 'authority', file: 'lib/authority.js',
-    from: "if (!ctx.agentExplicit || ctx.env?.TOWER_CRANE_VIA === 'broker') return null;", to: "if (ctx.env?.TOWER_CRANE_VIA === 'broker') return null;", tests: ['test/identity.test.js'] },
+    from: "if (!ctx.agentExplicit || typeof ctx.agent !== 'string' || !ctx.agent.trim()) return null;", to: "if (typeof ctx.agent !== 'string' || !ctx.agent.trim()) return null;", tests: ['test/identity.test.js'] },
   // broker
   { id: 'broker-any-command', area: 'broker', file: 'lib/broker.js',
     from: 'if (!allowed.includes(cmd.name)) {', to: 'if (false) {', tests: ['test/broker.test.js'] },
@@ -80,14 +80,14 @@ const MUTANTS = [
     from: "if (ctx.args?.admin || project.merge?.admin === true) return fail('stack merges cannot use --admin;", to: "if (false) return fail('stack merges cannot use --admin;", tests: ['test/stack-merge.test.js'] },
   // secrets
   { id: 'codex-config-keeps-secrets', area: 'secrets', file: 'lib/agents.js',
-    from: 'Object.entries(v).filter(([k]) => !secretKey(k))', to: 'Object.entries(v)', tests: ['test/isolation.test.js'] },
+    from: 'out.model_providers = keepTables(doc.model_providers, PROVIDER_FIELDS);', to: 'out.model_providers = doc.model_providers;', tests: ['test/isolation.test.js'] },
   { id: 'env-file-error-echoes', area: 'secrets', file: 'lib/spawn-settings.js',
     from: 'throw refuse(`invalid env_file ${file} at line ${assignmentLine}`);', to: 'throw refuse(`invalid env_file ${file} at line ${assignmentLine}: ${text}`);', tests: ['test/sandbox-extensions.test.js'] },
   // board
   { id: 'board-unescaped-lt', area: 'board', file: 'lib/board/view.js',
     from: ".replace(/</g, '&lt;')", to: '', tests: ['test/board.test.js'] },
   { id: 'serve-no-page-token', area: 'board', file: 'lib/serve.js',
-    from: 'if (given.length !== token.length || !crypto.timingSafeEqual(given, Buffer.from(token))) {', to: 'if (false) {', tests: ['test/settings.test.js'] },
+    from: "if (!same(req.headers['x-tower-crane-token'], token)) {", to: 'if (false) {', tests: ['test/settings.test.js'] },
   { id: 'serve-anyone-owner', area: 'board', file: 'lib/serve.js',
     from: "const canWriteOwner = ctx.agent === 'owner' && ctx.agentExplicit;", to: 'const canWriteOwner = true;', tests: ['test/events.test.js'] },
 ];
