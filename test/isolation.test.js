@@ -92,6 +92,8 @@ process.exit(result.status ?? 1);
 `, { mode: 0o755 });
   const out = path.join(h.base, 'stub.json');
   const runEnv = { ...h.env, HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_OUT: out };
+  // Nested harness cache settings must not redirect the fake user's caches.
+  runEnv.XDG_CACHE_HOME = path.join(home, '.cache');
   // The developer's own harness homes and gh tokens must not leak in: the
   // fixture's gh login lives in its stub keyring. The tokens are emptied, not
   // deleted, since the caller's own env would fill a missing key back in.
