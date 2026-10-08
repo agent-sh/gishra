@@ -117,7 +117,7 @@ const readability = `(() => { ${LIB}
       const lines = new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
       // What a full line holds: the text's own width against the line box.
       if (lines > 1) {
-        const text = el.textContent.replace(/\s+/g, ' ').trim();
+        const text = el.textContent.replace(/\\s+/g, ' ').trim();
         ctx2d.font = s.fontWeight + ' ' + s.fontSize + ' ' + s.fontFamily;
         const box = el.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight);
         const per = text.length * box / ctx2d.measureText(text).width;

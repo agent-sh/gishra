@@ -202,7 +202,7 @@ for (const type of ['tests', 'clean']) {
     assert.match(entries()[0], /does not count/);
     assert.doesNotMatch(entries()[1], /does not count/);
     assert.equal((sheet().match(new RegExp(`does not count: ${type} evidence command policy`, 'g')) || []).length, 1);
-    assert.match(sheet(), new RegExp(`class="pip pass">${type}</span>`));
+    assert.match(sheet(), new RegExp(`class="pip pass">${type} passed</span>`));
   });
 }
 

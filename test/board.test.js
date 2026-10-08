@@ -1040,3 +1040,38 @@ test('the board meets contrast, target, name and readability bars at the owner\'
     }
   });
 });
+
+test('an open board draws a live reading stale once it stops arriving, with no state change to trigger it', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Spend live', '--tier', 'easy', '--acceptance', 'usage shows']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Work on T1.\n' });
+  const bin = path.join(h.base, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'claude'), '', { mode: 0o755 });
+  h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'live-model', '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ usage_ms: 200, stall_ms: 60000 })]);
+  const stub = path.join(__dirname, 'fixtures', 'live-usage-harness.js').replace(/\\/g, '/');
+  // Spawn caches under HOME; this one keeps them in the scratch directory.
+  const home = path.join(h.base, 'home');
+  fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+  h.json(['spawn', '--task', 'T1'], { env: { HOME: home, XDG_CACHE_HOME: path.join(home, '.cache'), PATH: bin + path.delimiter + h.env.PATH, NODE_OPTIONS: `--require "${stub}"`, LIVE_STEPS: '2', LIVE_STEP_TOKENS: '700', LIVE_HOLD: '60000', LIVE_DONE: path.join(h.base, 'done') } });
+  const end = Date.now() + 20000;
+  while (!h.json(['status']).spend.live.some((l) => l.tokens === 1400)) {
+    assert.ok(Date.now() < end, 'live usage was not read');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await withServers(async (servers) => {
+    const url = await startServe(servers, h, 'viewer');
+    const b = await openBrowser(t);
+    await b.goto(url);
+    await b.until(`document.querySelector('.conn').dataset.conn === 'live' && !!document.querySelector('[data-key="agent-T1"] [data-live-state="live"]')`, 'the live reading on the row');
+    // The supervisor goes away and the agent keeps running: no reading, no write.
+    const monitor = log(h).find((e) => e.cmd === 'spawn' && e.task === 'T1').detail.monitor_pid;
+    process.kill(monitor, 'SIGKILL');
+    const events = log(h).length;
+    await b.until(`!!document.querySelector('[data-key="agent-T1"] [data-live-state="stale"]') && !!document.querySelector('#queue [data-key="runaway-T1-stale"]')`, 'the stale reading and its Now item', 30000);
+    assert.equal(log(h).length, events, 'nothing was written: the page aged the reading itself');
+    assert.match(await b.inPage(`document.querySelector('h1[data-status]').textContent`), /1 not counted/);
+    assert.doesNotMatch(await b.inPage(`document.querySelector('[data-key="agent-T1"] [data-usage]').textContent`), /(^|\s)0 tokens/, 'never drawn as zero');
+  });
+});
