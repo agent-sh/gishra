@@ -8,6 +8,9 @@
 // Linux only, since the CPU figure comes from /proc cutime and cstime.
 //
 //   node scripts/test-cost.js [--runs 3] [--jobs 4] [--before DIR] [--json out.json] [files...]
+//
+// With --json, each sample is also appended to out.json.samples.jsonl as it
+// completes, and a later run with the same --json resumes from them.
 
 const cp = require('node:child_process');
 const fs = require('node:fs');
@@ -62,12 +65,23 @@ async function main() {
   if (process.platform !== 'linux') throw new Error('test-cost reads /proc; run it on Linux');
   const seed = createRepoSeed();
   const samples = new Map();
+  const log = jsonOut ? `${jsonOut}.samples.jsonl` : null;
+  if (log && fs.existsSync(log)) {
+    for (const line of fs.readFileSync(log, 'utf8').split('\n').filter(Boolean)) {
+      const { key, sample } = JSON.parse(line);
+      if (!samples.has(key)) samples.set(key, []);
+      samples.get(key).push(sample);
+    }
+  }
+  const done = new Map([...samples].map(([key, list]) => [key, list.length]));
   const queue = [];
   for (let i = 0; i < runs; i++) {
     const longest = Math.max(...[...filesOf.values()].map((f) => f.length));
     for (let j = 0; j < longest; j++) {
       for (const [name, root] of trees) {
         const file = filesOf.get(name)[j];
+        const key = `${name} ${file}`;
+        if (file && (done.get(key) || 0) > i) continue;
         if (file) queue.push({ name, root, file });
       }
     }
@@ -78,7 +92,9 @@ async function main() {
         const job = queue.shift();
         const key = `${job.name} ${job.file}`;
         if (!samples.has(key)) samples.set(key, []);
-        samples.get(key).push(await once(job.root, job.file, seed));
+        const sample = await once(job.root, job.file, seed);
+        samples.get(key).push(sample);
+        if (log) fs.appendFileSync(log, JSON.stringify({ key, sample }) + '\n');
       }
     }));
   } finally {

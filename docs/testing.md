@@ -16,6 +16,7 @@ For projects Tower Crane manages, expensive proof is the default: the orchestrat
 - One integration test per piece of functionality and one end-to-end test per full feature. A unit test is only for pure logic nothing else reaches.
 - A table of variants over pure logic runs in process against the module, with one CLI test for the wiring: address ranges and markup in `test/sources.test.js`, build-file and policy tables in `test/gates/tests.test.js`, outage classification in `test/supervision.test.js`, broker authorization in `test/broker.test.js`.
 - A fixture several tests share is built once per file with `cachedFixture(t, key, build)` from `test/helpers.js`. Each test gets a copy, with paths that name the template rewritten in its files, env and git config.
+- Each test repository has its own `HOME`, so no test writes the developer's home: `spawn` keeps receipts under `~/.cache/tower-crane`.
 - No fixed sleeps. Wait for a file, an event or a process with a deadline, and size the deadline for a loaded machine.
 - Assert the reason a command refuses, not only its exit code. A refusal for the wrong reason passes an exit-code check while the guarded code is gone.
 
@@ -40,7 +41,43 @@ For projects Tower Crane manages, expensive proof is the default: the orchestrat
 | secrets | 2 | the codex config keeps credentials, an env_file error echoes its contents |
 | board | 3 | unescaped `<`, Settings writes without the page token, any serve acts as owner |
 
-MUTATION_RESULTS
+Before: 31/31 caught, 5 of them only by the full suite. After: 31/31 caught, 1 only by the full suite.
+
+| bug | area | before: caught by | after: caught by |
+| --- | --- | --- | --- |
+| `tests-pass-without-change` | gates | test/gates/tests.test.js | test/gates/tests.test.js |
+| `tests-deleted-test-counts` | gates | test/gates/tests.test.js | test/gates/tests.test.js |
+| `ci-cancelled-is-green` | gates | test/gates/ci.test.js | test/gates/ci.test.js |
+| `clean-high-passes` | gates | test/gates/clean.test.js | test/gates/clean.test.js |
+| `sources-loopback-public` | gates | test/sources.test.js | test/sources.test.js |
+| `evidence-without-audit` | gates | test/evidence.test.js | test/evidence.test.js |
+| `review-by-submitter` | gates | test/accept.test.js | test/accept.test.js |
+| `evidence-old-revision` | gates | test/accept.test.js | test/accept.test.js |
+| `spawned-agent-is-orchestrator` | authority | test/authority.test.js | test/authority.test.js |
+| `brokered-command-has-authority` | authority | full suite | test/authority.test.js, test/broker.test.js |
+| `orchestrator-makes-owner-changes` | authority | test/authority.test.js | test/authority.test.js |
+| `terminal-fallback-is-owner` | authority | test/identity.test.js | test/identity.test.js |
+| `broker-any-command` | broker | test/broker.test.js | test/broker.test.js |
+| `broker-other-task` | broker | full suite | test/broker.test.js |
+| `broker-no-token` | broker | full suite | test/broker.test.js |
+| `supervisor-retries-permanent-exit` | spawn/supervisor | test/supervision.test.js | test/supervision.test.js |
+| `supervisor-extra-retry` | spawn/supervisor | test/supervision.test.js | test/supervision.test.js |
+| `supervisor-ignores-cpu` | spawn/supervisor | full suite | test/supervision.test.js |
+| `workers-limit-off-by-one` | spawn/supervisor | test/claim.test.js, test/worker-slots.test.js | test/claim.test.js, test/worker-slots.test.js |
+| `lock-breaks-live-holder` | state lock | test/lock.test.js | test/lock.test.js |
+| `lock-ignores-pid-namespace` | state lock | test/lock.test.js | test/lock.test.js |
+| `lock-never-ages-out` | state lock | test/lock.test.js | test/lock.test.js |
+| `merge-moved-head` | merge/stacks | test/gates/merge.test.js | test/gates/merge.test.js |
+| `stack-merge-unaccepted-lower` | merge/stacks | full suite | full suite |
+| `stack-merge-untracked-lower` | merge/stacks | test/stack-merge.test.js | test/stack-merge.test.js |
+| `stack-merge-admin` | merge/stacks | test/stack-merge.test.js | test/stack-merge.test.js |
+| `codex-config-keeps-secrets` | secrets | test/isolation.test.js | test/isolation.test.js |
+| `env-file-error-echoes` | secrets | test/sandbox-extensions.test.js | test/sandbox-extensions.test.js |
+| `board-unescaped-lt` | board | test/board.test.js | test/board.test.js |
+| `serve-no-page-token` | board | test/settings.test.js | test/settings.test.js |
+| `serve-anyone-owner` | board | test/events.test.js | test/events.test.js |
+
+The before run is `origin/main` at e2f5277 with two additions so it could run here: each test repository's own `HOME` (spawn writes receipts under the home cache) and this branch's `test/run.js`; the after run is this branch. Both ran inside a Tower Crane worker sandbox. There the parent's git shim refuses a nested push of another task's branch, so the before run passed `--skip "publish its task branch"` for the one isolation test that makes such a push.
 
 Working through the sample found one test that passed for the wrong reason and two checks that only a slow or timing-bound test made:
 
