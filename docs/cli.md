@@ -47,7 +47,7 @@ Lock attempts use private staging directories named with the process pid and a f
 | | |
 | `project show` | print settings, including `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd`, `gates.executors`, `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch`, `merge.admin` and `decision_delegation.orchestrator_technical`, and the resolved ladder |
 | | |
-| `task add --title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]` | add a task; prints its id. A `needs_owner` reason is trimmed; a blank value stores null. `T` is `easy`, `medium`, `hard` or `research`; without it the tier comes from kind and size (state.md). `--needs '["browser"]'` declares browser capability. Refused for an unknown dependency or capability. Repeat `--lock` for exclusive resources |
+| `task add --title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]` | add a task; prints its id. A `needs_owner` reason is trimmed; a blank value stores null. `T` is `easy`, `medium`, `hard`, `research` or an ascending range such as `easy..medium`; without it the tier comes from kind and size (state.md). `--needs '["browser"]'` declares browser capability. Refused for an unknown dependency or capability. Repeat `--lock` for exclusive resources |
 | | |
 | `task list [--status S]` | read; `S` is a status, `ready` or `blocked` |
 | | |
@@ -191,6 +191,8 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment` |
 | | |
+| `recover ID` | ranged quality recovery: climb after a failed latest review or confirmed tests, clean or CI gate failure; dispatch fresh, retry a pending climb, or open an owner decision at the range top; wait for verified worker process-group cleanup before dispatch |
+| | |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or the owner (owner-required: the orchestrator's attempt opens a decision); any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event |
 | | |
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes its resource locks and worker slot again, so its renewal is refused when a lock is held or the workers limit is reached |
@@ -312,6 +314,15 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 `spend --cache-write N` records cache-write input separately from `--cached` cache reads. Both are included in `--input`; their sum cannot exceed input. Review pricing uses the entry when available and conservatively prices non-cached input in older records at the higher input or cache-write rate.
 
 ## Decisions
+
+`--tier` accepts a single rung or an ascending range such as `easy..medium` in `task add`, `task update` and `plan import`. A range starts at its minimum and lets spawned workers climb after quality failure; a single tier retains manual recovery. Setting a new range resets the current tier to its minimum, while a single tier clears the range.
+
+`recover ID` handles a ranged task's failed independent review or confirmed tests, clean or CI gate failure at the current submitted head, exit without submit, or confirmed supervisor stall. The engine calls it after review failure and supervised exit; orchestrator `wait` also recovers observed exits and retries pending climbs. It waits for the old worker to stop, collects usage, records the climb and reason, sets rework, and starts a fresh session one rung higher in the same worktree. Provider outages and harness refusals follow same-rung availability fallback. Failed launches, full worker capacity and reviewer sandbox permission denials leave a pending climb that can be retried with `recover ID`. The reviewer's host monitor or orchestrator `wait` can complete a climb that its sandbox cannot launch.
+
+A passing latest eligible verdict cancels an older failure of the same gate as a climb trigger. Gate runners mark `confirmed_failure` only for a failed test command, a completed cleanup scan with HIGH findings, or a completed failing CI run. Missing configuration, incomplete scans and pending CI do not climb. `rework` records a known failed attempt before changing task status, even while worker cleanup is pending; dispatch still waits for verified cleanup. Submitted workers still need their live monitor's terminal receipt before another worker starts; parent exit alone does not finish descendant cleanup. `wait` retries recorded failures that have no climb record, including after spend already recorded the exit notification or recovery timed out on the state lock. If a supervisor is lost without a terminal receipt, host recovery must verify that the old process group stopped. A live or unverifiable group leaves recovery waiting, with the reason in CLI output, task notes and a deduplicated `recover waiting` event; JSON exposes `waiting`. Linux supports this group probe.
+
+Failure at the range top opens one blocking owner decision. Answer it and apply the chosen plan before dispatching again. `task show --json` includes `tier_range`, `escalations` and `spend_by_rung`; text output shows the range and rung totals. New spend entries include `cost_usd` priced with configured `review.prices`. Missing prices or telemetry remain null. Each escalation records a spend snapshot; later usage collection can enrich the current task totals.
+
 
 <!-- commands:Decisions:start -->
 | Command | Does |
@@ -627,6 +638,10 @@ The CLI refuses manual software verdicts, and software receipts require matching
 | | |
 | `merge ID [--subject S] [--body B] [--method M]` | merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise). Linked stacks merge bottom up with `--merge`, pinning each accepted head and confirming it before the next member. If an upper member fails, the target reports `merge FAIL` while confirmed lower members retain successful merge evidence. Inspect each member with `task show ID` and check its PR state; fix the refusal or wait for queued merges to complete. Sync the idle remaining chain when needed with `stack sync ID`; changed heads need rework, a new submission, passing gates, review and acceptance. Refresh stale gates and retry `merge ID` on the target; confirmed lower members are skipped. Records `merge`; then removes the task's worktree unless it has uncommitted changes, a worker or reviewer still running, or `merge.keep_branch` is set ([state](state.md)) |
 <!-- commands:Gates:end -->
+
+For a ranged task, `check tests` climbs after a confirmed test failure. A missing test command, including cmd.exe's command-not-found results on Windows, leaves the rung unchanged. Fix the pinned command and run the gate again.
+
+`check ci` records a completed uncapped failure even when a required check is missing or still pending. Those required checks continue to block acceptance, and the known failure can trigger a rung climb. Missing or pending checks alone do not trigger a climb.
 
 `check sources` scans HTML without using tag replacement expressions. It preserves inline punctuation, skips nested comments and templates plus script/style blocks, and excludes unfinished or ambiguous markup from quote matching. Its pinned DNS lookup supplies all validated public addresses for IPv6/IPv4 fallback within the same page deadline. See [Research sources](state.md#research-sources) for the deliverable and fetch limits.
 
