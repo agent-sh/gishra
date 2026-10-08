@@ -20,6 +20,9 @@ try {
   }
   cp.execFileSync('git', ['init', '-q'], { cwd: probe });
   cp.execFileSync('git', ['add', '.'], { cwd: probe });
+  cp.execFileSync('git', ['-c', 'user.name=Model swap probe', '-c', 'user.email=probe@example.invalid',
+    '-c', 'commit.gpgsign=false', '-c', `core.hooksPath=${path.join(probe, '.git', 'no-hooks')}`,
+    'commit', '-qm', 'Seed model swap probe'], { cwd: probe });
   const file = path.join(probe, 'lib', 'ladder.js');
   const text = fs.readFileSync(file, 'utf8');
   const builtin = {

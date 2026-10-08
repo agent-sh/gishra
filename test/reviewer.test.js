@@ -422,6 +422,29 @@ test('review selection prices a Claude alias rung by the release id its spend re
   assert.equal(model(promoted), alias);
 });
 
+test('native Claude alias review spend matches release-id pricing', (t) => {
+  const [alias, release] = Object.entries(require('../lib/ladder').BUILTIN.claude_aliases)[0];
+  const h = setup(t, 'medium');
+  const bin = path.join(h.base, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
+  const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || '') };
+  pinRung(h, 'hard', { harness: 'claude', model: alias, effort: 'high' });
+  pinRung(h, 'review', { harness: 'claude', model: alias, effort: 'high' });
+  h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [release]: prices['fixture-large'] } })]);
+  ready(h);
+  sample(h, 'fixture-main', 1000000, 0, 0);
+  sample(h, alias, 0, 0, 1);
+  const recorded = h.json(['task', 'show', 'T1']).spend.entries.find(e => e.model === alias);
+  assert.equal(recorded.harness, 'claude');
+  assert.equal(recorded.provider, undefined);
+  const promoted = choice(h, env);
+  assert.equal(promoted.review_rung, 'hard');
+  assert.equal(model(promoted), alias);
+  sample(h, alias, 0, 0, 1000000);
+  assert.equal(choice(h, env).review_rung, 'medium', 'a higher alias median keeps the current rung');
+});
+
 test('equal cost promotes, missing components do not provide a cost sample', (t) => {
   const h = setup(t, 'medium');
   ready(h);
