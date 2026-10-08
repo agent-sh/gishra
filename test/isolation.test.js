@@ -16,6 +16,17 @@ const STUB = path.join(__dirname, 'fixtures', 'harness-stub.js');
 const NO_STUBS = process.platform === 'win32' && 'harness stubs are shebang scripts';
 const SECRET = 'PLANTED-SECRET';
 const CLAUDE_SANDBOX_PLACEHOLDERS = ClaudeSandboxPlaceholders.FILES;
+// What the sandbox mounts over in a worker worktree, listed here rather than
+// taken from the module, so the cleanup test fails if the module misses one.
+const SANDBOX_MOUNTS = [
+  '.bash_profile', '.bashrc', '.gitconfig', '.gitmodules', '.idea', '.mcp.json',
+  '.profile', '.ripgreprc', '.vscode', '.zprofile', '.zshrc',
+  '.claude/agents', '.claude/commands', '.claude/hooks', '.claude/launch.json', '.claude/loop.md',
+  '.claude/output-styles', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/settings.json',
+  '.claude/settings.local.json', '.claude/skills', '.claude/workflows',
+];
+// The repository tracks this file, so the sandbox never leaves a placeholder in its place.
+const TRACKED_SETTINGS = '.claude/settings.json';
 
 // A user home holding what must never reach a tower-crane agent: memory and
 // instruction files, hooks, an MCP server, approved-command rules, and
@@ -440,13 +451,14 @@ test('a sandboxed claude removes its ignored cwd placeholders after exit', { ski
   }).trim();
 
   const started = spawn(h, u, 'small', {
-    STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(CLAUDE_SANDBOX_PLACEHOLDERS),
+    STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(SANDBOX_MOUNTS),
   });
   const seen = u.report();
   assert.deepEqual(seen.placeholderGitStatus, { code: 0, stdout: '', stderr: '' }, 'git status stays clean while the placeholders exist');
-  for (const relative of CLAUDE_SANDBOX_PLACEHOLDERS) {
+  for (const relative of SANDBOX_MOUNTS.filter((name) => name !== TRACKED_SETTINGS)) {
     assert.equal(fs.existsSync(path.join(wt, relative)), false, `${relative} is removed after exit`);
   }
+  assert.equal(fs.existsSync(path.join(wt, TRACKED_SETTINGS)), true, 'the tracked project settings stay');
   assert.equal(status(started.cwd), '', 'the worktree stays clean after exit');
 
   const excludes = fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8').split(/\r?\n/);
@@ -490,7 +502,7 @@ test('sandbox cleanup preserves and reports a pre-existing empty read-only file 
   assert.equal(fs.existsSync(realFile), true, 'the existing file remains');
   assert.equal(fs.statSync(realFile).size, 0, 'the existing file stays empty');
   assert.equal(fs.statSync(realFile).mode & 0o222, 0, 'the existing file keeps its read-only mode');
-  for (const relative of CLAUDE_SANDBOX_PLACEHOLDERS.slice(1)) {
+  for (const relative of CLAUDE_SANDBOX_PLACEHOLDERS.filter((name) => name !== '.bash_profile' && name !== TRACKED_SETTINGS)) {
     assert.equal(fs.existsSync(path.join(wt, relative)), false, `${relative} placeholder is removed`);
   }
   assert.equal(status(started.cwd), '?? .bash_profile');
