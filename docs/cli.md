@@ -14,6 +14,8 @@ In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), co
 
 Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing.
 
+Lock attempts use private staging directories named with the process pid and a fresh random nonce. Concurrent staging cleanup retries with backoff within the usual 10 s acquisition deadline; it does not expose a staging `ENOENT` as a command or supervisor failure. Persistent contention or cleanup races exit 3. See [state.md: Lock](state.md#lock).
+
 ## Plan
 
 <!-- commands:Plan:start -->
@@ -136,7 +138,7 @@ If every lower task merges before an unlinked dependent submits its PR, `stack l
 
 `merge ID` verifies remote stack membership and refuses unknown lower PRs, checks every task below the target is accepted with passing gates, and checks every PR head before any member merges. It merges linked stacks bottom up with `gh pr merge --merge --match-head-commit <full accepted head>`, since `gh stack merge --squash` cannot pin heads. Merge commits preserve the accepted dependency heads as ancestors, so retargeting an upper PR after a lower merge does not lose its merge base. Each lower merge must be confirmed before an upper PR is retargeted to the project base and merged. Branches are retained so upper PR bases survive. The gate refuses further merges if project settings, stack members or their events changed since it started. A moved head, refusal, failed confirmation or queued merge stops the chain. Earlier confirmed accepted members may have landed; each gets separate merge evidence even when the target fails. A queued member gets no successful evidence until GitHub confirms its accepted head merged.
 
-After a lower merge, or when a later `worktree` or `spawn` observes main or a dependency moving, Tower Crane refreshes upper worktrees through `gh stack sync`. A dependent prepared before its PR is linked is revalidated at each `worktree` and `spawn`: when its dependency was resubmitted, a branch with no work of its own moves onto the new dependency head, and a branch with its own commits is refused until it contains that head (merge it in, or remove the worktree and branch). Every worktree in that stack must be idle and clean; otherwise refresh is deferred and an event names the blocker. Unknown remote PRs must be recorded before sync. Sync snapshots the project, stack members and their events under a short state lock, runs gh and Git unlocked, then re-takes the lock to compare and apply. Changes to the project or affected tasks refuse application and preserve current claims; unrelated task writes are retained. Git may already have moved branches when application is refused, so inspect their heads before retrying. The allowed gh-stack extension owns its rebases and atomic lease-protected pushes under the dispatcher's policy. A conflict restores branches through gh-stack and sends unchanged outstanding tasks to rework with the failure in their briefs. A changed branch also goes to rework and needs a new submission and gates; evidence for the old head remains historical.
+After a lower merge, or when a later `worktree` or `spawn` observes main or a dependency moving, Tower Crane refreshes upper worktrees through `gh stack sync`. A dependent prepared before its PR is linked is revalidated at each `worktree` and `spawn`: when its dependency was resubmitted, a branch with no work of its own moves onto the new dependency head, and a branch with its own commits is refused until it contains that head (merge it in, or remove the worktree and branch). Every worktree in that stack must be idle and clean; otherwise refresh is deferred and an event names the blocker. Unknown remote PRs must be recorded before sync. Sync snapshots the project, stack members and their events under a short state lock, runs gh and Git unlocked, then re-takes the lock to compare and apply. Changes to the project or affected tasks refuse application and preserve current claims; unrelated task writes are retained. Git may already have moved branches when application is refused, so inspect their heads before retrying. The allowed gh-stack extension owns its rebases and atomic lease-protected pushes under the dispatcher's policy. An explicit conflict report sends outstanding tasks to rework with the failure in their briefs. A changed branch also goes to rework and needs a new submission and gates, even if sync then fails to push; evidence for the old head remains historical. Tooling and transport errors, including failures listing worktrees or an unavailable extension, record the parsed abort reason and preserve unchanged submissions and gates. The next refresh retries the linked stack. A failed sync exits 1 and reports whether work needs rework or a later retry.
 
 Stacks require the GitHub repository setting and the gh-stack extension (v0.2.0 or newer). A missing extension (gh exits non-zero pointing at the gh-stack extension), a disabled stacks endpoint, or `gh stack` exit 9 falls back to ordinary dispatch for accepted dependencies. Submitted dependencies wait for acceptance when stacks are unavailable. If linking or merging becomes unavailable after dispatch, the branch is retained and the task is marked for ordinary merging: lower tasks must land before its PR can target main. A refused stack merge reports that fallback and the next merge uses the ordinary gate. Authentication and other unexpected failures are reported rather than treated as disabled stacks.
 
@@ -167,13 +169,19 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 |---|---|
 | `accept ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]` | run unattempted software gates first; tests and clean use pinned project commands. Optional `--cmd` and `--proof-cmd` must match their pins; none mode needs no test command. When they pass and review is missing, dispatch it and return `review_pending: true` while keeping the task submitted. Call again after review evidence arrives to accept. Existing successful receipts are reused; attempted failures or invalid receipts require an explicit gate rerun. `--waive review` is operational when the reviewer is capped or down at the submitted head (a capped review run in its `check ci` evidence, or a review spawn that exited without a verdict) and owner-required otherwise; waiving tests, clean, sources or ci is owner-required |
 | | |
+| `ci completed ID --sha SHA` | orchestrator or owner: deliver a CI completion hint for an active submitted head, rerun the CI gate and advance passing tasks |
+| | |
+| `ci webhook FILE` | orchestrator or owner: deliver completed GitHub `check_run`, `check_suite` or `workflow_run` JSON; `-` reads stdin. Repository must match. Stale heads and incomplete checks are ignored |
+| | |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; repeating it as the live claimant renews the lease. Refused if another agent holds it, the task is not ready, a resource lock is held, or the workers limit is reached (live leases and unclaimed worker spawns); consumes that agent's reservation for this task |
+| | |
+| `event ID` | print one event with its detail, as a wake line names it |
 | | |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `sources`, `ci` and `merge` for every agent and either verdict; use the gate commands |
 | | |
 | `hook ACTION --binding FILE [--payload JSON\|-]` | deliver harness messages and record activity under the home identity |
 | | |
-| `msg --to NAME [--task ID] TEXT` | send a worker message through the event log |
+| `msg --to NAME [--task ID] [--steer] TEXT` | send a worker message through the event log |
 | | |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner |
 | | |
@@ -189,7 +197,7 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters. For a task with a recorded PR, an open PR blocks changing its PR number or head branch. After it is closed or merged, a new PR supplies its head branch unless `--branch` is given and matches it |
 | | |
-| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` | block until one matching event; print one JSON line (timeout exits 2) |
+| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC \| --follow] [--observe]` | block until one matching event; print one JSON line (timeout exits 2); --follow prints an id-only line per event until interrupted |
 <!-- commands:Run:end -->
 
 `task add --lock lab/rdma --lock gpu/0 --environment lab` stores exclusive resource names and an informational environment label. Names are case-sensitive, trimmed and deduplicated. Tasks with any shared lock cannot hold worker leases or dispatch reservations at the same time, regardless of `limits.workers` or environment labels. Claim, worker spawn and expired renewal check under the state lock and name the holding task and agent on refusal. An unclaimed spawn reserves its locks with its worker slot, including retry backoff; its generated agent consumes that reservation on claim. Reviewer and other non-worker dispatches do not acquire resource locks. Environment labels do not select a harness or change its environment variables.
@@ -199,6 +207,91 @@ When `--branch` or `--pr` is supplied and the task already records a PR, `submit
 `submit` runs the scope gate on the submitted diff before taking the state lock: the changed files are compared with the repository paths named in the task's title, acceptance and brief (a token with a slash whose directory exists at the base or the head; a glob such as `test/**` works too). Absolute paths under the main checkout or a registered worktree become repository-relative paths; quote paths containing spaces. Naming a checkout or worktree root scopes the whole repository. Quoted commands such as `node lib/scope.js` scope the paths inside them when the complete span is not a repository path. The diff starts at the newest merge base with the configured base's local and origin refs, so files changed only by a merged base update are excluded even when the local base is stale. Test files under the project's test layouts and `CHANGELOG.md` are always in scope; a task naming no path is scoped to the whole repository. Out-of-scope files are not refused: the output gains a `scope:` line, `--json` adds `scope: { basis, named, outside }` (or `{ error }` when git cannot read the diff), the `submit` event records it, a task note lists the files for the orchestrator, and the review packet's `## Scope` section lists them for the reviewer.
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
+
+The trusted `wait` watcher and dispatch supervisor react to submissions,
+worker exits, review evidence, acceptance, CI completions and confirmed
+merges. Submission runs unattempted tests, cleanup and source verification
+once the PR head matches, including while mergeability is unknown. CI,
+review dispatch and merging still require known mergeability.
+A tracked worker must exit before automatic review dispatch. Native
+workers without a recorded exit use explicit `accept` to dispatch review.
+Passing independent review accepts the task; accepted PRs with green
+gates merge through the existing head guards. A watcher creates a fresh
+reconciliation request for every active PR when starting, except a default
+`wait --timeout 0` cursor snapshot. It queries current mergeability even
+when the last reaction completed, recovering conflicts after merges that
+happened without a waiter. Existing evidence at the same head is reused.
+Reconciliation does not wait on a busy state lock; the next notification
+or existing fallback tick retries it within the wait's timeout.
+Filters apply to the returned event, not to the software reactions.
+
+After a confirmed merge, outstanding submitted or accepted PRs are checked
+against their fetched base in temporary detached worktrees. Conflicts send
+the task to rework with Git's filenames in its note and brief. Trial merges
+do not resolve conflicts or update worker branches. Unknown PR heads,
+unknown mergeability and failed GitHub transport cannot authorize merging.
+
+Accepted PRs merge through a merge queue in the order of their `accept`
+events. A stack is one entry, ordered by its lowest unmerged task: it holds
+that task and the accepted, linked tasks directly above it, and an upper
+task whose lower task is not accepted waits outside the line. Only the head
+of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
+goes to rework with its files and leaves the line. Unknown mergeability, a
+moved head, failing gates or a refused merge stop the line until a later
+reaction; the executor's `done` event names the blocking task and why.
+Gate evidence belongs to the submitted sha, so a base move alone reruns no
+gate. The fail-before proof reruns only for a new head. Before merging, the
+head runs the pinned `gates.tests_cmd` once on the merge of `project.base`'s
+current tip into its top task's head, which for a stack carries every task
+in the entry, never on a stacked task's lower branch. It first trial-merges
+each task bottom up and sends the lowest conflicting one to rework with its
+files. The suite is skipped when the head already contains that tip or an
+earlier `head check` covered the same head, revision, base tip and command.
+Entries without a tests gate, or with tests mode `none`, skip it. A failing
+check sends the top task to rework with the output tail, and the tasks
+below it take the line again on their own. A failure under heads, stack
+metadata or project settings that changed while the suite ran sends nothing
+to rework; the line starts over on the current state. The rest of the line runs no
+gate and no suite. The merge is bound to what the check covered: if the
+entry's heads, revisions, statuses, PRs or stack metadata, or the project
+settings, changed while the suite ran, the merge gate does not run and the
+line starts over on the current state. A head that a reaction sends to
+rework for a conflict drains the line in the same reaction, so the PRs
+behind a blocked head move on. After the check the executor fetches the base
+again and checks again if it moved; `gh pr merge --match-head-commit` pins the head,
+but nothing pins the base, so a push to the base in the seconds between
+that fetch and the merge call is not checked. A branch protection rule that
+requires up-to-date branches closes that window. Hosted CI evidence comes
+from GitHub's `pull_request` run, which already tests the merge ref; never
+merge the base into a PR to refresh evidence or pick up a workflow change.
+One executor drains the queue; a reaction that finds it busy records a
+request, and the executor makes another pass before releasing. Manual
+`merge ID` bypasses the queue and its head check: it keeps only the merge
+gate's own guards.
+
+CI completion requires notification delivery by the host's webhook or job
+integration, using `ci webhook` or `ci completed`. No listener or CI polling
+loop is installed. The notification's conclusion is never evidence: the
+CI gate queries GitHub at the current submitted head. A pending or failing
+gate remains failing until an explicit retry or another completion.
+Automatic failures are recorded in `automation` events. Concurrent
+consumers serialize per task and reuse completed event receipts; commands
+execute outside the state lock. Deferred or errored reactions remain
+retryable at watcher startup. Accepted PRs already merged remotely are
+confirmed through the merge gate, preserving the accepted head check.
+`merge ID` holds the same task reservation as reactions. It waits while
+an observable reaction runs on the task, then merges or, when the reaction
+already merged, confirms the accepted head through the merge gate. A
+reaction that starts during a manual merge queues; the merge drains it
+after releasing the task, and it finds the task merged. A reservation
+held by an unobservable executor refuses the merge.
+The merge queue takes the same reservation for the head of the line
+around its merge, since the queue can run under another task's reaction.
+Supervisors use the dispatcher's PATH and an explicit trusted
+authorization context; workers and reviewers keep their restrictive
+command shims. Software reactions may finish their
+bounded gate commands after a wait's timeout expires. The broker retains
+its command restrictions and never executes gates.
 
 Pass the commit actually reviewed to `evidence --sha S`. A submitted head can move while a review is running; `tower-crane evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on `review` evidence is a usage error (exit 2) and writes nothing. Software evidence types are refused first (exit 1), with or without `--sha`. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
 
@@ -222,18 +315,36 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 ## Event wakeups
 
-`tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
+The orchestrator does not run a waiter of its own. Its harness delivers events into the session (table below); `tower-crane wait` is the interface underneath and the fallback for a harness with nothing better.
+
+| Orchestrator harness | Busy | Idle |
+| --- | --- | --- |
+| Claude Code, interactive, with this plugin | The mod `hooks/tower-crane.mjs` runs one `wait --follow` child per session and turns each line into a prompt with `$.prompt.submit`, queued until the turn ends; events arriving meanwhile go out together. An owner message sent with `--steer` joins the running turn (`$.session.append`) and is pushed again after the turn if the turn made no further model request | The queued prompt starts a turn |
+| Claude (`claude -p`) spawned on the orchestrator rung | Home `PostToolUse` and `UserPromptSubmit` hooks return the notice as `additionalContext` | Home `Stop` returns `decision: block` with pending events; with none and a task still open it blocks in `tower-crane wait` (hook timeout one day) and then blocks with the event |
+| Codex spawned on the orchestrator rung | The same home hooks in `config.toml` | The same blocking `Stop`; Codex has no asynchronous rewake |
+| pi, OpenCode | Their home adapters add the notice at tool boundaries (and OpenCode on `session.idle`) | Unsupported: no idle hold; use `tower-crane wait` |
+| agy, command | Unsupported: use `tower-crane wait` | Unsupported: use `tower-crane wait` |
+
+In Claude Code, arm the mod once after the startup snapshot: the model calls the `mcp__tower-crane__watch` tool with `after` set to the snapshot's offset (and `agent` or `state` when they differ from `TOWER_CRANE_AGENT`, `TOWER_CRANE_STATE` or the state found from the working directory), or the person runs `/tower-crane-watch [cursor]`. A session started with `TOWER_CRANE_AGENT=orchestrator` arms itself at session start. Arming again restarts the follower from the given cursor or from where the last one stopped. If the follower exits, a toast says so and names the command.
+
+A push carries ids, never content: one line per event (`- E…: decision-answer D5 from owner`, `- E…: worker-message T3 from worker-T3-1`), then `Read each with tower-crane event <id>` and the cursor. Spawned orchestrator homes acknowledge what they delivered with `hook inbox` receipts and count events from the log offset their home was built at (`after` in `hook.json`).
+
+`tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC | --follow] [--observe]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
 
 - `--after` is an event `id` or a byte `offset` returned by a previous wait. The default, `now`, starts at the log's current end; `0` replays from the beginning. Cursors are exclusive. A numeric cursor must be zero or immediately after a complete line, within the current log. Unknown ids and invalid offsets exit 2.
-- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner` and engine observations (`worker-exited` and `stall`). Owner input must reach a waiter running as `owner`, and observations must wake their observer too.
+- `--for` defaults to `orchestrator`. A message addressed to the waiter's own agent name also wakes it, and every event recorded as `owner` wakes an `orchestrator` waiter whoever it was addressed to (an owner message to a worker included). `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types; `all` adds the bookkeeping the default skips: `hook progress`, `hook report`, `hook inbox`, `renew`, `spend` and `spawn session`. The orchestrator never needs a type list. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner`, `via: automation` and engine observations (`worker-exited` and `stall`). Owner input and automatic results reach the waiter that shares their actor, and observations wake their observer too.
+- `--observe` watches without software reactions: no startup reconciliation and no automatic gates, review dispatch, accepts or merges. Use it for a waiter that must not act, such as a second observer or a test of manual commands.
 - No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is `{"type":"timeout","offset":N}` followed by a newline and the exit code is 2. The offset follows the last complete line scanned, including filtered events. Interrupting the wait exits 130 and closes its watchers.
 - An event line contains `id`, `type`, `to`, `at`, `agent`, `cmd`, `task`, `detail`, and `offset`. `offset` is the byte position after that event's newline. Use either returned cursor for the next wait to retain events that arrived while handling the first.
+- `--follow` never exits on an event: it prints `{"type":"ready","offset":N}` once its cursor is set, then one line per matching event with `id`, `type`, `to`, `agent`, `task`, `offset`, `decision` for decision events and `steer: true` for a steered message, and no `detail`. It runs until interrupted or until its reader closes stdout, and refuses `--timeout`.
+
+`tower-crane event ID` prints one event with its detail and offset, for a pushed id. It only reads.
 
 On startup or resume without a saved cursor, run `tower-crane wait --timeout 0` once. It exits 2 with a timeout and the current cursor, without observing worker exits or stalls. Save that offset, read state once, then start the background wait with `--after <offset>`. Events during the state read remain available, and the blocking wait observes current exits and stalls. With an explicit earlier `--after`, a zero timeout returns an already available matching event or a timeout cursor.
 
-Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review and gate results). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
+Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review, CI and gate results, and the CI gate's conflict refusal). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
 
-`tower-crane msg --to NAME [--task ID] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes.
+`tower-crane msg --to NAME [--task ID] [--steer] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes, and the orchestrator too when the sender is `owner`. `--steer` records `steer: true`: a harness that can join a running turn delivers it there instead of after the turn. The orchestrator answers the owner with `msg --to owner`, which reaches the owner's channel on `serve` (below).
 
 Spawned harnesses deliver messages automatically through the adapters below. Messages are addressed to the generated agent name, across all tasks. `wait` remains the orchestrator's event interface.
 
@@ -289,7 +400,7 @@ The token protects against foreign web origins and against local processes that 
 | | |
 | `serve [--port P]` | serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. As the owner it also prints a one-time link to open in the browser that will write (`--json` prints `{ url, state, open }`; `open` is `url` for other identities). Exits 1 if the port is in use |
 | | |
-| `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
+| `status` | one screen: counts by status, ready tasks, blocked required gates when their test or cleanup command is unpinned, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
 <!-- commands:Views:end -->
 
 The board is one HTML document with four views (Board, Plan, History, Spend) and a sheet per task, linked as `#board`, `#plan`, `#history`, `#spend` and `#T7`; docs/design.md is its design. `sketch.html` loads nothing from the network: no fonts, scripts, styles or images outside the file, and its inline script makes no request. Every view and task sheet opens by its link with scripts disabled. Links in evidence (`--ref`) open only when clicked. The snapshot has no token and no forms; where serve would offer a write, it shows the CLI command. The script adds local times, keyboard keys (`b`, `p`, `h`, `s`, Escape), copy buttons and a digest of what changed since the browser last showed the board, kept in the browser's local storage and never in the state directory. The snapshot embeds the newest 400 events for History.
@@ -307,7 +418,9 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 | `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request, with the owner forms when serve runs as the owner |
 | `GET /settings` | the Settings view |
 | any page with `?key=<key>` | the first request with the one-time key serve printed also carries the run's token in `<meta name="tower-crane-token">`; the key is then spent. Every other page has that tag empty |
-| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
+| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state; `wake` for each new event on the owner channel, with data `{ "id", "type", "to", "offset" }` and no content |
+| `GET /api/messages?after=OFFSET` | the owner channel from a byte offset (default 0): `{ "messages": [event, ...], "cursor": N }`, where messages are `msg` events to or from `owner`, `decision-opened` and `decision-answer`, each with its detail and `offset`. Pass `cursor` as the next `after` |
+| `POST /api/messages` | owner only: `{ "text", "mode": "queue" \| "steer", "task" }` sends `msg --to orchestrator` as the owner; `steer` sets `--steer`. The reply is `{ "ok": true, "message": {...} }` |
 | `POST /api/ladder` | owner only: change the default harness and rungs, as `ladder harness` and `ladder set` do |
 | `POST /api/tiers` | owner only: change task tiers, as `task update --tier` does |
 
@@ -318,6 +431,10 @@ Every POST needs:
 - an `Origin`, if the browser sends one, of `http://127.0.0.1:<port>` or `http://localhost:<port>`.
 
 serve answers any request only when its `Host` is `127.0.0.1:<port>` or `localhost:<port>`, so a page on another site cannot reach it through a name rebound to 127.0.0.1 and read the token.
+
+### Owner channel
+
+The owner talks to the orchestrator the way a phone client talks to an agent: a message stream, push wake-ups and the decisions to approve. A client reads the token from the board's `<meta name="tower-crane-token">`, keeps an `EventSource` on `/events`, and on each `wake` fetches `/api/messages?after=<cursor>` for the text, so a wake-up never carries content. It sends with `POST /api/messages` (`queue` waits for the orchestrator's turn to end, `steer` joins the running one) and answers a decision with `POST /api/decisions/D<n>/answer`, the board's own route. Both wake the orchestrator session through its harness delivery; the orchestrator replies with `tower-crane msg --to owner`, which arrives on the same stream. Board comments and answers take the same path.
 
 `POST /api/ladder` body, with `harness` and `rungs` optional but at least one change, and `base` required:
 
@@ -348,7 +465,7 @@ Both write under the lock, validate, log events (`ladder harness`, `ladder set` 
 <!-- commands:Agents and worktrees:start -->
 | Command | Does |
 |---|---|
-| `spawn --task ID [--role RUNG] [--dry-run] [--wait]` | start a rung's harness in the task's worktree with the brief and task as the prompt: the rung of the task's tier, or the rung `--role` names (`--role review` for a review); sets `TOWER_CRANE_STATE`, `TOWER_CRANE_TASK`, `TOWER_CRANE_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command. A claude or codex rung runs under its role's agent file in a config home of its own (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`); `--dry-run` prints a `#` line naming the agent file, the home, the MCP servers and the opted-in tools, and `--json` adds them as `home`. Every `--dry-run` also prints a `# rules:` line with the house rules files, how each reaches the agent and their size, and the prompt size; `--json` adds them as `startup`, the same record the `startup` event keeps. The rung is resolved again from the state read under the lock, so a tier or ladder change made while spawn created the worktree is the one that runs |
+| `spawn --task ID [--role RUNG] [--dry-run] [--wait]` | start a rung's harness in the task's worktree with the brief and task as the prompt: the rung of the task's tier, or the rung `--role` names (`--role review` for a review); sets `TOWER_CRANE_STATE`, `TOWER_CRANE_TASK`, `TOWER_CRANE_AGENT`; logs to the state directory; prints the pid or, with `--dry-run`, the command. A claude or codex rung runs under its role's agent file in a config home of its own (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`); `--dry-run` prints a `#` line naming the agent file, the home, the MCP servers and the opted-in tools, and `--json` adds them as `home`. Every `--dry-run` also prints a `# rules:` line with the house rules files, how each reaches the agent and their size, and the prompt size; `--json` adds them as `startup`, the same record the `startup` event keeps. Claude/Codex reviewers receive the role skill, house-rule contents, standards and review contract sections in system context, with task JSON, review brief, gate receipts and diff in the user message. Claude writes it to `system.md` in its home and passes `--append-system-prompt-file` and `--exclude-dynamic-system-prompt-sections`; Codex writes its generated `AGENTS.md`. Every Claude spawn sets `FORCE_PROMPT_CACHING_5M=1`. Isolated reviewer startup receipts add `system_bytes` and `system_tokens`. The rung is resolved again from the state read under the lock, so a tier or ladder change made while spawn created the worktree is the one that runs |
 | | |
 | `worktree ID [ID ...]` | create (or print) a git worktree and branch `tower-crane/<id>-<slug>` from the freshest base for each task, at `<repo-parent>/<repo>-worktrees/<id>-<slug>`; records the branch on the task. Once the task has a branch, its worktree is found by branch, so renaming the task does not move it |
 <!-- commands:Agents and worktrees:end -->
@@ -358,6 +475,8 @@ Before creating a new task branch, `worktree` fetches `base` from `origin` into 
 Prepare a dispatch with one `tower-crane worktree T1 T2 ...` call before starting workers. It validates every task id, fetches the base once if any task needs a new branch, then creates the worktrees serially from that selected SHA. With multiple ids, `--json` prints an array in task order; one id keeps the existing object output. Plain output lists one path per line. Duplicate ids are prepared once. A later dispatch fetches again; existing branches and completed worktrees remain usable offline. Start parallel `spawn` calls only after preparation, so they reuse the completed worktrees. Callers must serialize preparation within a repository, including calls from different worktrees or state directories; independent creation calls are not coordinated by a repository lock.
 
 A `cannot lock ref` or `incorrect old value` fetch failure waits 100 ms and retries once before reading the tracking ref. Each fetch and missing-branch verification times out after 60 s. An unpack failure is usable only if a fresh origin read proves another caller already imported that exact tip. Other fetch failures, including a second ref-race failure, refuse before a task branch is created or recorded. Git worktree creation and checkout have no added timeout. Worktree creation uses Git's native initialization lock and unlocks only after checkout and its hooks finish. A killed or failed add leaves any surviving registration locked; `worktree` and `spawn` refuse to reuse it. If any task in a batch has an unfinished registration, the whole batch call refuses; worktrees prepared earlier in the call can remain. After Git and its children finish, inspect the worktree, then run `git worktree unlock <path>` for a complete checkout or `git worktree remove --force <path>` for an incomplete one. The CLI never reclaims that lock based on the parent's pid or elapsed time. `spawn` with an unprepared task uses the same single-task creation behavior, so run it serially.
+
+Preparation and stack sync prune orphan Git worktree registrations before use. Temporary gate worktrees also prune before creation and after every removal attempt. A sandbox can recreate empty read-only `commondir` and `config.worktree` mount points after a worktree is removed; prune clears those orphan entries. Locked initializing registrations remain protected while checkout and its hooks run. Git writes the admin files; the CLI does not reconstruct partial metadata.
 
 `spawn` checks the rung, the brief (`brief set`) and the harness program (on `PATH`, or at the path the rung gives) before it creates anything. If the program still fails to start, or the lock cannot be taken, it records nothing and exits with the reason, naming the worktree it created; the worktree and branch stay, and the next spawn of the task reuses them. `spawn` never deletes a worktree or branch. The agent is named `<job>-<task>-<n>`, where the job is `worker` for the four tiers, `reviewer` for `review`, and the rung's name otherwise, numbered from earlier spawns of that job on that task.
 
@@ -386,12 +505,16 @@ Review instructions.
 
 For worker and reviewer jobs, a `claude`, `codex`, `opencode` or `agy` prompt starts with the body of the matching `skills/tower-crane-work/SKILL.md` or `skills/tower-crane-review/SKILL.md`, with frontmatter removed. If that `SKILL.md` is missing, `spawn` warns on stderr and continues without the role skill. A fresh prompt then contains a `## Goal` section (the project goal, the task's target, and an instruction to restate both in the first message), a `## House rules` section listing the rule files by path ([Agent files and homes](ladder.md#agent-files-and-homes)), the worker brief or reviewer packet, the task's id, title, acceptance and kind as JSON, and a line telling the agent to use the `tower-crane` CLI for every state change. It says `you are not the owner; never pass --agent owner`. Its closing instruction says `run tower-crane with --agent <name> if TOWER_CRANE_AGENT is missing`, using the same name passed in the environment. A resumed worker gets its rework note without another copy of the skill body. A pi worker or reviewer receives its matching skill through `--skill` instead, without a duplicate in the prompt; if its `SKILL.md` is missing, `spawn` warns on stderr and omits `--skill`. A fresh custom `command` rung receives the worker brief or reviewer packet and task prompt without an automatically embedded skill body. Its `{brief}` argument is a temporary copy of that context with the same `## Goal` and `## House rules` sections first and the task JSON after it, so an adapter that reads only `{brief}` still gets the goal, rules and acceptance; the copy is removed after foreground completion or a verified background exit. The prompt runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. Both streams go to `logs/<task>-<agent>.log`; the `spawn` event records the harness pid and dispatch metadata. In the background the agent is detached and a monitor collects usage after exit through the same locked observer used by `wait`. A waiter that observes an exit also attempts collection; concurrent observers count the spawn once. With `--wait` output is also streamed to the terminal (stdout goes to stderr under `--json`), usage is collected after stream closure, and tower-crane exits with the agent code.
 
+Command `{brief}` copies are single files named `tower-crane-brief-<pid>-<uuid>-brief.md` under `TOWER_CRANE_TMP`, then `TOWER_CRANE_TEST_TMP`, then the system temporary directory. Creation is exclusive with mode `0600`. Cleanup unlinks the whole copy in one operation, leaving no per-copy directory. Foreground completion and startup failures remove the copy before returning; detached supervision removes it after the harness and its process group finish, including signal exits.
+
 `spawn --role review` selects a reviewer per task and requires a submitted head with passing software gates, including CI for a PR. It checks again under the dispatch lock and refuses a second live reviewer at that head and revision. Review prompts contain the diff, acceptance, gate results and the brief's `## Reviewer` section. They ask the reviewer to use the supplied results and re-run tests only for a focused probe. The CLI writes `reviews/<task>-<full-sha>.md`; packets over 12,000 characters are referenced from a short prompt so Windows command limits do not drop the diff. `rung` stays `review` for role and spend accounting; `review_rung` names the selected tier or fallback, and review dispatch adds the submitted `sha` and `revision`. An unsubmitted `--dry-run` previews the fallback command only; a submitted dry run checks gates and selection but writes no packet.
 Spawn logs are created exclusively with mode `0600` on POSIX. On Windows, logs inherit the state directory's ACL; the state directory normally lives under the user's profile. An occupied log name, including a leaf symlink, refuses the spawn without writing to the file or recording a spawn. Move the occupied log before retrying. The state directory and its parent directories remain trusted local storage.
 
 Review diff reads run before the spawn state lock. Inside the lock, a changed submitted SHA or configured base refuses dispatch with a retry instruction. Gates, reviewer selection and duplicate detection use the state read under that lock.
 
 Every rung gets a fresh, private `homes/<agent>/` with hook bindings and Git and gh shims, built under the lock before the agent starts. Homes of exited agents are removed. For claude and codex, `spawn` also renders the agent file of the rung's job (`agents/tower-crane-worker.md` for the tiers, `tower-crane-reviewer.md` for `review`, `tower-crane-small.md`, `tower-crane-orchestrator.md`) into flags. Their `HOME` is the home's `home/`; other harnesses retain their existing HOME and authentication setup. Every harness's `PATH` starts with the generated shims. The rung's `tools` and `mcp` opt back in to what the file leaves out; an MCP server the user's harness config does not define refuses the spawn, `--dry-run` included. [Agent files and homes](ladder.md#agent-files-and-homes) has what each harness gets.
+
+Started spawns also return and record `tool: {sha, version, path}`, with the checkout SHA (null for an installed package without Git metadata), package version and private runtime snapshot path. Shims, hooks and the supervisor use that snapshot through retries and route fallbacks. Moving or upgrading the tool checkout affects the next dispatch; live agents keep their generated policy and runtime until exit. Pre-T112 policies missing branch or repository fields migrate in memory from their bound task and project state before permission checks, as specified in [state.md](state.md#files).
 
 Codex roles with `gitPush: branch` receive an explicit `git push` allow rule so branch publishing does not need an approval prompt. The git shim permits a push to another machine only through `origin` in the repository recorded at dispatch, with every destination resolving to `refs/heads/<task branch>`. The configured fetch URL must name the recorded GitHub repository over HTTPS or SSH. Direct URL arguments and other remote names are refused, including implicit remote selection. Every configured `origin.pushurl` must equal the fetch URL, and Git's resolved push URLs must all equal its resolved fetch URL after URL rewriting. A missing recorded repository or task branch refuses remote pushes. The shim checks explicit refspecs, configured refspecs and implicit upstream or current-branch destinations, and passes fully qualified destinations to Git with submodule pushes disabled. Other branches, tags, wildcards, namespaces, force, delete, mirror, automatic tag pushes and configured recursive submodule pushes are refused. Roles with `gitPush: none` receive no push authorization. Plain pushes to local test repositories retain the local exception.
 
@@ -457,7 +580,7 @@ Native agents use one call, for example `tower-crane spend T1 --tokens 100 --inp
 
 ## Gates
 
-Each gate runs software, then records evidence on the task. Only `check tests`, `check clean`, `check sources`, `check ci` and `merge` record their respective software evidence types. Each result carries `source` naming that command and `commands` listing the processes it ran, with their arguments, working directory, exit status and signal. This includes the test command at head and, in `prove` mode, without the change, the cleanup invocation, GitHub queries and the merge invocation. Expensive proof records the full head run and both scoped runs. Tests mode `none` records only the Git command verifying the submitted commit and names the skip policy in its summary. Tests evidence and audit detail record the resolved `tests_mode`; successful tests evidence with a missing or mismatched mode no longer counts against the current project policy. A precondition failure can have no commands; an ok entry needs at least one command to count. The audit event carries the same receipts and revision.
+Each gate runs software, then records evidence on the task. Only `check tests`, `check clean`, `check sources`, `check ci` and `merge` record their respective software evidence types. Each result carries `source` naming that command and `commands` listing the processes it ran, with their arguments, working directory, exit status and signal. This includes the test command at head and, in `prove` mode, without the change, the cleanup invocation, GitHub queries and the merge invocation. Expensive proof records the full head run and both scoped runs. A failed test command records `test_failure.names` from node:test spec (`✖`) or TAP (`not ok`) output and `test_failure.output_tail`, bounded to the last 40 lines and 8192 characters; the summary prints both. Names and tails redact environment values that look like secrets before storage or printing. A value looks like a secret when it has a token shape (GitHub, API, AWS and Slack keys, `Authorization` header values), or when its name is credential-named (token, secret, password, passwd, credential, API key, access key, private key or cookie) and it is 20 or more characters of letters and digits with no spaces. This covers the process environment and project, resolved rung and environment-file values. Numbers, booleans and short words are never redacted, whatever the name. Paths, file names and commit SHAs are never redacted. Environment-file contents are never stored. Tests mode `none` records only the Git command verifying the submitted commit and names the skip policy in its summary. Tests evidence and audit detail record the resolved `tests_mode`; successful tests evidence with a missing or mismatched mode no longer counts against the current project policy. A precondition failure can have no commands; an ok entry needs at least one command to count. The audit event carries the same receipts and revision.
 
 For the `check tests` run without the code change in `prove` mode, changed declarative manifests, lockfiles and `tests.keep` matches stay at the submitted sha. This includes files such as `package.json`, `package-lock.json`, `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`, `pyproject.toml` and `requirements*.txt`; executable build files such as `Makefile` need an explicit keep glob. The summary names each kept path.
 
@@ -478,7 +601,7 @@ The CLI refuses manual software verdicts, and software receipts require matching
 | | |
 | `check sources ID` | fetch the distinct cited pages from committed `research/ID.json` and verify every quote; records sources evidence; required for research kind on every tier |
 | | |
-| `check tests ID [--cmd CMD] [--proof-cmd CMD]` | use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs CMD once and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests` and resolved `tests_mode` |
+| `check tests ID [--cmd CMD] [--proof-cmd CMD]` | use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs CMD once and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests`, resolved `tests_mode`, and failed test names plus a bounded output tail when its command fails |
 | | |
 | `merge ID [--subject S] [--body B] [--method M]` | merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise). Linked stacks merge bottom up with `--merge`, pinning each accepted head and confirming it before the next member. If an upper member fails, the target reports `merge FAIL` while confirmed lower members retain successful merge evidence. Inspect each member with `task show ID` and check its PR state; fix the refusal or wait for queued merges to complete. Sync the idle remaining chain when needed with `stack sync ID`; changed heads need rework, a new submission, passing gates, review and acceptance. Refresh stale gates and retry `merge ID` on the target; confirmed lower members are skipped. Records `merge`; then removes the task's worktree unless it has uncommitted changes or `merge.keep_branch` is set ([state](state.md)) |
 <!-- commands:Gates:end -->
