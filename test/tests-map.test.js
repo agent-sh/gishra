@@ -128,3 +128,18 @@ test('broad test globs still map changed helpers to their covered suites', (t) =
   assert.equal(fallback.receipt.head_mode, 'full');
   assert.match(fallback.receipt.head_reason, /unmapped.*test\/helpers.js/);
 });
+
+
+test('explicit mappings still apply when a broad test glob matches the mapped source', (t) => {
+  const h = fixture(t, { ...map, 'test/runtime.js': ['test/mapped.test.js'] });
+  fs.writeFileSync(path.join(h.repo, 'test/runtime.js'), 'module.exports = 1;\n');
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'runtime support change']);
+  h.ok(['rework', 'T1', '--reason', 'runtime coverage']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.git(['rev-parse', 'HEAD'])]);
+  h.ok(['project', 'set', '--tests-paths', '["test/**"]']);
+  const result = check(h);
+  assert.equal(result.receipt.head_mode, 'mapped');
+  assert.ok(result.receipt.head_tests.includes('test/mapped.test.js'));
+});
