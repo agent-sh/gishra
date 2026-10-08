@@ -154,9 +154,13 @@ async function openBrowser(t) {
     type: (text) => send('Input.insertText', { text }),
     until: (expression, what, ms) => until(() => inPage(expression).catch(() => false), what, ms),
     restored: (expression, what, ms) => until(() => inPage(`document.documentElement.hasAttribute('data-position-restored') && (${expression})`).catch(() => false), what, ms),
+    // A served page drops serve's one-time key from the address bar.
     goto: async (url) => {
       await send('Page.navigate', { url });
-      await until(() => inPage(`location.href === ${JSON.stringify(url)} && document.readyState === 'complete'`).catch(() => false), `${url} to load`);
+      const shown = new URL(url);
+      shown.search = '';
+      const hrefs = JSON.stringify([url, shown.href]);
+      await until(() => inPage(`${hrefs}.includes(location.href) && document.readyState === 'complete'`).catch(() => false), `${url} to load`);
     },
   };
 }

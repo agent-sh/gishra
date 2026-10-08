@@ -41,6 +41,19 @@ cp.spawnSync = function stackGh(command, args, opts) {
     if (r.status !== 0) throw new Error(String(r.stderr));
     return String(r.stdout).trim();
   };
+  // A fast-forward when main has not moved, otherwise a squash commit on it.
+  const land = (branch) => {
+    const head = git(['rev-parse', `refs/heads/${branch}`]);
+    const main = git(['ls-remote', 'origin', 'refs/heads/main']).split(/\s/)[0];
+    if (git(['merge-base', head, main]) === main) return git(['push', 'origin', `${head}:refs/heads/main`]);
+    const tree = git(['merge-tree', '--write-tree', main, head]).split('\n')[0];
+    git(['push', 'origin', `${git(['commit-tree', tree, '-p', main, '-m', `squash ${branch}`])}:refs/heads/main`]);
+  };
+  if (args[1] === 'merge' && data.moveOnMerge && (!data.moveOnMerge.onPr || Number(args[2]) === data.moveOnMerge.onPr)) {
+    const { pr, head } = data.moveOnMerge;
+    data.prs[pr].headRefOid = head;
+    delete data.moveOnMerge;
+  }
   if (args[0] === 'api') {
     if (data.unavailable) return finish('', 9, 'Stacked pull requests are not enabled');
     if (args[1].includes('/stacks')) return finish(data.linked ? [{ id: 5, pull_requests: data.order.map((number) => ({ number })) }] : []);
@@ -57,9 +70,20 @@ cp.spawnSync = function stackGh(command, args, opts) {
   }
   if (args[0] === 'pr' && args[1] === 'merge') {
     const pr = data.prs[args[2]];
+    const match = args.indexOf('--match-head-commit');
+    if (match !== -1 && args[match + 1] !== pr.headRefOid) return finish('', 1, 'PR head moved; head commit does not match');
+    if (data.queued) return finish('queued');
+    if (data.refuseMergePr === Number(args[2])) return finish('', 1, 'Base branch policy prohibits the merge');
+    const base = git(['rev-parse', `refs/remotes/origin/${pr.baseRefName}`]);
+    const merged = original('git', ['merge-tree', '--write-tree', base, pr.headRefOid], { ...opts, cwd: data.repo });
+    if (merged.status !== 0) return finish('', 1, `PR has conflicts: ${merged.stdout}${merged.stderr}`);
+    const tree = String(merged.stdout).trim().split(/\r?\n/)[0];
+    const parents = args.includes('--merge') ? ['-p', base, '-p', pr.headRefOid] : ['-p', base];
+    const subject = args.includes('--subject') ? args[args.indexOf('--subject') + 1] : `Merge PR #${pr.number}`;
+    const oid = git(['commit-tree', tree, ...parents, '-m', subject]);
+    git(['push', 'origin', `${oid}:${pr.baseRefName}`]);
     pr.state = 'MERGED';
-    pr.mergeCommit = { oid: pr.headRefOid };
-    git(['push', 'origin', `${pr.headRefName}:main`]);
+    pr.mergeCommit = { oid };
     if (args.includes('--delete-branch')) git(['push', 'origin', `:${pr.headRefName}`]);
     return finish();
   }
@@ -90,7 +114,7 @@ cp.spawnSync = function stackGh(command, args, opts) {
       data.prs[n].state = 'MERGED';
       data.prs[n].mergeCommit = { oid: data.prs[n].headRefOid };
     }
-    git(['push', 'origin', `${data.prs[args[2]].headRefName}:main`]);
+    land(data.prs[args[2]].headRefName);
     return finish();
   }
   if (args[1] === 'sync') {

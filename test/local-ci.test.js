@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { makeRepo, cachedFixture } = require('./helpers');
-const { gateFixture } = require('./gate-helpers');
+const { gateFixture, changeKind } = require('./gate-helpers');
 
 // Each fixture is built once per process and copied for each test.
 function fixture(t, script) {
@@ -362,7 +362,7 @@ test('local CI selects kind args, replacement commands and the default with audi
     ['ops', 'kind:ops', local.by_kind.ops.command, 10],
     ['research', 'default', h.command, 5],
   ]) {
-    h.ok(['task', 'update', 'T1', '--kind', kind]);
+    changeKind(h, kind);
     const e = h.json(['check', 'ci', 'T1']);
     assert.equal(e.receipt.variant, variant);
     assert.deepEqual(e.receipt.command, command);
@@ -384,6 +384,8 @@ test('changing kind, which can select a different local CI variant, is the orche
     by_kind: { docs: { args: ['--lab'] }, ops: { args: ['--s3'] } },
   };
   h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  // A submitted task refuses any kind change, so the kind moves while it waits for rework.
+  h.ok(['rework', 'T1', '--reason', 'retier the local check', '--agent', 'owner']);
   const tasks = h.readState('tasks.json');
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
   const denied = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'worker']);
@@ -396,6 +398,8 @@ test('changing kind, which can select a different local CI variant, is the orche
   h.ok(['task', 'update', 'T1', '--ci-local', JSON.stringify(override)]);
   const allowed = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'orchestrator']);
   assert.equal(allowed.code, 0, allowed.stderr);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.sha]);
   const e = h.json(['check', 'ci', 'T1']);
   assert.equal(e.receipt.variant, 'task:T1');
   assert.deepEqual(e.receipt.command, [...h.command, ...override.args]);
@@ -443,7 +447,7 @@ test('kind variants with identical argv cannot reuse receipts or merge under a d
   const local = { command: h.command, timeout: 5, by_kind: { docs: { args: [] }, ops: { args: [] } } };
   h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
   h.ok(['check', 'ci', 'T1']);
-  h.ok(['task', 'update', 'T1', '--kind', 'ops']);
+  changeKind(h, 'ops');
   assert.match(h.run(['accept', 'T1']).stderr, /receipt.*variant/);
   h.ok(['check', 'ci', 'T1']);
   h.ok(['accept', 'T1']);

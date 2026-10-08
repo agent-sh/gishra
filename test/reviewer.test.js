@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, makeProjectRepo, cachedFixture, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
-const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { gateFixture, gateEvidence, changeKind } = require('./gate-helpers');
 
 const prices = {
   'openai.gpt-6-luna': { input: 0.10, cache_write: 0.125, cache_read: 0.01, output: 0.50 },
@@ -66,7 +66,7 @@ function choice(h, env) {
 }
 
 function model(out) {
-  const flag = out.argv.includes('-m') ? '-m' : out.argv.includes('-p') ? '-p' : '--model';
+  const flag = out.harness === 'claude' ? '--model' : out.argv.includes('-m') ? '-m' : out.argv.includes('-p') ? '-p' : '--model';
   return out.argv[out.argv.indexOf(flag) + 1];
 }
 
@@ -148,6 +148,31 @@ test('a stronger model wins only when its median priced review cost is no higher
   assert.equal(model(choice(h)), 'sol');
 });
 
+test('review selection matches Claude provider aliases to recorded provider spend', (t) => {
+  const bedrock = 'global.anthropic.claude-opus-5-5';
+  const anthropic = 'claude-opus-5-5';
+  for (const tier of ['medium', 'hard']) {
+    const h = setup(t, tier);
+    const bin = path.join(h.base, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
+    const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
+      AWS_REGION: 'eu-west-1', AWS_BEARER_TOKEN_BEDROCK: 'stub-secret-bedrock',
+      ANTHROPIC_API_KEY: 'stub-secret-anthropic' };
+    h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--provider', 'bedrock', '--model', 'opus']);
+    h.ok(['ladder', 'set', 'research', '--harness', 'claude', '--provider', 'anthropic', '--model', 'opus']);
+    h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [bedrock]: prices[anthropic] } })]);
+    ready(h);
+    sample(h, tier === 'medium' ? 'sol' : bedrock, 1000000, 0, 0);
+    sample(h, tier === 'medium' ? bedrock : anthropic, 0, 0, 1);
+    const promoted = choice(h, env);
+    assert.equal(promoted.review_rung, tier === 'medium' ? 'hard' : 'research');
+    assert.equal(model(promoted), tier === 'medium' ? bedrock : anthropic);
+    sample(h, tier === 'medium' ? bedrock : anthropic, 0, 0, 1000000);
+    assert.equal(choice(h, env).review_rung, tier, 'a higher provider median keeps the current rung');
+  }
+});
+
 test('equal cost promotes, missing components do not provide a cost sample', (t) => {
   const h = setup(t, 'medium', 'other', undefined, { gated: true });
   h.ok(['spend', 'T1', '--agent', 'unknown-review', '--tokens', '1', '--rung', 'review', '--model', 'opus']);
@@ -181,7 +206,7 @@ test('escalation starts above the actual dispatched reviewer rung', (t) => {
 const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--fail', '--sha', ${JSON.stringify(h.sha)}], {env: process.env});
 process.exit(r.status ?? 1);`;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', script])]);
+    '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}'])]);
   const dispatched = h.json(['spawn', '--task', 'T1', '--role', 'review', '--wait']);
   assert.equal(dispatched.review_rung, 'easy');
   assert.equal(choice(h).review_rung, 'medium');
@@ -238,7 +263,7 @@ test('review dispatch computes its diff once outside the state lock', (t) => {
 test('review dispatch refuses a submitted head or configured base changed after diff preparation', async (t) => {
   for (const change of ['head', 'base']) {
     const h = setup(t);
-    h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+    changeKind(h, 'docs');
     commandReviewer(h, path.join(h.base, 'context.txt'));
     h.git(['commit', '--allow-empty', '-qm', 'next head']);
     const next = h.git(['rev-parse', 'HEAD']);
@@ -316,7 +341,7 @@ test('automatic tests honor owner none mode and forward expensive proof commands
 test('accept reuses an active review and direct dispatch refuses a duplicate', (t) => {
   const h = setup(t, 'easy', 'other', undefined, { gated: true });
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)'])]);
+    '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)', '{prompt}'])]);
   const first = h.json(['accept', 'T1']);
   const second = h.json(['accept', 'T1']);
   assert.equal(second.reviewer, first.reviewer);
@@ -327,11 +352,11 @@ test('accept reuses an active review and direct dispatch refuses a duplicate', (
 
 test('large review diffs use a context file and a short argv', (t) => {
   const h = setup(t);
+  changeKind(h, 'docs');
   fs.writeFileSync(path.join(h.repo, 'large.md'), 'A focused review reads this diff.\n'.repeat(1000));
   h.git(['add', 'large.md']);
   h.git(['commit', '-qm', 'large diff']);
   h.sha = h.git(['rev-parse', 'HEAD']);
-  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
   h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha]);
   const out = path.join(h.base, 'large-prompt.txt');
   commandReviewer(h, out);
@@ -349,6 +374,7 @@ test('large review diffs use a context file and a short argv', (t) => {
 
 test('the review packet flags changed files outside the paths the brief names', (t) => {
   const h = setup(t);
+  changeKind(h, 'docs');
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Only `docs/` changes.\n\n## Reviewer\nREVIEWER-ONLY instruction\n' });
   fs.mkdirSync(path.join(h.repo, 'docs'));
   fs.writeFileSync(path.join(h.repo, 'docs', 'note.md'), 'note\n');
@@ -356,7 +382,6 @@ test('the review packet flags changed files outside the paths the brief names', 
   h.git(['add', '.']);
   h.git(['commit', '-qm', 'docs and a stray file']);
   h.sha = h.git(['rev-parse', 'HEAD']);
-  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
   h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha]);
   commandReviewer(h, path.join(h.base, 'prompt.txt'));
   h.json(['spawn', '--role', 'review', '--task', 'T1', '--wait']);

@@ -63,7 +63,7 @@ ${waitForFinish ? `const timer = setInterval(() => {
   if (fs.existsSync(file + '.finish')) { clearInterval(timer); finish(); }
 }, 25);` : `setTimeout(finish, ${hold});`}
 `;
-  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, h.attempts]),
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{prompt}']),
     '--clear', 'profile', '--clear', 'effort', '--supervision',
     JSON.stringify({ retries: 2, backoff_ms: 150, max_backoff_ms: 1000, stall_ms: 60000, ...config })]);
   h.spawn = (role, timeout = 15000) => h.run(['spawn', '--task', 'T1', ...(role ? ['--role', role] : []), '--wait', '--json'], { env, timeout });
@@ -288,7 +288,7 @@ if (task === 'T1' && retry === 0) {
   console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'last report from ' + agent } }));
 }
 `;
-  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN]),
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, '{prompt}']),
     '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 1, backoff_ms: 3500, max_backoff_ms: 3500 })]);
 
   const started = h.json(['spawn', '--task', 'T1']);
@@ -561,7 +561,7 @@ console.${stream === 'stdout' ? 'log' : 'error'}(JSON.stringify({ type: 'assista
 console.${stream === 'stdout' ? 'log' : 'error'}(JSON.stringify({ type: 'result', is_error: false, result: text }));
 process.exit(1);
 `;
-    h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN])]);
+    h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, '{prompt}'])]);
     const result = h.spawn();
     assert.equal(result.code, 1, result.stderr);
     assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
@@ -578,7 +578,7 @@ cp.execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']);
 console.${stream === 'stdout' ? 'log' : 'error'}('rate limit exceeded: The service is temporarily unavailable.; HTTP 429 Too Many Requests; overloaded');
 process.exit(1);
 `;
-    h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN])]);
+    h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, '{prompt}'])]);
     const result = h.spawn();
     assert.equal(result.code, 1, result.stderr);
     assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 0);
@@ -629,7 +629,7 @@ const descendant = cp.spawn(process.execPath, ['-e', "process.on('SIGTERM', () =
 descendant.stdout.once('data', () => fs.writeFileSync(process.argv[2], JSON.stringify([process.pid, descendant.pid])));
 setInterval(() => {}, 1000);
 `;
-  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, pids, terminated])]);
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, pids, terminated, '{prompt}'])]);
   const spawned = h.json(['spawn', '--task', 'T1']);
   await until(() => fs.existsSync(pids), 'process group did not start');
   const group = JSON.parse(fs.readFileSync(pids, 'utf8'));
@@ -672,7 +672,7 @@ if (!fs.existsSync(file)) {
   process.exit(0);
 }
 `;
-  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, groupFile])]);
+  h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, groupFile, '{prompt}'])]);
   let group;
   t.after(() => {
     if (!group) return;
@@ -712,7 +712,7 @@ test('foreground exit waits until the retained stdout pipe has been captured', a
   const hook = path.join(__dirname, 'fixtures', 'supervision-followups.js').replace(/\\/g, '/');
   const fixture = path.join(__dirname, 'fixtures', 'foreground-held-output.js');
   h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([
-    process.execPath, fixture, BIN, writerReady, writerRelease, writerPidFile,
+    process.execPath, fixture, BIN, writerReady, writerRelease, writerPidFile, '{prompt}',
   ])]);
   const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
     env: {
