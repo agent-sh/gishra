@@ -103,6 +103,22 @@ test('a worker cannot answer under a forged orchestrator identity', (t) => {
   assert.deepEqual(events(h), before, 'a worker cannot use a selected identity to authorize an answer');
 });
 
+test('a worker cannot delegate by passing the owner identity', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres']);
+
+  const before = events(h);
+  const forged = h.run(
+    ['decision', 'delegate', 'D1', '--answerers', '["worker-T1-1"]', '--agent', 'owner'],
+    { env: { TOWER_CRANE_AGENT: 'worker-T1-1' } },
+  );
+  assert.equal(forged.code, 1, forged.stderr);
+  assert.match(forged.stderr, /only the owner/);
+  assert.deepEqual(h.readState('decisions.json').decisions[0].answerers, []);
+  assert.deepEqual(events(h), before, 'a worker cannot name itself as an answerer');
+});
+
 test('the owner can always answer explicitly, and technical classification alone does not delegate', (t) => {
   const h = makeRepo(t);
   h.init();
@@ -126,7 +142,7 @@ test('technical delegation recognizes generated orchestrators by their recorded 
   const spawned = {};
   for (const rung of ['easy', 'orchestrator']) {
     h.ok(['ladder', 'set', rung, '--harness', 'command',
-      '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)']),
+      '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}']),
       ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
     spawned[rung] = h.json(['spawn', '--task', 'T1', '--role', rung, '--wait']).agent;
   }
