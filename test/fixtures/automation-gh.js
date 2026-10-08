@@ -43,7 +43,11 @@ if (args[0] === 'pr') {
       process.exit(0);
     }
   } else {
-    out = pr.invalidView ? '{' : JSON.stringify(pr);
+    // unknownViews answers UNKNOWN for that many reads, as GitHub does while it computes mergeability.
+    const unknown = pr.unknownViews > 0;
+    if (unknown) pr.unknownViews -= 1;
+    const view = unknown ? { ...pr, mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' } : pr;
+    out = pr.invalidView ? '{' : JSON.stringify(view);
     if (state.becomeMergeableAfterView) {
       pr.mergeable = 'MERGEABLE';
       pr.mergeStateStatus = 'CLEAN';
