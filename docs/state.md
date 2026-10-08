@@ -82,7 +82,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `claim.release` | owner-required | `release` of another agent's claim while its process is live or unverified |
 | `sandbox`, `env`, `env_file`, `scope` | owner-required | `project set` or `ladder set` |
 | `ladder.command` | owner-required | `ladder set --command`: the program a rung runs |
-| `ladder.reach` | owner-required | `ladder set --tools` opting in to a tool that is not a harness built-in (such as a `Bash(...)` rule) or that changes the rung's sandbox: claude `Edit`, `Write`, `NotebookEdit`; codex `memories`, `plugins`, `apps`, `browser_use`, `computer_use`; a `ladder set` or `ladder harness` that moves a worker, reviewer or small rung, or a user-file fallback route that follows its harness, off claude and codex, the only harnesses that enforce a sandbox; args on a harness other than claude and codex, which check them against no list |
+| `ladder.reach` | owner-required | `ladder set --tools` opting in to a tool that is not a harness built-in (such as a `Bash(...)` rule) or that changes the rung's sandbox: claude `Edit`, `Write`, `NotebookEdit`; codex `memories`, `plugins`, `apps`, `browser_use`, `computer_use`; pi `edit`, `write`; a `ladder set` or `ladder harness` that moves a worker, reviewer or small rung, or a user-file fallback route that follows its harness, off claude and codex, the only harnesses that enforce a sandbox; args on a harness other than claude and codex, including pi despite its restricted flag list |
 | `budget.raise` | owner-required | `project set --budget-hours`, `--budget-tokens` to a higher limit or none |
 | `delegation` | owner-required | `spawn --role orchestrator`, which hands orchestrator authority to a new agent |
 | `waive.review_live` | owner-required | `accept --waive review` when no reviewer is capped or down at the submitted head |
@@ -208,6 +208,8 @@ Task preparation, temporary gate preparation and stack sync run `git worktree pr
 
 The ladder says which harness, model and effort runs each kind of work. It has seven rungs:
 
+Pi uses a generated config home and tool allowlist, with credential files linked to the original user. Pi has no command sandbox or native MCP; a rung with `mcp` on pi is refused. Its `args` accept only `--no-session` and `--verbose`. Moving a sandboxed role to pi remains owner-required. Dry-run reports `home.mcp_supported: false` and `home.sandbox: false`; its startup receipt names the generated instruction file and marks every house rule as `read`, since context discovery is disabled, and records `sandbox: false` with `confinement: "unconfined"`.
+
 | Rung | Runs |
 |---|---|
 | `orchestrator` | planning, briefs, dispatch, gates and merges |
@@ -226,7 +228,7 @@ The ladder says which harness, model and effort runs each kind of work. It has s
 | `effort` | all but `command` | reasoning effort in the harness's own terms: claude `low` `medium` `high` `xhigh` `max`; codex `none` `minimal` `low` `medium` `high` `xhigh` `max`; agy `low` `medium` `high` `max`; pi `off` `minimal` `low` `medium` `high` `xhigh` `max`; opencode passes it as `--variant`, whose names each provider defines, so any single word |
 | `args` | all | extra arguments appended verbatim to the command |
 | `command` | `command` | owner-required: argv array; `{task}`, `{brief}`, `{prompt}` and `{cwd}` are substituted (`{brief}` is the brief file's path) |
-| `tools` | `claude`, `codex` | tools the role's agent file leaves out that this rung opts back in to: claude tool names (`WebFetch`), codex feature names (`multi_agent`) or `web_search` |
+| `tools` | `claude`, `codex`, `pi` | tools the role's agent file leaves out that this rung opts back in to: claude tool names (`WebFetch`), codex feature names (`multi_agent`) or `web_search`, pi built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) |
 | `mcp` | `claude`, `codex` | MCP servers this rung opts in to, by the name the user's harness config gives them (claude config directory's `mcp.json`, falling back to `~/.claude.json` `mcpServers`; codex `[mcp_servers.NAME]` in `config.toml`) |
 | `web_mcp` | research on `claude` | owner-required: explicit `{name, command, args}` web server, with no env, headers or secrets; cannot combine with `mcp` |
 | `supervision` | all | per-rung `{ retries, backoff_ms, max_backoff_ms, stall_ms, progress_paths }`; omitted fields use the defaults below |
