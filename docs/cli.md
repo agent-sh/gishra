@@ -231,6 +231,44 @@ the task to rework with Git's filenames in its note and brief. Trial merges
 do not resolve conflicts or update worker branches. Unknown PR heads,
 unknown mergeability and failed GitHub transport cannot authorize merging.
 
+Accepted PRs merge through a merge queue in the order of their `accept`
+events. A stack is one entry, ordered by its lowest unmerged task: it holds
+that task and the accepted, linked tasks directly above it, and an upper
+task whose lower task is not accepted waits outside the line. Only the head
+of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
+goes to rework with its files and leaves the line. Unknown mergeability, a
+moved head, failing gates or a refused merge stop the line until a later
+reaction; the executor's `done` event names the blocking task and why.
+Gate evidence belongs to the submitted sha, so a base move alone reruns no
+gate. The fail-before proof reruns only for a new head. Before merging, the
+head runs the pinned `gates.tests_cmd` once on the merge of `project.base`'s
+current tip into its top task's head, which for a stack carries every task
+in the entry, never on a stacked task's lower branch. It first trial-merges
+each task bottom up and sends the lowest conflicting one to rework with its
+files. The suite is skipped when the head already contains that tip or an
+earlier `head check` covered the same head, revision, base tip and command.
+Entries without a tests gate, or with tests mode `none`, skip it. A failing
+check sends the top task to rework with the output tail, and the tasks
+below it take the line again on their own. A failure under heads, stack
+metadata or project settings that changed while the suite ran sends nothing
+to rework; the line starts over on the current state. The rest of the line runs no
+gate and no suite. The merge is bound to what the check covered: if the
+entry's heads, revisions, statuses, PRs or stack metadata, or the project
+settings, changed while the suite ran, the merge gate does not run and the
+line starts over on the current state. A head that a reaction sends to
+rework for a conflict drains the line in the same reaction, so the PRs
+behind a blocked head move on. After the check the executor fetches the base
+again and checks again if it moved; `gh pr merge --match-head-commit` pins the head,
+but nothing pins the base, so a push to the base in the seconds between
+that fetch and the merge call is not checked. A branch protection rule that
+requires up-to-date branches closes that window. Hosted CI evidence comes
+from GitHub's `pull_request` run, which already tests the merge ref; never
+merge the base into a PR to refresh evidence or pick up a workflow change.
+One executor drains the queue; a reaction that finds it busy records a
+request, and the executor makes another pass before releasing. Manual
+`merge ID` bypasses the queue and its head check: it keeps only the merge
+gate's own guards.
+
 CI completion requires notification delivery by the host's webhook or job
 integration, using `ci webhook` or `ci completed`. No listener or CI polling
 loop is installed. The notification's conclusion is never evidence: the
