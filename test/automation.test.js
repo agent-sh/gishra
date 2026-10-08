@@ -840,3 +840,61 @@ test('a head the queue cannot advance is reported once and the PR behind it merg
   assert.match(skips[0].detail.reason, /merged with head f+, not the accepted/);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
 });
+
+test('a concurrent CI completion retries a skipped head in the next drain pass', async (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  h.moveMain();
+  const failed = h.github();
+  failed.ci[h.sha] = 'failure';
+  h.saveGithub(failed);
+  assert.equal(h.run(['check', 'ci', 'T1', '--agent', 'orchestrator']).code, 1);
+  const green = h.github();
+  green.ci[h.sha] = 'success';
+  h.saveGithub(green);
+
+  const paused = path.join(h.base, 'queue-paused');
+  const resume = path.join(h.base, 'queue-resume');
+  // Hold T2's head check after T1 is skipped, until a second command
+  // records T1's passing CI and requests another queue pass.
+  fs.writeFileSync(path.join(h.base, 'during-check.js'), `const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(paused)}, '');
+const until = Date.now() + 20000;
+const poll = () => {
+  if (fs.existsSync(${JSON.stringify(resume)})) return;
+  if (Date.now() > until) throw new Error('queue was not resumed');
+  setTimeout(poll, 25);
+};
+poll();
+`);
+  const offset = h.logs().length;
+  const first = h.runAsync(['ci', 'completed', 'T2', '--sha', h.second, '--agent', 'orchestrator']);
+  let result;
+  try {
+    assert.notEqual(await waitFor(paused), null, 'T2 holds the queue after T1 is skipped');
+    const skipped = h.logs().slice(offset).find((e) => e.cmd === 'queue skipped');
+    assert.equal(skipped?.task, 'T1');
+    assert.match(skipped.detail.reason, /ci: latest ci .* failed/);
+    h.ok(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'orchestrator']);
+    assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+    assert.ok(h.logs().slice(offset).some((e) => e.cmd === 'merge queue' && e.detail.phase === 'requested'));
+  } finally {
+    fs.writeFileSync(resume, '');
+    result = await first;
+  }
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8', '7'],
+    'both commands finish with both PRs merged, without a later notification');
+  for (const task of h.readState('tasks.json').tasks) {
+    const receipt = task.evidence.findLast((e) => e.type === 'merge');
+    assert.equal(receipt?.ok, true, task.id);
+    assert.equal(receipt.sha, task.sha);
+  }
+  const events = h.logs().slice(offset);
+  assert.equal(events.filter((e) => e.cmd === 'queue skipped').length, 1);
+  const passes = events.filter((e) => e.cmd === 'merge queue');
+  assert.equal(passes.filter((e) => e.detail.phase === 'running').length, 2);
+  assert.equal(passes.at(-1).detail.phase, 'done');
+  assert.equal(passes.at(-1).detail.blocked, null);
+  assert.deepEqual(passes.at(-1).detail.skipped, []);
+});

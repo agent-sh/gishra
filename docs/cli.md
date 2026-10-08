@@ -241,6 +241,8 @@ stops the line until a later reaction. A head the queue cannot advance (a
 closed PR, a moved or differently merged head, failing gates, a refused
 merge or head check) is reported once in a `queue skipped` event and passed
 over, so the next entry merges; later passes try it again. The executor's
+next pass starts with no skipped heads, including when a concurrent CI
+completion requests that pass while the executor is still running. Its
 `done` event names the first head that did not merge and lists the skipped
 ones. An accepted PR already merged on GitHub at its accepted head is
 confirmed through the merge gate without current gate evidence.

@@ -609,7 +609,10 @@ pass and the next entry takes the line; each later pass tries it again.
 `queue skipped` records `{sha, revision, reason}` on that task once per
 sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain
-again. The line holds one entry per accepted, unmerged PR task with no
+again with a fresh skipped set. A successful CI completion during the
+previous pass can therefore advance a skipped head before the executor
+releases the queue, without another notification. The line holds one entry
+per accepted, unmerged PR task with no
 unmerged task below it, extended up its stack by the accepted, linked tasks
 directly above it; entries are ordered by their bottom task's latest
 `accept` event at the current sha and revision.
