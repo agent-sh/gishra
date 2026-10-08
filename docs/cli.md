@@ -183,7 +183,7 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `hook ACTION --binding FILE [--payload JSON\|-]` | deliver harness messages and record activity under the home identity |
 | | |
-| `mcp` | start the newline-delimited JSON-RPC MCP server on stdin/stdout. Tools: `inbox` (optional `ack`), `spawn_ready`, `merge_accepted`, `rework_from_review` (`id`), and `release_dead`. Calls retain the CLI process identity and state; there are no identity, state or shell overrides. Batch actions require the orchestrator or owner; all existing command checks and authority rules remain in force |
+| `mcp` | start the newline-delimited JSON-RPC MCP server on stdin/stdout. Tools: `inbox` (optional `ack`), `spawn_ready`, `merge_accepted`, `rework_from_review` (`id`), and `release_dead`. Initialization and tool discovery work without a project; tool calls resolve the project and return missing-state or authorization errors as tool results. Calls retain the CLI process identity and state; there are no identity, state or shell overrides. Batch actions require the orchestrator or owner; all existing command checks and authority rules remain in force |
 | | |
 | `msg --to NAME [--task ID] [--steer] TEXT` | send a worker message through the event log |
 | | |
@@ -191,7 +191,7 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment` |
 | | |
-| `release ID --reason R \| --dead` | `--dead` recovers every claim the shared process detector verifies exited; remote or unobservable processes stay claimed. Otherwise give it back; status returns to its prior `todo` or `rework`. The claimant or the owner (owner-required: the orchestrator's attempt opens a decision); any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event |
+| `release ID --reason R \| --dead` | `--dead` recovers every claim the shared process detector verifies exited; remote or unobservable processes stay claimed. The worker broker refuses this unscoped batch; workers use `release ID --reason R` on their own task. Otherwise give it back; status returns to its prior `todo` or `rework`. The claimant or the owner (owner-required: the orchestrator's attempt opens a decision); any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event |
 | | |
 | `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes its resource locks and worker slot again, so its renewal is refused when a lock is held or the workers limit is reached |
 | | |
@@ -408,7 +408,7 @@ The token protects against foreign web origins and against local processes that 
 <!-- commands:Views:start -->
 | Command | Does |
 |---|---|
-| `inbox [--ack ITEM] [--json]` | orchestrator or owner: read state once and inspect PR heads, mergeability, uncapped revuto failures and inline comments, and open CodeQL alerts at the submitted head. Returns typed `items` with `action.command` and `action.argv`, plus live gate `executors`. GitHub failures are explicit items. `--ack ITEM` acknowledges a message or stall after handling it; task and GitHub findings clear only when their condition clears |
+| `inbox [--ack ITEM] [--json]` | orchestrator or owner: read state once and inspect PR heads, mergeability, uncapped revuto failures and inline comments, and open CodeQL alerts on the submitted head or its verified current PR merge commit. Returns typed `items` with `action.command` and `action.argv`, plus live gate `executors`. GitHub failures are explicit items. `--ack ITEM` acknowledges a message, stall, decision answer or owner comment after handling it; task and GitHub findings clear only when their condition clears |
 | | |
 | `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock |
 | | |
@@ -638,4 +638,4 @@ Only the gate runner produces the local receipt. It records `variant`, `command`
 
 `tower-crane mcp --agent orchestrator` serves the inbox and batch actions as MCP tools over stdio. Pass `--state DIR` outside the project. The plugin registers it for Claude Code, and spawned Claude and Codex orchestrators receive it in their generated homes. The Codex plugin command surface exposes `/tower-crane-inbox`, `/tower-crane-spawn-ready`, `/tower-crane-merge-accepted`, `/tower-crane-rework-from-review ID` and `/tower-crane-release-dead`.
 
-Use `inbox --json` for typed findings with `action.command` and `action.argv`; use the returned command to resolve each item. Messages and stalls can be acknowledged after handling with `inbox --ack ITEM`. Decisions require the owner's answer. GitHub observation failures remain visible as `github_error` items. Batch merge refusals remain in the inbox while independent mergeable entries continue through the existing current-base and stack checks.
+Use `inbox --json` for typed findings with `action.command` and `action.argv`; use the returned command to resolve each item. Messages, stalls, decision answers and owner comments can be acknowledged after handling with `inbox --ack ITEM`. Decisions require the owner's answer. GitHub observation failures remain visible as `github_error` items. Batch merge refusals remain in the inbox while independent mergeable entries continue through the existing current-base and stack checks.

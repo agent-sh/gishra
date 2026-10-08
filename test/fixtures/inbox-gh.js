@@ -17,11 +17,20 @@ if (data.fail || data.failEndpoint && args[1]?.includes(data.failEndpoint)) {
     pr.mergeCommit = { oid: pr.headRefOid };
   }
   result = pr;
+} else if (/\/pulls\/\d+$/.test(args[1])) {
+  const pr = data.prs[args[1].split('/').at(-1)];
+  result = { head: { sha: pr.headRefOid }, base: { sha: pr.baseRefOid || 'b'.repeat(40) }, merge_commit_sha: pr.mergeRefOid || null };
+} else if (args[1].includes('/git/commits/')) {
+  const sha = args[1].split('/').at(-1);
+  result = data.commits?.[sha] || { sha, parents: [] };
 } else if (args[1].includes('/comments')) {
   result = data.comments || [];
 } else if (args[1].includes('/code-scanning/')) {
+  const ref = new URL(`https://api.github.com/${args[1]}`).searchParams.get('ref');
   const number = decodeURIComponent(args[1]).match(/refs\/pull\/(\d+)\//)?.[1];
-  result = data.alerts?.[number] || [];
+  result = (data.alerts?.[number] || []).map((a) => ({ ...a,
+    most_recent_instance: { ref: `refs/pull/${number}/head`, ...a.most_recent_instance },
+  })).filter((a) => a.most_recent_instance.ref === ref);
 } else {
   result = [{ name: 'test', suite: 1, id: 1, runs: 1, app: 'fixture', status: 'completed', conclusion: 'success' }];
   if (args[1].includes('/check-runs') && data.revuto) result.push(data.revuto);

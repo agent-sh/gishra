@@ -99,6 +99,8 @@ test('one fixture exposes every inbox kind and resolving commands clear their co
   assert.match(fs.readFileSync(path.join(h.state, 'briefs', `${review}.md`), 'utf8'), /Check null.*\nhttps:\/\/github.com/s);
   h.ok(['release', '--dead', '--agent', 'orchestrator']);
   h.ok(['answer', 'D1', '--choice', 'A']);
+  const answer = h.inbox().items.find((i) => i.kind === 'decision_answer');
+  h.ok([...answer.action.argv, '--agent', 'orchestrator']);
   for (const i of inbox.items.filter((i) => ['message', 'stall'].includes(i.kind))) h.ok([...i.action.argv, '--agent', 'orchestrator']);
   for (const id of [revuto, codeql]) {
     const i = inbox.items.find((i) => i.task === id && i.kind === (id === revuto ? 'revuto_failed' : 'codeql_alert'));
@@ -198,7 +200,11 @@ test('MCP tools retain identity, expose actions and reject argument overrides', 
   assert.equal(replies[4].result.isError, false);
   assert.equal(replies[5].result.isError, true);
   assert.equal(h.json(['task', 'show', id]).status, 'rework');
-  assert.equal(h.run(['mcp', '--agent', 'worker'], { input }).code, 1);
+  const worker = h.run(['mcp', '--agent', 'worker'], { input });
+  assert.equal(worker.code, 0, worker.stderr);
+  const denied = worker.stdout.trim().split('\n').map(JSON.parse);
+  assert.equal(denied[1].result.tools.length, 5, 'discovery itself grants no authority');
+  assert.ok(denied.slice(2).every((r) => r.result.isError));
 });
 
 test('new inbox items wake through wait and unchanged snapshots do not wake twice', (t) => {
@@ -287,4 +293,110 @@ test('inbox derives an expired native worker stall without a prior watcher', (t)
   assert.ok(!inbox.items.some((i) => i.kind === 'dead_claim'));
   h.ok([...stall.action.argv, '--agent', 'orchestrator']);
   assert.ok(!h.inbox().items.some((i) => i.kind === 'stall'));
+});
+
+test('verified workers cannot use orchestrator inbox or batch tools', (t) => {
+  const h = setup(t);
+  const id = h.add('Bound worker');
+  h.ok(['claim', id, '--agent', 'worker-T1-1']);
+  const env = { TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_TASK: id };
+  h.ok(['msg', '--to', 'orchestrator', 'owner instruction']);
+  const message = h.inbox().items.find((i) => i.kind === 'message');
+  const before = h.logs();
+  for (const args of [['inbox'], ['inbox', '--ack', message.id], ['spawn', '--ready'], ['merge', '--accepted'], ['release', '--dead']]) {
+    const result = h.run([...args, '--agent', env.TOWER_CRANE_AGENT], { env });
+    assert.equal(result.code, 1, `${args.join(' ')}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /orchestrator or owner/);
+  }
+  const result = h.run(['mcp', '--agent', env.TOWER_CRANE_AGENT], { env,
+    input: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'release_dead' } }) + '\n' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).result.isError, true);
+  assert.deepEqual(h.logs(), before);
+  const wait = h.run(['wait', '--inbox', '--observe', '--after', 'now', '--timeout', '0.01', '--agent', env.TOWER_CRANE_AGENT], { env });
+  assert.equal(wait.code, 2, wait.stderr);
+  assert.deepEqual(h.logs(), before, 'a worker observer emits no inbox notifications');
+});
+
+test('CodeQL merge-ref alerts match the current merge commit and submitted parents', (t) => {
+  const h = setup(t);
+  const id = h.add('Pull request analysis');
+  h.submit(id, 8);
+  const merge = 'c'.repeat(40);
+  const base = 'b'.repeat(40);
+  const old = 'd'.repeat(40);
+  const ref = 'refs/pull/8/merge';
+  const github = h.github();
+  github.prs[8].mergeRefOid = merge;
+  github.prs[8].baseRefOid = base;
+  github.commits = { [merge]: { sha: merge, parents: [{ sha: base }, { sha: h.sha }] } };
+  const alert = (number, commit_sha, analysisRef = ref) => ({ number, tool: { name: 'CodeQL' },
+    rule: { id: 'js/injection' }, html_url: `https://github.com/acme/demo/security/code-scanning/${number}`,
+    most_recent_instance: { ref: analysisRef, commit_sha, message: { text: 'Untrusted input' } } });
+  github.alerts = { 8: [alert(1, merge), alert(2, old), alert(3, merge, 'refs/pull/9/merge')] };
+  h.save(github);
+  const finding = h.inbox().items.find((i) => i.kind === 'codeql_alert');
+  assert.ok(finding, 'the current PR merge analysis is visible');
+  assert.equal(finding.sha, h.sha);
+  assert.deepEqual(finding.alerts.map((a) => a.number), [1], 'stale and unrelated analyses stay out');
+  assert.equal(finding.alerts[0].most_recent_instance.commit_sha, merge);
+  assert.ok(h.github().calls.some((args) => decodeURIComponent(args[1]).includes('ref=refs/pull/8/merge')));
+  github.commits[merge].parents[1].sha = old;
+  h.save(github);
+  const stale = h.inbox().items;
+  assert.ok(!stale.some((i) => i.kind === 'codeql_alert'), 'a merge of an older head is not current evidence');
+  assert.ok(stale.some((i) => i.kind === 'github_error'));
+  github.commits[merge].parents[1].sha = h.sha;
+  h.save(github);
+  h.ok([...finding.action.argv, '--agent', 'orchestrator']);
+  assert.ok(!h.inbox().items.some((i) => i.kind === 'codeql_alert'));
+});
+
+test('decision answers and owner comments remain in the inbox until explicitly acknowledged', (t) => {
+  const h = setup(t);
+  const id = h.add('Owner input');
+  h.ok(['ask', '--question', 'Which API?', '--option', 'A', '--option', 'B', '--blocks', id]);
+  h.ok(['decision', 'note', 'D1', 'Use the stable contract']);
+  h.ok(['task', 'note', id, 'Preserve compatibility']);
+  h.ok(['answer', 'D1', '--choice', 'B', '--note', 'Approved for this release']);
+  const notes = () => h.inbox().items.filter((i) => ['decision_answer', 'owner_comment'].includes(i.kind));
+  const first = notes();
+  assert.equal(first.length, 3);
+  const answer = first.find((i) => i.kind === 'decision_answer');
+  assert.equal(answer.decision.id, 'D1');
+  assert.equal(answer.decision.answer, 'B');
+  assert.equal(answer.decision.note, 'Approved for this release');
+  assert.deepEqual(answer.decision.blocks, [id]);
+  assert.deepEqual(first.filter((i) => i.kind === 'owner_comment').map((i) => i.text),
+    ['Use the stable contract', 'Preserve compatibility']);
+  assert.deepEqual(notes(), first, 'reading and restarting the CLI consumes no owner input');
+  const text = h.ok(['inbox', '--agent', 'orchestrator']);
+  assert.match(text, /Approved for this release/);
+  assert.match(text, /Preserve compatibility/);
+  for (const i of first) h.ok([...i.action.argv, '--agent', 'orchestrator']);
+  assert.deepEqual(notes(), []);
+  h.ok(['decision', 'note', 'D1', 'Ship the compatibility adapter']);
+  assert.equal(notes().length, 1);
+  assert.equal(notes()[0].text, 'Ship the compatibility adapter');
+});
+
+test('MCP discovery works before project initialization and tool errors remain JSON-RPC replies', (t) => {
+  const h = makeRepo(t);
+  const input = [
+    { id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } },
+    { id: 2, method: 'tools/list' },
+    { id: 3, method: 'tools/call', params: { name: 'inbox' } },
+    { id: 4, method: 'ping' },
+  ].map((r) => JSON.stringify({ jsonrpc: '2.0', ...r })).join('\n') + '\n';
+  for (const cwd of [h.repo, h.base]) {
+    const result = h.run(['mcp', '--agent', 'orchestrator'], { cwd, input });
+    assert.equal(result.code, 0, result.stderr);
+    const replies = result.stdout.trim().split('\n').map(JSON.parse);
+    assert.deepEqual(replies.map((r) => r.id), [1, 2, 3, 4]);
+    assert.equal(replies[0].result.serverInfo.name, 'tower-crane');
+    assert.equal(replies[1].result.tools.length, 5);
+    assert.equal(replies[2].result.isError, true);
+    assert.match(replies[2].result.content[0].text, /init|repository/);
+    assert.deepEqual(replies[3].result, {});
+  }
 });
