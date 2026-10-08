@@ -28,7 +28,7 @@ test('lower merge refreshes upper worktrees with gh stack sync and conflicts sen
     .findLast(e => e.cmd === 'rework' && e.task === 'T2');
   assert.equal(rework.detail.previous_revision, before.revision);
   assert.equal(rework.detail.revision, task.revision);
-  assert.match(task.notes.at(-1).text, /all branches restored/);
+  assert.match(task.notes.at(-1).text, /Conflict detected rebasing/);
   assert.match(f.h.ok(['brief', 'get', 'T2']), /Rework notes/);
   assert.match(f.h.json(['spawn', '--task', 'T2', '--dry-run']).argv.join('\n'), /Resolve the upper conflict/);
 
@@ -70,6 +70,75 @@ require('node:fs').writeFileSync(process.argv[1], process.argv[2]);
   const nextPrompt = fs.readFileSync(prompt, 'utf8');
   assert.match(nextPrompt, /Resolve the next review/);
   assert.doesNotMatch(nextPrompt, /Failed review by reviewer at/);
+});
+
+for (const stage of ['checkout', 'sync']) {
+  test(`${stage} worktree listing failure preserves submissions and gate evidence, then retries on the next pass`, (t) => {
+    const f = stacked(t);
+    const reason = 'listing worktrees: reading worktree administration directory ".git/worktrees/broken": open gitdir: no such file or directory';
+    f.h.ok(['evidence', 'T2', '--type', 'review', '--sha', f.upper.sha, '--revision', f.h.revision('T2'), '--ok', '--summary', 'review passed']);
+    f.h.git(['commit', '--allow-empty', '-qm', 'main moved']);
+    f.h.git(['push', 'origin', 'main']);
+    const before = f.h.json(['task', 'show', 'T2']);
+    const brief = f.h.ok(['brief', 'get', 'T2']);
+    f.write((d) => { d[`${stage}Error`] = `Sync aborted; no changes were made\n  Your current checkout is unchanged.\n${reason}`; });
+    const failed = f.h.run(['stack', 'sync', 'T2']);
+    assert.equal(failed.code, 1);
+    assert.match(failed.stdout, /retry/);
+    assert.deepEqual(f.h.json(['task', 'show', 'T2']), before);
+    assert.equal(f.h.json(['task', 'show', 'T1']).status, 'submitted');
+    assert.equal(f.h.ok(['brief', 'get', 'T2']), brief);
+    const events = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const event = events.findLast((e) => e.cmd === 'stack sync' && e.task === 'T2');
+    assert.equal(event.detail.ok, false);
+    assert.equal(event.detail.reason, reason);
+    assert.equal(event.detail.failure, 'tool');
+    assert.equal(events.some((e) => e.cmd === 'rework'), false);
+    f.write((d) => { delete d[`${stage}Error`]; });
+    f.h.ok(['worktree', 'T2']);
+    assert.equal(f.h.json(['task', 'show', 'T2']).status, 'submitted');
+    assert.notEqual(f.h.json(['task', 'show', 'T2']).stack.synced_base, before.stack.synced_base);
+    assert.equal(f.read().calls.filter((c) => c.args[1] === stage).length, 2);
+  });
+}
+
+test('transport failure after moving a branch sends only that branch to rework', (t) => {
+  const f = stacked(t);
+  f.write((d) => { d.syncCommit = true; d.syncError = 'pushing stack: connection reset by peer'; });
+  assert.equal(f.h.run(['stack', 'sync', 'T2']).code, 1);
+  assert.equal(f.h.json(['task', 'show', 'T1']).status, 'submitted');
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'rework');
+  assert.match(f.h.ok(['brief', 'get', 'T2']), /moved branch/);
+});
+
+test('transport failures mentioning conflicts are retried without rework', (t) => {
+  const f = stacked(t);
+  f.write((d) => { d.syncError = 'fetching branch conflicts: connection reset by peer'; });
+  assert.equal(f.h.run(['stack', 'sync', 'T2']).code, 1);
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'submitted');
+  f.write((d) => { delete d.syncError; });
+  f.h.ok(['stack', 'sync', 'T2']);
+});
+
+test('stack sync prunes orphan sandbox metadata before gh lists worktrees', (t) => {
+  const f = stacked(t);
+  const admin = path.join(f.h.repo, '.git', 'worktrees', 'orphan');
+  fs.mkdirSync(admin);
+  for (const file of ['commondir', 'config.worktree']) fs.writeFileSync(path.join(admin, file), '', { mode: 0o444 });
+  f.write((d) => { d.inspectWorktrees = true; });
+  f.h.ok(['stack', 'sync', 'T2']);
+  assert.equal(fs.existsSync(admin), false);
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'submitted');
+});
+
+test('an unavailable extension preserves the linked submission for a later retry', (t) => {
+  const f = stacked(t);
+  const before = f.h.json(['task', 'show', 'T2']);
+  f.write((d) => { d.missingExtension = true; });
+  assert.equal(f.h.run(['stack', 'sync', 'T2']).code, 1);
+  assert.deepEqual(f.h.json(['task', 'show', 'T2']), before);
+  f.write((d) => { delete d.missingExtension; });
+  f.h.ok(['stack', 'sync', 'T2']);
 });
 
 test('sync rework preserves a brief deletion that races its append', (t) => {
