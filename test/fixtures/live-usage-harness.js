@@ -37,6 +37,7 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
     file = path.join(env.CODEX_HOME, 'sessions', '2026', '10', '07', `rollout-2026-10-07T00-00-00-${id}.jsonl`);
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (env.LIVE_FILE) fs.writeFileSync(env.LIVE_FILE, file);
   let step = 0;
   const write = (final = false) => {
     step += 1;
@@ -51,7 +52,13 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
       fs.writeFileSync(env.LIVE_DONE, String(step));
       process.exit(70);
     }
-    if (step < steps) setTimeout(write, Number(env.LIVE_EVERY || 100));
+    if (step === 1 && env.LIVE_CONTINUE) {
+      const resume = setInterval(() => {
+        if (!fs.existsSync(env.LIVE_CONTINUE)) return;
+        clearInterval(resume);
+        write();
+      }, 25);
+    } else if (step < steps) setTimeout(write, Number(env.LIVE_EVERY || 100));
     else {
       setTimeout(() => {
         fs.writeFileSync(env.LIVE_DONE, String(step));

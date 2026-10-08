@@ -301,6 +301,8 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 For a supervised claude exit without a result, the supervisor reads the session again after the process group exits. Exit collection includes that final usage and replaces the live entry. Repeating `spend --from-spawn` keeps the same total.
 
+Submitting ends lease renewal and retries; live usage collection and budget enforcement continue until the harness closes. Missing telemetry retains known spend and marks it stale. A fresh reading restores live status. The open board updates telemetry age, freshness and spend summaries each second, even when no state change arrives.
+
 ## Decisions
 
 <!-- commands:Decisions:start -->

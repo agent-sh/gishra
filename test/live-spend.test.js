@@ -4,7 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const cp = require('node:child_process');
+const { makeRepo, BIN } = require('./helpers');
+const { CHROME, openBrowser } = require('./browser');
 
 const STUB = path.join(__dirname, 'fixtures', 'live-usage-harness.js').replace(/\\/g, '/');
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -128,6 +130,104 @@ test('Claude exit without a result includes usage written after the last live sa
   assert.equal(spend.entries.length, 1);
   h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
   assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 2000, 'recollection keeps the final total');
+});
+
+test('submission ends lease renewal and retries but live budgets hold until the harness exits', async (t) => {
+  const h = setup(t, 'claude');
+  h.ok(['task', 'update', 'T1', '--budget-tokens', '3500']);
+  const resume = path.join(h.base, 'continue');
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+    LIVE_STEPS: '60', LIVE_EVERY: '200', LIVE_CONTINUE: resume,
+  }) });
+  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  h.ok(['submit', 'T1', '--agent', spawned.agent, '--sha', h.git(['rev-parse', 'HEAD'])]);
+  fs.writeFileSync(resume, '');
+  await until(() => exited(h, spawned.agent), 'submitted worker was not stopped');
+  const log = events(h);
+  const submit = log.findIndex((e) => e.cmd === 'submit');
+  const after = log.slice(submit + 1);
+  assert.ok(after.some((e) => e.cmd === 'budget stop'), 'spending after submission crosses the task budget');
+  assert.ok(after.some((e) => e.cmd === 'spend live' && e.detail.tokens > 3500));
+  assert.equal(fs.existsSync(h.done), false, 'budget enforcement stops the submitted harness before natural exit');
+  assert.equal(after.some((e) => ['renew', 'spawn retry', 'spawn fallback'].includes(e.cmd)), false);
+  assert.equal(h.json(['task', 'show', 'T1']).status, 'submitted');
+  assert.deepEqual(h.readState('decisions.json').decisions.find((d) => d.escalation).escalation.settings, ['budget.raise']);
+  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'submitted exit usage was not finalized');
+});
+
+test('unavailable telemetry preserves known spend and its age through recovery and exit', async (t) => {
+  const h = setup(t, 'claude');
+  const location = path.join(h.base, 'usage-file');
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+    LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_FILE: location,
+  }) });
+  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  const before = h.json(['task', 'show', 'T1']).spend;
+  const file = fs.readFileSync(location, 'utf8');
+  const data = fs.readFileSync(file);
+  fs.unlinkSync(file);
+  await until(() => events(h).some((e) => e.cmd === 'spend live' && ['unavailable', 'stale'].includes(e.detail.live.state)), 'missing telemetry was not observed');
+  const missing = h.json(['task', 'show', 'T1']).spend;
+  for (const key of ['tokens', 'input', 'cached', 'output']) assert.equal(missing[key], before[key], key);
+  assert.equal(missing.entries[0].at, before.entries[0].at, 'missing data cannot refresh the last measured usage');
+  assert.equal(h.json(['status']).spend.live[0].state, 'stale');
+  fs.writeFileSync(file, data);
+  await until(() => h.json(['status']).spend.live[0].state === 'live', 'recovered telemetry stayed stale');
+  fs.unlinkSync(file);
+  await until(() => h.json(['status']).spend.live[0].state === 'stale', 'lost telemetry did not become stale again');
+  h.ok(['task', 'update', 'T1', '--budget-tokens', '500']);
+  await until(() => exited(h, spawned.agent), 'the harness did not exit');
+  assert.ok(events(h).some((e) => e.cmd === 'budget stop'), 'missing telemetry cannot restore spent budget');
+  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'exit usage was not finalized');
+  assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 1000);
+  h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+  assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 1000);
+});
+
+test('an open board ages live telemetry without state writes or a page reload', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const b = await openBrowser(t);
+  const h = setup(t, 'claude', { usage_ms: 1000 });
+  const location = path.join(h.base, 'usage-file');
+  h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_FILE: location }) });
+  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  const file = fs.readFileSync(location, 'utf8');
+  fs.unlinkSync(file);
+  fs.mkdirSync(file); // Failed reads leave the last reading to age without another state write.
+  const reading = h.json(['status']).spend.live[0];
+  await b.send('Page.enable');
+  await b.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.boardNow = ${Date.parse(reading.at) + 1000};
+    Date.now = () => window.boardNow;
+    window.boardTimers = [];
+    window.setInterval = (callback) => window.boardTimers.push(callback);
+  ` });
+  const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json', '--agent', 'viewer'], { cwd: h.repo, env: h.env });
+  const closed = new Promise((resolve) => server.once('close', resolve));
+  let output = '';
+  server.stdout.on('data', (chunk) => { output += chunk; });
+  try {
+    await until(() => output.includes('\n'), 'serve did not start');
+    const { url } = JSON.parse(output.split('\n')[0]);
+    await b.goto(`${url}#spend`);
+    await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+    assert.equal(await b.inPage(`document.querySelector('[data-live-state]').dataset.liveState`), 'live');
+    const log = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+    await b.inPage(`window.boardNow += 60000; window.boardTimers.forEach((callback) => callback());`);
+    const shown = await b.inPage(`(() => {
+      const row = document.querySelector('[data-live-state]');
+      return { state: row.dataset.liveState, freshness: row.cells[3].textContent, age: row.cells[4].textContent,
+        summary: document.querySelector('.spendmini').textContent, running: document.querySelector('.total[data-live]').textContent };
+    })()`);
+    assert.equal(shown.state, 'stale');
+    assert.equal(shown.freshness, 'stale');
+    assert.equal(shown.age, '61s ago');
+    assert.match(shown.summary, /stale/);
+    assert.match(shown.running, /stale/);
+    assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), log, 'time passing wrote no state');
+  } finally {
+    server.kill();
+    await closed;
+  }
 });
 
 // The test context's cleanup stops the detached agents these tests leave running.
