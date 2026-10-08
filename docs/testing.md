@@ -26,6 +26,79 @@ For projects Tower Crane manages, expensive proof is the default: the orchestrat
 - `node scripts/mutants.js` plants each bug in its list in a scratch copy and runs the files named for it. A bug those files miss runs against the full suite before it counts as missed. Every bug must be caught.
 - `node scripts/test-coverage.js` uses node:test coverage, which follows the CLI processes a test starts. For each file it lists the lib lines it runs and how many no other file runs. A file with no unique lines is a candidate to merge or delete.
 
+## Cost
+
+`node scripts/test-cost.js --before <main checkout>`: each file alone, median of three runs, four files at a time, the two checkouts interleaved so both saw the same load. The before checkout is `origin/main` at e2f5277 with its own `HOME` per test repository; without that, 15 of its files failed early here and measured too low. The machine was at a load of 40 to 80 from other sessions throughout, so wall times run long; CPU seconds compare.
+
+Total CPU: **1967 s before, 1408 s after, 28% less**. Summed wall time: 6156 s before, 4479 s after.
+
+| file | covers | before CPU s | before wall s | after CPU s | after wall s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `test/isolation.test.js` | spawned agent homes: no user secrets or hooks, sandbox rules, git and gh shims, broker-only state writes | 167.9 | 361.4 (3/3 failed) | 146.6 | 320.8 (3/3 failed) |
+| `test/sources.test.js` | sources gate: fetch, visible text, public addresses and redirects, citations, research tiers | 155.6 | 411.4 | 46.4 | 142.5 |
+| `test/reviewer.test.js` | reviewer choice by tier, diff and price history; review packet; accept dispatch | 151.7 | 594.5 | 93.2 | 401.0 |
+| `test/local-ci.test.js` | ci.local: merged-tree runs, receipts, base movement, variants, overrides | 149.2 | 589.9 | 116.0 | 436.0 |
+| `test/board.test.js` | board snapshot and live serve: escaping, offline load, forms, live updates keep focus and scroll, viewer limits | 109.5 | 403.0 | 61.2 | 243.8 |
+| `test/gates.test.js` | CLI gate wiring: audited tests mode, policy at accept and merge, missing gate modules, gate context | 107.6 | 270.9 | 19.1 | 48.2 |
+| `test/supervision.test.js` | supervised retries, outage classification, stalls, monitor teardown | 83.7 | 228.9 | 62.3 | 187.1 |
+| `test/spawn-resume.test.js` | rework resumes the recorded session or starts fresh | 71.8 | 179.1 | 72.1 | 176.5 |
+| `test/fallback.test.js` | fallback routes after outages and refusals, retry budgets, personal fallbacks | 66.4 | 180.1 | 66.8 | 169.5 (1/3 failed) |
+| `test/spawn.test.js` | spawn command building per harness, prompts, detached runs, refusals | 62.7 | 175.6 | 50.6 | 141.6 |
+| `test/evidence.test.js` | software evidence counts only with its audit event; hand-written or forged receipts never do | 60.1 | 200.1 | 27.0 | 99.6 |
+| `test/events.test.js` | wait: each event type wakes waiters, cursors, stalls, worker exits, serve comments | 54.7 | 201.3 (1/3 failed) | 41.8 | 167.9 |
+| `test/worktree.test.js` | task worktrees from the freshest base, fetch failures, interrupted adds | 53.9 | 217.7 (2/3 failed) | 39.7 | 175.1 (3/3 failed) |
+| `test/stack.test.js` | stacked dispatch from a dependency head and PR linking | 46.8 | 114.5 | 47.1 | 112.6 |
+| `test/worker-slots.test.js` | worker slot reservations across dispatch, retries and exits | 42.1 | 139.3 | 28.4 | 76.2 |
+| `test/gate-commands.test.js` | pinned gate commands: who sets them, stale receipts after a change, no caller payloads | 41.3 | 106.1 | 28.1 | 72.5 |
+| `test/harness-hooks.test.js` | harness home hooks deliver messages and publish progress per harness | 40.5 | 91.0 | 35.8 | 77.0 |
+| `test/stack-merge.test.js` | stacked PR merge: lower acceptance, rechecks, admin refusal, fallbacks | 38.7 | 102.3 | 38.6 | 101.6 |
+| `test/accept.test.js` | accept needs gate evidence at the head and revision, review by another agent, waivers by the owner, rework | 36.4 | 108.1 | 27.7 | 80.3 |
+| `test/usage.test.js` | usage capture per harness and accounting monitors | 34.2 | 104.7 | 24.2 | 73.2 |
+| `test/sandbox-extensions.test.js` | rung sandbox, env, env_file and scope settings reach only the agent | 33.0 | 113.1 | 29.1 | 97.1 |
+| `test/ci-policy.test.js` | CI policy changes invalidate hosted CI evidence at accept and merge | 31.0 | 94.5 | 12.3 | 38.2 |
+| `test/authority.test.js` | operational vs owner-required settings, orchestrator identity, escalation decisions, detected gate pins | 28.5 | 96.0 | 20.5 | 67.0 |
+| `test/project.test.js` | project settings flags, lists, tests policy, authority on init and project set | 27.8 | 140.9 | 28.0 | 138.0 |
+| `test/submit.test.js` | resubmission rules, PR and branch changes | 25.5 | 61.9 | 25.5 | 58.5 |
+| `test/merge-options.test.js` | merge subject and body, admin policy, keep_branch | 22.6 | 117.1 | 22.7 | 110.5 |
+| `test/ladder.test.js` | ladder defaults, user file, fallbacks, validation, tiers | 21.5 | 53.6 | 21.1 | 56.2 |
+| `test/task-locks.test.js` | resource locks across claims and dispatch | 21.4 | 49.5 | 15.5 | 40.4 |
+| `test/spawn-exit.test.js` | exited spawned claimants are reported and released | 19.9 | 85.1 | 16.0 | 65.6 |
+| `test/ci-required.test.js` | ci.required jobs, mergeability and conflicts in the CI gate | 19.1 | 55.7 | 11.2 | 33.5 |
+| `test/stack-sync.test.js` | stack sync after lower merges and base moves | 18.9 | 41.1 | 19.2 | 47.9 |
+| `test/ci-capped-review.test.js` | ci.capped_review: a capped review app passes only its own linked failure | 17.4 | 58.6 | 8.7 | 27.0 |
+| `test/identity.test.js` | agent identity resolution, terminal owner fallback limits | 16.8 | 41.9 | 10.3 | 27.9 |
+| `test/rules.test.js` | house rules chain and startup receipt per harness; scope gate | 11.3 | 69.6 | 11.3 | 49.0 |
+| `test/gates/tests.test.js` | tests gate in process: prove, revert, build-file keeps, modes, expensive proof, layouts, timeouts | 10.0 | 31.4 | 18.9 | 53.1 (1/3 failed) |
+| `test/plan.test.js` | task add and update, plan import, validate, briefs | 8.7 | 43.0 | 8.8 | 44.7 |
+| `test/claim.test.js` | claims, leases, renewals, worker limit and release rules | 8.6 | 21.9 | 8.6 | 19.6 |
+| `test/lock.test.js` | state lock: wait, stale breaking, pid namespaces, id continuity | 8.3 | 51.9 (1/3 failed) | 8.4 | 58.0 (1/3 failed) |
+| `test/settings.test.js` | Settings view edits ladder and tiers through the CLI with the page token | 7.2 | 24.4 | 4.7 | 21.9 |
+| `test/ready.test.js` | ready ordering and status summary | 5.7 | 32.1 | 5.7 | 30.6 |
+| `test/browser-kit.test.js` | browser kit user setting, needs round trip, rework before capability change | 5.0 | 19.3 | 5.0 | 14.9 |
+| `test/broker.test.js` | state broker authorization: role commands, own identity, own task, token, no git, shutdown | 4.5 | 13.7 | 4.6 | 15.7 |
+| `test/render.test.js` | sketch render on every write, render lock, serve reload | 4.2 | 14.8 | 4.2 | 18.5 |
+| `test/json.test.js` | --json output parses for every command | 4.0 | 10.1 | 4.0 | 10.7 |
+| `test/gates/clean.test.js` | cleanup gate: HIGH findings, incomplete scans, unpinned tool | 3.1 | 8.3 | 3.1 | 8.7 |
+| `test/package.test.js` | the npm package ships the plugin and loads pi skills | 2.2 | 11.1 | 2.1 | 6.7 |
+| `test/init.test.js` | init, state discovery, --state override, help | 2.0 | 5.2 | 2.0 | 5.9 |
+| `test/epipe.test.js` | closed stdout and stderr pipes keep state writes and exit codes | 1.6 | 4.1 | 1.6 | 3.6 |
+| `test/commands.test.js` | a subprocess inside a state mutation refuses the whole write | 1.5 | 3.4 | 1.5 | 3.8 |
+| `test/browser-startup.test.js` | Chrome launcher for board tests: spawn errors, sandbox file isolation | 0.3 | 1.2 | 0.3 | 1.1 |
+| `test/gates/ci.test.js` | CI gate on fake gh output: conclusions, suites, ignored apps, moved head | 0.1 | 0.3 | 0.1 | 0.4 |
+| `test/live-browser.test.js` | live: a real sandboxed browser worker (skipped unless TOWER_CRANE_LIVE_BROWSER=1) | 0.1 | 0.2 | 0.2 | 0.2 |
+| `test/gates/merge.test.js` | merge gate: accepted only, head match, admin policy, merge queue, already merged | 0.1 | 0.3 | 0.1 | 0.4 |
+| `test/live-rules.test.js` | live: a real worker reads the rules chain (skipped unless its TOWER_CRANE_LIVE_* flag is set) | 0.1 | 0.2 | 0.1 | 0.2 |
+| `test/live-sandbox.test.js` | live: real claude and codex sandboxes refuse forged state edits (skipped unless TOWER_CRANE_LIVE_CLAUDE=1 or its codex flag) | 0.1 | 0.3 | 0.1 | 0.4 |
+| **total** | 55 files | **1967.2** | **6156.0** | **1408.4** | **4478.6** |
+
+`isolation.test.js` fails 3 of 3 in both trees, only inside a Tower Crane worker sandbox: its nested `git push` of another task's branch meets the parent sandbox's git shim. `worktree.test.js` fails its 30-second dispatch bound above a load of about 70, in both trees. `fallback`, `events` and `lock` each failed one run of three under load.
+
+What is left is mostly the CLI's own cost: every call starts Node and loads the CLI (about 80 ms of CPU for `task show`, against 29 ms for an empty `node -e 0`), runs `git rev-parse`, and a write re-renders the board. Skipping the render in tests that never read it saved only 8% on three CLI-heavy files, so the suite keeps rendering. Loading the CLI's modules lazily would cut every test's process cost; that is a change to the CLI, not to the tests.
+
+## What each file uniquely covers
+
+`node scripts/test-coverage.js` on the lean suite: 13699 lib lines run in all. Three files run no line some other file does not: `test/ci-capped-review.test.js`, `test/claim.test.js` and `test/identity.test.js`. None was deleted on that alone. Line coverage does not see assertions. `identity` is the only file that catches `terminal-fallback-is-owner`, and `claim` catches `workers-limit-off-by-one`. `ci-capped-review` is the only file that asserts a capped review cannot hide another failure. The most unique lines are in `test/sources.test.js` (302, the source gate and public HTTP), then `harness-hooks`, `sandbox-extensions`, `isolation` and `stack-merge` (74 to 80 each).
+
 ## Accuracy: the mutation sample
 
 `scripts/mutants.js` holds 31 planted bugs across the areas where a silent regression costs the most. Each is a one-line change: a check removed, a bound moved by one, a guard always true.
