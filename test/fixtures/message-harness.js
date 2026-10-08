@@ -73,7 +73,8 @@ async function main() {
     out.blocked = held.decision === 'block';
     out.turns.push(held);
     out.turns.push(hook('UserPromptSubmit'));
-    hook('Stop');
+    // An orchestrator's Stop holds while tasks are open; the test ends it.
+    if (process.env.MESSAGE_ORCHESTRATOR !== '1') hook('Stop');
   } else if (harness === 'pi') {
     const handlers = {};
     const pi = { on: (name, fn) => { handlers[name] = fn; }, sendMessage: (m, options) => {
