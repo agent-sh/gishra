@@ -231,7 +231,11 @@ test('a brokered worker or reviewer messages only the orchestrator or the owner'
   assert.equal(refused.code, 1, refused.stderr);
   assert.match(refused.stderr, /messages only the orchestrator or the owner, not worker-T1-1/);
   assert.deepEqual(harnessHooks.unread(events(), 'worker-T1-1'), []);
-  assert.equal(events().filter((e) => e.cmd === 'msg').length, 0, 'the refused message wrote no event');
+  assert.equal(events().filter((e) => e.cmd === 'msg').length, 0, 'the refused message wrote no message event');
+  // The attempt is logged for the orchestrator and the board, without its text.
+  const refusals = events().filter((e) => e.cmd === 'msg refused');
+  assert.deepEqual(refusals.map((e) => [e.agent, e.task, e.to, e.detail.to]), [['worker-T2-1', 'T2', 'orchestrator', 'worker-T1-1']]);
+  assert.ok(!fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').includes('note from T2'), 'the refusal keeps the text out of the log');
 
   for (const to of ['orchestrator', 'owner']) {
     const r = await B.forward(job.broker, ['msg', '--to', to, `status from T2 to ${to}`], h.state);

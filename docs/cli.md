@@ -180,7 +180,7 @@ On startup or resume without a saved cursor, run `tower-crane wait --timeout 0` 
 
 Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review and gate results). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
 
-`tower-crane msg --to NAME [--task ID] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes. A sandboxed worker or reviewer messages only `orchestrator` or `owner`: the broker refuses any other `--to` with exit 1 and writes nothing, so one task's agent cannot put text into another agent's prompt.
+`tower-crane msg --to NAME [--task ID] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes. A sandboxed worker or reviewer messages only `orchestrator` or `owner`: the broker refuses any other `--to` with exit 1 and delivers nothing, so one task's agent cannot put text into another agent's prompt. The refusal appends one `msg refused` event to the orchestrator, with the agent, the task and the intended `to`, and never the text.
 
 Spawned harnesses deliver messages automatically through the adapters below. Messages are addressed to the generated agent name, across all tasks. `wait` remains the orchestrator's event interface.
 
