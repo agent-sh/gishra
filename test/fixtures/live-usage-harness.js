@@ -53,7 +53,10 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
     step += 1;
     const output = Math.floor(per / 10);
     const record = {
-      claude: { type: 'assistant', message: { id: `msg-${step}`, model: 'live-model', usage: { input_tokens: per - output, output_tokens: output } } },
+      claude: { type: 'assistant', message: { id: `msg-${step}`, model: 'live-model', usage: {
+        input_tokens: per - output, output_tokens: output,
+        ...(env.LIVE_CACHED !== undefined ? { cache_read_input_tokens: Number(env.LIVE_CACHED) } : {}),
+      } } },
       codex: { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: {
         input_tokens: step * (per - output), cached_input_tokens: 0, output_tokens: step * output, total_tokens: step * per,
       } } } },

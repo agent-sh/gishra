@@ -255,6 +255,45 @@ test('interrupt stops a live-spend dispatch and reconciles usage without changin
   assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 1000);
 });
 
+test('a ranged task budget stop does not climb the quality ladder', async (t) => {
+  const h = setup(t, 'codex');
+  h.ok(['task', 'update', 'T1', '--tier', 'easy..medium', '--budget-tokens', '3500']);
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '60', LIVE_EVERY: '300' }) });
+  await until(() => exited(h, spawned.agent), 'the budget did not stop the ranged worker');
+  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'ranged exit usage was not finalized');
+  h.ok(['recover', 'T1']);
+  const task = h.json(['task', 'show', 'T1']);
+  assert.equal(task.tier, 'easy', 'a budget stop is not a quality failure');
+  assert.deepEqual(task.escalations || [], []);
+  assert.equal(events(h).some((e) => e.cmd === 'escalate'), false);
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn').length, 1);
+  const decisions = h.readState('decisions.json').decisions;
+  assert.equal(decisions.length, 1);
+  assert.deepEqual(decisions[0].escalation.settings, ['budget.raise']);
+});
+
+test('live and reconciled spend keep the configured cost for their rung', async (t) => {
+  const h = setup(t, 'claude');
+  h.ok(['task', 'update', 'T1', '--tier', 'easy..medium']);
+  h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: {
+    'live-model': { input: 1, cache_write: 1, cache_read: 1, output: 1 },
+  } })]);
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_CACHED: '0' }) });
+  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  const before = h.json(['task', 'show', 'T1']);
+  assert.deepEqual(before.spend_by_rung.easy, { tokens: 1000, cost_usd: 0.001 });
+  assert.equal(before.spend.entries[0].cost_usd, 0.001);
+  assert.match(h.ok(['task', 'show', 'T1']), /easy: 1000 tokens, USD 0\.001/);
+  h.ok(['interrupt', 'T1']);
+  await until(() => exited(h, spawned.agent), 'the priced worker did not exit');
+  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'priced exit usage was not finalized');
+  const after = h.json(['task', 'show', 'T1']);
+  assert.deepEqual(after.spend_by_rung, before.spend_by_rung);
+  assert.equal(after.spend.entries.length, 1);
+  h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+  assert.deepEqual(h.json(['task', 'show', 'T1']).spend_by_rung, before.spend_by_rung);
+});
+
 test('unavailable telemetry preserves known spend and its age through recovery and exit', async (t) => {
   const h = setup(t, 'claude');
   const location = path.join(h.base, 'usage-file');
