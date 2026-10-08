@@ -258,9 +258,12 @@ test('rework records the review climb before pending worker cleanup finishes', {
   assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
 });
 
-for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
+for (const { route, required } of [
+  { route: 'tests' }, { route: 'clean' }, { route: 'ci' }, { route: 'local-ci' },
+  { route: 'ci', required: 'missing' }, { route: 'ci', required: 'pending' },
+]) {
   const type = route === 'local-ci' ? 'ci' : route;
-  test(`a confirmed ${route} gate failure climbs and reaches the owner at the range ceiling`, async (t) => {
+  test(`a confirmed ${route} gate failure${required ? ` while a required check is ${required}` : ''} climbs and reaches the owner at the range ceiling`, async (t) => {
     const h = setup(t, 'review', 'easy..medium', (repo) => {
       gateFixture(repo);
       // Spawn exit runs every software gate, so each fails only where the check asks it to.
@@ -270,6 +273,15 @@ for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
       if (route === 'local-ci') repo.ok(['project', 'set', '--ci-local', JSON.stringify({
         command: [process.execPath, '-e', exit], timeout: 5,
       })]);
+      if (required) repo.ok(['project', 'set', '--ci-required', '["required-build"]']);
+      if (required === 'pending') {
+        const gh = path.join(repo.base, 'tools', 'gh');
+        fs.appendFileSync(gh, `
+if (args.some((arg) => arg.includes('/check-runs'))) {
+  console.log(JSON.stringify({name: 'required-build', app: 'fixture', status: 'in_progress', conclusion: null}));
+}
+`);
+      }
     });
     // The monitor runs automated gates after spawn exit; check only once each reaction has ended.
     const settled = (agent) => {
