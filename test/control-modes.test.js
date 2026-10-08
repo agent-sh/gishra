@@ -205,4 +205,48 @@ test('ask --setting requests an owner-required change no command makes, and appl
   assert.equal(h.run(['ask', '--setting', 'publish', '--question', 'q'], as('orchestrator')).code, 2);
   assert.match(h.run(['ask', '--setting', 'publish']).stderr, /the owner makes publish changes directly/);
   assert.match(h.run(publish, as('worker-T1-1')).stderr, /only the owner/);
+
+  // A setting some command changes is asked for by that command, which
+  // applies the approval; asking here would use it up with nothing changed.
+  const before = decisions(h).length;
+  const owned = Object.keys(Authority.TABLE).filter((k) => Authority.classOf(k) === Authority.OWNER && k !== 'publish');
+  assert.ok(owned.includes('merge.admin'));
+  for (const setting of owned) {
+    const r = h.run(['ask', '--setting', setting], as('orchestrator'));
+    assert.equal(r.code, 1, setting);
+    assert.match(r.stderr, new RegExp(`${setting.replace('.', '\\.')} is changed by .*run that command`), setting);
+  }
+  assert.equal(decisions(h).length, before, 'no decision opens for them');
+});
+
+test('an orchestrator spawn uses the owner\'s delegation approval and records it only once the spawn starts', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Run', '--acceptance', 'works']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
+  const rung = (program) => h.ok(['ladder', 'set', 'orchestrator', '--harness', 'command',
+    '--command', JSON.stringify([program, '-e', 'process.exit(0)', '{prompt}']),
+    ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
+  const spawn = () => h.run(['spawn', '--task', 'T1', '--role', 'orchestrator', '--wait'], as('orchestrator'));
+  const delegations = () => audits(h).filter((e) => Object.hasOwn(e.detail.settings, 'delegation'));
+
+  rung(path.join(h.base, 'missing-program'));
+  const asked = spawn();
+  assert.equal(asked.code, 1, asked.stderr);
+  assert.match(asked.stderr, /delegation is owner-required; opened D1/);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  const failed = spawn();
+  assert.equal(failed.code, 1, failed.stderr);
+  assert.doesNotMatch(failed.stderr, /owner-required/);
+  assert.deepEqual(delegations(), [], 'a spawn that never started delegated nothing');
+  assert.equal(decisions(h)[0].applied, undefined, 'and leaves the approval usable');
+
+  rung(process.execPath);
+  const started = spawn();
+  assert.equal(started.code, 0, started.stderr);
+  assert.equal(decisions(h)[0].applied.by, 'orchestrator');
+  assert.deepEqual(delegations().map((e) => e.detail), [
+    { command: 'spawn', actor: 'orchestrator', mode: 'cli', approved_by: 'D1', settings: { delegation: 'owner-required' } },
+  ]);
+  assert.match(spawn().stderr, /opened D2 /, 'the approval is used up');
 });
