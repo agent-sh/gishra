@@ -207,6 +207,74 @@ test('an asynchronous merge that GitHub reports failed stops the chain after the
   assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge' && e.ok), false);
 });
 
+test('a failed asynchronous POST without a job id reports the refusal after checking the PR', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => {
+    d.asyncResponses = { 11: {
+      post: { body: { status: 'failed', error: 'Required review is missing' } },
+      views: [{ advanceMs: 10 * 60 * 1000 + 1 }],
+    } };
+  });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /asynchronous merge of PR #11 ended failed: Required review is missing/);
+  assert.doesNotMatch(r.stdout, /may be in a merge queue/);
+  assert.deepEqual(routes(f), ['async 11']);
+  const data = f.read();
+  assert.equal(data.asyncResponses[11].views.length, 0, 'the PR was read before reporting the refusal');
+  assert.equal(data.calls.some((c) => c.args[0] === 'api' && /merge-async\//.test(c.args[1])), false);
+  for (const id of ['T1', 'T2']) {
+    assert.equal(f.h.json(['task', 'show', id]).evidence.some((e) => e.type === 'merge' && e.ok), false);
+  }
+});
+
+for (const unread of [false, true]) {
+  test(`a failed job survives a PR read error and a retired status endpoint${unread ? ' while confirmation stays unavailable' : ''}`, (t) => {
+    const f = stacked(t);
+    f.accept('T1');
+    f.accept('T2');
+    const readError = { code: 1, error: 'gh: Server Error (HTTP 502)' };
+    f.write((d) => {
+      d.asyncResponses = { 12: {
+        polls: [
+          { body: { status: 'failed', error: 'Merge conflict in T2.txt' } },
+          { code: 1, error: 'gh: Not Found (HTTP 404)', advanceMs: 10 * 60 * 1000 + 1 },
+        ],
+        views: unread ? [readError, readError] : [readError],
+      } };
+    });
+    const r = f.h.run(['merge', 'T2']);
+    assert.equal(r.code, 1);
+    assert.match(r.stdout, /asynchronous merge of PR #12 ended failed: Merge conflict in T2\.txt/);
+    assert.doesNotMatch(r.stdout, /may be in a merge queue/);
+    assert.deepEqual(routes(f), ['async 11', 'async 12']);
+    const data = f.read();
+    assert.equal(data.asyncResponses[12].polls.length, 0);
+    assert.equal(data.asyncResponses[12].views.length, 0);
+    assert.equal(data.prs[12].state, 'OPEN');
+    assert.equal(f.h.json(['task', 'show', 'T1']).evidence.findLast((e) => e.type === 'merge').ok, true);
+    assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge' && e.ok), false);
+  });
+}
+
+test('a confirmed accepted merge takes precedence over a retained terminal failure', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => {
+    d.asyncResponses = { 11: {
+      post: { body: { status: 'failed', message: 'Merge was cancelled' } },
+      views: [{ code: 1, error: 'gh: Server Error (HTTP 502)' }, { merge: true }],
+    } };
+  });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
+  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+});
+
 test('failed status polls defer to the PR state: a 5xx waits, a 404 after the merge landed confirms it', (t) => {
   const f = stacked(t);
   f.accept('T1');

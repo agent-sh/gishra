@@ -29,6 +29,10 @@ cp.spawnSync = function stackGh(command, args, opts) {
     fs.writeFileSync(file, JSON.stringify(data));
     return { status, stdout: typeof value === 'string' ? value : JSON.stringify(value), stderr };
   };
+  const response = (r, fallback = '') => {
+    skew += r.advanceMs || 0;
+    return finish(r.body ?? fallback, r.code || 0, r.error || '');
+  };
   // data.during runs tower-crane commands once while this gh call is in flight.
   const key = /\/merge-async$/.test(args[1] || '') ? 'merge-async' : args.slice(0, 2).join(' ');
   for (const cli of data.during?.[key] || []) {
@@ -82,6 +86,11 @@ cp.spawnSync = function stackGh(command, args, opts) {
       const field = (name) => args.find((a, i) => args[i - 1] === '-f' && a.startsWith(`${name}=`))?.slice(name.length + 1);
       if (field('expected_head_sha') !== pr.headRefOid) return finish('', 1, 'gh: Head branch was modified. Review and try the merge again. (HTTP 409)');
       if (data.refuseMergePr === pr.number) return finish('', 1, 'gh: Base branch policy prohibits the merge (HTTP 405)');
+      const replies = data.asyncResponses?.[pr.number];
+      if (replies) {
+        replies.started = true;
+        if (replies.post) return response(replies.post);
+      }
       data.asyncMerges = data.asyncMerges || {};
       const id = `m${Object.keys(data.asyncMerges).length + 1}`;
       data.asyncMerges[id] = { pr: pr.number, method: field('merge_method') };
@@ -90,6 +99,8 @@ cp.spawnSync = function stackGh(command, args, opts) {
     if (asyncPath) {
       const job = data.asyncMerges[asyncPath[2]];
       const pr = data.prs[job.pr];
+      const reply = data.asyncResponses?.[pr.number]?.polls?.shift();
+      if (reply) return response(reply);
       // data.pollFailures[pr] lists errors for successive polls. GitHub retires a finished
       // job, so a 404 comes after the merge lands; a 5xx leaves the merge pending.
       const failure = data.pollFailures?.[pr.number]?.shift();
@@ -115,6 +126,10 @@ cp.spawnSync = function stackGh(command, args, opts) {
   if (args[0] === 'pr' && args[1] === 'view') {
     const pr = data.prs[args[2]];
     if (!pr) return finish('', 1, 'missing PR');
+    const replies = data.asyncResponses?.[pr.number];
+    const reply = replies?.started && replies.views?.shift();
+    if (reply?.merge) land(pr, 2, `Merge pull request #${pr.number}`, false);
+    if (reply) return response(reply, pr);
     return finish(pr);
   }
   if (args[0] === 'pr' && args[1] === 'edit') {
