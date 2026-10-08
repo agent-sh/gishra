@@ -28,8 +28,22 @@ function reviewedTask(t, kind = 'docs') {
   return { h, sha };
 }
 
+// A review_pending accept dispatches the stub reviewer. Its exit runs the
+// automation reaction, which accepts on its own once review evidence exists,
+// so the test records the fresh review only after that reaction finished.
+async function reviewSettled(h) {
+  const deadline = Date.now() + 30000;
+  for (;;) {
+    const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const exit = events.findLast((e) => e.cmd === 'spawn exit' && e.detail.role === 'reviewer');
+    if (exit && events.some((e) => e.cmd === 'automation' && e.detail.source === exit.id && e.detail.phase === 'done')) return;
+    assert.ok(Date.now() < deadline, 'dispatched reviewer did not settle');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 for (const status of ['submitted', 'accepted']) {
-  test(`G3: rework of a ${status} task cannot reuse a review when the same sha is resubmitted`, (t) => {
+  test(`G3: rework of a ${status} task cannot reuse a review when the same sha is resubmitted`, async (t) => {
     const { h, sha } = reviewedTask(t);
     if (status === 'accepted') h.ok(['accept', 'T1', '--agent', 'orchestrator']);
     const before = h.json(['task', 'show', 'T1']);
@@ -47,12 +61,13 @@ for (const status of ['submitted', 'accepted']) {
     assert.equal(shown.gates.ok, false);
     assert.match(h.ok(['task', 'show', 'T1']), /review ok .* \(revision 1, does not count\)/);
 
+    await reviewSettled(h);
     h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
     assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
   });
 }
 
-test('G4: changing a submitted brief invalidates the review at the unchanged sha', (t) => {
+test('G4: changing a submitted brief invalidates the review at the unchanged sha', async (t) => {
   const { h, sha } = reviewedTask(t);
   const before = h.json(['task', 'show', 'T1']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Check the link and cover the CLI docs.\n' });
@@ -64,11 +79,12 @@ test('G4: changing a submitted brief invalidates the review at the unchanged sha
   assert.deepEqual(shown.evidence, before.evidence);
   assert.match(h.ok(['task', 'show', 'T1']), /review ok .* \(revision 1, does not count\)/);
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).review_pending, true);
+  await reviewSettled(h);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
 });
 
-test('an accepted brief needs explicit rework before edits, and dependents wait for fresh acceptance', (t) => {
+test('an accepted brief needs explicit rework before edits, and dependents wait for fresh acceptance', async (t) => {
   const { h, sha } = reviewedTask(t);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   h.ok(['task', 'add', '--title', 'Uses the link', '--acceptance', 'uses the accepted link', '--kind', 'docs', '--dep', 'T1']);
@@ -97,6 +113,7 @@ test('an accepted brief needs explicit rework before edits, and dependents wait 
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).review_pending, true);
   assert.equal(h.run(['claim', 'T2', '--agent', 'dependent']).code, 1);
+  await reviewSettled(h);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   h.ok(['claim', 'T2', '--agent', 'dependent']);
