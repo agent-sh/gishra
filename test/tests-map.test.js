@@ -7,7 +7,7 @@ const path = require('node:path');
 const { makeRepo } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 
-const map = { 'value.js': ['test/mapped.test.js'] };
+const map = { 'value.js': ['test/mapped.test.js'], '**/*.md': [] };
 
 function fixture(t, settings = map) {
   const h = makeRepo(t);
@@ -23,6 +23,7 @@ function fixture(t, settings = map) {
   h.git(['switch', 'fixture-change']);
   h.git(['merge', '--no-edit', 'main']);
   fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 1;\n');
+  fs.writeFileSync(path.join(h.repo, 'README.md'), 'Changed documentation.\n');
   h.git(['add', '.']);
   h.git(['commit', '--allow-empty', '-qm', 'submitted change']);
   const sha = h.git(['rev-parse', 'HEAD']);
@@ -63,10 +64,15 @@ test('mapped head suites preserve scoped proof and policy-bound evidence through
   assert.match(fallback.summary, /unmapped.*value.js/);
   assert.equal(fallback.commands.find((c) => c.command !== 'git').command, 'node --test test/*.test.js');
   assert.deepEqual(fallback.receipt.proof_tests, receipt.receipt.proof_tests);
+  h.ok(['project', 'set', '--tests-map', JSON.stringify(map)]);
+  check(h);
+  h.ok(['project', 'set', '--ci-required', '[]']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'tests').ok, false);
 });
 
 for (const [reason, settings, flags] of [
-  ['missing mapped test', { 'value.js': ['test/missing.test.js'] }, []],
+  ['missing mapped test', { 'value.js': ['test/missing.test.js'], '**/*.md': [] }, []],
+  ['outside tests.paths', { 'value.js': ['value.js'], '**/*.md': [] }, []],
   ['ci.required', map, ['--ci-required', '[]']],
   ['tests.expensive', map, ['--tests-expensive', 'false']],
   ['tests.map', map, ['--tests-map', 'null']],

@@ -6,12 +6,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const files = cp.execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean).sort();
+const ref = process.argv[2];
+const files = cp.execFileSync('git', ref ? ['ls-tree', '-r', '--name-only', '-z', ref] : ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean).sort();
+const read = (file) => ref
+  ? cp.execFileSync('git', ['show', `${ref}:${file}`], { cwd: root, encoding: 'utf8' })
+  : fs.readFileSync(path.join(root, file), 'utf8');
 const suites = files.filter((p) => /^test\/(?:gates\/)?[^/]+\.test\.js$/.test(p));
 const sources = files.filter((p) => /^(lib|bin|scripts|tools|hooks|test)\//.test(p) && !suites.includes(p) && /\.(?:js|mjs|json)$/.test(p));
 const map = Object.fromEntries(sources.map((p) => [p, new Set()]));
 function imports(file) {
-  const text = fs.readFileSync(path.join(root, file), 'utf8');
+  const text = read(file);
   const deps = new Set();
   for (const match of text.matchAll(/require\(['"](\.[^'"]+)['"]\)/g)) {
     const base = path.posix.normalize(path.posix.join(path.posix.dirname(file), match[1]));
@@ -40,9 +44,9 @@ for (const suite of suites) {
   }
 }
 for (const file of ['bin/tower-crane.js', 'lib/commands.js', 'lib/state.js', 'lib/util.js', 'lib/project.js', 'lib/tasks.js', 'lib/authority.js', 'package.json', 'test/run.js', 'test/helpers.js', 'test/repo-seed.js']) {
-  map[file] = new Set(suites);
+  if (files.includes(file)) map[file] = new Set(suites);
 }
 map['**/*.md'] = new Set();
 // Unknown executable coverage remains unmapped and therefore runs the full suite.
 const pinned = Object.fromEntries(Object.entries(map).filter(([p, tests]) => tests.size || p === '**/*.md').sort(([a], [b]) => a.localeCompare(b)).map(([p, tests]) => [p, [...tests].sort()]));
-process.stdout.write(`${JSON.stringify(pinned, null, 2)}\n`);
+process.stdout.write(`{\n${Object.entries(pinned).map(([source, tests]) => `  ${JSON.stringify(source)}: ${JSON.stringify(tests)}`).join(',\n')}\n}\n`);
