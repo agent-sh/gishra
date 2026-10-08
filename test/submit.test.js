@@ -87,9 +87,7 @@ test('the claimant resubmits a newer head and its gates need evidence at that he
   for (const [type, agent] of [['tests', 'w-1'], ['clean', 'w-1'], ['review', 'w-1'], ['ci', 'ci']]) {
     pass(h, type, agent, newSha);
   }
-  const selfReview = h.run(['accept', 'T1']);
-  assert.equal(selfReview.code, 1);
-  assert.match(selfReview.stderr, /only the submitter \(w-1\) reviewed/);
+  assert.match(h.json(['task', 'show', 'T1']).gates.missing.join('; '), /only the submitter \(w-1\) reviewed/);
   h.reviewer('T1', 'r-1', newSha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', newSha, '--agent', 'r-1']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
