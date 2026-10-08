@@ -211,8 +211,10 @@ test('a manual merge racing an automatic merge of the same task: one merges, the
     h.ok(['accept', id, '--agent', 'owner', '--reason', 'race fixture',
       ...['tests', 'clean', 'review', 'ci'].flatMap((type) => ['--waive', type])]);
     // The waiter's startup reconciliation merges the accepted task while the
-    // manual merge starts, so both reach the merge gate together.
-    const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--task', id, '--types', 'merged', '--timeout', '9']);
+    // manual merge starts, so both reach the merge gate together. The cursor
+    // keeps a manual merge that finishes before the waiter starts visible.
+    const after = String(fs.statSync(path.join(h.state, 'events.jsonl')).size);
+    const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--after', after, '--task', id, '--types', 'merged', '--timeout', '9']);
     const manual = await h.runAsync(['merge', id]);
     assert.equal(manual.code, 0, `${id}: ${manual.stderr}`);
     const woke = await event(automatic, 'merged', id);
