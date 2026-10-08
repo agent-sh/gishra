@@ -1,10 +1,11 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, makeProjectRepo, makeTaskRepo } = require('./helpers');
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const supervision = { retries: 2, backoff_ms: 10, max_backoff_ms: 20, stall_ms: 60000 };
@@ -22,21 +23,25 @@ async function until(fn, message) {
   }
 }
 
-function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false } = {}) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Fallback routes', '--tier', 'easy', '--acceptance', 'fresh fallback session']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Complete the original task brief.\n' });
+function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false,
+  rung = 'easy', webMcp, fallbackWebMcp } = {}) {
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Fallback routes', '--tier', rung,
+      '--kind', rung === 'research' ? 'research' : 'code', '--acceptance', 'fresh fallback session'],
+    brief: 'Complete the original task brief.\n',
+  }]);
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
   // A gh on PATH and no token in the environment make every route ask gh for
   // one, as on a CI runner; that must happen outside the state lock.
   for (const harness of ['codex', 'claude', 'agy', 'gh']) fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
   const routes = [{ harness: nextHarness, model: 'second', env: { ROUTE_ENV: 'fallback', NODE_TEST_CONTEXT: 'child-v8' } }];
+  if (fallbackWebMcp) routes[0].web_mcp = fallbackWebMcp;
   if (chain) routes.push({ harness: 'claude', model: 'third' });
-  h.ok(['ladder', 'set', 'easy', '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
-    '--env', '{"ROUTE_ENV":"primary","NODE_TEST_WORKER_ID":"outer-worker"}', '--supervision', JSON.stringify(supervision)]);
-  setFallbacks(h, routes);
+  h.ok(['ladder', 'set', rung, '--harness', primaryHarness, '--model', 'first', '--clear', 'profile', '--clear', 'effort',
+    '--env', '{"ROUTE_ENV":"primary","NODE_TEST_WORKER_ID":"outer-worker"}', '--supervision', JSON.stringify(supervision),
+    ...(webMcp ? ['--web-mcp', JSON.stringify(webMcp)] : [])]);
+  setFallbacks(h, routes, rung);
   h.file = path.join(h.base, 'attempts.json');
   h.spawnEnv = {
     PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), GH_TOKEN: '', GITHUB_TOKEN: '',
@@ -49,6 +54,38 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
   return h;
 }
 
+for (const explicit of [false, true]) {
+  test(`research Claude fallback ${explicit ? 'sets' : 'inherits'} web MCP tools and worker confinement on Bedrock`, async (t) => {
+    const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
+    const override = { name: 'backup-web', command: 'node', args: ['/web/backup.mjs'] };
+    const h = setup(t, { rung: 'research', primaryHarness: 'claude', nextHarness: 'claude',
+      reason: 'refusal', webMcp: server, ...(explicit ? { fallbackWebMcp: override } : {}) });
+    const cache = path.join(h.base, 'cache');
+    fs.mkdirSync(cache);
+    h.spawnEnv.XDG_CACHE_HOME = cache;
+    h.spawnEnv.LOCALAPPDATA = cache;
+    h.spawnEnv.CLAUDE_CODE_USE_BEDROCK = '1';
+    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.spawnEnv });
+    const result = await h.runAsync(['wait', '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '20']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).detail.agent, spawned.agent);
+    const [primary, fallback] = h.attempts();
+    assert.equal(fallback.model, 'second');
+    const web = explicit ? override : server;
+    assert.deepEqual(fallback.mcp, { [web.name]: { command: web.command, args: web.args } });
+    const tools = fallback.args[fallback.args.indexOf('--allowedTools') + 1].split(',');
+    assert.ok(tools.includes(`mcp__${web.name}__websearch`));
+    assert.ok(tools.includes(`mcp__${web.name}__webfetch`));
+    assert.ok(!tools.includes('WebSearch') && !tools.includes('WebFetch'));
+    assert.ok(fallback.args.includes('--strict-mcp-config'));
+    assert.deepEqual(fallback.sandbox, primary.sandbox);
+    assert.deepEqual(fallback.policy, primary.policy);
+    assert.equal(fallback.policy.gitPush, 'branch');
+    assert.deepEqual(fallback.sandbox.network.allowedDomains, ['*']);
+  });
+}
+
+describe('independent fallback routes', { concurrency: windowsConcurrency }, () => {
 for (const nextHarness of ['codex', 'claude']) {
   test(`outage exhausts same-route retries before a fresh ${nextHarness} fallback and records route spend`, async (t) => {
     const h = setup(t, { nextHarness });
@@ -168,6 +205,7 @@ for (const primaryHarness of ['agy', 'claude']) {
     assert.equal(events(h).filter((e) => e.cmd === 'spend').length, spendEvents);
   });
 }
+});
 
 test('rework during a live fallback refuses a second worker until the previous attempt exits', async (t) => {
   const h = setup(t);
@@ -178,7 +216,15 @@ test('rework during a live fallback refuses a second worker until the previous a
   });
   const wake = await waiting;
   assert.equal(wake.code, 0, wake.stderr);
-  await until(() => h.attempts().length === 4, 'fallback worker did not start');
+  // The harness truncates and rewrites attempts.json between fallback routes.
+  await until(() => {
+    try {
+      return h.attempts().length === 4;
+    } catch (error) {
+      if (error instanceof SyntaxError) return false;
+      throw error;
+    }
+  }, 'fallback worker did not start');
   h.ok(['submit', 'T1', '--agent', 'worker-T1-1', '--sha', 'abcdef1']);
   h.ok(['rework', 'T1', '--reason', 'fix while worker is finishing']);
   for (const flags of [['--dry-run'], []]) {
@@ -193,6 +239,7 @@ test('rework during a live fallback refuses a second worker until the previous a
   assert.equal(preview.resumed, false);
 });
 
+describe('remaining fallback routes', { concurrency: windowsConcurrency }, () => {
 test('Codex profile and provider arguments change without carrying the old session or route flags', (t) => {
   const h = setup(t);
   h.ok(['ladder', 'set', 'easy', '--profile', 'first', '--clear', 'model',
@@ -270,8 +317,7 @@ test('agent output quoting outage and refusal does not switch routes', (t) => {
 });
 
 test('user fallback configuration validates route shapes without project flags', (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   for (const value of [{}, [null], [{ profile: 'sol', fallbacks: [] }]]) {
     setFallbacks(h, value);
     assert.notEqual(h.run(['ladder', 'show']).code, 0);
@@ -396,6 +442,7 @@ test('missing expanded command fallback executables are skipped during preparati
   assert.equal(result.stderr.includes('{cwd}'), false);
   assert.deepEqual(h.attempts().map((a) => a.model), ['first', 'second']);
   assert.equal(events(h).find((e) => e.cmd === 'spawn fallback').detail.route_index, 2);
+});
 });
 
 test('a detached switch wakes a live waiter, keeps its lease, and collects route usage on exit', async (t) => {

@@ -26,7 +26,10 @@ function setRung(h, rung, flags) {
   h.ok(['ladder', 'set', rung, ...flags, ...FIELDS.filter((k) => !given.includes(k)).flatMap((k) => ['--clear', k])]);
 }
 
-const commandRung = (h, rung, argv) => setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(argv)]);
+const commandRung = (h, rung, argv) => {
+  const command = argv.some((arg) => /\{(prompt|brief)\}/.test(arg)) ? argv : [...argv, '{prompt}'];
+  setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(command)]);
+};
 
 test('design tasks dispatch without a kit on unsupported worker, review and small harnesses and report the omission', (t) => {
   const h = setup(t);
@@ -34,7 +37,7 @@ test('design tasks dispatch without a kit on unsupported worker, review and smal
   for (const harness of ['pi', 'opencode', 'command']) {
     for (const role of ['medium', 'review', 'small']) {
       setRung(h, role, harness === 'command'
-        ? ['--harness', harness, '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]
+        ? ['--harness', harness, '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}'])]
         : ['--harness', harness, '--model', 'fixture']);
       const seen = dry(h, role);
       assert.deepEqual(seen.home.mcp, []);
@@ -55,7 +58,7 @@ test('design tasks dispatch without a kit on unsupported worker, review and smal
 test('explicit browser needs refuse only when no route can provide the kit', (t) => {
   const h = setup(t);
   h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
-  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const missing = h.run(['spawn', '--task', 'T1', '--dry-run']);
   assert.notEqual(missing.code, 0);
   assert.match(missing.stderr, /browser/);
@@ -291,11 +294,12 @@ test('the prompt is the role skill, brief, task, then how to use tower-crane', (
   assert.ok(p.endsWith('run tower-crane with --agent worker-T1-1 if TOWER_CRANE_AGENT is missing.'));
 });
 
-test('the prompt keeps the leading-dash guard when no skill is embedded', (t) => {
+test('without an embedded skill the goal leads the prompt, so a brief opening with a dash is never read as a flag', (t) => {
   const h = setup(t);
   setRung(h, 'small', ['--harness', 'opencode', '--model', 'a/b']);
   const prompt = dry(h, 'small').argv.find((arg) => arg.includes('## Task'));
-  assert.ok(prompt.startsWith('\n- start from the webhook handler'));
+  assert.ok(prompt.startsWith('## Goal\n\nProject goal: prove the engine\nTask target: T1, "Idempotency key on retries"'));
+  assert.ok(prompt.includes('\n\n- start from the webhook handler\n'));
 });
 
 test('a spawned reviewer that loses all TOWER_CRANE variables cannot record evidence as owner', (t) => {
@@ -357,7 +361,7 @@ process.exit(r.code === null ? 99 : r.code);
   assert.equal(seen.task, 'T1');
   assert.deepEqual(seen.remaining, []);
   assert.equal(seen.code, 1, seen.stdout + seen.stderr);
-  assert.match(seen.stdout, /only the owner/);
+  assert.match(seen.stdout, /only the orchestrator or the owner/);
   const task = h.readState('tasks.json').tasks[1];
   assert.equal(task.needs_owner, 'approve access');
   assert.deepEqual(task.notes, []);
@@ -411,9 +415,9 @@ test('spawn --wait runs the command rung in the task worktree with the tower-cra
   assert.equal(real(seen.cwdArg), real(wt));
   assert.equal(seen.task, 'T1');
   assert.notEqual(path.resolve(seen.brief), path.resolve(path.join(h.state, 'briefs', 'T1.md')));
-  assert.equal(seen.briefText, '- start from the webhook handler\n');
+  assert.match(seen.briefText, /^## Goal\n[\s\S]*\n- start from the webhook handler\n\n## Task\n/);
   assert.ok(!fs.existsSync(seen.brief), 'the temporary brief copy is removed after exit');
-  assert.match(seen.prompt, /^P:\n- start from the webhook handler/);
+  assert.match(seen.prompt, /^P:## Goal\n[\s\S]*\n- start from the webhook handler/);
   assert.deepEqual([real(seen.env.s), seen.env.t, seen.env.a], [real(h.state), 'T1', 'worker-T1-1']);
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   const spawnEv = events.find((e) => e.cmd === 'spawn');
@@ -607,7 +611,7 @@ const leftover = (h) => path.join(h.base, 'repo-worktrees', 'T1-idempotency-key-
 
 test('a spawn whose program fails to start records nothing and leaves its worktree for the next spawn', (t) => {
   const h = setup(t);
-  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks, events } = footprint(h);
   for (const mode of [[], ['--wait']]) {
     const r = h.run(['spawn', '--role', 'small', '--task', 'T1', ...mode], { hooks: { HOOK_SPAWN_FAIL: '1' } });
@@ -627,7 +631,7 @@ test('a spawn whose program fails to start records nothing and leaves its worktr
 
 test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', async (t) => {
   const h = setup(t);
-  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks } = footprint(h);
   const paused = path.join(h.base, 'holder');
   const holder = h.runAsync(['task', 'note', 'T1', 'holding the lock'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
@@ -728,7 +732,7 @@ test('spawn runs the rung of the tier and ladder it finds under the lock, not th
   h.git(['worktree', 'remove', '--force', ev.detail.cwd]);
   const b = h.runAsync(['spawn', '--task', 'T1', '--wait'], { hooks: { HOOK_STOP_WORKTREE_ADD: stopped2 } });
   await waitForFile(stopped2);
-  setRung(h, 'hard', ['--harness', 'command', '--command', JSON.stringify([path.join(h.base, 'no-such-program')])]);
+  setRung(h, 'hard', ['--harness', 'command', '--command', JSON.stringify([path.join(h.base, 'no-such-program'), '{prompt}'])]);
   fs.writeFileSync(`${stopped2}.go`, '');
   const rb = await b;
   assert.equal(rb.code, 1);

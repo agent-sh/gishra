@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { makeRepo } = require('./helpers');
-const { gateFixture } = require('./gate-helpers');
+const { gateFixture, changeKind } = require('./gate-helpers');
 
 function fixture(t, script) {
   const h = makeRepo(t);
@@ -358,7 +358,7 @@ test('local CI selects kind args, replacement commands and the default with audi
     ['ops', 'kind:ops', local.by_kind.ops.command, 10],
     ['research', 'default', h.command, 5],
   ]) {
-    h.ok(['task', 'update', 'T1', '--kind', kind]);
+    changeKind(h, kind);
     const e = h.json(['check', 'ci', 'T1']);
     assert.equal(e.receipt.variant, variant);
     assert.deepEqual(e.receipt.command, command);
@@ -366,29 +366,36 @@ test('local CI selects kind args, replacement commands and the default with audi
     assert.deepEqual(JSON.parse(fs.readFileSync(h.log, 'utf8')), command.slice(3));
     const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.deepEqual(events.findLast((v) => v.cmd === 'check ci').detail.receipt, e.receipt);
-    assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+    const gates = h.json(['task', 'show', 'T1']).gates;
+    assert.equal(gates.gates.find(g => g.type === 'ci').ok, true);
+    assert.equal(gates.ok, kind !== 'research');
+    if (kind === 'research') assert.equal(gates.gates.find(g => g.type === 'sources').ok, false);
   }
 });
 
-test('changing kind to a different local CI variant requires owner identity', (t) => {
+test('changing kind, which can select a different local CI variant, is the orchestrator\'s or the owner\'s', (t) => {
   const h = fixture(t);
   const local = {
     command: h.command, timeout: 5,
     by_kind: { docs: { args: ['--lab'] }, ops: { args: ['--s3'] } },
   };
   h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
+  // A submitted task refuses any kind change, so the kind moves while it waits for rework.
+  h.ok(['rework', 'T1', '--reason', 'retier the local check', '--agent', 'owner']);
   const tasks = h.readState('tasks.json');
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
   const denied = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'worker']);
   assert.equal(denied.code, 1, denied.stderr);
-  assert.match(denied.stderr, /only the owner/);
+  assert.match(denied.stderr, /only the orchestrator or the owner/);
   assert.deepEqual(h.readState('tasks.json'), tasks);
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), events);
 
   const override = { args: ['--custom'] };
   h.ok(['task', 'update', 'T1', '--ci-local', JSON.stringify(override)]);
-  const allowed = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'worker']);
+  const allowed = h.run(['task', 'update', 'T1', '--kind', 'ops', '--agent', 'orchestrator']);
   assert.equal(allowed.code, 0, allowed.stderr);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.sha]);
   const e = h.json(['check', 'ci', 'T1']);
   assert.equal(e.receipt.variant, 'task:T1');
   assert.deepEqual(e.receipt.command, [...h.command, ...override.args]);
@@ -436,7 +443,7 @@ test('kind variants with identical argv cannot reuse receipts or merge under a d
   const local = { command: h.command, timeout: 5, by_kind: { docs: { args: [] }, ops: { args: [] } } };
   h.ok(['project', 'set', '--ci-local', JSON.stringify(local)]);
   h.ok(['check', 'ci', 'T1']);
-  h.ok(['task', 'update', 'T1', '--kind', 'ops']);
+  changeKind(h, 'ops');
   assert.match(h.run(['accept', 'T1']).stderr, /receipt.*variant/);
   h.ok(['check', 'ci', 'T1']);
   h.ok(['accept', 'T1']);
@@ -473,7 +480,7 @@ test('local CI variant settings validate atomically and task overrides require e
   }
   for (const value of ['{"args":["--s3"]}', 'null']) {
     for (const identity of [
-      { flags: ['--agent', 'worker'], env: {}, code: 1, pattern: /only the owner/ },
+      { flags: ['--agent', 'worker'], env: {}, code: 1, pattern: /only the orchestrator or the owner/ },
       { flags: [], env: { TOWER_CRANE_AGENT: '' }, code: 2, pattern: /no agent/ },
     ]) {
       const r = h.run(['task', 'update', 'T1', '--ci-local', value, ...identity.flags], { env: identity.env });

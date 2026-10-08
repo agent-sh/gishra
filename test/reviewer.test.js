@@ -1,29 +1,29 @@
 'use strict';
 
-const test = require('node:test');
+const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
-const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { makeRepo, makeProjectRepo, makeTaskRepo, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
+const { gateFixture, gateEvidence, changeKind } = require('./gate-helpers');
 
 const prices = {
   'openai.gpt-6-luna': { input: 0.10, cache_write: 0.125, cache_read: 0.01, output: 0.50 },
   'openai.gpt-6.1-sol': { input: 2, cache_write: 2.50, cache_read: 0.10, output: 10 },
   'claude-opus-5-5': { input: 4, cache_write: 5, cache_read: 0.20, output: 20 },
 };
+const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 function rung(h, name, model) {
   h.ok(['ladder', 'set', name, '--harness', 'opencode', '--model', model, '--clear', 'profile', '--clear', 'effort']);
 }
 
 function setup(t, tier = 'easy', builder = 'other', profile) {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Change', '--acceptance', 'value becomes one', '--tier', tier],
+    brief: 'BUILDER-HISTORY that the reviewer does not need\n\n## Reviewer\nREVIEWER-ONLY instruction\n\n## Worker\nWORKER-HISTORY that the reviewer does not need\n',
+  }], { projectArgs: ['--repo', 'acme/demo'] });
   h.sha = gateFixture(h);
-  h.ok(['project', 'set', '--repo', 'acme/demo']);
-  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'value becomes one', '--tier', tier]);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'BUILDER-HISTORY that the reviewer does not need\n\n## Reviewer\nREVIEWER-ONLY instruction\n\n## Worker\nWORKER-HISTORY that the reviewer does not need\n' });
   if (profile) {
     const bin = path.join(h.base, 'bin');
     const codexHome = path.join(h.base, 'codex');
@@ -71,6 +71,21 @@ function sample(h, name, input, cached, output, cacheWrite = 0) {
     '--cached', String(cached), '--cache-write', String(cacheWrite), '--output', String(output), '--rung', 'review', '--model', name]);
 }
 
+function commandReviewer(h, out) {
+  const script = `const fs = require('node:fs'); const cp = require('node:child_process');
+fs.writeFileSync(process.argv[1], process.argv[2]);
+const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', ${JSON.stringify(h.sha)}, '--summary', 'reviewed'], {env: process.env});
+process.exit(r.status ?? 1);`;
+  h.ok(['project', 'set', '--review-policy', 'null']);
+  const command = [process.execPath, '-e', script, out, '{prompt}'];
+  for (const name of ['easy', 'medium', 'hard', 'research']) {
+    h.ok(['ladder', 'set', name, '--harness', 'command', '--clear', 'model', '--clear', 'profile',
+      '--clear', 'provider', '--clear', 'effort', '--command', JSON.stringify(command)]);
+  }
+  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
+}
+
+describe('reviewer integration cases', { concurrency: windowsConcurrency }, () => {
 test('review selection also uses tier and diff defaults without a price table', (t) => {
   const h = setup(t);
   h.ok(['project', 'set', '--review-policy', 'null']);
@@ -172,7 +187,7 @@ test('escalation starts above the actual dispatched reviewer rung', (t) => {
 const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--fail', '--sha', ${JSON.stringify(h.sha)}], {env: process.env});
 process.exit(r.status ?? 1);`;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', script])]);
+    '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}'])]);
   const dispatched = h.json(['spawn', '--task', 'T1', '--role', 'review', '--wait']);
   assert.equal(dispatched.review_rung, 'easy');
   assert.equal(choice(h).review_rung, 'medium');
@@ -214,20 +229,6 @@ test('review packet uses role headings consistently and ignores fenced headings'
   for (const secret of ['BUILDER-HISTORY', 'FAKE-REVIEWER', 'SHARED-HISTORY']) assert.ok(!prompt.includes(secret));
 });
 
-function commandReviewer(h, out) {
-  const script = `const fs = require('node:fs'); const cp = require('node:child_process');
-fs.writeFileSync(process.argv[1], process.argv[2]);
-const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--ok', '--sha', ${JSON.stringify(h.sha)}, '--summary', 'reviewed'], {env: process.env});
-process.exit(r.status ?? 1);`;
-  h.ok(['project', 'set', '--review-policy', 'null']);
-  const command = [process.execPath, '-e', script, out, '{prompt}'];
-  for (const name of ['easy', 'medium', 'hard', 'research']) {
-    h.ok(['ladder', 'set', name, '--harness', 'command', '--clear', 'model', '--clear', 'profile',
-      '--clear', 'provider', '--clear', 'effort', '--command', JSON.stringify(command)]);
-  }
-  h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
-}
-
 test('review dispatch computes its diff once outside the state lock', (t) => {
   const h = setup(t);
   ready(h);
@@ -239,11 +240,12 @@ test('review dispatch computes its diff once outside the state lock', (t) => {
   const calls = fs.readFileSync(report, 'utf8').trim().split('\n').map(JSON.parse);
   assert.deepEqual(calls, Array.from({ length: 3 }, () => ({ locked: false })));
 });
+});
 
 test('review dispatch refuses a submitted head or configured base changed after diff preparation', async (t) => {
   for (const change of ['head', 'base']) {
     const h = setup(t);
-    h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+    changeKind(h, 'docs');
     commandReviewer(h, path.join(h.base, 'context.txt'));
     h.git(['commit', '--allow-empty', '-qm', 'next head']);
     const next = h.git(['rev-parse', 'HEAD']);
@@ -293,6 +295,7 @@ test('accept runs tests, clean and CI before dispatch, and records review pendin
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
 });
 
+describe('remaining reviewer integration cases', { concurrency: windowsConcurrency }, () => {
 test('a failed automatic gate never starts a reviewer', (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'review-context.txt');
@@ -321,7 +324,7 @@ test('accept reuses an active review and direct dispatch refuses a duplicate', (
   const h = setup(t);
   ready(h);
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)'])]);
+    '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)', '{prompt}'])]);
   const first = h.json(['accept', 'T1']);
   const second = h.json(['accept', 'T1']);
   assert.equal(second.reviewer, first.reviewer);
@@ -332,11 +335,11 @@ test('accept reuses an active review and direct dispatch refuses a duplicate', (
 
 test('large review diffs use a context file and a short argv', (t) => {
   const h = setup(t);
+  changeKind(h, 'docs');
   fs.writeFileSync(path.join(h.repo, 'large.md'), 'A focused review reads this diff.\n'.repeat(1000));
   h.git(['add', 'large.md']);
   h.git(['commit', '-qm', 'large diff']);
   h.sha = h.git(['rev-parse', 'HEAD']);
-  h.ok(['task', 'update', 'T1', '--kind', 'docs']);
   h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha]);
   const out = path.join(h.base, 'large-prompt.txt');
   commandReviewer(h, out);
@@ -352,9 +355,26 @@ test('large review diffs use a context file and a short argv', (t) => {
   assert.ok(!fullPacket.includes('WORKER-HISTORY'));
 });
 
+test('the review packet flags changed files outside the paths the brief names', (t) => {
+  const h = setup(t);
+  changeKind(h, 'docs');
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Only `docs/` changes.\n\n## Reviewer\nREVIEWER-ONLY instruction\n' });
+  fs.mkdirSync(path.join(h.repo, 'docs'));
+  fs.writeFileSync(path.join(h.repo, 'docs', 'note.md'), 'note\n');
+  fs.writeFileSync(path.join(h.repo, 'stray.md'), 'stray\n');
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'docs and a stray file']);
+  h.sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--agent', 'builder', '--sha', h.sha]);
+  commandReviewer(h, path.join(h.base, 'prompt.txt'));
+  h.json(['spawn', '--role', 'review', '--task', 'T1', '--wait']);
+  const packet = fs.readFileSync(path.join(h.state, 'reviews', `T1-${h.sha}.md`), 'utf8');
+  assert.match(packet, /## Scope\n\nscope: \d+ changed files? outside the paths the brief and acceptance name \(docs\/\): [^\n]*stray\.md/);
+  assert.ok(!/\(docs\/\): [^\n]*docs\/note\.md/.test(packet), 'a named path is in scope');
+});
+
 test('review policy validates price and diff settings through the CLI', (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   for (const bad of [{ prices: { 'openai.gpt-6.1-sol': { input: -1 } } },
     { prices: { sol: prices['openai.gpt-6.1-sol'], 'openai.gpt-6.1-sol': prices['openai.gpt-6.1-sol'] } },
     { small_lines: -1 }, { risk_paths: [3] }, { surprise: true }]) {
@@ -369,33 +389,33 @@ test('review policy validates price and diff settings through the CLI', (t) => {
   }
 });
 
-test('review policy and prices require an explicit owner identity', (t) => {
+test('review policy and prices are the orchestrator\'s or the explicit owner\'s', (t) => {
   const h = makeRepo(t);
   const policy = JSON.stringify({ prices });
   const init = h.run(['init', '--name', 'demo', '--goal', 'prove the engine', '--review-policy', policy, '--agent', 'worker']);
   assert.equal(init.code, 1);
-  assert.match(init.stderr, /only the owner with an explicit identity/);
+  assert.match(init.stderr, /only the orchestrator or the owner/);
   assert.ok(!fs.existsSync(h.state), 'a refused init writes no state');
 
   h.init();
   const before = h.readState('project.json');
   const denied = h.run(['project', 'set', '--review-policy', policy, '--agent', 'worker']);
   assert.equal(denied.code, 1);
-  assert.match(denied.stderr, /only the owner with an explicit identity/);
+  assert.match(denied.stderr, /only the orchestrator or the owner/);
   assert.deepEqual(h.readState('project.json'), before);
   assert.equal(h.run(['project', 'set', '--review-policy', 'null', '--agent', 'worker']).code, 1);
+  h.ok(['project', 'set', '--review-policy', 'null', '--agent', 'orchestrator']);
   h.ok(['project', 'set', '--review-policy', policy, '--agent', 'owner']);
   assert.deepEqual(h.json(['project', 'show']).review.prices, prices);
 });
 
 test('terminal owner fallback cannot change review policy', { skip: !PTY_AVAILABLE }, (t) => {
-  const h = makeRepo(t);
-  h.init();
+  const h = makeProjectRepo(t);
   const env = { ...h.env };
   delete env.TOWER_CRANE_AGENT;
   const result = runPty(['project', 'set', '--review-policy', 'null'], { cwd: h.repo, env });
   assert.equal(result.code, 1);
-  assert.match(result.stdout, /only the owner with an explicit identity/);
+  assert.match(result.stdout, /only the orchestrator or the owner/);
 });
 
 test('review uses the nearest base when only origin has it or the local base is stale', (t) => {
@@ -408,4 +428,5 @@ test('review uses the nearest base when only origin has it or the local base is 
   h.git(['branch', 'main', `${base}~1`]);
   const prompt = choice(h).argv.find((arg) => arg.includes('## Task'));
   assert.ok(prompt.includes(`Base: ${base}.`));
+});
 });
