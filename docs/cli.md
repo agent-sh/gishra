@@ -175,7 +175,7 @@ tower-crane ladder set review --sandbox '{"write":[]}' --scope '{}' --agent owne
 | | |
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment` |
 | | |
-| `recover ID` | ranged quality recovery: climb one rung and dispatch fresh, retry a pending climb, or open an owner decision at the range top; wait for verified worker process-group cleanup before dispatch |
+| `recover ID` | ranged quality recovery: climb after a failed latest review or confirmed tests, clean or CI gate failure; dispatch fresh, retry a pending climb, or open an owner decision at the range top; wait for verified worker process-group cleanup before dispatch |
 | | |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or the owner (owner-required: the orchestrator's attempt opens a decision); any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event |
 | | |
@@ -206,9 +206,9 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 `--tier` accepts a single rung or an ascending range such as `easy..medium` in `task add`, `task update` and `plan import`. A range starts at its minimum and lets spawned workers climb after quality failure; a single tier retains manual recovery. Setting a new range resets the current tier to its minimum, while a single tier clears the range.
 
-`recover ID` handles a ranged task's failed independent review at the current submitted head, exit without submit, or confirmed supervisor stall. The engine calls it after review failure and supervised exit; orchestrator `wait` also recovers observed exits and retries pending climbs. It waits for the old worker to stop, collects usage, records the climb and reason, sets rework, and starts a fresh session one rung higher in the same worktree. Provider outages and harness refusals follow same-rung availability fallback. Failed launches, full worker capacity and reviewer sandbox permission denials leave a pending climb that can be retried with `recover ID`. The reviewer's host monitor or orchestrator `wait` can complete a climb that its sandbox cannot launch.
+`recover ID` handles a ranged task's failed independent review or confirmed tests, clean or CI gate failure at the current submitted head, exit without submit, or confirmed supervisor stall. The engine calls it after review failure and supervised exit; orchestrator `wait` also recovers observed exits and retries pending climbs. It waits for the old worker to stop, collects usage, records the climb and reason, sets rework, and starts a fresh session one rung higher in the same worktree. Provider outages and harness refusals follow same-rung availability fallback. Failed launches, full worker capacity and reviewer sandbox permission denials leave a pending climb that can be retried with `recover ID`. The reviewer's host monitor or orchestrator `wait` can complete a climb that its sandbox cannot launch.
 
-A passing latest eligible review cancels an older failed verdict as a climb trigger. Submitted workers still need their live monitor's terminal receipt before another worker starts; parent exit alone does not finish descendant cleanup. `wait` retries recorded failures that have no climb record, including after spend already recorded the exit notification or recovery timed out on the state lock. If a supervisor is lost without a terminal receipt, host recovery must verify that the old process group stopped. A live or unverifiable group leaves recovery waiting, with the reason in CLI output, task notes and a deduplicated `recover waiting` event; JSON exposes `waiting`. Linux supports this group probe.
+A passing latest eligible verdict cancels an older failure of the same gate as a climb trigger. Gate runners mark `confirmed_failure` only for a failed test command, a completed cleanup scan with HIGH findings, or a completed failing CI run. Missing configuration, incomplete scans and pending CI do not climb. `rework` records a known failed attempt before changing task status, even while worker cleanup is pending; dispatch still waits for verified cleanup. Submitted workers still need their live monitor's terminal receipt before another worker starts; parent exit alone does not finish descendant cleanup. `wait` retries recorded failures that have no climb record, including after spend already recorded the exit notification or recovery timed out on the state lock. If a supervisor is lost without a terminal receipt, host recovery must verify that the old process group stopped. A live or unverifiable group leaves recovery waiting, with the reason in CLI output, task notes and a deduplicated `recover waiting` event; JSON exposes `waiting`. Linux supports this group probe.
 
 Failure at the range top opens one blocking owner decision. Answer it and apply the chosen plan before dispatching again. `task show --json` includes `tier_range`, `escalations` and `spend_by_rung`; text output shows the range and rung totals. New spend entries include `cost_usd` priced with configured `review.prices`. Missing prices or telemetry remain null. Each escalation records a spend snapshot; later usage collection can enrich the current task totals.
 
@@ -281,9 +281,9 @@ The engine watches the state directory with `fs.watch`. A one-second internal st
 
 A task sheet's tier control posts to `/api/tiers` (below), as Settings does. Both `/api/tiers` and `/api/ladder` require the same explicit owner identity as the other board writes. Other serve identities see the ladder and tiers as read-only values. The board has no route that accepts, merges, waives, claims, releases, submits, records evidence or edits the plan: those stay CLI commands, and the board shows the command where it would help, such as `accept T1 --waive review --reason R --agent owner` on a submitted task's sheet.
 
-Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the page's `tower-crane-token` meta value as `x-tower-crane-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
+Successful writes return the command's JSON data plus the board's `version` token. These endpoints share Settings' POST handling: send the run's token (below) as `x-tower-crane-token`. Invalid input or a refused change returns 400, missing or wrong token/host/origin 403, wrong content type 415, oversized body 413, and lock timeout 503. Bodies require `application/json` and are limited to 64 KiB to bound a local request's memory. Messages and comments appear on the served board, with state changes delivered through its reload stream.
 
-The token protects against foreign web origins. Local processes can read it from the page, just as they can supply an owner identity to the CLI.
+The token protects against foreign web origins and against local processes that read the pages: only the page opened from the owner's one-time link carries it. A local process can still supply an owner identity to the CLI.
 
 ## Views
 
@@ -298,7 +298,7 @@ The token protects against foreign web origins. Local processes can read it from
 | | |
 | `render` | write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock |
 | | |
-| `serve [--port P]` | serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. Exits 1 if the port is in use |
+| `serve [--port P]` | serve the live board and a Settings view on 127.0.0.1 (default port 4747; 0 picks a free one) and update open pages over server-sent events when the state changes. Pages are rendered from the state on each request. As the owner it also prints a one-time link to open in the browser that will write (`--json` prints `{ url, state, open }`; `open` is `url` for other identities). Exits 1 if the port is in use |
 | | |
 | `status` | one screen: counts by status, ready tasks, open decisions, owner tasks, spend against budget, expired leases, claims whose spawned process exited without submit and their log tails |
 <!-- commands:Views:end -->
@@ -317,15 +317,16 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 
 | Method and path | Does |
 |---|---|
-| `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request; carries the run's token, and the owner forms when serve runs as the owner |
-| `GET /settings` | the Settings view; carries the run's token in `<meta name="tower-crane-token">` |
+| `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request, with the owner forms when serve runs as the owner |
+| `GET /settings` | the Settings view |
+| any page with `?key=<key>` | the first request with the one-time key serve printed also carries the run's token in `<meta name="tower-crane-token">`; the key is then spent. Every other page has that tag empty |
 | `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
 | `POST /api/ladder` | owner only: change the default harness and rungs, as `ladder harness` and `ladder set` do |
 | `POST /api/tiers` | owner only: change task tiers, as `task update --tier` does |
 
 Every POST needs:
 
-- `x-tower-crane-token: <token>`, the random token of this serve run, which only the served board and Settings pages carry;
+- `x-tower-crane-token: <token>`, the random token of this serve run. Only the page opened from the printed link gets it, so a local process that reads the pages, with or without an `Origin` header, cannot write. The page keeps the token in the origin's local storage, scoped to this host and port, so reloads and other tabs keep writing; it drops the key from the address bar. Another browser needs a restart of serve and its new link;
 - `content-type: application/json` and a body of at most 64 KiB;
 - an `Origin`, if the browser sends one, of `http://127.0.0.1:<port>` or `http://localhost:<port>`.
 
