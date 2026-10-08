@@ -20,8 +20,11 @@ function setup(t, trigger = 'exit', range = 'easy..medium', prepare = null) {
   const h = makeRepo();
   t.after(async () => {
     try {
-      // Submitted workers still have usage collection and gate reactions to finish.
-      await until(() => h.detached().filter((child) => child.kind === 'monitor').every((child) => !detachedAlive(child)));
+      // Stop background usage and gate retries before removing fixture state.
+      for (const child of h.detached()) {
+        if (child.kind === 'monitor' && detachedAlive(child)) process.kill(child.pid, 'SIGTERM');
+      }
+      await until(() => h.detached().filter((child) => child.kind === 'monitor').every((child) => !detachedAlive(child)), 60000);
     } finally {
       await h.cleanup();
     }
