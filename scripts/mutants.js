@@ -112,6 +112,7 @@ function runTests(files) {
   const r = cp.spawnSync(process.execPath, ['test/run.js', `--test-concurrency=${jobs}`, ...files], {
     cwd: copy, encoding: 'utf8', env: process.env, maxBuffer: 1 << 28, timeout: 60 * 60 * 1000,
   });
+  if (r.status !== 0) runTests.failures = (r.stdout || '').split('\n').filter((l) => /^\s*✖|^not ok/.test(l)).slice(0, 20).join('\n');
   return r.status === 0;
 }
 
@@ -126,7 +127,7 @@ try {
   }
   // A file that fails unmutated would count every mutant as caught.
   const named = [...new Set(selected.flatMap((m) => m.tests))];
-  if (!runTests(named)) throw new Error(`the unmutated tests fail: ${named.join(' ')}`);
+  if (!runTests(named)) throw new Error(`the unmutated tests fail:\n${runTests.failures}`);
   for (const m of selected) {
     const file = path.join(copy, m.file);
     const source = fs.readFileSync(file, 'utf8');
