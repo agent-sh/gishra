@@ -41,17 +41,27 @@ async function until(fn, what, ms = 15000) {
   }
 }
 
-async function openBrowser(t) {
-  const profile = fs.mkdtempSync(path.join(process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), 'tower-crane-chrome-'));
-  // Registered before Chrome starts, so the profile goes even when setup fails part way.
-  let proc = null;
-  let closed = Promise.resolve();
-  t.after(async () => {
-    proc?.kill();
-    await closed;
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+// One Chrome per test process: a start costs seconds of CPU, a tab almost
+// nothing. Each openBrowser call gets its own tab, closed after its test, so
+// emulation, scripts and session storage never cross tests.
+let chrome;
+function startChrome() {
+  chrome ||= launch().catch((error) => {
+    chrome = null;
+    throw error;
   });
-  const args =['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
+  return chrome;
+}
+
+async function closeBrowser() {
+  const started = chrome;
+  chrome = null;
+  if (started) await (await started).close();
+}
+
+async function launch() {
+  const profile = fs.mkdtempSync(path.join(process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), 'tower-crane-chrome-'));
+  const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
   const sandboxed = process.env.TOWER_CRANE_SANDBOX === '1';
   // Chrome's user/SUID sandbox cannot nest in the harness's outer sandbox.
   // Temp-backed shared memory avoids granting writes to the host's /dev/shm.
@@ -68,17 +78,18 @@ async function openBrowser(t) {
       XDG_CONFIG_HOME: config, XDG_CACHE_HOME: cache, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
     };
   } else if (process.getuid && process.getuid() === 0) args.push('--no-sandbox');
-  proc = cp.spawn(CHROME, [...args, 'about:blank'], {
+  const proc = cp.spawn(CHROME, [...args, 'about:blank'], {
     ...(env ? { env } : {}), stdio: sandboxed ? ['ignore', 'ignore', 'pipe'] : 'ignore',
   });
   let stderr = '';
   let failure = null;
   proc.stderr?.on('data', (data) => { stderr = (stderr + data).slice(-16384); });
   proc.on('error', (error) => { failure = error.message; });
-  closed = new Promise((resolve) => proc.on('close', (code, signal) => {
+  const closed = new Promise((resolve) => proc.on('close', (code, signal) => {
     failure ||= signal ? `signal ${signal}` : `exit code ${code}`;
     resolve();
   }));
+  const remove = () => fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   const portFile = path.join(profile, 'DevToolsActivePort');
   // A first start on a fresh machine builds the font cache, which takes 10 s
   // or more on a busy CI runner; a Chrome killed before it finishes leaves the
@@ -90,12 +101,36 @@ async function openBrowser(t) {
       return fs.existsSync(portFile) && fs.readFileSync(portFile, 'utf8').split('\n')[0];
     }, 'Chrome to start', 60000);
   } catch (error) {
+    proc.kill();
+    await closed;
+    remove();
     throw new Error(`Chrome failed to start (${CHROME}): ${error.message}${stderr ? `\n${stderr.trim()}` : ''}`);
   }
-  const targets = await until(async () => {
-    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    return list.find((x) => x.type === 'page');
-  }, 'a Chrome page');
+  // File teardown refs and reaps Chrome before the runner records child CPU.
+  proc.unref();
+  proc.stderr?.unref?.();
+  const lastResort = () => proc.kill('SIGKILL');
+  process.once('exit', lastResort);
+  const close = async () => {
+    proc.ref();
+    proc.stderr?.ref?.();
+    proc.kill();
+    const deadline = setTimeout(() => proc.kill('SIGKILL'), 5000);
+    try {
+      await closed;
+      remove();
+    } finally {
+      clearTimeout(deadline);
+      process.removeListener('exit', lastResort);
+    }
+  };
+  return { port, close };
+}
+
+async function openBrowser(t) {
+  const { port } = await startChrome();
+  const targets = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
+  t.after(() => fetch(`http://127.0.0.1:${port}/json/close/${targets.id}`).then((r) => r.text()));
   const ws = new WebSocket(targets.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     ws.onopen = resolve;
@@ -145,4 +180,4 @@ async function openBrowser(t) {
   };
 }
 
-module.exports = { CHROME, openBrowser };
+module.exports = { CHROME, openBrowser, closeBrowser };
