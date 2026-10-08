@@ -532,6 +532,37 @@ test('NODE_ENV is ' + process.env.NODE_ENV, () => {
   assert.equal(output.includes('[redacted:'), false, output);
 });
 
+test('credential-named variables with numeric, boolean or short values leave the output intact', (t) => {
+  const h = makeRepo(t);
+  const testFile = `const test = require('node:test');
+const assert = require('node:assert/strict');
+test('budget ' + process.env.MAX_THINKING_TOKENS, () => {
+  console.log(['test/a.test.js:12:3', 'ok: true', process.env.MAX_THINKING_TOKENS, process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, process.env.X_COOKIE_ENABLED].join(' '));
+  assert.fail('fixture failure');
+});
+`;
+  const sha = manifestTask(h, { submitted: { 'test/a.test.js': testFile } });
+  submitTestsFixture(h, sha);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+
+  const cmd = `${shellQuote(process.execPath)} --test --test-reporter=tap test/a.test.js`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker'], {
+    env: { MAX_THINKING_TOKENS: '1', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000', X_COOKIE_ENABLED: 'true' },
+  });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.deepEqual(evidence.test_failure.names, ['budget 1']);
+  assert.match(evidence.test_failure.output_tail, /not ok 1 - budget 1/);
+  assert.match(evidence.test_failure.output_tail, /test\/a\.test\.js:12:3 ok: true 1 32000 true/);
+  assert.equal(evidence.test_failure.output_tail.includes('[redacted:'), false, evidence.test_failure.output_tail);
+  assert.match(result.stdout, /budget 1/);
+  assert.equal(result.stdout.includes('[redacted:'), false, result.stdout);
+});
+
 test('a token that straddles the output tail cut is redacted, not kept as a fragment', (t) => {
   const h = makeRepo(t);
   const body = 'T83BoundaryBody0123456789';
