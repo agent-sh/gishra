@@ -4,7 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const cp = require('node:child_process');
+const { makeRepo, ROOT } = require('./helpers');
 const { shellQuote } = require('../lib/gates/common');
 
 function orphan(h, name = 'orphan') {
@@ -130,4 +131,27 @@ while (!fs.existsSync(${JSON.stringify(addRelease)})) {
     fs.writeFileSync(addRelease, '');
     await Promise.all([gate, ...additions]);
   }
+});
+
+test('a sandboxed git push clears an empty read-only lock placeholder that would block its upstream config', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.git(['checkout', '-q', '-b', 'task-T1']);
+  const remote = path.join(h.base, 'origin.git');
+  h.git(['init', '-q', '--bare', remote]);
+  // What a sandbox mask leaves behind in the main checkout's git directory.
+  const lock = path.join(h.repo, '.git', 'config.lock');
+  fs.writeFileSync(lock, '', { mode: 0o444 });
+  const policy = path.join(h.base, 'policy.json');
+  fs.writeFileSync(policy, JSON.stringify({ gitPush: 'branch', branch: 'task-T1', repo: null, gh: [] }));
+  const shimDir = path.join(h.base, 'shim');
+  fs.mkdirSync(shimDir);
+  const push = cp.spawnSync(process.execPath, [path.join(ROOT, 'lib', 'shim.js'), policy, shimDir, 'git', 'push', '-u', remote, 'HEAD:refs/heads/task-T1'],
+    { cwd: h.repo, env: h.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(push.status, 0, push.stderr);
+  // Git reports a blocked upstream write without a failing status.
+  assert.doesNotMatch(push.stderr, /could not lock config/);
+  assert.match(push.stderr, /removed empty read-only placeholder .*config\.lock/);
+  assert.equal(fs.existsSync(lock), false);
+  assert.equal(h.git(['config', '--get', 'branch.task-T1.remote']), remote);
 });
