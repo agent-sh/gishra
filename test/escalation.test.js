@@ -4,11 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, BIN } = require('./helpers');
+const { makeRepo, detachedAlive, BIN } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-async function until(fn, timeout = 15000) {
+async function until(fn, timeout = 30000) {
   const deadline = Date.now() + timeout;
   while (!fn()) {
     if (Date.now() >= deadline) assert.fail('escalation did not finish');
@@ -17,7 +17,18 @@ async function until(fn, timeout = 15000) {
 }
 
 function setup(t, trigger = 'exit', range = 'easy..medium', prepare = null) {
-  const h = makeRepo(t);
+  const h = makeRepo();
+  t.after(async () => {
+    try {
+      // Stop background usage and gate retries before removing fixture state.
+      for (const child of h.detached()) {
+        if (child.kind === 'monitor' && detachedAlive(child)) process.kill(child.pid, 'SIGTERM');
+      }
+      await until(() => h.detached().filter((child) => child.kind === 'monitor').every((child) => !detachedAlive(child)), 60000);
+    } finally {
+      await h.cleanup();
+    }
+  });
   h.init();
   if (prepare) prepare(h);
   h.ok(['task', 'add', '--title', 'Start low', '--tier', range, '--acceptance', 'climbs on quality failure']);
@@ -54,7 +65,7 @@ ${index === 0 && trigger === 'cleanup' ? "setInterval(() => { if (fs.existsSync(
     h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
       JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{session}', '{prompt}']),
       '--clear', 'profile', '--clear', 'effort', '--clear', 'model', '--supervision',
-      JSON.stringify({ retries: 0, stall_ms: 100, backoff_ms: 10, max_backoff_ms: 10 })]);
+      JSON.stringify({ retries: 0, ...(index === 0 && trigger === 'stall' ? { stall_ms: 100 } : {}), backoff_ms: 10, max_backoff_ms: 10 })]);
   }
   h.readAttempts = () => fs.existsSync(h.attempts) ? JSON.parse(fs.readFileSync(h.attempts)) : [];
   return h;
@@ -247,9 +258,12 @@ test('rework records the review climb before pending worker cleanup finishes', {
   assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
 });
 
-for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
+for (const { route, required } of [
+  { route: 'tests' }, { route: 'clean' }, { route: 'ci' }, { route: 'local-ci' },
+  { route: 'ci', required: 'missing' }, { route: 'ci', required: 'pending' },
+]) {
   const type = route === 'local-ci' ? 'ci' : route;
-  test(`a confirmed ${route} gate failure climbs and reaches the owner at the range ceiling`, async (t) => {
+  test(`a confirmed ${route} gate failure${required ? ` while a required check is ${required}` : ''} climbs and reaches the owner at the range ceiling`, async (t) => {
     const h = setup(t, 'review', 'easy..medium', (repo) => {
       gateFixture(repo);
       // Spawn exit runs every software gate, so each fails only where the check asks it to.
@@ -259,6 +273,15 @@ for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
       if (route === 'local-ci') repo.ok(['project', 'set', '--ci-local', JSON.stringify({
         command: [process.execPath, '-e', exit], timeout: 5,
       })]);
+      if (required) repo.ok(['project', 'set', '--ci-required', '["required-build"]']);
+      if (required === 'pending') {
+        const gh = path.join(repo.base, 'tools', 'gh');
+        fs.appendFileSync(gh, `
+if (args.some((arg) => arg.includes('/check-runs'))) {
+  console.log(JSON.stringify({name: 'required-build', app: 'fixture', status: 'in_progress', conclusion: null}));
+}
+`);
+      }
     });
     // The monitor runs automated gates after spawn exit; check only once each reaction has ended.
     const settled = (agent) => {
@@ -313,6 +336,34 @@ for (const type of ['tests', 'clean', 'ci']) {
     h.ok(['recover', 'T1']);
     assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy');
     assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 0);
+  });
+}
+
+for (const { status, failingTest } of [{ status: 1 }, { status: 9009 }, { status: 1, failingTest: true }]) {
+  test(failingTest ? 'a failing test reporting a missing-command diagnostic still climbs'
+    : `Windows command-not-found exit ${status} does not climb`, async (t) => {
+    const h = setup(t, 'review', 'easy..medium', (repo) => {
+      gateFixture(repo);
+      repo.ok(['project', 'set', '--repo', 'acme/demo', '--tests-mode', 'run-only',
+        '--tests-cmd', 'tower-crane-missing-test-program']);
+      const hook = path.join(__dirname, 'fixtures', 'windows-missing-command.js').replace(/\\/g, '/');
+      repo.env.NODE_OPTIONS = `--require "${hook}"`;
+      repo.env.TOWER_CRANE_TEST_MISSING_STATUS = String(status);
+      if (failingTest) repo.env.TOWER_CRANE_TEST_DIAGNOSTIC_IN_TEST = '1';
+    });
+    h.ok(['spawn', '--task', 'T1']);
+    await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+    const checked = h.run(['check', 'tests', 'T1', '--json']);
+    assert.equal(checked.code, 1, checked.stderr);
+    const result = JSON.parse(checked.stdout);
+    assert.ok(result.commands.some((command) => command.command === 'tower-crane-missing-test-program'
+      && command.status === status), 'the CLI records the Windows shell status');
+    assert.equal(result.confirmed_failure, failingTest ? true : undefined);
+    h.ok(['recover', 'T1']);
+    assert.equal(h.json(['task', 'show', 'T1']).tier, failingTest ? 'medium' : 'easy');
+    const climbs = events(h).filter((e) => e.cmd === 'escalate');
+    if (failingTest) assert.ok(climbs.length > 0 && climbs.every((e) => e.detail.trigger === 'tests'));
+    else assert.equal(climbs.length, 0);
   });
 }
 
@@ -452,10 +503,25 @@ test('failure at the range top opens one owner decision and blocks further dispa
   const decision = h.json(['decisions', '--open'])[0];
   assert.deepEqual(decision.blocks, ['T1']);
   assert.match(decision.question, /hard.*exit/i);
+  assert.deepEqual(decision.answerers, []);
+  assert.equal(decision.technical, false);
+  assert.equal(decision.answer_rule, null);
+  const beforeAnswers = events(h);
+  for (const agent of ['worker-T1-3', 'orchestrator']) {
+    const denied = h.run(['answer', decision.id, '--choice', 'retry', '--agent', agent]);
+    assert.equal(denied.code, 1, denied.stderr);
+    assert.match(denied.stderr, /only the owner/);
+  }
+  assert.deepEqual(events(h), beforeAnswers, 'an unauthorized answer leaves the ceiling blocked');
   h.ok(['recover', 'T1']);
   assert.equal(h.json(['decisions', '--open']).length, 1);
   assert.notEqual(h.run(['spawn', '--task', 'T1']).code, 0);
   assert.equal(h.readAttempts().length, 3);
+  h.ok(['answer', decision.id, '--choice', 'revise the plan']);
+  const answered = h.json(['decisions'])[0];
+  assert.equal(answered.answer_rule, 'owner');
+  assert.equal(answered.status, 'answered');
+  assert.equal(h.readAttempts().length, 3, 'an owner answer does not dispatch a worker');
 });
 
 test('a native harness climb records captured tokens and configured cost for the failed rung', async (t) => {

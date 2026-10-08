@@ -92,6 +92,8 @@ process.exit(result.status ?? 1);
 `, { mode: 0o755 });
   const out = path.join(h.base, 'stub.json');
   const runEnv = { ...h.env, HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_OUT: out };
+  // Nested harness cache settings must not redirect the fake user's caches.
+  runEnv.XDG_CACHE_HOME = path.join(home, '.cache');
   // The developer's own harness homes and gh tokens must not leak in: the
   // fixture's gh login lives in its stub keyring. The tokens are emptied, not
   // deleted, since the caller's own env would fill a missing key back in.
@@ -280,6 +282,59 @@ test('codex config allowlists also filter inline tables on Windows', () => {
   assert.ok(!TOML.stringify(filtered.doc).includes(SECRET));
   const arrays = Object.fromEntries(require('../lib/ladder').CODEX_KEYS.map(key => [key, [{ apikey: SECRET, key: SECRET, bearer: SECRET }]]));
   assert.deepEqual(A.codexConfig(TOML.parse(TOML.stringify({ ...arrays, profiles: { malformed: arrays } })), []).doc, { profiles: { malformed: {} } });
+});
+
+// The built-in Bedrock provider takes only its aws table; credentials are
+// planted beside the region. An Azure-style provider carries query parameters
+// with keys, a SAS signature, a Functions code and an auth value planted
+// among them.
+const PROVIDERS = {
+  'amazon-bedrock': {
+    aws: {
+      region: 'us-east-1', profile: 'work',
+      bearer_token: `${SECRET}-BEARER`, secret_access_key: `${SECRET}-SECRET`, session_token: `${SECRET}-TOKEN`, password: `${SECRET}-PASSWORD`,
+      credential_export: { command: `echo ${SECRET}-EXPORT` }, auth_refresh: { command: `echo ${SECRET}-REFRESH` },
+    },
+  },
+  azure: {
+    name: 'Azure', base_url: 'https://azure.example/openai', env_key: 'AZURE_KEY', wire_api: 'responses',
+    query_params: { 'api-version': '2025-04-01-preview', key: `${SECRET}-QUERY`, apikey: `${SECRET}-QUERY`, sig: `${SECRET}-SIG`, code: `${SECRET}-CODE`, auth: `${SECRET}-AUTH`, nested: { value: SECRET } },
+  },
+};
+const PROVIDERS_KEPT = {
+  'amazon-bedrock': { aws: { region: 'us-east-1', profile: 'work' } },
+  azure: { ...PROVIDERS.azure, query_params: { 'api-version': '2025-04-01-preview' } },
+};
+const BEDROCK_CONFIG = { model: 'openai.gpt-oss-120b', model_provider: 'amazon-bedrock', model_providers: PROVIDERS };
+
+test('codex provider sub-tables keep their named non-credential fields', () => {
+  const filtered = A.codexConfig(TOML.parse(TOML.stringify(BEDROCK_CONFIG)), []).doc;
+  assert.deepEqual(JSON.parse(JSON.stringify(filtered.model_providers)), PROVIDERS_KEPT);
+  assert.ok(!TOML.stringify(filtered).includes(SECRET));
+});
+
+test('a codex spawn on Bedrock starts with the region from the user config', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(BEDROCK_CONFIG));
+  }
+  isolated(h, 'medium', 'codex');
+  // The region comes only from the config, as on a machine whose shell sets
+  // none; the stub refuses to start without it, as codex does.
+  const started = spawn(h, u, 'medium', { AWS_REGION: '', AWS_DEFAULT_REGION: '' });
+  noSecretsCopied(h);
+  const home = path.join(h.state, 'homes', started.agent);
+  const { args: spawned, config } = u.report();
+  assert.deepEqual(config.model_providers, PROVIDERS_KEPT);
+  const profile = TOML.parse(fs.readFileSync(path.join(home, 'sol.config.toml'), 'utf8'));
+  assert.deepEqual(JSON.parse(JSON.stringify(profile.model_providers)), PROVIDERS_KEPT);
+  // An installed codex also loads the generated home with the spawn's -c
+  // overrides, so a field it refuses fails here instead of at dispatch.
+  const version = cp.spawnSync('codex', ['--version'], { encoding: 'utf8' });
+  if (version.status !== 0) return t.diagnostic('codex is not installed; the stub alone checked startup');
+  const overrides = spawned.flatMap((a, i) => (spawned[i - 1] === '-c' ? ['-c', a] : []));
+  const r = cp.spawnSync('codex', [...overrides, 'features', 'list'], { encoding: 'utf8', env: { ...process.env, CODEX_HOME: home }, timeout: 60000 });
+  assert.equal(r.status, 0, `codex refused the generated config: ${r.stderr}`);
 });
 
 test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
@@ -1131,7 +1186,7 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
     assert.deepEqual(ran.map((r) => r.code), [...cases, named].map((c) => c[1]), `${harness}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
     assert.match(ran[1].stderr, /owner acts from an interactive terminal/);
     assert.match(ran[2].stderr, /works on T1 only, not T2/);
-    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, hook, not task add/);
+    assert.match(ran[3].stderr, /sandboxed small; it changes state only with task note, answer, hook, not task add/);
     assert.match(ran[11].stderr, /uses its own hook binding only/);
     assert.match(ran[7].stderr, /without its token/);
     assert.match(ran[12].stderr, /owner acts from an interactive terminal/);

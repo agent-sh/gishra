@@ -10,7 +10,7 @@ For an unlinked dependent whose lower members all have merge evidence, linking r
 
 `github_stack` holds the unmodified `pull_request.stack` object (or the payload's top-level `stack`) from a trusted payload passed to `stack webhook`, or null when the payload has no stack. The repository and PR number must match a known task. Task show and board sheets expose this metadata separately from Tower Crane's local dependency chain. Webhook metadata does not satisfy a gate, change a submitted head, accept a task or prove a merge.
 
-Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, bottom-up `gh pr merge --merge --match-head-commit` invocations, upper PR retargeting and the confirmations. Merge commits keep every accepted head as an ancestor of the project base; the submitted shas remain unchanged. A refused or queued member stops later merges; confirmed accepted lower members retain successful evidence even when the target fails. Branches are retained while merging a linked chain. Sync emits `stack sync` events for the affected tasks. A moved branch or sync conflict emits rework and appends its reason to the task's brief. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack unavailable` and `stack link failed` events.
+Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, bottom-up `gh pr merge --merge --match-head-commit` invocations, upper PR retargeting and the confirmations. Merge commits keep every accepted head as an ancestor of the project base; the submitted shas remain unchanged. A refused or queued member stops later merges; confirmed accepted lower members retain successful evidence even when the target fails. Branches are retained while merging a linked chain. Sync emits `stack sync` events for the affected tasks with `ok`, `head`, the parsed abort `reason`, and `failure` (`conflict`, `tool`, or null on success). A moved branch or an explicit conflict report emits rework and appends its reason to the task's brief. A tooling or transport failure preserves unchanged submissions, claims, briefs, gate evidence and stack metadata; the next refresh retries it. A branch moved before a failed push still requires rework. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack unavailable` and `stack link failed` events.
 
 Sync holds the state lock only for its initial read and final compare-and-apply. Its gh commands and branch reads, fetches and pushes run unlocked. Application compares project configuration, stack membership, complete member task records and member events against the snapshot. A difference refuses application without writing sync events, briefs or task records. Writes to unrelated tasks are preserved by applying to freshly read state.
 
@@ -55,6 +55,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | Setting | Class | Changed by |
 | --- | --- | --- |
 | `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd` | operational | `project set --tests-cmd`, `--clean-cmd`, `--tests-proof-cmd`; gate self-pinning below |
+| `gates.executors` | operational | `project set --executors` |
 | `ci.required`, `ci.ignore_apps`, `ci.capped_review` | operational | `project set --ci-required`, `--ci-ignore-apps`, `--ci-capped-review` |
 | `ci.local` | operational | `project set --ci-local`, `task update --ci-local` |
 | `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive` | operational | `project set --tests-*` |
@@ -71,10 +72,12 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `task.downgrade` | owner-required | `task update --kind` from `code` to `docs`, `research`, `design` or `ops`, which drops the tests and clean gates, at any status |
 | `task.kind.submitted` | refused | `task update --kind` on a submitted or accepted task, whoever asks; `rework` the task first |
 | `task.tier` | operational | `task update --tier` when the value changes |
+| `task.interrupt` | operational | `interrupt ID`, and `task update --interrupt` on a live claim whose requirements change |
 | `task.needs_owner` | operational | `owner-done`; `task update --needs-owner` clearing or replacing an existing reason |
 | `task.cancel_needs_owner` | owner-required | `task update --status cancelled` on a task with an owner ask (`needs_owner`) |
 | `waive.review` | operational | `accept --waive review` when the reviewer is capped or down at the submitted head: a `check ci` there recorded a capped review run (`ci.capped_review`, kept as `capped_review` on the evidence), or a review spawn there exited without a verdict |
 | `merge.admin` | owner-required | `project set --merge-admin` |
+| `decision_delegation` | owner-required | `project set --decision-delegation` |
 | `waive.sources` | owner-required | `accept --waive sources` |
 | `claim.release` | owner-required | `release` of another agent's claim while its process is live or unverified |
 | `sandbox`, `env`, `env_file`, `scope` | owner-required | `project set` or `ladder set` |
@@ -87,7 +90,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `browser_kit` | owner-required | `browser-kit set`, the MCP servers browser tasks get in every project |
 | `publish` | owner-required | anything that publishes outside the repository, such as a release or a package; no command does this |
 
-Tools and MCP servers are operational because choosing what a rung works with is running the project, and the owner's autonomy rule hands that to the orchestrator; the two conditions keep it from widening what an agent reaches. An MCP server runs outside the rung's sandbox, so the orchestrator may opt in only a server already defined in the owner's own harness config (claude `mcp.json` or `.claude.json`, codex `config.toml`); naming another is refused, and the owner adds it. A tool the agent files name (claude tool names, codex features) or codex `web_search` re-enables a harness built-in inside the same sandbox; any other tool opens a `ladder.reach` decision. Only opt-ins new to a rung and harness are checked, including rungs a `ladder harness` change moves to another harness. The owner can overrule either condition by making the change. The conditions hold because the rung keeps its sandbox: only claude and codex enforce one, so a sandboxed role's rung that a change moves to opencode, agy, pi or command (with the personal fallback routes that follow its harness), or args on those harnesses (which no safe-args list checks), open a `ladder.reach` decision too. A route the owner already put there is the orchestrator's to tune with the same args; the orchestrator rung runs unsandboxed, so only args open a decision there. The sandbox, env, env_file and scope grants, `merge.admin`, budget raises, delegation and publishing stay owner-required.
+Tools and MCP servers are operational because choosing what a rung works with is running the project, and the owner's autonomy rule hands that to the orchestrator; the two conditions keep it from widening what an agent reaches. An MCP server runs outside the rung's sandbox, so the orchestrator may opt in only a server already defined in the owner's own harness config (claude `mcp.json` or `.claude.json`, codex `config.toml`); naming another is refused, and the owner adds it. A tool the agent files name (claude tool names, codex features) or codex `web_search` re-enables a harness built-in inside the same sandbox; any other tool opens a `ladder.reach` decision. Only opt-ins new to a rung and harness are checked, including rungs a `ladder harness` change moves to another harness. The owner can overrule either condition by making the change. The conditions hold because the rung keeps its sandbox: only claude and codex enforce one, so a sandboxed role's rung that a change moves to opencode, agy, pi or command (with the personal fallback routes that follow its harness), or args on those harnesses (which no safe-args list checks), open a `ladder.reach` decision too. A route the owner already put there is the orchestrator's to tune with the same args; the orchestrator rung runs unsandboxed, so only args open a decision there. The sandbox, env, env_file and scope grants, `merge.admin`, `decision_delegation`, budget raises, delegation and publishing stay owner-required.
 
 The research agent ships with network and web tools enabled in code; initializing or tuning its model does not ask for a new grant. Changing its explicit `web_mcp` command or tools is owner-required, including clearing it to return to native web tools. The orchestrator's attempt opens a decision without changing the rung. A setting that widens network access is owner-required under `ladder.reach`; operational built-in opt-ins must keep the existing sandbox network confinement.
 
@@ -99,7 +102,7 @@ The owner is the resolved name `owner`, supplied explicitly by `--agent owner` o
 
 | File | Holds |
 |---|---|
-| `project.json` | name, goal, repo, base branch, default harness and model ladder, limits, budgets, standards profile |
+| `project.json` | name, goal, repo, base branch, default harness and model ladder, limits, budgets, standards profile, owner policies |
 | `tasks.json` | every task and its status, evidence and spend |
 | `decisions.json` | questions for the owner and their answers |
 | `briefs/<task>.md` | shared task context and optional worker or reviewer sections, kept current by the orchestrator |
@@ -117,7 +120,7 @@ Pinning keeps upgrades independent of live dispatches. On 2026-10-08, moving the
 
 The shim defaults missing `gitPush` to `none`, `gh` to `[]` and `hook` to null. Missing branch and repository default to null and deny remote pushes. Before checking permissions, a pre-T112 branch policy with absent `branch` or `repo` migrates those fields in memory from its recorded task and project; a field state does not record migrates to null, which refuses remote pushes (no branch or no repository to bind them to) and leaves every other command allowed. Migration requires its protected `hook.json` in the same home and matching dispatch agent, task and state environment; it never infers authority from the current Git branch or remote. Missing recorded values or a mismatched binding refuse the call. The policy file stays read-only, and all calls use the same migrated shape and push checks. The historical policy fixture is generated from `lib/agents.js` and the worker frontmatter at `e034a4325677ada9d0752a1acee60483acfd8849`, T112's parent.
 
-Codex homes rebuild `config.toml` and every `<profile>.config.toml` with explicit allowlists for provider, MCP server and per-tool fields. Unknown fields, credential fields, literal env and headers, and fields with unexpected types are omitted. Named environment-variable references remain for explicit MCP opt-ins; the browser kit also removes `env_vars` and `env_http_headers`. Auth files remain linked to the user's originals.
+Codex homes rebuild `config.toml` and every `<profile>.config.toml` with explicit allowlists for provider, MCP server and per-tool fields. Provider sub-tables keep only named fields: `aws.region` and `aws.profile`, and `query_params.api-version`; a credential-shaped name (containing key, bearer, token, secret or password) never crosses from a sub-table, and `aws.credential_export` and `aws.auth_refresh` stay outside. Unknown fields, credential fields, literal env and headers, and fields with unexpected types are omitted. Named environment-variable references remain for explicit MCP opt-ins; the browser kit also removes `env_vars` and `env_http_headers`. Auth files remain linked to the user's originals.
 
 Codex model and auth-store fields also require their expected scalar types in base configs, profile files and legacy `[profiles.NAME]` tables; arrays and tables are omitted. Claude's `mcp.json` keeps only string `type`, `command` and `url` fields and `args` arrays containing only strings. A nested credential table cannot cross through these settings.
 
@@ -156,11 +159,12 @@ A marker's holder and modification time are read through one opened file descrip
     "small":        { "profile": "luna", "effort": "low" }
   },
   "limits": { "workers": 6, "lease_minutes": 60 },
-  "budget": { "hours": 40, "tokens": 20000000 }
+  "budget": { "hours": 40, "tokens": 20000000 },
+  "decision_delegation": { "orchestrator_technical": true }
 }
 ```
 
-`tower-crane init` writes the default harness and ladder (see below), `limits` as shown, and `budget` values of `null` (no budget) until `tower-crane project set` gives them. `limits.workers` caps worker slots held by live leases and unclaimed worker spawns; `lease_minutes` is the default lease. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
+`tower-crane init` writes the default harness and ladder (see below), `limits` as shown, and `budget` values of `null` (no budget) until `tower-crane project set` gives them. `limits.workers` caps worker slots held by live leases, unclaimed worker spawns and interrupted supervisors still stopping; `lease_minutes` is the default lease. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
 
 Worker dispatch, claim and expired-lease renewal use the same slot count under the state lock. A successful worker `spawn` event without a claim of its own records `reserved: true` and reserves one slot until that task's generated agent claims, a matching exit receipt is recorded, the monitor records the attempt with `active: false`, or `lease_minutes` pass with no claim since the attempt's latest `spawn`, `spawn retry`, `spawn fallback` or `spawn phase` event, counted from the scheduled relaunch when a `retrying` phase records `backoff_ms`. `spawn session` receipts replay an earlier attempt's detail and neither move the reservation's pid nor extend it. A lapsed reservation stays lapsed: later monitor records do not revive it, because another holder may have taken the slot. The claim consumes its own reservation and then holds the slot by lease, without counting twice. Reservations persist through supervised retries, route fallbacks and backoff. Launch failure commits no spawn event and holds no reservation. A full limit refuses dispatch before launching a process, writing a home or recording spend, and names the task and agent holding each slot. Reviewer and other non-worker jobs do not reserve worker slots.
 
@@ -174,9 +178,15 @@ If an expired pre-claim already belongs to the generated worker, dispatch renews
 
 `gates` is an optional object with `tests_cmd` (the full test shell command), `clean_cmd` (the cleanup shell command prefix) and `tests_proof_cmd` (the expensive-mode scoped shell template with `{tests}`). Commands must be non-blank strings without NUL bytes; absent or null means unpinned. They are operational ([Authority](#authority)): the orchestrator or the owner sets or clears them through `init` or `project set --tests-cmd CMD --clean-cmd CMD --tests-proof-cmd CMD`. Prove and run-only require `tests_cmd`; clean requires `clean_cmd`. An unpinned project does not block: when the orchestrator or the owner runs `check tests`, `check clean` or `accept` and a needed pin is missing, the engine pins the detected command under that identity first. `tests_cmd` becomes `npm test` when the repository's `package.json` has a test script other than npm's placeholder; `clean_cmd` becomes the configured cleanup tool: `TOWER_CRANE_CLEAN_CMD`, else `deslop` on PATH, else the deslop plugin's `~/.agentsys/plugins/deslop/scripts/detect.js`. Each pin logs a `gates pin` event with `key`, `value`, `from` and `authority`, and `status` lists pins that still stand. Workers and reviewers pin nothing, and a gate with nothing detected refuses as before. Tests mode none needs no command. Gate flags `--cmd`, `--proof-cmd` and a non-blank `TOWER_CRANE_CLEAN_CMD` can only repeat the corresponding pinned value after whitespace trimming. They refuse a different value before any process runs. Clean appends the checkout directory, `--base=SHA` and `--json` to its prefix.
 
+`gates.executors` is a positive integer, default 2, that caps automation executors running at once on this host ([events.jsonl](#eventsjsonl)). The default fits one full suite at tests concurrency 3, about 6 processes, so two keep tests under half the cores of a 24-core box. The orchestrator or the owner raises it with `project set --executors N` on a larger machine.
+
 `merge` is an optional object with boolean `keep_branch` and `admin` fields, both defaulting to false. `keep_branch: true` omits `gh pr merge --delete-branch` so retained worktrees can keep their task branches; it also keeps branches without a worktree. Only owner-set `admin: true` (owner-required) adds `--admin` for repositories solely owned by the project owner, as allowed by SHARED.md. A command argument cannot enable admin merging; `merge --admin` is refused. Neither option skips Tower Crane's acceptance gates or its accepted-head check.
 
 Set these fields through `project set --merge-keep-branch true --merge-admin true`, or the same flags on `init`. They accept JSON true, false or null. Null clears that field, preserving other merge settings and removing an empty merge object. Changes to `merge.admin`, including clearing or setting an unchanged value, are owner-required; `keep_branch` is operational ([Authority](#authority)). Refused changes write no settings. `project show` prints both resolved defaults.
+
+`decision_delegation` is an optional owner-required policy. Its `orchestrator_technical` boolean defaults to false. Set it with `project set --decision-delegation '{"orchestrator_technical":true}'` or the same flag on `init`; `null` clears it. Setting, repeating or clearing it requires explicit owner identity. When true, the orchestrator may answer a decision only after the owner marks that decision technical with `decision delegate DID --technical true`.
+
+For technical delegation, `lib/authority.js` must resolve the explicit caller as the orchestrator. A generated name such as `orchestrator-T1-1` is recognized through its recorded spawn role; an unsandboxed worker cannot claim the literal `orchestrator` identity by passing `--agent orchestrator`. Answers keep the caller's identity in `answered_by` and the event's actor fields.
 
 Every use of `init --ci-local` or `project set --ci-local`, including setting the current value or clearing it with `null`, is operational: the orchestrator or the owner. Refused calls write no settings or events.
 
@@ -191,6 +201,8 @@ Review dispatch computes the submitted diff before taking the spawn state lock. 
 Cost samples use T31's `spend.entries` across all tasks, restricted to native `rung: review` or spawned reviewer entries. Worker usage, including usage by the submitter, is excluded. Inclusive input, cached input and output must all be known. Recorded `cache_write`, when available, is subtracted from fresh input and priced separately; older records price non-cached input at the higher of input and cache-write rates. Unknown components cannot justify promotion. Model aliases and provider IDs are normalized before spend is matched to prices. Explicit Claude reviewer candidates use the same plain Anthropic or global Bedrock model identity as spend; price a Bedrock Opus route under `global.anthropic.claude-opus-5-5`. Use rates for the provider, cache lifetime and context size being measured. Aggregate T31 records cannot reconstruct per-request long-context surcharges or unlogged thinking tokens; missing output remains a measurement limit.
 
 Worktree creation has no added timeout and uses Git's native initialization lock. The CLI unlocks only after checkout and its hooks finish. It refuses to reuse an unfinished locked registration, including one whose CLI died while a Git child survived or before HEAD was written. An unfinished registration for any task refuses the whole batch call; worktrees prepared earlier in the call can remain. There is no automatic recovery by pid or age. After Git and its children finish, inspect the worktree, then run `git worktree unlock <path>` for a complete checkout or `git worktree remove --force <path>` for an incomplete one. Existing branches and completed worktrees are reused offline. If an add later in a batch fails, earlier tasks can remain prepared.
+
+Task preparation, temporary gate preparation and stack sync run `git worktree prune` before using worktree registrations. Gate cleanup prunes after every removal attempt, including successful removals. This clears orphan admin directories, including empty read-only `commondir` and `config.worktree` mount points recreated by a sandbox after removal. Git owns admin-file writes and initialization ordering; Tower Crane does not synthesize or repair those files. Prune preserves locked registrations while another checkout or its hooks are running.
 
 ### Ladder
 
@@ -363,7 +375,7 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 - `claim`: `{ "agent": "w-3", "since": "...", "until": "...", "from": "todo" }` while in progress; `from` is the status before the claim (`todo` or `rework`), which `release` restores. Repeating `claim` as the live holder extends `until` without changing `since` or `from`. An expired lease frees the task: it counts as `from` again and another agent may claim it. Until someone does, the original claimant can still submit it, or renew it while the workers limit has room: an expired lease no longer counts toward `limits.workers`, so renewing it takes a slot like a new claim.
 - `submitted_by`: the agent that submitted the current `sha`. Submission clears `claim`; while the task is `submitted`, only this agent can replace the submitted head.
 - `evidence`: entries `{ "type", "ok", "sha", "agent", "at", "summary", "ref", "revision" }`, plus `"waived": true` on an owner waiver and `"via": "broker"` on evidence the state broker recorded for the agent it names (provenance, not proof: an unsandboxed process can write the same). Types: `tests`, `clean`, `sources`, `review`, `ci`, `merge`, `note`. Review evidence requires `--sha` for the commit reviewed; `note` can default to the submitted sha. Software gates record the sha they checked.
-- `evidence.confirmed_failure`: optional boolean, emitted as true by tests, clean and CI runners when the check confirms a failed attempt. CI sets it for completed uncapped failing runs, including a failing sibling of a capped review; capped reviews alone, queued or pending runs, missing runs and observation errors do not set it. The same optional field appears in the gate event's `detail` and must match for audited software evidence to count. Legacy evidence without the field remains valid but supplies no confirmed-failure escalation signal.
+- `evidence.confirmed_failure`: optional boolean, emitted as true by tests, clean and CI runners when the check confirms a failed attempt. Unavailable test commands do not set it: shell exits 126/127, Windows exit 9009, or exit 1 with only cmd.exe's missing-command diagnostic. Failed-test output accompanied by that diagnostic still confirms a failure. CI sets it for completed uncapped failing runs, including a failing sibling of a capped review. Missing or pending required checks do not hide a completed uncapped failure in another run. Capped reviews alone, queued or pending runs, missing runs and observation errors do not set it. The same optional field appears in the gate event's `detail` and must match for audited software evidence to count. Legacy evidence without the field remains valid but supplies no confirmed-failure escalation signal.
 
 - `revision`: incremented when acceptance or dependencies change; evidence recorded against an older revision does not count. An accepted task's acceptance, dependencies and kind cannot change; send it back with `rework` first.
 - `spend`: `{ "minutes", "tokens", "input"?, "cached"?, "output"?, "entries"? }`. Existing `{ "minutes", "tokens" }` files keep loading. Totals increase under the state lock. Token counts are non-negative safe integers. `input` includes cache reads and writes, `cached` is the cache-read subset of input, and `output` includes reasoning when reported. Do not add `cached` to `tokens` again. A total-only report increases `tokens` without inventing a breakdown; aggregate breakdown fields sum only the reports that supply them.
@@ -378,6 +390,14 @@ The CLI never writes a dependency on a task that does not exist, a dependency cy
 Task ids are never reused. A new task takes the larger of `next` and one past the highest task id any `events.jsonl` record names, so a task that tasks.json lost keeps its id. `validate` reconciles tasks.json with the log and reports drift: a task id the log names that tasks.json lacks, a `task note` the log records that the task lacks, and a `next` at or below a logged id. It reads without the lock; every reader reads `events.jsonl` before tasks.json, and a commit writes tasks.json before it appends its events, so a commit between the two reads is never mistaken for drift.
 
 Resource lock holders are derived from the same pure event-log, lease and clock view as worker slot holders. A task holds all its locks while its lease is live or its unclaimed worker dispatch reservation holds a slot. Claim, worker spawn and expired-lease renewal refuse conflicting locks under the state lock, naming the resource, task and agent holding it; the same task and agent can consume their own reservation. `ready`, blocked views and task descriptions include conflicts with other tasks. Submission, release and lease expiry free leased locks. Unclaimed reservations free their locks on the matching exit, inactive monitor record or reservation horizon, and retain them through supervised retry and fallback backoff. No process probe can free a lock for one observer alone. Reviewer and other non-worker dispatches acquire no resource locks. Lock and environment changes do not bump the task revision.
+
+Changing acceptance, dependencies, capabilities (`needs`), kind or a local CI override while a claim's lease is live requires `task update --interrupt`. Only the explicit owner, `orchestrator`, or a generated agent with a recorded orchestrator role can authorize the stop. Validation, the requirements edit and the interruption event share one lock, so a refused edit stops nothing. Acceptance, dependency and capability edits retain their revision bump. Adding or clearing capabilities changes what the next spawn receives; repeating an unchanged capability set keeps the claim and revision. Unchanged requirements and metadata changes do not interrupt.
+
+`interrupt ID` clears the claim and restores its `from` status without changing revision, branch, PR, head, evidence or worktree files. Its event records `{ holder, claim, status, revision, reason, phase, active }` and the matched supervisor's run identity when present. A live supervisor starts in `stopping`; a claim without a live supervisor records `stopped`. The supervisor consumes this request through its existing shutdown path, cancels retries, waits for process-group cleanup and output closure, then records `spawn phase` with `phase: "stopped", active: false` and the usual exit and spend receipts. An interrupted task with a live stopping supervisor still reserves one worker slot; claim and redispatch refuse until cleanup finishes. A manual claim has no active supervisor and releases immediately. Interrupted runs do not produce an exited-without-submit recovery wakeup.
+
+Dispatch recognizes the interruption of the latest worker attempt independently of `submitted_by`. The usual matching-route Codex and command-adapter session policy applies; native Claude starts fresh. Resume restores the interrupted claim's original `since` and `from`, checks blockers and worker limits, and supplies the current requirements with an interruption note. A changed route, missing session or fallback starts fresh in the retained worktree. No session is resumed while the interrupted supervisor is still stopping.
+
+Recorded `active: false` takes precedence over a monitor process that remains alive for usage collection. Interrupting such a claim records `stopped` directly. Final exit handling checks for a matching active interruption under the state lock after waiting for hooks, so a stop request committed during that wait also receives its `stopped` phase and exit receipt. A later `submit` or `rework` event for the task ends the preceding interruption's eligibility for both session selection and prompt construction. Rework resumes from the submission's claim and supplies current review feedback.
 
 Software evidence also has `source` (`check tests`, `check clean`, `check sources`, `check ci` or `merge`) and `commands`, an array of `{ "command", "args", "cwd", "status", "signal" }` receipts. `command` is the executable name or shell command line, `args` holds its arguments, `cwd` is its working directory, and `status` and `signal` report how it ended (null when unavailable). All commands the gate ran are recorded, including failed commands and GitHub queries. A gate refused before running a process records an empty array; an ok entry needs at least one command to count. In tests mode `none`, the receipt is the Git command resolving the submitted sha; it does not claim that a suite ran. Tests evidence and event detail also carry `tests_mode`, the mode resolved from the project and task kind when checking started, or null for invalid policy. Gate evidence and its event carry the same receipts and revision.
 
@@ -453,7 +473,9 @@ When software gates pass and no review has been attempted at the current head an
 
 Unfinished CI blocks dispatch without requiring rework. The orchestrator watches it through a gate runner, then re-runs `check ci` when it completes before accepting again. Reviewers judge code and acceptance; missing or unfinished CI evidence is reported to the orchestrator rather than recorded as a failed code review. Review policy and prices are operational: the orchestrator or the owner changes them, and a worker asks the orchestrator.
 
-The reviewer receives the submitted diff, task acceptance, software gate summaries and only the brief's `## Reviewer` section, rather than the worker's brief or history. It reads surrounding code only as needed and uses the supplied results unless a focused probe is warranted. Packets over 12,000 characters are referenced by file from a short prompt for Windows argv limits. Software waivers requested in the same accept remain atomic with acceptance and cannot authorize a review spawn; use audited software gate evidence or an owner accept that also waives review.
+The reviewer receives the submitted diff, task acceptance, audited software gate results (including command receipts, sha, revision and tests mode) and only the brief's `## Reviewer` section. Claude and Codex put the role instructions, rule contents, standards and the repository's review contract sections in the system context; task JSON, brief, gates and diff stay in the user message. Claude writes it to `system.md` in its home and uses `--append-system-prompt-file` and `--exclude-dynamic-system-prompt-sections`; Codex uses its generated `AGENTS.md`. Repository rule labels are relative to the checkout, while external rule paths stay absolute, so moving to another worktree does not change unchanged contents. Every Claude spawn sets `FORCE_PROMPT_CACHING_5M=1`. See [ladder.md](ladder.md#reviewer-cache) for the measurements and cost per million tokens.
+
+Reviewers use the supplied tests, clean and CI results. They do not re-run the full suite unless they change something in a scratch checkout to probe a specific concern, and run only the affected tests for that probe. The submitted worktree stays read-only. Packets over 12,000 characters put the diff in a context file; the user prompt still carries task context and gate results. This bounds diff arguments, not the static system text or unusually large gate receipts. Software waivers requested in the same accept remain atomic with acceptance and cannot authorize a review spawn; use audited software gate evidence or an owner accept that also waives review.
 
 A gate passes when the latest eligible evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `tests`, `clean`, `sources` and `ci`, evidence needs the matching gate `source` and an events.jsonl entry with `cmd === source`, the same task id and agent, and matching `type`, `source`, exact evidence `sha`, `ok`, `revision`, `commands` and optional `confirmed_failure` in `detail`. An ok entry also needs a non-empty commands list. Manual, forged and older unmarked entries are ignored, including later entries that would otherwise override a genuine pass or failure. For `review`, entries by the submitter are ignored. A waiver counts only when its agent is `owner`, for both review and software gates.
 
@@ -502,13 +524,16 @@ The standards profile may add gates. `--waive TYPE --reason TEXT` records an own
       "recommendation": "postgres",
       "why": "keys must survive a Redis flush; volume is 30/s",
       "blocks": ["T3"],
+      "answerers": [],
+      "technical": false,
       "status": "open",
       "answer": null,
       "note": null,
       "asked_by": "orchestrator",
       "asked_at": "...",
       "answered_by": null,
-      "answered_at": null
+      "answered_at": null,
+      "answer_rule": null
     }
   ]
 }
@@ -516,7 +541,11 @@ The standards profile may add gates. `--waive TYPE --reason TEXT` records an own
 
 A decision the engine opened for an orchestrator's owner-required change also has `escalation: { "settings": [...], "change": {...} }` ([Authority](#authority)).
 
-A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
+A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. An explicit owner identity can answer every decision. `answerers` lists agents the owner named with `decision delegate DID --answerers JSON`; the owner can replace the list or clear it with `[]`. `technical` is set by the owner through the same command. The orchestrator can answer only when `technical` is true and `project.json` enables `decision_delegation.orchestrator_technical`. An answer stores `answered_by` and `answer_rule`; older decisions default to no named answerers, not technical, and no answer rule.
+
+Answer rules are `owner`, `owner-named-agent` and `owner-technical-delegation`. The `answer` event records the caller in `agent` and `detail.answered_by`, and the rule in `detail.answer_rule`. Refused answers write no event. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
+
+The orchestrator's technical rule takes precedence over `answerers`, including for a generated identity with a recorded orchestrator role. Listing that identity cannot authorize a nontechnical answer or one without project delegation. A sandboxed agent may answer through its broker only when the owner named its bound identity for that decision; successful brokered answer events retain the bound identity and carry `via: broker`.
 
 ## events.jsonl
 
@@ -546,8 +575,17 @@ an exception. Terminal receipts include `error`, null without an exception.
 Startup can retry deferred or errored work without a new lifecycle event.
 A task has at most one observable executor.
 An exited executor's start can be retried, while an unobservable executor
-remains busy. `automation queued` records a blocked notification's source;
-the executor drains it after releasing the task. State locks cover only
+remains busy. At most `gates.executors` executors run on one host across
+every watcher and supervisor. The running receipt in the event log is the
+executor's lease: its terminal receipt releases it on exit, and its PID
+identity releases it when the process dies. Running receipts from other
+hosts do not count against this host's cap.
+`automation queued` records a blocked notification's source, with
+`executors` set to the cap when the cap blocked it rather than another
+executor of the same task. Queued notifications run in submission order:
+while one waits, a later notification queues behind it even if a slot is
+free. Each executor drains the queue after releasing its slot; watchers
+also retry their pending notifications on their next check. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
 `via: automation`. Reactions establish an explicit authorization context
@@ -555,9 +593,24 @@ only after verifying the caller's authority or entering from the trusted
 supervisor. Supervisors restore the dispatcher's command PATH for these
 operations; agent commands retain their restrictive Git and GitHub shims.
 This provenance does not replace gate command receipts.
+`merge ID` takes the same reservation with source `merge:<uuid>`, waits
+while a running executor is observable and records `done`, or `error` when
+it refuses, as its release. It drains reactions queued behind it, as an
+executor does. The merge queue takes the head of the line's reservation
+with source `queue:<uuid>` around its merge, unless its own process
+already holds it. Stack head checks ignore `automation`,
+`automation queued` and `automation reconcile` events, which change no
+task state.
 An accepted PR already merged remotely goes through the merge gate's
-confirmation path. It records the matching accepted head without merging
-again, including after an executor dies before writing its receipt.
+confirmation path. It records the matching accepted head and the PR's merge
+commit without merging again, including after an executor dies before
+writing its receipt. A non-stacked PR GitHub reports merged at the accepted
+head needs no current gate evidence or CI receipt base, so tasks accepted
+before merge evidence existed are confirmed rather than refused.
+The confirmation lookup validates merge text and method before calling
+GitHub. Failed current gates permit this read-only lookup; an open PR still
+requires passing gates. Confirmation evidence records the lookup that
+proved the accepted head merged, without querying and merging it again.
 Waiters retain automatic events even when their actor matches the waiter.
 Reactions run before event output filters, and active PRs catch up at
 watcher startup except a default zero-timeout cursor snapshot.
@@ -574,9 +627,21 @@ or fallback tick without holding the wait timeout.
 executor `pid`, `host` and Linux `start_ticks`, `requested` from a reaction
 that found a live executor, then `done`, or `error` with `error`. `done` and
 `error` also record `blocked`: `null` when the line drained, or
-`{task, reason}` naming the head that stopped it. A `requested` after the
+`{task, reason}` naming the first head of the pass that did not merge, and
+`skipped`: the `{task, reason}` heads passed over in the pass. A head
+waiting on GitHub's mergeability stops the line. A head refused for any
+other reason (a closed or unreadable PR, a moved or differently merged head, failing
+gates, a refused merge or head check) is passed over for the rest of the
+pass and the next entry takes the line; each later pass tries it again.
+PR lookup refusals and unreadable GitHub responses use this skip path;
+unexpected execution errors still abort the queue.
+`queue skipped` records `{sha, revision, reason}` on that task once per
+sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain
-again. The line holds one entry per accepted, unmerged PR task with no
+again with a fresh skipped set. A successful CI completion during the
+previous pass can therefore advance a skipped head before the executor
+releases the queue, without another notification. The line holds one entry
+per accepted, unmerged PR task with no
 unmerged task below it, extended up its stack by the accepted, linked tasks
 directly above it; entries are ordered by their bottom task's latest
 `accept` event at the current sha and revision.
@@ -662,7 +727,7 @@ An incomplete final line remains unread until a subsequent append; after a crash
 
 Each `spawn` also records `route`, `attempt`, `session_id` and `resumed`. A fresh spawn after an isolated session file is missing records `resume_fallback_reason` with the reason it did not resume. `route` holds the resolved rung fields. `attempt` counts spawns for this job and task, including resumed attempts that keep their agent name. Resumed attempts use a distinct log named `<task>-<agent>-attempt-<n>.log`. A resumed Codex dispatch includes `usage_before`, its session's cumulative counters before the new turn. Usage collection subtracts this snapshot; if it is unavailable, the resumed attempt's usage stays unknown. Its spend source is `spawn:<agent>:attempt:<n>`; fresh spawns keep `spawn:<agent>`. Dispatch collects the previous attempt before starting a resume, and repeated collectors update the same attempt receipt.
 
-A `startup` event precedes each started agent's `spawn` event, and each route fallback's `spawn fallback` event: the receipt of what the agent was given, `{ agent, role, harness, goal, target: { id, title, acceptance }, rules: [{ path, scope, loaded, bytes }], rules_bytes, rules_tokens, instructions_file, prompt_bytes, prompt_tokens, resumed, receives_prompt, attempt }`. `target.acceptance` is the number of acceptance items, not their text. `scope` is `global`, `project` or `import`; `loaded` is `harness` (importable by the harness at start) or `read` (the prompt tells it to read the file, without claiming it was read). Claude quotes paths containing tabs with literal tabs, and marks paths containing line breaks `read`. Claude imports include the generated home's hop in its five-hop limit; files beyond that limit are marked `read`. Codex prefers `AGENTS.override.md` over `AGENTS.md` per directory. Other harnesses receive their global files as `read`. A command dispatch requires `{prompt}` or `{brief}` in its command argv; without either, spawn refuses before writing a startup receipt. Token counts are bytes divided by four, rounded up. A resumed session got these with its first prompt.
+A `startup` event precedes each started agent's `spawn` event, and each route fallback's `spawn fallback` event: the receipt of what the agent was given, `{ agent, role, harness, goal, target: { id, title, acceptance }, rules: [{ path, scope, loaded, bytes }], rules_bytes, rules_tokens, instructions_file, prompt_bytes, prompt_tokens, resumed, receives_prompt, attempt }`. `target.acceptance` is the number of acceptance items, not their text. `scope` is `global`, `project` or `import`; `loaded` is `harness` (importable by the harness at start), `read` (the prompt tells it to read the file, without claiming it was read), or `system` (a Claude/Codex review snapshot). For agents using path imports, Claude quotes paths containing tabs with literal tabs, and marks paths containing line breaks `read`. Claude imports include the generated home's hop in its five-hop limit; files beyond that limit are marked `read`. Codex prefers `AGENTS.override.md` over `AGENTS.md` per directory. Other harnesses receive their global files as `read`. A command dispatch requires `{prompt}` or `{brief}` in its command argv; without either, spawn refuses before writing a startup receipt. Isolated reviewers also record `system_bytes` and `system_tokens`, separately from the task's user prompt. Claude's reviewer `instructions_file` names an empty `CLAUDE.md`, since its static text is passed by flag; Codex's names the populated `AGENTS.md`. Token estimates are bytes divided by four, rounded up, not measured API cache usage. A resumed session got these with its first prompt.
 
 `session_id` is null on a fresh dispatch and names the reused session on resume. Once stdout exposes the id, an append-only `spawn session` event repeats the attempt's spawn detail with its `session_id`. Match by task, agent, pid and attempt; do not rewrite an earlier event. Codex reports it in `thread.started.thread_id` and Claude in its JSON result. A command harness can emit either record. Session ids stay out of prompts and briefs. On rework, resume selects the most recent worker attempt only when it belongs to `submitted_by`, its session is known, its route and worktree match, and the previous process has exited. Before an isolated Codex resume, spawn checks for the matching rollout under `homes/.codex/<agent>/sessions`. Native Codex resumes; native Claude starts fresh with the review note because measured resumes rewrote its cache. A command adapter can resume through its `{session}` protocol. A missing session or changed rung, route, harness or worktree permits a fresh spawn with the full brief and review note. Review spawns do not resume.
 
