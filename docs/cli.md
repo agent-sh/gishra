@@ -206,11 +206,8 @@ When `--branch` or `--pr` is supplied and the task already records a PR, `submit
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid only within the same revision. Rework and a changed brief after the first submission start a new revision and require fresh evidence. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
 
-<<<<<<< HEAD
 Pass the commit actually reviewed to `evidence --sha S`. A submitted head can move while a review is running; `tower-crane evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. A spawned reviewer's result also keeps the revision from its dispatch, so a verdict arriving after a brief change, acceptance change or rework cannot satisfy the new revision's review gate. Missing `--sha` on `review` evidence is a usage error (exit 2) and writes nothing. Software evidence types are refused first (exit 1), with or without `--sha`. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
-||||||| 6aa2e50
-Pass the commit actually reviewed to `evidence --sha S`. A submitted head can move while a review is running; `tower-crane evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on `review` evidence is a usage error (exit 2) and writes nothing. Software evidence types are refused first (exit 1), with or without `--sha`. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
-=======
+
 The trusted `wait` watcher and dispatch supervisor react to submissions,
 worker exits, review evidence, acceptance, CI completions and confirmed
 merges. Submission runs unattempted tests, cleanup and source verification
@@ -251,7 +248,6 @@ bounded gate commands after a wait's timeout expires. The broker retains
 its command restrictions and never executes gates.
 
 Pass the commit actually reviewed to `evidence --sha S`. A submitted head can move while a review is running; `tower-crane evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on `review` evidence is a usage error (exit 2) and writes nothing. Software evidence types are refused first (exit 1), with or without `--sha`. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
->>>>>>> origin/main
 
 `spend --cache-write N` records cache-write input separately from `--cached` cache reads. Both are included in `--input`; their sum cannot exceed input. Review pricing uses the entry when available and conservatively prices non-cached input in older records at the higher input or cache-write rate.
 
