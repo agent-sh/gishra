@@ -12,7 +12,10 @@ function events(h) {
 }
 
 function pass(h, type, agent, sha) {
-  if (type === 'review') h.ok(['evidence', 'T1', '--type', type, '--ok', '--sha', sha, '--agent', agent]);
+  if (type === 'review') {
+    h.reviewer('T1', agent, sha);
+    h.ok(['evidence', 'T1', '--type', type, '--ok', '--sha', sha, '--agent', agent]);
+  }
   else gateEvidence(h, type, agent);
 }
 
@@ -87,6 +90,7 @@ test('the claimant resubmits a newer head and its gates need evidence at that he
   const selfReview = h.run(['accept', 'T1']);
   assert.equal(selfReview.code, 1);
   assert.match(selfReview.stderr, /only the submitter \(w-1\) reviewed/);
+  h.reviewer('T1', 'r-1', newSha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', newSha, '--agent', 'r-1']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
   h.ok(['accept', 'T1']);
@@ -111,6 +115,7 @@ test('resubmission belongs to the current submitter and stops after acceptance o
   assert.deepEqual(h.json(['task', 'show', 'T1']), before);
   assert.deepEqual(events(h), beforeEvents);
 
+  h.reviewer('T1', 'r-1', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
   const again = h.json(['submit', 'T1', '--sha', sha.toUpperCase(), '--agent', 'w-1']);
   assert.deepEqual([again.sha, again.branch, again.pr], [sha, 'feature/old', 7]);
@@ -231,6 +236,7 @@ test('review evidence must pin the reviewed sha when a worker resubmits during r
   assert.equal(stale.code, 1, stale.stdout);
   assert.match(stale.stderr, /could not start tower-crane-no-such-reviewer/);
   assert.equal(h.json(['task', 'show', 'T1']).status, 'submitted');
+  h.reviewer('T1', 'r-1', newerSha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', newerSha, '--agent', 'r-1']);
   assert.equal(h.json(['accept', 'T1']).status, 'accepted');
   assert.equal(h.json(['task', 'show', 'T1']).sha, newerSha);

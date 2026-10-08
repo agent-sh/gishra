@@ -40,6 +40,7 @@ fs.writeFileSync(process.argv[2], JSON.stringify({
   h.ok(['task', 'add', '--title', 'local check', '--kind', 'docs', '--acceptance', 'checked']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.sha, '--branch', 'local-change', '--pr', '1']);
+  h.reviewer('T1', 'reviewer', h.sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   return h;
 }
@@ -122,6 +123,7 @@ test('accept reruns local CI when the submitted head has no receipt', (t) => {
   h.git(['commit', '--allow-empty', '-qm', 'another head with the same tree']);
   const next = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', next]);
+  h.reviewer('T1', 'reviewer', next);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', next, '--agent', 'reviewer']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'ci').ok, false);
   h.ok(['accept', 'T1']);
@@ -227,6 +229,7 @@ test('hosted CI merges without fetching an unavailable origin when ci.local is a
   h.ok(['task', 'add', '--title', 'hosted check', '--kind', 'docs', '--acceptance', 'checked']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha, '--branch', 'fixture-change', '--pr', '1']);
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
   h.ok(['check', 'ci', 'T1']);
   h.ok(['accept', 'T1']);
@@ -283,6 +286,7 @@ test('matching audit copies cannot bind a receipt to another head or tree', (t) 
   h.git(['commit', '--allow-empty', '-qm', 'new head for receipt validation']);
   const next = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', next]);
+  h.reviewer('T1', 'reviewer', next);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', next, '--agent', 'reviewer']);
   const doc = h.readState('tasks.json');
   const evidence = doc.tasks[0].evidence.findLast((e) => e.type === 'ci');

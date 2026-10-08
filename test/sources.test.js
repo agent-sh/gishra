@@ -214,6 +214,7 @@ for (const [i, tier] of ['easy', 'medium', 'hard', 'research'].entries()) {
   test(`research kind requires sources and citation review on ${tier} tier, including after a tier move`, async (t) => {
     const { h, submit } = await fixture(t, tier);
     const sha = submit();
+    h.reviewer('T1', 'reviewer', sha);
     h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha]);
     const report = h.json(['task', 'show', 'T1']).gates;
     assert.equal(report.ok, false, 'review alone cannot satisfy research verification');
@@ -245,6 +246,7 @@ test('sources gate follows research kind when kind changes without moving the ta
   h.ok(['claim', 'T1', '--agent', 'worker']);
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha]);
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha]);
   assert.equal(h.json(['task', 'show', 'T1']).tier, 'medium');
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);

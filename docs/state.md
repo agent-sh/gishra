@@ -411,9 +411,11 @@ Any agent recovers a verified exited task with `release ID --reason R`. The dete
 
 `tower-crane accept` refuses unless the task's current revision has, at the submitted `sha`:
 
-- `code` tasks: `tests` ok, `clean` ok, and `review` ok from an agent other than the one that submitted
-- `research` tasks on any tier: `sources` ok and `review` ok from another agent
-- other tasks: `review` ok from another agent
+- `code` tasks: `tests` ok, `clean` ok, and `review` ok from an independent reviewer
+- `research` tasks on any tier: `sources` ok and `review` ok from an independent reviewer
+- other tasks: `review` ok from an independent reviewer
+
+An independent reviewer is the owner, or a reviewer that `spawn` dispatched for that task at that sha and revision, never the submitter.
 - any task with a PR, whatever its kind: `ci` ok as well
 
 Tests modes change how `check tests` produces evidence, not which gates acceptance requires. A code task in mode `none` still needs audited tests evidence for its submitted sha, plus cleanup and independent review.
@@ -428,7 +430,7 @@ Unfinished CI blocks dispatch without requiring rework. The orchestrator watches
 
 The reviewer receives the submitted diff, task acceptance, software gate summaries and only the brief's `## Reviewer` section, rather than the worker's brief or history. It reads surrounding code only as needed and uses the supplied results unless a focused probe is warranted. Packets over 12,000 characters are referenced by file from a short prompt for Windows argv limits. Software waivers requested in the same accept remain atomic with acceptance and cannot authorize a review spawn; use audited software gate evidence or an owner accept that also waives review.
 
-A gate passes when the latest eligible evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `tests`, `clean`, `sources` and `ci`, evidence needs the matching gate `source` and an events.jsonl entry with `cmd === source`, the same task id and agent, and matching `type`, `source`, exact evidence `sha`, `ok`, `revision` and `commands` in `detail`. An ok entry also needs a non-empty commands list. Manual, forged and older unmarked entries are ignored, including later entries that would otherwise override a genuine pass or failure. For `review`, entries by the submitter are ignored. A waiver counts only when its agent is `owner`, for both review and software gates.
+A gate passes when the latest eligible evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `tests`, `clean`, `sources` and `ci`, evidence needs the matching gate `source` and an events.jsonl entry with `cmd === source`, the same task id and agent, and matching `type`, `source`, exact evidence `sha`, `ok`, `revision` and `commands` in `detail`. An ok entry also needs a non-empty commands list. Manual, forged and older unmarked entries are ignored, including later entries that would otherwise override a genuine pass or failure. For `review`, an entry counts only when its agent is `owner` or has a `spawn` event with `role: reviewer` for the task, at a sha matching the entry's and at the entry's revision, and is not the submitter. Recording review evidence needs no role, so a name no review dispatch started counts for nothing; its entry is kept, `task show` marks it `(does not count)` and the review gate names its agent. A waiver counts only when its agent is `owner`, for both review and software gates.
 
 Local CI adds `receipt` to its evidence and event detail. Both copies must match exactly:
 

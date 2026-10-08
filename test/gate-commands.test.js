@@ -106,6 +106,7 @@ for (const type of ['tests', 'clean']) {
     pin(h);
     h.ok(['check', 'tests', 'T1']);
     h.ok(['check', 'clean', 'T1']);
+    h.reviewer('T1', 'reviewer', sha);
     h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
     const previous = h.readState('project.json').gates[`${type}_cmd`];
     const changed = `${previous} `;
@@ -183,6 +184,7 @@ for (const type of ['tests', 'clean']) {
     pin(h);
     h.ok(['check', 'tests', 'T1']);
     h.ok(['check', 'clean', 'T1']);
+    h.reviewer('T1', 'reviewer', sha);
     h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
     h.ok(['accept', 'T1']);
     const entries = () => h.ok(['task', 'show', 'T1']).split('\n').filter((line) => line.startsWith(`  - ${type} ok at`));

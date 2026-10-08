@@ -191,6 +191,7 @@ test('accepted task gate pips and ledger stop counting tests after the owner cha
   h.ok(['project', 'set', '--tests-mode', 'run-only']);
   gateEvidence(h, 'tests', 'checker');
   gateEvidence(h, 'clean', 'checker');
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
   h.ok(['accept', 'T1']);
   const sheet = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article id="T1"[\s\S]*?<\/article>/)[0];

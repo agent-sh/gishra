@@ -17,7 +17,8 @@ function submitted(h, extra = [], kind = 'code') {
 
 const ev = (h, type, agent, ok = true) => ['tests', 'clean', 'ci'].includes(type)
   ? gateEvidence(h, type, agent, ok)
-  : h.ok(['evidence', 'T1', '--type', type, ok ? '--ok' : '--fail', '--sha', h.sha, '--agent', agent]);
+  : (type === 'review' && agent !== 'w-1' && h.reviewer('T1', agent),
+    h.ok(['evidence', 'T1', '--type', type, ok ? '--ok' : '--fail', '--sha', h.sha, '--agent', agent]));
 
 test('accept refuses a code task without gates, and a review by the submitter does not count', (t) => {
   const h = makeRepo(t);
@@ -134,6 +135,45 @@ test('other kinds need only a review from another agent', (t) => {
   assert.equal(h.run(['accept', 'T1']).code, 1);
   ev(h, 'review', 'r-1');
   h.ok(['accept', 'T1']);
+});
+
+test('review evidence counts only from a reviewer spawned for that head and revision, or the owner', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  submitted(h, [], 'docs');
+  // I6: a name no spawn started records an ok review; it is kept but does not count.
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'made-up-reviewer']);
+  const show = h.ok(['task', 'show', 'T1']);
+  assert.match(show, /gates: review missing/);
+  assert.match(show, /review ok at \w+ by made-up-reviewer .*\(does not count\)/);
+  const reason = /review by made-up-reviewer does not count: not a reviewer spawned for T1 at \w+ revision 1, nor the owner/;
+  assert.match(h.json(['task', 'show', 'T1']).gates.missing.join('; '), reason);
+  // I7: the orchestrator cannot accept on it.
+  const forged = h.run(['accept', 'T1', '--agent', 'orchestrator']);
+  assert.equal(forged.code, 1, forged.stderr);
+  assert.match(forged.stderr, reason);
+
+  // A reviewer spawn for another head, revision or task, or as a worker, does not vouch for it.
+  h.reviewer('T1', 'r-other-sha', 'fffffff');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'r-other-sha']);
+  const worker = { at: new Date().toISOString(), agent: 'orchestrator', cmd: 'spawn', task: 'T1',
+    detail: { agent: 'worker-T1-9', role: 'worker', sha: h.sha, revision: 1, pid: 999999, attempt: 1 } };
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), `${JSON.stringify(worker)}\n`);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'worker-T1-9']);
+  assert.equal(h.run(['accept', 'T1', '--agent', 'orchestrator']).code, 1);
+
+  h.reviewer('T1', 'reviewer-T1-1');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer-T1-1']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
+});
+
+test('the owner review counts without a reviewer spawn', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  submitted(h, [], 'docs');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'owner']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
 });
 
 test('accept runs missing CI for a non-code task with a PR', (t) => {
