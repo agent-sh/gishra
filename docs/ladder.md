@@ -16,7 +16,7 @@ Every task has a tier, and the ladder in `project.json` says which harness, mode
 
 ```bash
 tower-crane ladder harness codex                                  # every rung without its own harness
-tower-crane ladder set easy     --model claude-sonnet-5-5 --effort medium
+tower-crane ladder set easy     --harness claude --model claude-sonnet-5-5 --effort medium
 tower-crane ladder set hard     --harness claude --model opus --effort high
 tower-crane ladder set review   --harness codex --profile sol --effort high --clear model
 tower-crane ladder save-user                                      # make this ladder the default for new projects
