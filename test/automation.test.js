@@ -792,6 +792,28 @@ test('a head that stops the line and then goes to rework lets the PR behind it m
   assert.equal(h.github().prs['8'].state, 'MERGED');
 });
 
+test('a merged-head suite timeout stops the queue without reworking an accepted task', (t) => {
+  const h = queueFixture(t);
+  h.moveMain();
+  h.ok(['project', 'set', '--tests-timeout-min', '0.05', '--agent', 'orchestrator']);
+  fs.appendFileSync(path.join(h.base, 'suite.js'), `
+console.log('# Subtest: test/slow.test.js');
+setTimeout(() => {}, 10000);
+`);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  const check = headChecks(h).at(-1).detail;
+  assert.equal(check.ok, false);
+  assert.equal(check.infrastructure_failure, true);
+  assert.equal(check.timeout.minutes, 0.05);
+  assert.deepEqual(check.timeout.running_files, ['test/slow.test.js']);
+  assert.match(check.summary, /timed out after 0\.05 min/);
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
+  assert.equal(h.github().calls.filter((a) => a[1] === 'merge').length, 0);
+  const stopped = h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+  assert.match(stopped.detail.blocked.reason, /timed out after 0\.05 min/);
+});
+
 test('a head check that fails after its settings changed checks again under the current settings', (t) => {
   const h = queueFixture(t);
   h.moveMain();
