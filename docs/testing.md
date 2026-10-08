@@ -30,7 +30,7 @@ For projects Tower Crane manages, expensive proof is the default: the orchestrat
 
 `node scripts/test-cost.js --before <main checkout>`: each file alone, median of three runs, four files at a time, the two checkouts interleaved so both saw the same load. The before checkout is `origin/main` at e2f5277 with its own `HOME` per test repository; without that, 15 of its files failed early here and measured too low. The machine was at a load of 40 to 80 from other sessions throughout, so wall times run long; CPU seconds compare.
 
-Total CPU: **1967 s before, 1408 s after, 28% less**. Summed wall time: 6156 s before, 4479 s after.
+Total CPU: **1967 s before, 1408 s after, 28% less**. Both trees are the 55 files as of e2f5277; test files added to main since then are not in this table. Summed wall time: 6156 s before, 4479 s after.
 
 | file | covers | before CPU s | before wall s | after CPU s | after wall s |
 | --- | --- | ---: | ---: | ---: | ---: |
