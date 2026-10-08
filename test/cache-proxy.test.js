@@ -192,6 +192,30 @@ test('the turn breakpoint marks the user turn before trailing system messages', 
   assert.deepEqual(body.system.slice(1).map(b => b.cache_control), [marked, marked]);
 });
 
+test('an added 1-hour breakpoint raises the 5-minute ones before it, and an added 5-minute one before a 1-hour one is raised', async (t) => {
+  const short = { type: 'ephemeral' };
+  const long = { type: 'ephemeral', ttl: '1h' };
+  const turn = await start(t, ['--turn-breakpoint', '--breakpoint-ttl', '1h']);
+  await turn.send(OPUS, {
+    tools: [{ name: 't', input_schema: {}, cache_control: short }],
+    system: [{ type: 'text', text: 'a', cache_control: short }, { type: 'text', text: 'b', cache_control: short }],
+    messages: [{ role: 'user', content: 'review this' }, { role: 'system', content: 'env' }],
+  });
+  const marker = await start(t, ['--breakpoint', 'END', '--breakpoint-ttl', '1h']);
+  await marker.send(OPUS, { system: [{ type: 'text', text: 'a', cache_control: short }], messages: [{ role: 'user', content: 'skill END' }] });
+  const before = await start(t, ['--breakpoint', 'END']);
+  await before.send(OPUS, { system: [{ type: 'text', text: 'skill END' }], messages: [{ role: 'user', content: [{ type: 'text', text: 'x', cache_control: long }] }] });
+  const [turnLog, markerLog, beforeLog] = await Promise.all([turn.entries(1), marker.entries(1), before.entries(1)]);
+
+  const body = turn.received[0].body;
+  assert.deepEqual([body.tools[0], ...body.system, body.messages[0].content[0]].map(b => b.cache_control), [long, long, long, long]);
+  assert.deepEqual(turnLog.lines[0].rewrites, ['turn_breakpoint:messages[0]', 'ttl:promoted system[1]', 'ttl:promoted system[0]', 'ttl:promoted tools[0]']);
+  assert.deepEqual(marker.received[0].body.system[0].cache_control, long);
+  assert.deepEqual(markerLog.lines[0].rewrites, ['breakpoint:marked', 'ttl:promoted system[0]']);
+  assert.deepEqual(before.received[0].body.system[0].cache_control, long);
+  assert.deepEqual(beforeLog.lines[0].rewrites, ['breakpoint:marked', 'ttl:promoted system[0]']);
+});
+
 test('normalize keeps tools and system identical across working directories and moves git status after the prompt', async (t) => {
   const proxy = await start(t, ['--normalize']);
   const request = cwd => ({

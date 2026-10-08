@@ -260,7 +260,33 @@ function insertBreakpoint(body, marker, ttl) {
   const draft = structuredClone(body);
   const changes = placeBreakpoint(draft, marker, ttl);
   if (countBreakpoints(draft) > ANTHROPIC_MAX_BREAKPOINTS) return ['breakpoint:over_limit'];
+  changes.push(...orderTtls(draft));
   Object.assign(body, draft);
+  return changes;
+}
+
+// Anthropic rejects a request whose 1-hour breakpoint comes after a 5-minute one.
+// An added breakpoint can break that order either way, so every breakpoint before
+// a 1-hour one is raised to 1 hour. Billing does not change: 1-hour write tokens
+// run up to the last 1-hour breakpoint whatever the TTLs before it.
+function orderTtls(body) {
+  const order = [];
+  (body.tools || []).forEach((block, i) => order.push([`tools[${i}]`, block]));
+  if (Array.isArray(body.system)) body.system.forEach((block, i) => order.push([`system[${i}]`, block]));
+  (body.messages || []).forEach((message, i) => {
+    if (Array.isArray(message.content)) message.content.forEach((block, j) => order.push([`messages[${i}][${j}]`, block]));
+  });
+  const changes = [];
+  let later = false;
+  for (let i = order.length - 1; i >= 0; i--) {
+    const [name, block] = order[i];
+    if (!block || !block.cache_control) continue;
+    if (block.cache_control.ttl === '1h') later = true;
+    else if (later) {
+      block.cache_control = { ...block.cache_control, ttl: '1h' };
+      changes.push(`ttl:promoted ${name}`);
+    }
+  }
   return changes;
 }
 
@@ -323,6 +349,7 @@ function turnBreakpoint(body, ttl) {
     const system = (Array.isArray(body.system) ? body.system : []).find(b => b.cache_control);
     if (system) { delete system.cache_control; changes.push('turn_breakpoint:dropped first system breakpoint'); }
   }
+  changes.push(...orderTtls(body));
   return changes;
 }
 

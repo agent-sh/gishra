@@ -17,6 +17,21 @@
   ],
   "claims": [
     {
+      "claim": "Anthropic accepts 1-hour and 5-minute breakpoints in one request only when every 1-hour entry comes before every 5-minute one.",
+      "quote": "Cache entries with longer TTL must appear before shorter TTLs (that is, a 1-hour cache entry must appear before any 5-minute cache entries).",
+      "source": "anthropic-caching"
+    },
+    {
+      "claim": "With mixed TTLs, Anthropic places the 1-hour billing boundary at the highest 1-hour breakpoint and the 5-minute boundary at the last breakpoint.",
+      "quote": "Position B: The token count at the highest 1-hour cache_control block after A (or equals A if none exist). Position C: The token count at the last cache_control block.",
+      "source": "anthropic-caching"
+    },
+    {
+      "claim": "Anthropic charges 1-hour writes from the cache hit to the highest 1-hour breakpoint and 5-minute writes after it, so the TTL of a breakpoint before the last 1-hour one does not change the bill.",
+      "quote": "You'll be charged for: Cache read tokens for A. 1-hour cache write tokens for (B - A). 5-minute cache write tokens for (C - B).",
+      "source": "anthropic-caching"
+    },
+    {
       "claim": "Anthropic builds the cached prefix from tools, then system, then messages, up to the block with cache_control.",
       "quote": "Prompt caching references the entire prompt: tools, system, and messages (in that order), up to and including the block designated with cache_control.",
       "source": "anthropic-caching"
