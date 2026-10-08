@@ -64,7 +64,7 @@ const MUTANTS = [
   { id: 'lock-breaks-live-holder', area: 'state lock', file: 'lib/state.js',
     from: '    if (!lockIsStale(marker)) {', to: '    if (false) {', tests: ['test/lock.test.js'] },
   { id: 'lock-ignores-pid-namespace', area: 'state lock', file: 'lib/state.js',
-    from: "host === os.hostname() && (pidns ?? null) === pidNamespace() && Number.isInteger(pid)", to: 'host === os.hostname() && Number.isInteger(pid)', tests: ['test/lock.test.js'] },
+    from: '(pidns ?? null) === pidNamespace() && Number.isInteger(pid)', to: 'Number.isInteger(pid)', tests: ['test/lock.test.js'] },
   { id: 'lock-never-ages-out', area: 'state lock', file: 'lib/state.js',
     from: 'const LOCK_STALE_MS = 60000;', to: 'const LOCK_STALE_MS = 6000000;', tests: ['test/lock.test.js'] },
   // merge and stacks
