@@ -4,21 +4,24 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { cachedFixture, makeRepo } = require('./helpers');
 
+// A task, a bare origin and a clone of it standing in for another machine;
+// built once per process for each base and copied for each test.
 function setup(t, base = 'main') {
-  const h = makeRepo(t);
-  if (base !== 'main') h.git(['branch', base]);
-  h.init(['--base', base]);
-  h.ok(['task', 'add', '--title', 'Fresh base', '--acceptance', 'starts from the freshest base']);
-  const origin = path.join(h.base, 'origin.git');
-  h.git(['init', '--bare', '-q', origin]);
-  h.git(['remote', 'add', 'origin', origin]);
-  h.git(['push', 'origin', base]);
-  h.git(['branch', `--set-upstream-to=origin/${base}`, base]);
-  const upstream = path.join(h.base, 'upstream');
-  h.git(['clone', '-q', '--branch', base, origin, upstream]);
-  return { ...h, origin, upstream, baseBranch: base };
+  return cachedFixture(t, base, (h) => {
+    if (base !== 'main') h.git(['branch', base]);
+    h.init(['--base', base]);
+    h.ok(['task', 'add', '--title', 'Fresh base', '--acceptance', 'starts from the freshest base']);
+    const origin = path.join(h.base, 'origin.git');
+    h.git(['init', '--bare', '-q', origin]);
+    h.git(['remote', 'add', 'origin', origin]);
+    h.git(['push', 'origin', base]);
+    h.git(['branch', `--set-upstream-to=origin/${base}`, base]);
+    const upstream = path.join(h.base, 'upstream');
+    h.git(['clone', '-q', '--branch', base, origin, upstream]);
+    return { origin, upstream, baseBranch: base };
+  });
 }
 
 function advance(h, cwd, file) {
