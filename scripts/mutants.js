@@ -6,7 +6,10 @@
 // named files miss is run against the whole suite before it counts as missed,
 // so the score is the suite's, and the file lists only make it cheap.
 //
-//   node scripts/mutants.js [--jobs 4] [--only ID,ID] [--no-full]
+//   node scripts/mutants.js [--jobs 4] [--only ID,ID] [--no-full] [--skip PATTERN]
+//
+// --skip passes --test-skip-pattern to every run, for a test the current
+// environment cannot run, such as a nested git push inside an agent's sandbox.
 
 const cp = require('node:child_process');
 const fs = require('node:fs');
@@ -97,6 +100,7 @@ const opt = (name, fallback) => {
 const jobs = Number(opt('--jobs', '4'));
 const only = opt('--only', null)?.split(',');
 const full = !args.includes('--no-full');
+const skip = opt('--skip', null);
 const selected = only ? MUTANTS.filter((m) => only.includes(m.id)) : MUTANTS;
 
 const scratchRoot = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
@@ -109,7 +113,7 @@ for (const entry of ['bin', 'lib', 'test', 'scripts', 'skills', 'agents', 'stand
 
 // The repository's runner, so each test has its timeout and a hung run ends.
 function runTests(files) {
-  const r = cp.spawnSync(process.execPath, ['test/run.js', `--test-concurrency=${jobs}`, ...files], {
+  const r = cp.spawnSync(process.execPath, ['test/run.js', `--test-concurrency=${jobs}`, ...(skip ? [`--test-skip-pattern=${skip}`] : []), ...files], {
     cwd: copy, encoding: 'utf8', env: process.env, maxBuffer: 1 << 28, timeout: 60 * 60 * 1000,
   });
   if (r.status !== 0) runTests.failures = (r.stdout || '').split('\n').filter((l) => /^\s*✖|^not ok/.test(l)).slice(0, 20).join('\n');
