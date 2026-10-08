@@ -399,6 +399,8 @@ Ready tasks come in priority order: most outstanding dependents (direct or trans
 
 ### Spawned process exits
 
+On Windows, an npm `.cmd` harness runs as a direct Node process with the shim's script and the original arguments. Spawn events retain the configured harness and route; the recorded pid belongs to the Node process. The supervisor uses the same resolution for retries and fallback routes.
+
 `status` and `ready`, including `ready --all`, report a current claim when its matching spawned process has exited without submitting. This is a computed diagnostic, not a stored status. Their JSON includes `exited_claims: [{ id, agent, pid, log, code, size, tail }]`. `code` is the recorded foreground exit code or null when unknown; `size` is the log's size in bytes or null when unavailable. Text names the process and log, includes a tail of at most 20 lines from the final 8192 bytes, and directs any agent to recover the verified exit with `release --reason`. It never prints a command that supplies owner identity. Missing logs leave the exit visible with a `log unavailable` diagnostic. Foreground spawns retain logs; legacy events with `log: null` have an empty tail.
 
 Only the current claimant's most recent spawn counts. A worker can claim after its spawn; earlier claims, release, submit and rework events fence off older spawn records. Reclaiming an expired lease under the same agent identity does not inherit the previous claim's spawn. A submitted task or a manual claim with no matching spawn is not an exited claim. Reading either view writes no state, changes no lease and starts no replacement.
