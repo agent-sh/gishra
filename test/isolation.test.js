@@ -497,6 +497,25 @@ test('worker and reviewer sandboxes write a cache of their own, never the user c
   assert.deepEqual([...covered].sort(), ['claude hard', 'claude review', 'codex hard', 'codex review']);
 });
 
+test('the next spawn removes an exited agent\'s cache even when it holds read-only module trees', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  isolated(h, 'hard', 'claude');
+  const env = { XDG_CACHE_HOME: '' };
+  const first = spawn(h, u, 'hard', env);
+  const cache = u.report().settings.sandbox.filesystem.allowWrite.find((w) => path.basename(w) === first.agent);
+  // The layout Go leaves in GOMODCACHE: read-only files in read-only directories.
+  const mod = path.join(cache, 'go-mod', 'example.com', 'm@v1.0.0');
+  fs.mkdirSync(mod, { recursive: true });
+  fs.writeFileSync(path.join(mod, 'go.mod'), 'module example.com/m\n');
+  for (const p of [path.join(mod, 'go.mod'), mod, path.dirname(mod)]) fs.chmodSync(p, p === mod || p === path.dirname(mod) ? 0o555 : 0o444);
+  t.after(() => {
+    for (const p of [path.dirname(mod), mod]) try { fs.chmodSync(p, 0o700); } catch {}
+  });
+  const second = spawn(h, u, 'hard', env);
+  assert.notEqual(second.agent, first.agent);
+  assert.ok(!fs.existsSync(cache), `${cache} is removed`);
+});
+
 test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   const local = path.join(h.base, 'local.git');
