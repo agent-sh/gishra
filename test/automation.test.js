@@ -415,7 +415,11 @@ poll();
   const refused = h.run(['gates', 'prioritize', 'T4', '--reason', 'gate fix first', '--agent', 'worker']);
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /operational/);
-  assert.ok(!h.logs().some((e) => e.cmd === 'gates prioritize'), 'a refused request logs nothing');
+  // T1 holds the executor, so it has no queued work to move.
+  const idle = h.run(['gates', 'prioritize', 'T1', '--reason', 'gate fix first', '--agent', 'orchestrator']);
+  assert.notEqual(idle.code, 0);
+  assert.match(idle.stderr, /no queued gate work/);
+  assert.ok(!h.logs().some((e) => e.cmd === 'gates prioritize'), 'refused requests log nothing');
 
   h.ok(['gates', 'prioritize', 'T4', '--reason', 'T134 shrinks every later gate run', '--agent', 'orchestrator']);
   const event = h.logs().findLast((e) => e.cmd === 'gates prioritize');
