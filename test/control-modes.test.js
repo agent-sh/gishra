@@ -23,15 +23,16 @@ async function withServe(h, fn) {
   const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json', '--agent', 'owner'], { cwd: h.repo, env: h.env });
   const exited = new Promise((resolve) => server.on('exit', resolve));
   try {
-    const url = await new Promise((resolve, reject) => {
+    const { url, open } = await new Promise((resolve, reject) => {
       let out = '';
       server.stdout.on('data', (d) => {
         out += d;
-        if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]).url);
+        if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]));
       });
       server.on('exit', (code) => reject(new Error(`serve exited ${code}`)));
     });
-    const page = await (await fetch(url)).text();
+    // Only the owner's one-time link carries the write token.
+    const page = await (await fetch(open)).text();
     const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
     const post = async (route, body) => {
       const r = await fetch(`${url}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-tower-crane-token': token }, body: JSON.stringify(body) });
