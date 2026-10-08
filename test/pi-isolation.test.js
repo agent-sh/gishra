@@ -90,6 +90,7 @@ test('pi ignores planted user memory, MCP extension and approved rules, links au
     env: { ...env, HOME: last.userHome, USERPROFILE: last.userHome, PI_CODING_AGENT_DIR: last.home },
   });
   assert.ok(nested.startup.rules.some((rule) => rule.path === path.join(config, 'AGENTS.md')));
+  assert.ok(!nested.startup.rules.some((rule) => rule.path.startsWith(last.home + path.sep)));
   for (const file of fs.readdirSync(last.home)) {
     const at = path.join(last.home, file);
     if (fs.lstatSync(at).isFile()) assert.ok(!fs.readFileSync(at, 'utf8').includes('PI-PLANTED-SECRET'));
