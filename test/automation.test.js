@@ -501,6 +501,22 @@ test('a worker identity cannot authorize reactions by passing the orchestrator n
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
 });
 
+test('a worker that names its own identity cannot complete CI or run reactions as the orchestrator', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.submit();
+  const worker = { env: { TOWER_CRANE_AGENT: 'worker-T1-1' } };
+  const completed = h.run(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'worker-T1-1'], worker);
+  assert.equal(completed.code, 1, completed.stderr);
+  assert.match(completed.stderr, /ci completed is an orchestrator or owner command/);
+  const waited = h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'worker-T1-1'], worker);
+  assert.equal(waited.code, 2, waited.stderr);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
+  assert.equal(h.logs().filter((e) => e.cmd === 'ci completed').length, 0);
+  h.consume();
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.map((e) => e.type), ['tests', 'clean', 'ci'],
+    'the orchestrator still runs the reactions');
+});
+
 test('supervisor reactions pin unconfigured gates and bypass the real restrictive agent shims', async (t) => {
   const h = setup(t);
   fs.writeFileSync(path.join(h.repo, 'package.json'), JSON.stringify({ scripts: { test: 'node test/value.test.js' } }));

@@ -142,6 +142,22 @@ test('the orchestrator changes operational settings under its own identity; a wo
   assert.equal(h.readState('decisions.json').decisions.length, 0);
 });
 
+test('a command the broker runs is never the orchestrator, even under a spawned orchestrator name', (t) => {
+  const h = setup(t);
+  recordSpawn(h, 'orchestrator-T1-1', 'orchestrator');
+  const before = h.readState('project.json');
+  const brokered = h.run(['project', 'set', '--tests-cmd', 'npm test', '--agent', 'orchestrator-T1-1'], {
+    env: { TOWER_CRANE_STATE: h.state, TOWER_CRANE_AGENT: 'orchestrator-T1-1', TOWER_CRANE_TASK: 'T1', TOWER_CRANE_VIA: 'broker' },
+  });
+  assert.equal(brokered.code, 1, brokered.stderr);
+  assert.match(brokered.stderr, /only the orchestrator or the owner/);
+  assert.deepEqual(h.readState('project.json'), before);
+  h.ok(['project', 'set', '--tests-cmd', 'npm test', '--agent', 'orchestrator-T1-1'], {
+    env: { TOWER_CRANE_AGENT: 'orchestrator-T1-1', TOWER_CRANE_TASK: 'T1' },
+  });
+  assert.equal(h.readState('project.json').gates.tests_cmd, 'npm test');
+});
+
 test('ladder save-user is operational: the orchestrator saves with no decision and the event records it; a worker writes no user file', (t) => {
   const h = setup(t);
   const worker = h.run(['ladder', 'save-user'], as('worker-T1-1'));
@@ -176,6 +192,7 @@ test('owner-required changes by the orchestrator open one decision and change no
   const h = setup(t);
   const cases = [
     [['project', 'set', '--merge-admin', 'true'], ['merge.admin']],
+    [['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}'], ['decision_delegation']],
     [['project', 'set', '--sandbox', '{"write":["/tmp/x"]}'], ['sandbox']],
     [['project', 'set', '--env', '{"A":"1"}'], ['env']],
     [['project', 'set', '--budget-hours', '5'], null],
