@@ -266,6 +266,25 @@ test('a spawned claude agent imports the user\'s global rules by path, loads non
   noSecretsCopied(h);
 });
 
+test('claude\'s own Read, Grep and Glob tools are denied every path its sandbox hides', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolated(h, 'small', 'claude');
+  const ssh = path.join(u.home, '.ssh', 'id_probe');
+  fs.mkdirSync(path.dirname(ssh), { recursive: true });
+  fs.writeFileSync(ssh, 'ssh key\n');
+  // The owner key, and a home and broker token of an agent spawned after this one.
+  const hidden = [path.join(path.dirname(h.userConfig), 'owner', 'key'), ssh,
+    path.join(h.state, 'homes', 'worker-later', 'settings.json'), path.join(h.state, 'brokers', 'worker-later', 'token')];
+  const open = path.join(wt, '.claude', 'settings.local.json');
+  spawn(h, u, 'small', { STUB_READ: JSON.stringify([...hidden, open]) });
+  const reads = u.report().reads;
+  assert.equal(reads.length, 15);
+  for (const r of reads) {
+    if (r.file === open) assert.match(r.text, /planted-local-hook/, `${r.tool} reads the worktree`);
+    else assert.equal(r.denied, true, `${r.tool} ${r.file}`);
+  }
+});
+
 test('a spawned codex agent is pointed at the user\'s global rules, loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   isolated(h, 'small', 'codex');

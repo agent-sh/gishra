@@ -295,11 +295,15 @@ test('owner-key at a terminal creates the key that later stands in for one', { s
   assert.equal(fs.existsSync(file), false);
   const made = terminal(h, ['owner-key', '--agent', 'owner'], config);
   assert.equal(made.code, 0, made.stdout);
-  const key = fs.readFileSync(file, 'utf8').trim();
+  // One descriptor for mode and content, so both describe the same file.
+  const fd = fs.openSync(file, 'r');
+  const mode = fs.fstatSync(fd).mode & 0o777;
+  const key = fs.readFileSync(fd, 'utf8').trim();
+  fs.closeSync(fd);
   assert.match(key, /^[0-9a-f]{64}$/);
   assert.ok(made.stdout.includes(`created ${file}`));
   assert.ok(!made.stdout.includes(key));
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(mode, 0o600);
   const again = terminal(h, ['owner-key', '--agent', 'owner'], config);
   assert.ok(again.stdout.includes(`exists ${file}`));
   assert.equal(fs.readFileSync(file, 'utf8').trim(), key);
