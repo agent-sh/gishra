@@ -251,7 +251,8 @@ test('codex config allowlists also filter inline tables on Windows', () => {
 
 // The built-in Bedrock provider takes only its aws table; credentials are
 // planted beside the region. An Azure-style provider carries query parameters
-// with a key planted among them.
+// with keys, a SAS signature, a Functions code and an auth value planted
+// among them.
 const PROVIDERS = {
   'amazon-bedrock': {
     aws: {
@@ -262,7 +263,7 @@ const PROVIDERS = {
   },
   azure: {
     name: 'Azure', base_url: 'https://azure.example/openai', env_key: 'AZURE_KEY', wire_api: 'responses',
-    query_params: { 'api-version': '2025-04-01-preview', key: `${SECRET}-QUERY`, apikey: `${SECRET}-QUERY`, nested: { value: SECRET } },
+    query_params: { 'api-version': '2025-04-01-preview', key: `${SECRET}-QUERY`, apikey: `${SECRET}-QUERY`, sig: `${SECRET}-SIG`, code: `${SECRET}-CODE`, auth: `${SECRET}-AUTH`, nested: { value: SECRET } },
   },
 };
 const PROVIDERS_KEPT = {
