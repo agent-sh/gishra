@@ -1,1 +1,2 @@
 - Neutralize repository Git proxies through `GIT_PROXY_COMMAND` and refuse git or gh when the config scan fails or exceeds its output buffer.
+- Verify dispatch fetch reuse by its exact fetch count and serialization checks, without a separate wall-time assertion that includes Git config scans and host scheduling.
