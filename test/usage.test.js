@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, detachedAlive } = require('./helpers');
+const { cachedFixture, detachedAlive } = require('./helpers');
 
 const fixture = (name) => path.join(__dirname, 'fixtures', 'usage', name);
 const text = (name) => fs.readFileSync(fixture(name), 'utf8');
@@ -82,17 +82,18 @@ test('absent or malformed telemetry is unknown, explicit zero is measured', () =
 });
 
 function setup(t, harness = 'codex') {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Usage', '--acceptance', 'accounted', '--tier', 'easy']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Record usage.\n' });
-  h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'dispatch-model', '--clear', 'profile', '--clear', 'effort']);
-  const bin = path.join(h.base, 'bin');
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-  h.usageEnv = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), CODEX_HOME: path.join(h.base, 'codex') };
-  h.usageHooks = { HOOK_USAGE_HARNESS: harness, HOOK_USAGE_FILE: fixture(harness === 'codex' ? 'codex-stream.jsonl' : `${harness}.jsonl`) };
-  return h;
+  return cachedFixture(t, harness, (h) => {
+    h.init();
+    h.ok(['task', 'add', '--title', 'Usage', '--acceptance', 'accounted', '--tier', 'easy']);
+    h.ok(['brief', 'set', 'T1', '-'], { input: 'Record usage.\n' });
+    h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'dispatch-model', '--clear', 'profile', '--clear', 'effort']);
+    const bin = path.join(h.base, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
+    h.usageEnv = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), CODEX_HOME: path.join(h.base, 'codex') };
+    h.usageHooks = { HOOK_USAGE_HARNESS: harness, HOOK_USAGE_FILE: fixture(harness === 'codex' ? 'codex-stream.jsonl' : `${harness}.jsonl`) };
+    return { usageEnv: h.usageEnv, usageHooks: h.usageHooks };
+  });
 }
 
 const spends = (h) => h.json(['task', 'show', 'T1']).spend;
