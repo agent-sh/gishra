@@ -113,6 +113,13 @@ module.exports = function stub(harness) {
     const disabled = args.filter((a, i) => args[i - 1] === '--disable');
     const config = toml(path.join(dir, 'config.toml'));
     const profile = after('-p') ? toml(path.join(dir, `${after('-p')}.config.toml`)) : {};
+    // codex refuses to start on Bedrock without a region.
+    const providerId = profile.model_provider || config.model_provider;
+    const provider = { ...(config.model_providers || {}), ...(profile.model_providers || {}) }[providerId] || {};
+    if (providerId === 'amazon-bedrock' && !(provider.aws && provider.aws.region) && !process.env.AWS_REGION && !process.env.AWS_DEFAULT_REGION) {
+      process.stderr.write('Fatal error: Amazon Bedrock bearer token auth requires `model_providers.amazon-bedrock.aws.region`, `AWS_REGION`, or `AWS_DEFAULT_REGION`\n');
+      process.exit(1);
+    }
     report.memory = [
       read(path.join(dir, 'AGENTS.md')),
       ...[config.model_instructions_file, profile.model_instructions_file].filter(Boolean).map(read),
