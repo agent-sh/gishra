@@ -25,7 +25,8 @@ test('a stack that adds then modifies the same file merges without changing acce
     assert.equal(f.h.git(['merge-base', head, 'origin/main']), head);
   }
   assert.equal(f.h.git(['show', 'origin/main:T1.txt']), 'T2 modified T1');
-  assert.equal(f.h.git(['rev-parse', 'HEAD'], wt.path), upper);
+  assert.equal(f.h.git(['rev-parse', wt.branch]), upper);
+  assert.ok(!fs.existsSync(wt.path), 'the merged task worktree is removed');
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
 });
 
