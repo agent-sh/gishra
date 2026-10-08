@@ -242,9 +242,19 @@ events. A stack is one entry, ordered by its lowest unmerged task: it holds
 that task and the accepted, linked tasks directly above it, and an upper
 task whose lower task is not accepted waits outside the line. Only the head
 of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
-goes to rework with its files and leaves the line. Unknown mergeability, a
-moved head, failing gates or a refused merge stop the line until a later
-reaction; the executor's `done` event names the blocking task and why.
+goes to rework with its files and leaves the line. Unknown mergeability
+stops the line until a later reaction. A head the queue cannot advance (a
+closed or unreadable PR, a moved or differently merged head, failing gates, a refused
+merge or head check) is reported once in a `queue skipped` event and passed
+over, so the next entry merges; later passes try it again. The executor's
+next pass starts with no skipped heads, including when a concurrent CI
+completion requests that pass while the executor is still running. Its
+`done` event names the first head that did not merge and lists the skipped
+ones. An accepted PR already merged on GitHub at its accepted head is
+confirmed through the merge gate without current gate evidence.
+Merge text and method are validated before any GitHub call. With failed
+current gates, a read-only PR lookup can confirm a completed merge; an open
+PR is refused until its gates pass.
 Gate evidence belongs to the submitted sha, so a base move alone reruns no
 gate. The fail-before proof reruns only for a new head. Before merging, the
 head runs the pinned `gates.tests_cmd` once on the merge of `project.base`'s
