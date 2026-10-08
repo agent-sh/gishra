@@ -43,6 +43,12 @@ test('package support, CI matrix, and required jobs target Node 24 and 26', () =
   assert.match(agents, /\bNode 24 or newer\b/);
 });
 
+test('pull requests run CI for main and stacked task branches, and pushes run it for main', () => {
+  const root = path.resolve(__dirname, '..');
+  const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.match(workflow, /^on:\n {2}pull_request:\n(?: {4}#.*\n)? {4}branches: \[main, tower-crane\/\*\*\]\n {2}push:\n {4}branches: \[main\]\n/m);
+});
+
 function run(name, conclusion = 'success', status = 'completed', app = 'github-actions', id = 1) {
   return { name, conclusion, status, app: { slug: app }, check_suite: { id } };
 }

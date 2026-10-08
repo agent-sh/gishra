@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    # Stacked tasks open PRs against their lower task's branch.
+    branches: [main, tower-crane/**]
   push:
     branches: [main]
 
