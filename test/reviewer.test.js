@@ -99,6 +99,7 @@ test('reviewers share static system instructions and receive audited gates in th
   fs.writeFileSync(standards, 'REVIEW_STANDARDS\n');
   h.ok(['project', 'set', '--standards', standards]);
   for (const harness of ['claude', 'codex']) {
+    if (harness === 'codex') fs.writeFileSync(path.join(h.repo, 'AGENTS.override.md'), 'CODEX_REVIEW_RULE\n');
     h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'fixture', '--clear', 'profile', '--clear', 'args']);
     if (harness === 'claude') h.ok(['ladder', 'set', 'easy', '--args', '["--append-system-prompt","CUSTOM_REVIEW_RULE"]']);
     const out = choice(h, { FORCE_PROMPT_CACHING_5M: '0' });
@@ -126,6 +127,8 @@ test('reviewers share static system instructions and receive audited gates in th
     } else {
       assert.ok(out.startup.instructions_file.endsWith('AGENTS.md'));
       assert.ok(out.startup.system_bytes > 0);
+      assert.ok(out.startup.rules.some((r) => r.path === path.join(h.repo, 'AGENTS.override.md')));
+      assert.ok(!out.startup.rules.some((r) => r.path === path.join(h.repo, 'AGENTS.md')));
     }
   }
 });
@@ -305,7 +308,7 @@ test('escalation starts above the actual dispatched reviewer rung', (t) => {
 const r = cp.spawnSync(process.execPath, [${JSON.stringify(BIN)}, 'evidence', 'T1', '--type', 'review', '--fail', '--sha', ${JSON.stringify(h.sha)}], {env: process.env});
 process.exit(r.status ?? 1);`;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', script])]);
+    '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}'])]);
   const dispatched = h.json(['spawn', '--task', 'T1', '--role', 'review', '--wait']);
   assert.equal(dispatched.review_rung, 'easy');
   assert.equal(choice(h).review_rung, 'medium');
@@ -486,7 +489,7 @@ test('accept reuses an active review and direct dispatch refuses a duplicate', (
   const h = setup(t);
   ready(h);
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model',
-    '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)'])]);
+    '--command', JSON.stringify([process.execPath, '-e', 'setInterval(() => {}, 1000)', '{prompt}'])]);
   const first = h.json(['accept', 'T1']);
   const second = h.json(['accept', 'T1']);
   assert.equal(second.reviewer, first.reviewer);
