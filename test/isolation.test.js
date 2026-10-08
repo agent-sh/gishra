@@ -157,6 +157,9 @@ test('research Claude gets native or explicit web MCP tools with worker file and
     const ownHome = path.dirname(report.home);
     assert.deepEqual(allowRead, [ownHome, path.join(h.state, 'brokers', path.basename(ownHome))]);
     assert.ok(shared.denyWrite.includes(h.state));
+    // Each agent writes a cache of its own.
+    const cache = path.join(u.home, '.cache', 'tower-crane', 'agents');
+    shared.allowWrite = shared.allowWrite.map((w) => (path.dirname(path.dirname(w)) === cache && path.basename(w) === path.basename(ownHome) ? '<agent cache>' : w));
     return shared;
   };
   isolated(h, 'research', 'claude');
@@ -209,6 +212,9 @@ test('research Codex explicitly enables live search with worker file and git con
     assert.equal(rules[h.state], 'read');
     assert.equal(rules[path.join(h.state, 'brokers')], 'none');
     assert.equal(rules[broker], 'write');
+    const cache = Object.keys(rules).filter((k) => path.dirname(path.dirname(k)) === path.join(u.home, '.cache', 'tower-crane', 'agents'));
+    assert.deepEqual(cache.map((k) => [path.basename(k), rules[k]]), [[path.basename(ownHome), 'write']]);
+    delete rules[cache[0]];
     delete rules[ownHome];
     delete rules[sessions];
     delete rules[report.home];
@@ -456,6 +462,60 @@ test('a codex agent writes only where its agent file says; a worker writes its g
     const allow = u.report().settings.sandbox.filesystem.allowWrite;
     for (const d of [common, own]) assert.equal(allow.includes(d), writes, `claude ${rung}: ${d}`);
   }
+});
+
+test('worker and reviewer sandboxes write a cache of their own, never the user cache root, the tower-crane install, the CLI on PATH or a gate program', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  // Installed tools and scratch under the user cache run outside any sandbox.
+  const root = path.join(u.home, '.cache');
+  const tools = path.join(root, 'tools');
+  fs.mkdirSync(path.join(tools, 'bin'), { recursive: true });
+  for (const f of ['bin/tower-crane', 'run-tests', 'clean-cmd.sh']) fs.writeFileSync(path.join(tools, f), '#!/bin/sh\n', { mode: 0o755 });
+  h.ok(['project', 'set', '--tests-cmd', `${path.join(tools, 'run-tests')} --all`, '--clean-cmd', path.join(tools, 'clean-cmd.sh')]);
+  const env = { PATH: `${path.join(tools, 'bin')}${path.delimiter}${u.env.PATH}`, XDG_CACHE_HOME: '' };
+  const forbidden = [root, ROOT, path.join(tools, 'bin', 'tower-crane'), path.join(tools, 'run-tests'), path.join(tools, 'clean-cmd.sh')].map((p) => fs.realpathSync(p));
+  const contains = (dir, p) => p === dir || p.startsWith(dir + path.sep);
+  const probe = [process.execPath, '-e', `process.stderr.write(JSON.stringify(${JSON.stringify(['XDG_CACHE_HOME', 'GOCACHE', 'GOMODCACHE', 'npm_config_cache'])}.map((k) => process.env[k])))`];
+  const covered = new Set();
+  for (const harness of ['claude', 'codex']) {
+    // A reviewer runs on the first tier rung at or above the task's tier.
+    for (const rung of ['easy', 'medium', 'hard', 'review']) isolated(h, rung, harness);
+    for (const rung of ['hard', 'review']) {
+      const started = spawn(h, u, rung, { ...env, STUB_RUN: JSON.stringify([probe]) });
+      const seen = u.report();
+      covered.add(`${seen.harness} ${rung}`);
+      const writes = seen.harness === 'claude' ? seen.settings.sandbox.filesystem.allowWrite
+        : Object.entries(seen.config.permissions['tower-crane'].filesystem).filter(([k, v]) => !k.startsWith(':') && v === 'write').map(([k]) => k);
+      for (const w of writes) {
+        for (const p of forbidden) assert.ok(!contains(w, p), `${seen.harness} ${rung}: ${w} grants a write on ${p}`);
+      }
+      const own = writes.filter((w) => contains(root, w));
+      assert.equal(own.length, 1, `${seen.harness} ${rung}: one directory under the cache root: ${JSON.stringify(own)}`);
+      assert.ok(contains(path.join(fs.realpathSync(root), 'tower-crane', 'agents'), own[0]) && path.basename(own[0]) === started.agent, own[0]);
+      assert.ok(fs.statSync(own[0]).isDirectory(), 'the granted cache exists');
+      assert.deepEqual(JSON.parse(seen.ran[0].stderr), [own[0], ...['go-build', 'go-mod', 'npm'].map((d) => path.join(own[0], d))], `${seen.harness} ${rung}: tool caches point at the agent cache`);
+    }
+  }
+  assert.deepEqual([...covered].sort(), ['claude hard', 'claude review', 'codex hard', 'codex review']);
+});
+
+test('the next spawn removes an exited agent\'s cache even when it holds read-only module trees', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  isolated(h, 'hard', 'claude');
+  const env = { XDG_CACHE_HOME: '' };
+  const first = spawn(h, u, 'hard', env);
+  const cache = u.report().settings.sandbox.filesystem.allowWrite.find((w) => path.basename(w) === first.agent);
+  // The layout Go leaves in GOMODCACHE: read-only files in read-only directories.
+  const mod = path.join(cache, 'go-mod', 'example.com', 'm@v1.0.0');
+  fs.mkdirSync(mod, { recursive: true });
+  fs.writeFileSync(path.join(mod, 'go.mod'), 'module example.com/m\n');
+  for (const p of [path.join(mod, 'go.mod'), mod, path.dirname(mod)]) fs.chmodSync(p, p === mod || p === path.dirname(mod) ? 0o555 : 0o444);
+  t.after(() => {
+    for (const p of [path.dirname(mod), mod]) try { fs.chmodSync(p, 0o700); } catch {}
+  });
+  const second = spawn(h, u, 'hard', env);
+  assert.notEqual(second.agent, first.agent);
+  assert.ok(!fs.existsSync(cache), `${cache} is removed`);
 });
 
 test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
