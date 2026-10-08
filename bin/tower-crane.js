@@ -142,6 +142,8 @@ const COMMANDS = [
 
   { section: 'Decisions', name: 'decision note', pos: ['DID', 'TEXT...'], usage: 'DID TEXT', summary: 'append a comment on a decision', description: "append a comment; an explicit owner comment wakes the orchestrator and tasks blocked by the decision", run: D.comment },
 
+  { section: 'Decisions', name: 'decision withdraw', pos: ['DID'], usage: 'DID --reason R', summary: 'asker or owner: withdraw an unanswered decision as moot', flags: { reason: str('R', 'why it no longer needs an answer') }, required: ['reason'], description: "close an open decision that no longer needs an answer. The agent that opened it or the owner can withdraw it; no owner answer is needed. Refused once answered or withdrawn. The decision leaves the open list and stays in history; the event records the reason, and each task it blocked gets the reason in its notes", run: D.withdraw },
+
   { section: 'Decisions', name: 'decisions', usage: '[--open]', summary: 'list decisions', flags: { open: bool('only open ones') }, description: "list", run: D.list },
 
   { section: 'Run', name: 'event', pos: ['ID'], usage: 'ID', summary: 'print one event with its detail, as a wake line names it', run: run('../lib/events', 'show') },
