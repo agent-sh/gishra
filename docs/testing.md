@@ -24,3 +24,48 @@ For projects Tower Crane manages, expensive proof is the default: the orchestrat
 - `node scripts/test-cost.js [--before DIR] [files...]` measures CPU and wall seconds per file, median of three runs, four files at a time. With `--before`, it measures another checkout interleaved with this one.
 - `node scripts/mutants.js` plants each bug in its list in a scratch copy and runs the files named for it. A bug those files miss runs against the full suite before it counts as missed. Every bug must be caught.
 - `node scripts/test-coverage.js` uses node:test coverage, which follows the CLI processes a test starts. For each file it lists the lib lines it runs and how many no other file runs. A file with no unique lines is a candidate to merge or delete.
+
+## Accuracy: the mutation sample
+
+`scripts/mutants.js` holds 31 planted bugs across the areas where a silent regression costs the most. Each is a one-line change: a check removed, a bound moved by one, a guard always true.
+
+| area | bugs | examples |
+| --- | ---: | --- |
+| gates | 8 | tests pass without the change, a deleted test counts, a cancelled CI run is green, a HIGH finding passes clean, loopback is a public source, evidence counts without its audit event, the submitter's own review counts, evidence from an old revision counts |
+| authority | 4 | any spawned agent is the orchestrator, a brokered command keeps its identity's authority, the orchestrator makes owner-required changes, the terminal fallback acts as owner |
+| broker | 3 | any command, another task, a request without the token |
+| spawn and supervisor | 4 | a permanent exit retries, one retry too many, CPU activity ignored for stalls, the workers limit off by one |
+| state lock | 3 | a live holder's lock is broken, the pid namespace is ignored, a stale lock never ages out |
+| merge and stacks | 4 | merge with a moved head, an unaccepted lower task, an untracked lower PR, admin on a stack |
+| secrets | 2 | the codex config keeps credentials, an env_file error echoes its contents |
+| board | 3 | unescaped `<`, Settings writes without the page token, any serve acts as owner |
+
+MUTATION_RESULTS
+
+Working through the sample found one test that passed for the wrong reason and two checks that only a slow or timing-bound test made:
+
+- The brokered-authority check in `test/authority.test.js` exited 1 because the command found no repository, never reaching the authority check. It now passes `--state` and asserts the refusal.
+- Broker refusals for another task's id and for a missing token were only proven through a full sandboxed spawn in `test/isolation.test.js`. `test/broker.test.js` now checks both directly, in milliseconds.
+- The CPU stall test in `test/supervision.test.js` looked for a stall after 1.4 s, while the supervisor samples once a second. On a loaded machine its second sample came late, so a supervisor that ignored CPU passed. The window now covers two samples.
+
+`stack-merge-unaccepted-lower` is caught only by the full suite: in `test/stack-merge.test.js` the gate report refuses an unaccepted lower task before the status check is reached.
+
+## node:test options
+
+Measured on this machine, which other sessions kept at a load of 30 to 80 for the whole work. CPU seconds are the stable figure; wall times under that load are noisy. Medians of three unless noted.
+
+| option | measurement | taken | why |
+| --- | --- | --- | --- |
+| `--test-concurrency` | the owner's report: unbounded runs loaded the machine | yes | `npm test` passes 4, and `test/run.js` caps it at one below the core count. Each file also starts its own CLI and git processes, so the cap is on file workers, not cores. |
+| `--test-isolation=none` | 12 light files, 3 runs: 61.1 CPU s with process isolation, 58.5 s with none; wall 51 s against 148 s | no | It saves 4% CPU and loses file parallelism, so a run takes three times longer. Every file then shares one `process.env` and module cache, and files set git identity and gate variables in the environment. |
+| `--test-global-setup` | the seed is six small files: no measurable CPU | yes | `test/global-setup.js` builds the clean git seed once per run and hands it to every file through the environment. It replaces the wrapper's own seed handling and also covers scoped runs. |
+| `--test-shard` | the Windows job in three shards, as T85 set up | yes | CI keeps three Windows shards. `test/run.js` no longer keeps a Windows file priority list: native sharding does not keep the runner's file order (found in review of T85), so the list had no effect. |
+| `mock.timers`, `t.mock`, `--experimental-test-module-mocks` | the waits that remain are on real child processes | no | A mocked clock in the test process does not move the clock of the CLI, the supervisor or a git hook it waits for. Where a child's time matters, preloaded fixture clocks already run inside the child (`test/fixtures/supervision-backoff-clock.js`). Spawned stubs were replaced by in-process calls with the modules' own injection points: `fetchPublic` with a resolver and a fetcher, `errorReader`, `authorize`. |
+| `describe` or `test` concurrency inside a file | evidence and accept, 3 runs: 54.0 CPU s sequential, 53.9 s with four tests at once; wall 92 s against 62 s | no | It saves no CPU, and it multiplies the processes a run starts past the file cap the owner asked for. |
+| `--test-rerun-failures` | tried on a fixture: after one green rerun, the next run with the same state file ran no test and reported a pass | no, for `npm test` and the gate | A gate retry could then accept a head no test ran on. For a local loop, `npm test -- FILE --test-rerun-failures=$TOWER_CRANE_TEST_TMP/rerun.json`, and delete the file once it passes. |
+| `--experimental-test-coverage` | coverage follows the CLI processes a test starts: `test/claim.test.js` alone runs 37% of `lib/tasks.js` | yes, as a tool | `scripts/test-coverage.js` maps the lib lines each file runs and how many no other file runs, to find files to merge before deleting any. |
+| `--test-name-pattern` | passes through `npm test --` | yes | For one case of a file: `npm test -- test/events.test.js --test-name-pattern="decision answer"`. |
+| `--experimental-test-tag-filter` | works with `{ tags: [...] }` on a test | no | It is experimental, and files are already named by area, which is what the gate's scoped proof selects. |
+| `--test-timeout`, `--test-force-exit` | slowest test seen: 107 s, on a machine at load 68 | yes | 300 s per test, about three times that, so a hung test fails in minutes instead of holding CI to its job timeout. Force exit ends a run that a stray handle would keep open. |
+| `NODE_COMPILE_CACHE` | evidence and accept, 3 runs: 50.1 CPU s without, 50.0 s with; 60 CLI calls: 8.4 s against 8.0 s | no | No measurable gain on the suite. A CLI call's cost is its git subprocess and the board render on every write, not compiling. |
+| `--v8-pool-size=0`, `--jitless` | 60 CLI calls, 2 runs: 8.4 CPU s plain, 8.9 s and 9.9 s | no | Both are slower. |

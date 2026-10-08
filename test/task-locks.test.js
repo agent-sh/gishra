@@ -11,17 +11,17 @@ const snapshot = (h) => ['tasks.json', 'events.jsonl'].map((file) => fs.readFile
 
 function setup(t) {
   return cachedFixture(t, 'labs', (h) => {
-  h.init(['--workers', '6']);
-  for (let i = 1; i <= 3; i++) {
-    h.ok(['task', 'add', '--title', `Lab ${i}`, '--tier', 'easy', '--acceptance', 'hardware is exclusive']);
-    h.ok(['brief', 'set', `T${i}`, '-'], { input: 'Use the lab.\n' });
-  }
-  // Exercise scheduling separately from the flags that create the fields.
-  const doc = h.readState('tasks.json');
-  doc.tasks[0].locks = ['lab/rdma', 'gpu/0'];
-  doc.tasks[1].locks = ['lab/rdma'];
-  doc.tasks[2].locks = ['gpu/1'];
-  h.writeState('tasks.json', doc);
+    h.init(['--workers', '6']);
+    for (let i = 1; i <= 3; i++) {
+      h.ok(['task', 'add', '--title', `Lab ${i}`, '--tier', 'easy', '--acceptance', 'hardware is exclusive']);
+      h.ok(['brief', 'set', `T${i}`, '-'], { input: 'Use the lab.\n' });
+    }
+    // Exercise scheduling separately from the flags that create the fields.
+    const doc = h.readState('tasks.json');
+    doc.tasks[0].locks = ['lab/rdma', 'gpu/0'];
+    doc.tasks[1].locks = ['lab/rdma'];
+    doc.tasks[2].locks = ['gpu/1'];
+    h.writeState('tasks.json', doc);
   });
 }
 

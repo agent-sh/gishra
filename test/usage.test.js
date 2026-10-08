@@ -83,16 +83,16 @@ test('absent or malformed telemetry is unknown, explicit zero is measured', () =
 
 function setup(t, harness = 'codex') {
   return cachedFixture(t, harness, (h) => {
-  h.init();
-  h.ok(['task', 'add', '--title', 'Usage', '--acceptance', 'accounted', '--tier', 'easy']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Record usage.\n' });
-  h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'dispatch-model', '--clear', 'profile', '--clear', 'effort']);
-  const bin = path.join(h.base, 'bin');
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-  h.usageEnv = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), CODEX_HOME: path.join(h.base, 'codex') };
-  h.usageHooks = { HOOK_USAGE_HARNESS: harness, HOOK_USAGE_FILE: fixture(harness === 'codex' ? 'codex-stream.jsonl' : `${harness}.jsonl`) };
-  return { usageEnv: h.usageEnv, usageHooks: h.usageHooks };
+    h.init();
+    h.ok(['task', 'add', '--title', 'Usage', '--acceptance', 'accounted', '--tier', 'easy']);
+    h.ok(['brief', 'set', 'T1', '-'], { input: 'Record usage.\n' });
+    h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'dispatch-model', '--clear', 'profile', '--clear', 'effort']);
+    const bin = path.join(h.base, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
+    h.usageEnv = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), CODEX_HOME: path.join(h.base, 'codex') };
+    h.usageHooks = { HOOK_USAGE_HARNESS: harness, HOOK_USAGE_FILE: fixture(harness === 'codex' ? 'codex-stream.jsonl' : `${harness}.jsonl`) };
+    return { usageEnv: h.usageEnv, usageHooks: h.usageHooks };
   });
 }
 
