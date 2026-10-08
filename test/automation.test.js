@@ -523,8 +523,8 @@ const softwareEvidence = (h, id) => h.readState('tasks.json').tasks.find((x) => 
   .filter((e) => ['tests', 'clean', 'ci'].includes(e.type));
 
 function acceptBoth(h) {
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
-  h.ok(['evidence', 'T2', '--type', 'review', '--sha', h.second, '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T2', '--type', 'review', '--sha', h.second, '--revision', h.revision('T2'), '--ok', '--agent', 'reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   h.ok(['accept', 'T2', '--agent', 'orchestrator']);
 }
@@ -534,7 +534,7 @@ test('main moves: a mergeable PR keeps its evidence and merges after one head-of
   const before = softwareEvidence(h, 'T1');
   h.moveMain();
   const suites = h.suites().length;
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.deepEqual(softwareEvidence(h, 'T1'), before, 'a base move reruns no gate and resets no evidence');
   assert.equal(h.github().prs['7'].state, 'MERGED');
@@ -598,7 +598,7 @@ test('a base that moves during the head check gets a new check before the merge'
   const h = queueFixture(t);
   h.moveMain();
   fs.writeFileSync(path.join(h.base, 'move-main-once'), '');
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
   h.consume();
   const checks = headChecks(h);
   assert.equal(checks.length, 2, 'the check against the old base does not authorize the merge');
@@ -629,10 +629,10 @@ fs.writeFileSync(file, JSON.stringify(gh));
 cli('claim', 'T1', '--agent', 'worker');
 cli('submit', 'T1', '--sha', ${JSON.stringify(replacement)}, '--pr', '7', '--agent', 'worker');
 for (const gate of ['tests', 'clean', 'ci']) cli('check', gate, 'T1', '--agent', 'orchestrator');
-cli('evidence', 'T1', '--type', 'review', '--sha', ${JSON.stringify(replacement)}, '--ok', '--agent', 'reviewer');
+cli('evidence', 'T1', '--type', 'review', '--sha', ${JSON.stringify(replacement)}, '--revision', cli('task', 'show', 'T1', '--agent', 'orchestrator').match(/revision: (\\d+)/)[1], '--ok', '--agent', 'reviewer');
 cli('accept', 'T1', '--agent', 'orchestrator');
 `);
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the replacement ran during the check');
   assert.deepEqual(headChecks(h).map((e) => [e.detail.sha, e.detail.ok]), [[h.sha, true], [replacement, true]],
@@ -677,7 +677,7 @@ cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'project', 'set', '--
   { cwd: ${JSON.stringify(h.repo)}, env: ${JSON.stringify(h.env)}, encoding: 'utf8' });
 process.exitCode = 1;
 `);
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the settings changed during the check');
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted', 'the stale failure sends nothing to rework');
