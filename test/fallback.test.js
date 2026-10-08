@@ -50,7 +50,7 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
     TOWER_CRANE_TEST_FALLBACK_FILE: h.file, TOWER_CRANE_TEST_FALLBACK_REASON: reason,
     ...(chain ? { TOWER_CRANE_TEST_FALLBACK_CHAIN: '1' } : {}),
   };
-  h.spawn = () => h.run(['spawn', '--task', 'T1', '--wait'], { env: h.spawnEnv, timeout: 20000 });
+  h.spawn = () => h.run(['spawn', '--task', 'T1', '--wait'], { env: h.spawnEnv });
   h.attempts = () => JSON.parse(fs.readFileSync(h.file, 'utf8'));
   return h;
 }
