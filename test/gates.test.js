@@ -390,6 +390,33 @@ test('named regression failure', () => {
   }
 });
 
+test('failed tests evidence names the failing tests when the spec reporter is colored', (t) => {
+  const h = makeRepo(t);
+  const sha = manifestTask(h, { submitted: {
+    'test/failure.test.js': `const test = require('node:test');
+const assert = require('node:assert/strict');
+test('colored regression failure', () => {
+  assert.equal('actual', 'expected');
+});
+`,
+  } });
+  submitTestsFixture(h, sha);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+  const cmd = `${shellQuote(process.execPath)} --test --test-reporter=spec test/failure.test.js`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker'], { env: { FORCE_COLOR: '1' } });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.equal(evidence.test_failure.names.length, 1);
+  assert.match(evidence.test_failure.names[0], /^colored regression failure \(/);
+  assert.match(evidence.summary, /Failing tests:\n- colored regression failure \(/);
+  assert.equal(evidence.test_failure.output_tail.includes('\u001b'), false);
+  assert.match(result.stdout, /colored regression failure/);
+});
+
 test('failed test diagnostics redact process, project, rung and env_file secrets everywhere', (t) => {
   const h = makeRepo(t);
   const token = (...parts) => parts.join('');
