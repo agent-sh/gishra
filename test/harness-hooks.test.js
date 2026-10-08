@@ -213,14 +213,13 @@ test('transient resumes inject queued messages without a worker checking its inb
   assert.equal(delivered.length, 1);
 });
 
-test('commands without a context placeholder retain messages instead of acknowledging them', async (t) => {
+test('refused commands without a context placeholder retain messages', (t) => {
   const { h, ready } = setup(t, 'command');
   h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, STUB])]);
   h.ok(['msg', '--to', 'worker-T1-1', 'retain undelivered context', '--agent', 'orchestrator']);
-  const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json']);
-  await until(ready);
-  fs.writeFileSync(ready + '.go', '');
-  const result = await run;
-  assert.equal(result.code, 0, result.stderr);
+  const result = h.run(['spawn', '--task', 'T1', '--wait', '--json']);
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /command.*\{prompt\}.*\{brief\}.*house rules/);
+  assert.equal(fs.existsSync(ready), false);
   assert.ok(!events(h).some((e) => e.cmd === 'hook inbox' && e.detail.messages.length));
 });
