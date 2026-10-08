@@ -328,7 +328,7 @@ test('opencode renders worker path, web, skill, git and gh permission decisions'
 });
 
 for (const rung of ['medium', 'small']) {
-  test(`opencode ${rung} Bash asks before interpreter and absolute-path commands`, { skip: NO_STUBS }, (t) => {
+  test(`opencode ${rung} Bash denies unlisted interpreter and absolute-path commands`, { skip: NO_STUBS }, (t) => {
     const f = setup(t, rung);
     const canary = path.join(f.h.base, 'outside-bash-canary.txt');
     const preview = dry(f);
@@ -338,9 +338,9 @@ for (const rung of ['medium', 'small']) {
     ].map((command) => ['bash', command])];
     spawn(f, { STUB_BASH_CANARY: canary, STUB_PROBES: JSON.stringify(probes) });
     const report = f.report();
-    assert.deepEqual(report.probes, ['deny', 'ask', 'ask', 'ask', 'ask', 'ask']);
-    assert.equal(report.permission.bash['*'], 'ask');
-    assert.equal(report.bash.decision, 'ask');
+    assert.deepEqual(report.probes, ['deny', 'deny', 'deny', 'deny', 'deny', 'deny']);
+    assert.equal(report.permission.bash['*'], 'deny');
+    assert.equal(report.bash.decision, 'deny');
     assert.equal(report.bash.code, undefined);
     assert.throws(() => fs.readFileSync(canary, 'utf8'), { code: 'ENOENT' });
     assert.equal(preview.env.TOWER_CRANE_SANDBOX, '0');
@@ -348,6 +348,109 @@ for (const rung of ['medium', 'small']) {
     assert.equal(A.sandboxed(rung === 'small' ? 'small' : 'worker', 'opencode'), false);
   });
 }
+
+test('opencode worker headless Bash allows task commands, shim paths, tests and read-only tools', { skip: NO_STUBS }, (t) => {
+  const f = setup(t);
+  const preview = dry(f);
+  const probes = [
+    'tower-crane claim T1 --agent worker-T1-1', 'git status --short',
+    'npm test', 'npm run test', 'node --test test/value.test.js',
+    'node test/value.test.js', 'cat AGENTS.md', 'rg TODO .', 'ls',
+    `${path.join(preview.home.path, 'bin', 'git')} status --short`,
+    `${path.join(preview.home.path, 'bin', 'gh')} pr view 1`,
+  ].map((command) => ['bash', command]);
+  spawn(f, { STUB_PROBES: JSON.stringify(probes) });
+  assert.deepEqual(f.report().probes, probes.map(() => 'allow'));
+  assert.ok(!Object.values(f.report().permission.bash).includes('ask'));
+});
+
+test('native opencode headless worker runs claim, git and tests and denies an unlisted command', {
+  skip: !process.env.TOWER_CRANE_NATIVE_OPENCODE && 'set TOWER_CRANE_NATIVE_OPENCODE to the installed executable',
+  timeout: 120000,
+}, async (t) => {
+  const f = setup(t);
+  const native = process.env.TOWER_CRANE_NATIVE_OPENCODE;
+  fs.mkdirSync(path.join(f.h.repo, 'test'));
+  fs.writeFileSync(path.join(f.h.repo, 'test', 'headless.test.js'),
+    "require('node:test')('headless workspace', () => require('node:assert/strict').equal(2 + 2, 4));\n");
+  fs.writeFileSync(path.join(f.h.repo, 'package.json'), JSON.stringify({ scripts: { test: 'node --test test/headless.test.js' } }));
+  f.h.git(['add', '.']);
+  f.h.git(['commit', '-qm', 'headless test runner']);
+  const commands = [
+    'tower-crane claim T1 --agent worker-T1-1',
+    'git status --short',
+    'node --test test/headless.test.js',
+    'npm test',
+    'python3 -c "raise RuntimeError()"',
+  ];
+  let turn = 0;
+  const server = http.createServer(async (req, res) => {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const request = JSON.parse(body);
+    const command = request.tools?.some((tool) => tool.function?.name === 'bash') ? commands[turn++] : undefined;
+    const calls = command ? [{ index: 0, id: `probe-${turn}`, type: 'function',
+      function: { name: 'bash', arguments: JSON.stringify({ command, description: 'headless native probe', timeout: 10000 }) } }] : undefined;
+    const message = calls ? { role: 'assistant', tool_calls: calls } : { role: 'assistant', content: 'probe done' };
+    const base = { id: `mock-${turn}`, created: 1, model: 'mock' };
+    if (request.stream) {
+      res.setHeader('content-type', 'text/event-stream');
+      res.write(`data: ${JSON.stringify({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: message, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: calls ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\n`);
+      res.end('data: [DONE]\n\n');
+    } else {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ...base, object: 'chat.completion', choices: [{ index: 0, message, finish_reason: calls ? 'tool_calls' : 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const baseURL = `http://127.0.0.1:${server.address().port}/v1`;
+  fs.writeFileSync(path.join(f.global, 'opencode.json'), JSON.stringify({
+    provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { baseURL },
+      models: { mock: { name: 'mock', tool_call: true, limit: { context: 32768, output: 1024 } } } } },
+  }));
+  const bin = path.join(f.h.base, 'bin');
+  fs.writeFileSync(path.join(bin, 'opencode'), `#!${process.execPath}
+const cp = require('node:child_process');
+const env = { ...process.env, PWD: process.cwd(), OPENCODE_PURE: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1' };
+const result = cp.spawnSync(${JSON.stringify(native)}, process.argv.slice(2), { env, stdio: 'inherit', timeout: 90000 });
+process.exit(result.status ?? 1);
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'tower-crane'), `#!${process.execPath}
+const cp = require('node:child_process');
+const cli = require('node:path').join(require('node:path').dirname(process.env.TOWER_CRANE_HOOK), 'tool', 'bin', 'tower-crane.js');
+const result = cp.spawnSync(process.execPath, [cli, ...process.argv.slice(2)], { stdio: 'inherit' });
+process.exit(result.status ?? 1);
+`, { mode: 0o755 });
+  f.h.ok(['ladder', 'set', 'medium', '--model', 'fixture/mock']);
+  const result = await f.h.runAsync(['spawn', '--task', 'T1', '--wait'], {
+    env: { ...f.env, OPENCODE_CONFIG_CONTENT: '{}', OPENCODE_DISABLE_MODELS_FETCH: '1' },
+  });
+  let logs = '';
+  if (result.code !== 0) {
+    const logDir = path.join(f.h.state, 'homes', 'worker-T1-1', 'data', 'opencode', 'log');
+    try {
+      logs = fs.readdirSync(logDir).map((file) => fs.readFileSync(path.join(logDir, file), 'utf8')).join('\n');
+    } catch (error) { logs = error.message; }
+  }
+  assert.equal(result.code, 0, `${result.stdout}${result.stderr}\nmock requests: ${turn}\n${logs}`);
+  const events = result.stdout.split('\n').flatMap((line) => {
+    try { return [JSON.parse(line)]; } catch { return []; }
+  });
+  const tools = events.filter((event) => event.part?.tool === 'bash').map((event) => event.part.state);
+  assert.equal(tools.length, commands.length, result.stdout + result.stderr);
+  for (const [index, command] of commands.slice(0, -1).entries()) {
+    assert.equal(tools[index].input.command, command);
+    assert.equal(tools[index].status, 'completed', JSON.stringify(tools[index]));
+    assert.equal(tools[index].metadata.exit, 0, JSON.stringify(tools[index]));
+  }
+  assert.equal(tools.at(-1).status, 'error', JSON.stringify(tools.at(-1)));
+  assert.match(tools[2].output, /headless workspace/);
+  assert.match(tools[3].output, /headless workspace/);
+  assert.equal(f.h.readState('tasks.json').tasks[0].claim.agent, 'worker-T1-1');
+});
 
 test('opencode rung tool and MCP opt-ins appear in dry-run and exclude copied secrets', { skip: NO_STUBS }, (t) => {
   const f = setup(t);

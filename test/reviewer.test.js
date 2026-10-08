@@ -85,7 +85,7 @@ process.exit(r.status ?? 1);`;
   h.ok(['ladder', 'set', 'review', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, out, '{prompt}'])]);
 }
 
-test('opencode reviewer Bash asks before interpreter and absolute-path commands', {
+test('opencode reviewer Bash denies unlisted interpreter and absolute-path commands', {
   skip: process.platform === 'win32' && 'the stub uses a shebang executable',
 }, (t) => {
   const h = setup(t);
@@ -110,9 +110,9 @@ test('opencode reviewer Bash asks before interpreter and absolute-path commands'
   assert.equal(started.role, 'reviewer');
   const report = JSON.parse(fs.readFileSync(output, 'utf8'));
   assert.equal(report.name, 'gishra-reviewer');
-  assert.equal(report.permission.bash['*'], 'ask');
-  assert.deepEqual(report.probes, ['ask', 'ask', 'ask', 'ask', 'ask']);
-  assert.equal(report.bash.decision, 'ask');
+  assert.equal(report.permission.bash['*'], 'deny');
+  assert.deepEqual(report.probes, ['deny', 'deny', 'deny', 'deny', 'deny']);
+  assert.equal(report.bash.decision, 'deny');
   assert.equal(report.bash.code, undefined);
   assert.throws(() => fs.readFileSync(canary, 'utf8'), { code: 'ENOENT' });
 });
