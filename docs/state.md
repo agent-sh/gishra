@@ -55,6 +55,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | Setting | Class | Changed by |
 | --- | --- | --- |
 | `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd` | operational | `project set --tests-cmd`, `--clean-cmd`, `--tests-proof-cmd`; gate self-pinning below |
+| `gates.executors` | operational | `project set --executors` |
 | `ci.required`, `ci.ignore_apps`, `ci.capped_review` | operational | `project set --ci-required`, `--ci-ignore-apps`, `--ci-capped-review` |
 | `ci.local` | operational | `project set --ci-local`, `task update --ci-local` |
 | `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive` | operational | `project set --tests-*` |
@@ -76,6 +77,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `task.cancel_needs_owner` | owner-required | `task update --status cancelled` on a task with an owner ask (`needs_owner`) |
 | `waive.review` | operational | `accept --waive review` when the reviewer is capped or down at the submitted head: a `check ci` there recorded a capped review run (`ci.capped_review`, kept as `capped_review` on the evidence), or a review spawn there exited without a verdict |
 | `merge.admin` | owner-required | `project set --merge-admin` |
+| `decision_delegation` | owner-required | `project set --decision-delegation` |
 | `waive.sources` | owner-required | `accept --waive sources` |
 | `claim.release` | owner-required | `release` of another agent's claim while its process is live or unverified |
 | `sandbox`, `env`, `env_file`, `scope` | owner-required | `project set` or `ladder set` |
@@ -88,7 +90,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `browser_kit` | owner-required | `browser-kit set`, the MCP servers browser tasks get in every project |
 | `publish` | owner-required | anything that publishes outside the repository, such as a release or a package; no command does this |
 
-Tools and MCP servers are operational because choosing what a rung works with is running the project, and the owner's autonomy rule hands that to the orchestrator; the two conditions keep it from widening what an agent reaches. An MCP server runs outside the rung's sandbox, so the orchestrator may opt in only a server already defined in the owner's own harness config (claude `mcp.json` or `.claude.json`, codex `config.toml`); naming another is refused, and the owner adds it. A tool the agent files name (claude tool names, codex features) or codex `web_search` re-enables a harness built-in inside the same sandbox; any other tool opens a `ladder.reach` decision. Only opt-ins new to a rung and harness are checked, including rungs a `ladder harness` change moves to another harness. The owner can overrule either condition by making the change. The conditions hold because the rung keeps its sandbox: only claude and codex enforce one, so a sandboxed role's rung that a change moves to opencode, agy, pi or command (with the personal fallback routes that follow its harness), or args on those harnesses (which no safe-args list checks), open a `ladder.reach` decision too. A route the owner already put there is the orchestrator's to tune with the same args; the orchestrator rung runs unsandboxed, so only args open a decision there. The sandbox, env, env_file and scope grants, `merge.admin`, budget raises, delegation and publishing stay owner-required.
+Tools and MCP servers are operational because choosing what a rung works with is running the project, and the owner's autonomy rule hands that to the orchestrator; the two conditions keep it from widening what an agent reaches. An MCP server runs outside the rung's sandbox, so the orchestrator may opt in only a server already defined in the owner's own harness config (claude `mcp.json` or `.claude.json`, codex `config.toml`); naming another is refused, and the owner adds it. A tool the agent files name (claude tool names, codex features) or codex `web_search` re-enables a harness built-in inside the same sandbox; any other tool opens a `ladder.reach` decision. Only opt-ins new to a rung and harness are checked, including rungs a `ladder harness` change moves to another harness. The owner can overrule either condition by making the change. The conditions hold because the rung keeps its sandbox: only claude and codex enforce one, so a sandboxed role's rung that a change moves to opencode, agy, pi or command (with the personal fallback routes that follow its harness), or args on those harnesses (which no safe-args list checks), open a `ladder.reach` decision too. A route the owner already put there is the orchestrator's to tune with the same args; the orchestrator rung runs unsandboxed, so only args open a decision there. The sandbox, env, env_file and scope grants, `merge.admin`, `decision_delegation`, budget raises, delegation and publishing stay owner-required.
 
 The research agent ships with network and web tools enabled in code; initializing or tuning its model does not ask for a new grant. Changing its explicit `web_mcp` command or tools is owner-required, including clearing it to return to native web tools. The orchestrator's attempt opens a decision without changing the rung. A setting that widens network access is owner-required under `ladder.reach`; operational built-in opt-ins must keep the existing sandbox network confinement.
 
@@ -100,7 +102,7 @@ The owner is the resolved name `owner`, supplied explicitly by `--agent owner` o
 
 | File | Holds |
 |---|---|
-| `project.json` | name, goal, repo, base branch, default harness and model ladder, limits, budgets, standards profile |
+| `project.json` | name, goal, repo, base branch, default harness and model ladder, limits, budgets, standards profile, owner policies |
 | `tasks.json` | every task and its status, evidence and spend |
 | `decisions.json` | questions for the owner and their answers |
 | `briefs/<task>.md` | shared task context and optional worker or reviewer sections, kept current by the orchestrator |
@@ -157,7 +159,8 @@ A marker's holder and modification time are read through one opened file descrip
     "small":        { "profile": "luna", "effort": "low" }
   },
   "limits": { "workers": 6, "lease_minutes": 60 },
-  "budget": { "hours": 40, "tokens": 20000000 }
+  "budget": { "hours": 40, "tokens": 20000000 },
+  "decision_delegation": { "orchestrator_technical": true }
 }
 ```
 
@@ -175,9 +178,15 @@ If an expired pre-claim already belongs to the generated worker, dispatch renews
 
 `gates` is an optional object with `tests_cmd` (the full test shell command), `clean_cmd` (the cleanup shell command prefix) and `tests_proof_cmd` (the expensive-mode scoped shell template with `{tests}`). Commands must be non-blank strings without NUL bytes; absent or null means unpinned. They are operational ([Authority](#authority)): the orchestrator or the owner sets or clears them through `init` or `project set --tests-cmd CMD --clean-cmd CMD --tests-proof-cmd CMD`. Prove and run-only require `tests_cmd`; clean requires `clean_cmd`. An unpinned project does not block: when the orchestrator or the owner runs `check tests`, `check clean` or `accept` and a needed pin is missing, the engine pins the detected command under that identity first. `tests_cmd` becomes `npm test` when the repository's `package.json` has a test script other than npm's placeholder; `clean_cmd` becomes the configured cleanup tool: `TOWER_CRANE_CLEAN_CMD`, else `deslop` on PATH, else the deslop plugin's `~/.agentsys/plugins/deslop/scripts/detect.js`. Each pin logs a `gates pin` event with `key`, `value`, `from` and `authority`, and `status` lists pins that still stand. Workers and reviewers pin nothing, and a gate with nothing detected refuses as before. Tests mode none needs no command. Gate flags `--cmd`, `--proof-cmd` and a non-blank `TOWER_CRANE_CLEAN_CMD` can only repeat the corresponding pinned value after whitespace trimming. They refuse a different value before any process runs. Clean appends the checkout directory, `--base=SHA` and `--json` to its prefix.
 
+`gates.executors` is a positive integer, default 2, that caps automation executors running at once on this host ([events.jsonl](#eventsjsonl)). The default fits one full suite at tests concurrency 3, about 6 processes, so two keep tests under half the cores of a 24-core box. The orchestrator or the owner raises it with `project set --executors N` on a larger machine.
+
 `merge` is an optional object with boolean `keep_branch` and `admin` fields, both defaulting to false. `keep_branch: true` omits `gh pr merge --delete-branch` so retained worktrees can keep their task branches; it also keeps branches without a worktree. Only owner-set `admin: true` (owner-required) adds `--admin` for repositories solely owned by the project owner, as allowed by SHARED.md. A command argument cannot enable admin merging; `merge --admin` is refused. Neither option skips Tower Crane's acceptance gates or its accepted-head check.
 
 Set these fields through `project set --merge-keep-branch true --merge-admin true`, or the same flags on `init`. They accept JSON true, false or null. Null clears that field, preserving other merge settings and removing an empty merge object. Changes to `merge.admin`, including clearing or setting an unchanged value, are owner-required; `keep_branch` is operational ([Authority](#authority)). Refused changes write no settings. `project show` prints both resolved defaults.
+
+`decision_delegation` is an optional owner-required policy. Its `orchestrator_technical` boolean defaults to false. Set it with `project set --decision-delegation '{"orchestrator_technical":true}'` or the same flag on `init`; `null` clears it. Setting, repeating or clearing it requires explicit owner identity. When true, the orchestrator may answer a decision only after the owner marks that decision technical with `decision delegate DID --technical true`.
+
+For technical delegation, `lib/authority.js` must resolve the explicit caller as the orchestrator. A generated name such as `orchestrator-T1-1` is recognized through its recorded spawn role; an unsandboxed worker cannot claim the literal `orchestrator` identity by passing `--agent orchestrator`. Answers keep the caller's identity in `answered_by` and the event's actor fields.
 
 Every use of `init --ci-local` or `project set --ci-local`, including setting the current value or clearing it with `null`, is operational: the orchestrator or the owner. Refused calls write no settings or events.
 
@@ -369,6 +378,7 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 - `spend`: `{ "minutes", "tokens", "input"?, "cached"?, "output"?, "entries"? }`. Existing `{ "minutes", "tokens" }` files keep loading. Totals increase under the state lock. Token counts are non-negative safe integers. `input` includes cache reads and writes, `cached` is the cache-read subset of input, and `output` includes reasoning when reported. Do not add `cached` to `tokens` again. A total-only report increases `tokens` without inventing a breakdown; aggregate breakdown fields sum only the reports that supply them.
 - `spend.entries`: one record per spend call or exited spawn route: `{ "at", "agent", "minutes", "tokens", "input", "cached", "output", "rung", "harness", "model", "profile", "source" }`, with optional `cache_write` from manual `--cache-write` and `provider` (`anthropic` or `bedrock`) for explicitly selected Claude routes. Unknown counts and metadata are `null`. `source` is `manual` or `spawn:<agent>`, with `:attempt:<n>` for resumed dispatches and `:route:<index>` for fallback routes. A spawn's rung, harness, configured model and profile come from its dispatch or fallback event; a model named in captured telemetry takes precedence. Known model aliases are stored as canonical provider IDs; explicit Claude provider entries use plain Anthropic or global Bedrock ids and retain the provider that ran, including each fresh retry. Historical entries also normalize when compared with review prices. A profile-only dispatch without a reported model keeps `model: null` and the profile. Manual `--rung` resolves the current ladder; pass `--model` and `--harness` when a native subagent used different values.
 - Live usage: while an agent runs, its supervisor reads the harness's own usage every `usage_ms` (default 30 s; the first reading after one interval): claude's session file `<CLAUDE_CONFIG_DIR>/projects/<dir>/<session id>.jsonl`, the codex rollout for the printed session id, and the captured log for opencode and pi. Only files named for the spawn's own session id are opened, and events never carry their paths. The reading is stored as the route segment's entry, with the `source` the exit collection uses, plus `"live": { "state", "interval_ms" }`: `state` is `live` with the tokens so far, or `unavailable` with `tokens: null` while the harness exposes nothing (agy, command, or before the first usage record); never a zero. A resumed session counts only what it adds after the dispatch. A reading is written when it changes and at least every 4 intervals (`spend live` events); views show a reading older than 10 intervals as `stale`. A failed read writes nothing, so it turns stale too. Live tokens are in the totals. The exit collection replaces the live entry with the exit telemetry, or keeps its last reading without `live` when the exit reports none, so usage is counted once. Live entries are not counted as spawns without usage.
+- When claude exits without a result, its supervisor reads the session once more after the process group and output streams close, before recording the exit that permits collection. This includes usage written after the last live sample, even when submission has ended supervision. The resumed-session baseline still applies. If this final read is unavailable, collection keeps the last live reading.
 - Budgets: `project.json budget` and a task's optional `budget` `{ "hours", "tokens" }` (null is no limit) are checked against recorded and live usage at every supervisor sample. A crossing (usage above the limit) stops the agent: the supervisor records `budget stop` with the breaches and `authority: "operational"`, sets the run phase to `blocked: budget: ...`, terminates the process group without a rerun or fallback, cancels a retry still in backoff, and opens one decision per crossed budget with `escalation: { settings: ["budget.raise"], change: { scope, what, limit } }`. A task budget's decision blocks the task. `spawn` refuses while a project or the task's budget is crossed. Only the owner raises a budget.
 - Manual `spend --cache-write N` adds `cache_write` to the entry. It is included in `input` and separate from `cached`; their sum cannot exceed input. Omitted cache-write counts stay unknown for pricing older telemetry.
 - Automatic collection happens for foreground and detached exits, including nonzero exits and killed processes whose logs report usage. Foreground collection, detached monitors and `wait` share one locked exit-observation path. A waiter attempts usage collection when it observes a worker exit. A detached monitor observes the original harness pid (including Linux zombies and pid reuse) and invokes the CLI after exit. Its checks are 500 ms apart; each collection takes the usual state lock with a command deadline of at most 30 s. Failed collection retries for up to 10 min, then logs a recovery command and exits with code 1. If the process cannot be observed for 10 min (another host, a permission error or unavailable Linux process metadata), the monitor exits with code 1 and a recovery command without assuming exit or recording usage. Both deadlines use monotonic time. A known live process is watched until exit; deleting the project stops the monitor. Successful collection stops the monitor. `spend --from-spawn AGENT` can retry collection. A known `source` is counted once even across concurrent retries. Without usage, the entry has `tokens: null`, totals stay unchanged, and status/sketch count spawns without usage. A retry enriches unknown or partial entries if telemetry arrives, applying only counter deltas. Explicitly reported zero is a measured zero.
@@ -505,13 +515,16 @@ The standards profile may add gates. `--waive TYPE --reason TEXT` records an own
       "recommendation": "postgres",
       "why": "keys must survive a Redis flush; volume is 30/s",
       "blocks": ["T3"],
+      "answerers": [],
+      "technical": false,
       "status": "open",
       "answer": null,
       "note": null,
       "asked_by": "orchestrator",
       "asked_at": "...",
       "answered_by": null,
-      "answered_at": null
+      "answered_at": null,
+      "answer_rule": null
     }
   ]
 }
@@ -519,7 +532,11 @@ The standards profile may add gates. `--waive TYPE --reason TEXT` records an own
 
 A decision the engine opened for an orchestrator's owner-required change also has `escalation: { "settings": [...], "change": {...} }` ([Authority](#authority)).
 
-A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
+A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. An explicit owner identity can answer every decision. `answerers` lists agents the owner named with `decision delegate DID --answerers JSON`; the owner can replace the list or clear it with `[]`. `technical` is set by the owner through the same command. The orchestrator can answer only when `technical` is true and `project.json` enables `decision_delegation.orchestrator_technical`. An answer stores `answered_by` and `answer_rule`; older decisions default to no named answerers, not technical, and no answer rule.
+
+Answer rules are `owner`, `owner-named-agent` and `owner-technical-delegation`. The `answer` event records the caller in `agent` and `detail.answered_by`, and the rule in `detail.answer_rule`. Refused answers write no event. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
+
+The orchestrator's technical rule takes precedence over `answerers`, including for a generated identity with a recorded orchestrator role. Listing that identity cannot authorize a nontechnical answer or one without project delegation. A sandboxed agent may answer through its broker only when the owner named its bound identity for that decision; successful brokered answer events retain the bound identity and carry `via: broker`.
 
 ## events.jsonl
 
@@ -549,8 +566,17 @@ an exception. Terminal receipts include `error`, null without an exception.
 Startup can retry deferred or errored work without a new lifecycle event.
 A task has at most one observable executor.
 An exited executor's start can be retried, while an unobservable executor
-remains busy. `automation queued` records a blocked notification's source;
-the executor drains it after releasing the task. State locks cover only
+remains busy. At most `gates.executors` executors run on one host across
+every watcher and supervisor. The running receipt in the event log is the
+executor's lease: its terminal receipt releases it on exit, and its PID
+identity releases it when the process dies. Running receipts from other
+hosts do not count against this host's cap.
+`automation queued` records a blocked notification's source, with
+`executors` set to the cap when the cap blocked it rather than another
+executor of the same task. Queued notifications run in submission order:
+while one waits, a later notification queues behind it even if a slot is
+free. Each executor drains the queue after releasing its slot; watchers
+also retry their pending notifications on their next check. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
 `via: automation`. Reactions establish an explicit authorization context

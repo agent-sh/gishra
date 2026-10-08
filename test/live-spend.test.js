@@ -40,6 +40,7 @@ const exited = (h, agent) => events(h).some((e) => e.cmd === 'spawn exit' && e.d
 for (const [harness, scope] of [['claude', 'project'], ['codex', 'task']]) {
   test(`${harness} usage read while it runs crosses the ${scope} token budget and the agent is stopped before it exits`, async (t) => {
     const h = setup(t, harness);
+    h.ok(['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}']);
     if (scope === 'project') h.ok(['project', 'set', '--budget-tokens', '3500']);
     else h.ok(['task', 'update', 'T1', '--budget-tokens', '3500']);
     // 60 steps of 1000 tokens over about 18 s; the budget falls at step 4.
@@ -70,6 +71,12 @@ for (const [harness, scope] of [['claude', 'project'], ['codex', 'task']]) {
     assert.deepEqual(decision.escalation.settings, ['budget.raise']);
     assert.deepEqual(decision.blocks, scope === 'project' ? [] : ['T1']);
     assert.match(decision.question, /was stopped/);
+    assert.deepEqual(decision.answerers, []);
+    assert.equal(decision.technical, false);
+    assert.equal(decision.answer_rule, null);
+    const answer = h.run(['answer', decision.id, '--choice', 'raise', '--agent', 'orchestrator']);
+    assert.notEqual(answer.code, 0);
+    assert.match(answer.stderr, /only the owner answers it/);
 
     // The exit collection replaces the live entry: one entry, counted once.
     await until(() => {
@@ -104,6 +111,24 @@ for (const [harness, scope] of [['claude', 'project'], ['codex', 'task']]) {
     assert.ok(!text.includes('"claude_home"'), 'events never carry the claude session root');
   });
 }
+
+test('Claude exit without a result includes usage written after the last live sample', async (t) => {
+  const h = setup(t, 'claude');
+  const finish = path.join(h.base, 'finish');
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+    LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_FINISH: finish,
+  }) });
+  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'the first usage was not collected');
+  fs.writeFileSync(finish, '');
+  await until(() => exited(h, spawned.agent), 'the harness did not exit');
+  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'exit usage was not finalized');
+  const spend = h.json(['task', 'show', 'T1']).spend;
+  assert.equal(fs.readFileSync(h.done, 'utf8'), '2', 'the harness wrote a final session record');
+  assert.equal(spend.tokens, 2000);
+  assert.equal(spend.entries.length, 1);
+  h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+  assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 2000, 'recollection keeps the final total');
+});
 
 // The test context's cleanup stops the detached agents these tests leave running.
 test('live usage shows its freshness: live, stale when no reading arrives, unavailable without harness data', async (t) => {

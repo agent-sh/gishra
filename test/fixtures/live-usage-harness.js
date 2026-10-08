@@ -38,7 +38,7 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let step = 0;
-  const write = () => {
+  const write = (final = false) => {
     step += 1;
     const output = Math.floor(per / 10);
     const record = harness === 'claude'
@@ -47,6 +47,10 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
         input_tokens: step * (per - output), cached_input_tokens: 0, output_tokens: step * output, total_tokens: step * per,
       } } } };
     fs.appendFileSync(file, JSON.stringify(record) + '\n');
+    if (final) {
+      fs.writeFileSync(env.LIVE_DONE, String(step));
+      process.exit(70);
+    }
     if (step < steps) setTimeout(write, Number(env.LIVE_EVERY || 100));
     else {
       setTimeout(() => {
@@ -56,4 +60,9 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
     }
   };
   write();
+  if (env.LIVE_FINISH) {
+    setInterval(() => {
+      if (fs.existsSync(env.LIVE_FINISH)) write(true);
+    }, 25);
+  }
 }
