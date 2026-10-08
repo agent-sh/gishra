@@ -269,10 +269,17 @@ for (const { route, required } of [
   test(`a confirmed ${route} gate failure${required ? ` while a required check is ${required}` : ''} climbs and reaches the owner at the range ceiling`, async (t) => {
     const h = setup(t, 'review', 'easy..medium', (repo) => {
       gateFixture(repo);
-      // Spawn exit runs every software gate, so each fails only where the check asks it to.
+      // Recovery inherits the check's environment; only the selected gate fails.
       const exit = "process.exit(process.env.FIXTURE_GATE_OK === '0' ? 1 : 0)";
       repo.ok(['project', 'set', '--repo', 'acme/demo', '--tests-mode', 'run-only',
-        '--tests-cmd', `node -e "${exit}"`]);
+        '--tests-cmd', `node -e "${route === 'tests' ? exit : 'process.exit(0)'}"`]);
+      if (route !== 'clean') fs.writeFileSync(path.join(repo.base, 'tools', 'scanner.js'),
+        'console.log(JSON.stringify({ items: [] }));\n');
+      if (type !== 'ci') {
+        const gh = path.join(repo.base, 'tools', 'gh');
+        fs.writeFileSync(gh, fs.readFileSync(gh, 'utf8')
+          .replace("const ok = process.env.FIXTURE_GATE_OK !== '0';", 'const ok = true;'));
+      }
       if (route === 'local-ci') repo.ok(['project', 'set', '--ci-local', JSON.stringify({
         command: [process.execPath, '-e', exit], timeout: 5,
       })]);
@@ -311,7 +318,14 @@ if (args.some((arg) => arg.includes('/check-runs'))) {
     assert.deepEqual(task.escalations.map((e) => e.trigger), [type, type]);
     assert.deepEqual(task.escalations.map((e) => e.to), ['medium', null]);
     assert.ok(task.evidence.filter((e) => e.type === type && !e.ok).every((e) => e.confirmed_failure === true));
-    assert.equal(task.evidence.filter((e) => e.type === type && !e.ok).length, 2);
+    const log = events(h);
+    for (const [index, climb] of task.escalations.entries()) {
+      const failure = log.find((e) => e.id === climb.source);
+      assert.equal(failure.cmd, `check ${type}`);
+      assert.equal(failure.detail.ok, false);
+      assert.equal(failure.detail.confirmed_failure, true);
+      assert.equal(failure.detail.revision, index + 1, 'each climb belongs to its failed revision');
+    }
     assert.equal(h.readAttempts().length, 2);
   });
 }
