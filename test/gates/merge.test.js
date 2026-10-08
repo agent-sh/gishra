@@ -1,8 +1,13 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const gate = require('../../lib/gates/merge');
 const { result, fakeExec } = require('./helpers');
+const { makeRepo } = require('../helpers');
+const { gateFixture, gateEvidence } = require('../gate-helpers');
+const { stacked } = require('../stack-fixture');
 
 const SHA = 'c'.repeat(40);
 const OTHER = 'd'.repeat(40);
@@ -10,14 +15,15 @@ const MERGED = 'e'.repeat(40);
 const REPO = 'acme/app';
 
 // A PR on a fake GitHub: `merge` decides what gh pr merge does to it.
-function github({ state = 'OPEN', head = SHA, merge = 'ok' } = {}) {
-  const pr = { state, headRefOid: head, mergeCommit: state === 'MERGED' ? { oid: MERGED } : null };
+function github({ state = 'OPEN', head = SHA, merge = 'ok', base = 'main', crossRepository = false, landedBase = base } = {}) {
+  const pr = { state, headRefOid: head, baseRefName: base, isCrossRepository: crossRepository,
+    mergeCommit: state === 'MERGED' ? { oid: MERGED } : null };
   const gh = fakeExec((args) => {
     if (args[0] === 'pr' && args[1] === 'view') return result(JSON.stringify(pr));
     if (args[0] !== 'pr' || args[1] !== 'merge') return null;
     if (merge === 'refused') return result('', 1, 'GraphQL: Base branch policy prohibits the merge (mergePullRequest)');
     if (merge === 'queued') return result('! Pull request #42 will be added to the merge queue\n');
-    Object.assign(pr, { state: 'MERGED', mergeCommit: { oid: MERGED } });
+    Object.assign(pr, { state: 'MERGED', baseRefName: landedBase, mergeCommit: { oid: MERGED } });
     if (merge === 'branch-kept') return result('', 1, 'failed to delete remote branch: protected');
     return result('');
   });
@@ -118,4 +124,92 @@ test('already merged at the accepted sha: ok without merging again', async () =>
   const moved = await gate.run(ctx(github({ state: 'MERGED', head: OTHER })));
   assert.equal(moved.ok, false);
   assert.match(moved.summary, /not the accepted/);
+});
+
+test('M1: the CLI refuses an accepted PR retargeted from main to release', (t) => {
+  const h = makeRepo(t);
+  const sha = gateFixture(h);
+  h.git(['switch', '-q', 'main']);
+  h.init(['--repo', REPO, '--base', 'main']);
+  h.ok(['task', 'add', '--title', 'Change', '--kind', 'code', '--acceptance', 'works']);
+  h.ok(['claim', 'T1', '--agent', 'worker-T1']);
+  h.ok(['submit', 'T1', '--sha', sha, '--pr', '42', '--agent', 'worker-T1']);
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  h.ok(['accept', 'T1']);
+  h.env.FIXTURE_PR_BASE = 'release';
+  h.env.FIXTURE_GH_LOG = path.join(h.base, 'gh.jsonl');
+  const r = h.run(['merge', 'T1', '--agent', 'orchestrator']);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stdout, /base.*release.*main/);
+  const calls = fs.readFileSync(h.env.FIXTURE_GH_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(calls.some((args) => args[1] === 'merge'), false);
+  assert.ok(!fs.existsSync(h.env.FIXTURE_MERGED));
+  const evidence = h.json(['task', 'show', 'T1']).evidence.findLast((e) => e.type === 'merge');
+  assert.equal(evidence.ok, false);
+  assert.match(evidence.summary, /release/);
+  assert.ok(!evidence.commands.some((c) => c.args[1] === 'merge'));
+  h.env.FIXTURE_PR_BASE = 'main';
+  const merged = h.json(['merge', 'T1', '--agent', 'orchestrator']);
+  assert.equal(merged.ok, true, merged.summary);
+  assert.match(merged.summary, /into main/);
+});
+
+test('the plain path refuses a wrong base or a cross-repository PR, including already merged PRs', async () => {
+  for (const state of ['OPEN', 'MERGED']) {
+    for (const options of [{ base: 'release' }, { crossRepository: true }]) {
+      const gh = github({ state, ...options });
+      const r = await gate.run(ctx(gh));
+      assert.equal(r.ok, false, r.summary);
+      assert.match(r.summary, options.base ? /base.*release.*main/ : /same-repository/);
+      assert.equal(gh.merges().length, 0);
+    }
+  }
+});
+
+test('a stack PR must target its dependency branch rather than the project base', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.prs[12].baseRefName = 'main'; });
+  const r = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stdout, /PR base/);
+  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+});
+
+test('unstacked fallback retargets only the recorded dependency base after lower tasks land', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.h.ok(['stack', 'unstack', 'T2', '--agent', 'orchestrator']);
+  f.h.ok(['merge', 'T1', '--agent', 'orchestrator']);
+  f.write((d) => { d.calls = []; d.prs[12].baseRefName = 'release'; });
+  const refused = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(refused.code, 1, refused.stdout);
+  assert.match(refused.stdout, /base.*release.*main/);
+  assert.equal(f.read().calls.some((c) => ['edit', 'merge'].includes(c.args[1])), false);
+  f.write((d) => { d.prs[12].baseRefName = f.lower.branch; });
+  const merged = f.h.json(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(merged.ok, true, merged.summary);
+  assert.match(merged.summary, /into main/);
+  const calls = f.read().calls.map((c) => c.args.slice(0, 2).join(' '));
+  const edit = calls.indexOf('pr edit');
+  assert.ok(edit >= 0);
+  assert.equal(calls[edit + 1], 'pr view');
+  assert.equal(calls[edit + 2], 'pr merge');
+});
+
+test('merge confirmation names and refuses an unexpected landed base', async () => {
+  const gh = github({ landedBase: 'release' });
+  const r = await gate.run(ctx(gh));
+  assert.equal(r.ok, false, r.summary);
+  assert.match(r.summary, /merged.*release.*main/);
+  assert.equal(gh.merges().length, 1);
+});
+
+test('already merged confirmation names the real base', async () => {
+  const r = await gate.run(ctx(github({ state: 'MERGED', base: 'release' }), { project: { base: 'release' } }));
+  assert.equal(r.ok, true, r.summary);
+  assert.match(r.summary, /into release/);
 });
