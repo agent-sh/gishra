@@ -46,7 +46,7 @@ test('the claimant resubmits a newer head and its gates need evidence at that he
   h.ok(['submit', 'T1', '--sha', oldSha, '--branch', 'fixture-change', '--pr', '7', '--agent', 'w-1']);
   assert.deepEqual(
     events(h).find((event) => event.cmd === 'submit').detail,
-    { previous_sha: null, sha: oldSha, branch: 'fixture-change', pr: 7, summary: null },
+    { previous_sha: null, sha: oldSha, branch: 'fixture-change', pr: 7, summary: null, scope: { basis: 'repo', named: [], outside: [] } },
   );
   const gates = [['tests', 'w-1'], ['clean', 'w-1'], ['review', 'r-1'], ['ci', 'ci']];
   for (const [type, agent] of gates) pass(h, type, agent, oldSha);
@@ -203,7 +203,7 @@ test('review evidence must pin the reviewed sha when a worker resubmits during r
   const h = makeRepo(t);
   h.init();
   h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'profile', '--clear', 'effort',
-    '--command', '["tower-crane-no-such-reviewer"]']);
+    '--command', '["tower-crane-no-such-reviewer","{prompt}"]']);
   h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   const reviewedSha = h.git(['rev-parse', 'HEAD']);
