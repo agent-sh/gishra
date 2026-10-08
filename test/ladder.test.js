@@ -195,6 +195,10 @@ test('ladder save-user writes only what the project defines and keeps the rest o
 test('personal hard fallbacks overlay project rungs and stay out of project writes', (t) => {
   const h = makeRepo(t);
   h.init();
+  // Pinned so the expected model does not follow the built-in ladder.
+  const pinned = h.readState('project.json');
+  pinned.ladder.hard = { harness: 'claude', model: 'opus', effort: 'medium' };
+  h.writeState('project.json', pinned);
   const fallbacks = [{ harness: 'codex', profile: 'astra', effort: 'high' }, { harness: 'claude', model: 'fable', effort: 'high' }];
   writeUser(h, { ladder: { hard: { fallbacks } } });
   const hard = h.json(['ladder', 'show']).ladder.hard;
@@ -355,6 +359,10 @@ test('a ladder broken by a changed user file still loads, and ladder set repairs
 test('a ladder write is evented and re-renders the sketch with the ladder and each task tier', (t) => {
   const h = makeRepo(t);
   h.init();
+  // Pinned so the expected research row does not follow the built-in ladder.
+  const pinned = h.readState('project.json');
+  pinned.ladder.research = { harness: 'claude', model: 'opus', effort: 'high' };
+  h.writeState('project.json', pinned);
   h.ok(['task', 'add', '--title', 'Small fix', '--acceptance', 'a', '--size', 'S']);
   h.ok(['ladder', 'set', 'easy', '--model', 'gpt-x', '--clear', 'profile', '--clear', 'harness', '--agent', 'orchestrator']);
   const ev = events(h).find((e) => e.cmd === 'ladder set');

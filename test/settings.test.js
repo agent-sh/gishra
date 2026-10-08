@@ -67,6 +67,10 @@ const events = (h) => read(h, 'events.jsonl').trim().split('\n').map((l) => JSON
 test('the Settings view edits the ladder and task tiers only with the page token, through the CLI write path', async (t) => {
   const h = makeRepo(t);
   h.init();
+  // Pinned so the expected hard model does not follow the built-in ladder.
+  const pinned = h.readState('project.json');
+  pinned.ladder.hard = { harness: 'claude', model: 'opus', effort: 'medium' };
+  h.writeState('project.json', pinned);
   h.ok(['task', 'add', '--title', 'Webhook retries', '--acceptance', 'a']);
   const s = await startServe(h);
   try {
