@@ -4,10 +4,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeTaskRepo } = require('./helpers');
 
 function setup(t) {
-  const h = makeRepo(t);
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Claude provider switch', '--tier', 'hard', '--acceptance', 'fresh provider session'],
+    brief: 'Build with the original brief.\n',
+  }]);
   const home = path.join(h.base, 'user-home');
   const claude = path.join(home, '.claude');
   const aws = path.join(home, '.aws');
@@ -17,16 +20,25 @@ function setup(t) {
   for (const key of Object.keys(h.env)) {
     if (/^(AWS_|ANTHROPIC_|CLAUDE_)/.test(key)) delete h.env[key];
   }
+  const backoff = path.join(h.base, 'zero-backoff.cjs');
+  // Provider tests exercise retry and routing decisions without waiting on backoff.
+  // Load the monitor's pinned ladder module so fallback routes use the same override.
+  fs.writeFileSync(backoff, `
+const path = require('node:path');
+if (path.basename(process.argv[1] || '') === 'spawn-monitor.js') {
+  const ladder = require(path.join(path.dirname(process.argv[1]), 'ladder.js'));
+  const supervision = ladder.supervision;
+  ladder.supervision = (rung) => ({ ...supervision(rung), backoff_ms: 0, max_backoff_ms: 0 });
+}
+`);
   Object.assign(h.env, {
     HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claude,
     PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
-    NODE_OPTIONS: `--require "${path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/')}"`,
+    NODE_OPTIONS: [path.join(__dirname, 'fixtures', 'fallback-harness.js'), backoff]
+      .map((file) => `--require "${file.replace(/\\/g, '/')}"`).join(' '),
     TOWER_CRANE_TEST_FALLBACK_FILE: path.join(h.base, 'attempts.json'),
     TOWER_CRANE_TEST_CLAUDE_PROVIDER: '1',
   });
-  h.init();
-  h.ok(['task', 'add', '--title', 'Claude provider switch', '--tier', 'hard', '--acceptance', 'fresh provider session']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Build with the original brief.\n' });
   h.primary = (provider, model = 'opus') => h.ok([
     'ladder', 'set', 'hard', '--provider', provider, '--model', model,
     '--supervision', '{"retries":1,"backoff_ms":10,"max_backoff_ms":10,"stall_ms":60000}',
@@ -52,6 +64,13 @@ function setup(t) {
   return h;
 }
 
+function assertRetry(h) {
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const retries = events.filter((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying');
+  assert.deepEqual(retries.map((e) => [e.detail.retry, e.detail.backoff_ms]), [[1, 0]]);
+  assert.equal(events.filter((e) => e.cmd === 'spawn retry').length, 1);
+}
+
 for (const [provider, other, model, plain] of [
   ['anthropic', 'bedrock', 'opus', 'claude-opus-5-5'],
   ['bedrock', 'anthropic', 'sonnet', 'claude-sonnet-5-5'],
@@ -71,6 +90,7 @@ for (const [provider, other, model, plain] of [
     const attempts = h.attempts();
     assert.deepEqual(attempts.map((a) => a.provider), [provider, provider, other]);
     assert.deepEqual(attempts.map((a) => a.retry), ['0', '1', '0']);
+    assertRetry(h);
     assert.deepEqual(attempts.map((a) => a.model),
       [provider, provider, other].map((p) => p === 'bedrock' ? `global.anthropic.${plain}` : plain));
     assert.equal(new Set(attempts.map((a) => a.session)).size, 3);
@@ -126,6 +146,8 @@ test('ladder show marks missing Claude provider config and the supervisor skips 
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /skipping fallback 1.*bedrock/);
   assert.deepEqual(h.attempts().map((a) => a.provider), ['anthropic', 'anthropic']);
+  assert.deepEqual(h.attempts().map((a) => a.retry), ['0', '1']);
+  assertRetry(h);
   const ev = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   assert.equal(ev.find((e) => e.cmd === 'spawn fallback').detail.route_index, 2);
 });
@@ -140,6 +162,8 @@ test('missing first-party credentials are reported for primaries and skipped as 
   const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
   assert.equal(result.code, 1, result.stderr);
   assert.match(result.stderr, /skipping fallback 1.*anthropic/);
+  assert.deepEqual(h.attempts().map((a) => [a.provider, a.retry]), [['bedrock', '0'], ['bedrock', '1']]);
+  assertRetry(h);
   h.primary('anthropic');
   assert.match(h.ok(['ladder', 'show']), /cannot run: ladder hard.*anthropic.*credentials/);
   const missing = h.run(['spawn', '--task', 'T1']);
@@ -239,6 +263,8 @@ for (const source of ['project env', 'rung env', 'env_file']) {
     const result = h.run(['spawn', '--task', 'T1', '--wait'], { timeout: 20000 });
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(h.attempts().map((a) => a.provider), ['anthropic', 'anthropic', 'bedrock']);
+    assert.deepEqual(h.attempts().map((a) => a.retry), ['0', '1', '0']);
+    assertRetry(h);
     assert.equal(h.attempts()[2].provider_env.AWS_REGION, 'eu-west-1');
   });
 }
