@@ -702,7 +702,7 @@ for (const [command, args, opts] of calls) {
   }
 });
 
-test('the shim migrates a pre-T112 policy using recorded state and refuses unbound or incomplete migrations', { skip: NO_STUBS }, (t) => {
+test('the shim migrates a pre-T112 policy using recorded state and refuses unbound migrations', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   isolated(h, 'medium', 'codex');
   spawn(h, u, 'medium');
@@ -731,9 +731,27 @@ test('the shim migrates a pre-T112 policy using recorded state and refuses unbou
   h.writeState('tasks.json', tasks);
   const missing = run(['push', 'origin', `HEAD:refs/heads/${branch}`]);
   assert.equal(missing.status, 126);
-  assert.match(missing.stderr, /migration requires a recorded task branch and repository/);
+  assert.match(missing.stderr, /git push without a task branch/);
   tasks.tasks[0].branch = recordedBranch;
   h.writeState('tasks.json', tasks);
+  // init without a GitHub origin or --repo records repo null: only remote pushes lose their binding.
+  const project = h.readState('project.json');
+  project.repo = null;
+  h.writeState('project.json', project);
+  const local = path.join(h.base, 'local-T116.git');
+  h.git(['init', '-q', '--bare', local]);
+  const status = run(['status']);
+  assert.equal(status.status, 0, status.stderr);
+  const commit = run(['commit', '--allow-empty', '-q', '-m', 'probe']);
+  assert.equal(commit.status, 0, commit.stderr);
+  const localPush = run(['push', local, 'HEAD:refs/heads/fixture']);
+  assert.equal(localPush.status, 0, localPush.stderr);
+  const remote = run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]);
+  assert.equal(remote.status, 126);
+  assert.match(remote.stderr, /git push outside the recorded origin repository/);
+  const read = cp.spawnSync('gh', ['pr', 'view'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 });
+  assert.notEqual(read.status, 126, read.stderr);
+  assert.doesNotMatch(read.stderr, /tower-crane:/);
   fs.writeFileSync(policyFile, '{}\n');
   assert.equal(run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]).status, 126, 'missing permissions default to deny');
   const gh = cp.spawnSync('gh', ['pr', 'create'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 });
