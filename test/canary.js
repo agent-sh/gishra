@@ -80,11 +80,14 @@ function processListing() {
   return parts.join('\n');
 }
 
-// The file's text once it exists, or null after ms; read, not checked first.
+// File creation can precede the PID write, so an empty marker is not ready.
 async function waitFor(file, ms = 20000) {
   const deadline = Date.now() + ms;
   for (;;) {
-    try { return fs.readFileSync(file, 'utf8'); } catch (e) {
+    try {
+      const text = fs.readFileSync(file, 'utf8');
+      if (text) return text;
+    } catch (e) {
       if (e.code !== 'ENOENT') throw e;
     }
     if (Date.now() >= deadline) return null;

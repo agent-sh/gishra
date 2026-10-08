@@ -116,10 +116,13 @@ for (const harness of ['claude', 'codex']) {
 
   test(`${harness}: a supervisor stopped while the agent runs leaves no canary`, { skip: NO_STUBS }, async (t) => {
     const s = setup(t, harness, 'hold');
+    // Start observing between marker creation and the agent's PID write.
+    fs.writeFileSync(`${s.out}.ready`, '');
+    const ready = canary.waitFor(`${s.out}.ready`);
     const r = s.spawn(['--json']);
     assert.equal(r.code, 0, r.stderr);
     assert.deepEqual(Object.keys(JSON.parse(r.stdout).route.env), ['ROUTE', 'TC_RUNG_SECRET']);
-    assert.ok(await canary.waitFor(`${s.out}.ready`), 'the agent started');
+    assert.ok(await ready, 'the agent started');
     canary.assertNoHits(canary.scanText(canary.processListing(), s.c, 'the process listing'), 'a process listing');
     const started = fs.readFileSync(path.join(s.h.state, 'events.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l)).findLast((e) => e.cmd === 'spawn').detail;
