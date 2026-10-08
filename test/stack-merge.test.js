@@ -207,6 +207,31 @@ test('an asynchronous merge that GitHub reports failed stops the chain after the
   assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge' && e.ok), false);
 });
 
+test('failed status polls defer to the PR state: a 5xx waits, a 404 after the merge landed confirms it', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.pollFailures = { 11: ['gh: Server Error (HTTP 502)'], 12: ['gh: Not Found (HTTP 404)'] }; });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
+  const data = f.read();
+  for (const pr of [11, 12]) assert.equal(data.prs[pr].state, 'MERGED');
+  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+});
+
+test('a PR still open after the bounded wait fails with the last poll error', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.queued = true; d.pollFailures = { 11: ['gh: Server Error (HTTP 502)'] }; });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /PR #11 is not merged 10 minutes after .*last status poll failed: gh: Server Error \(HTTP 502\)/);
+  assert.equal(f.read().prs[11].state, 'OPEN');
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.some((e) => e.type === 'merge' && e.ok), false);
+});
+
 test('linked stacks refuse squash and rebase to preserve accepted dependency ancestry', (t) => {
   const f = stacked(t);
   f.accept('T1');

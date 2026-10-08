@@ -82,6 +82,14 @@ cp.spawnSync = function stackGh(command, args, opts) {
     if (asyncPath) {
       const job = data.asyncMerges[asyncPath[2]];
       const pr = data.prs[job.pr];
+      // data.pollFailures[pr] lists errors for successive polls. GitHub retires a finished
+      // job, so a 404 comes after the merge lands; a 5xx leaves the merge pending.
+      const failure = data.pollFailures?.[pr.number]?.shift();
+      if (failure) {
+        if (/404/.test(failure) && pr.state !== 'MERGED') land(pr, job.method === 'merge' ? 2 : 1, `Merge pull request #${pr.number}`, false);
+        if (data.queued) skew += 24 * 60 * 60 * 1000;
+        return finish('', 1, failure);
+      }
       if (data.queued) {
         // Jump the merge process's clock past the poll deadline instead of waiting it out.
         skew += 24 * 60 * 60 * 1000;
