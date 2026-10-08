@@ -45,7 +45,7 @@ Tower Crane benches what agents do. This page benches what the owner does on the
 | H2 | Answer a decision with a note | 3 clicks, 0 scrolls, KLM 8.75 s without typing, focus after: BODY, fail | 2 clicks, 0 scrolls, KLM 6.1 s without typing, focus after: stuck-T25-lease, fail |
 | H2a | Approve a change | sentence fail, raw JSON shown; apply: no path | sentence pass, raw JSON behind a disclosure; apply: no path (T89/T91) |
 | H3 | Judge a review and send it back | 3 clicks, 3 scrolls, KLM 14.99 s without typing, 711 px scrolled, fail | 3 clicks, 0 scrolls, KLM 10.1 s without typing, 0 px scrolled, pass |
-| H4 | Stop a runaway | spend rose before exit: yes; flagged: no; stop: no path, fail | spend rose before exit: yes; flagged: yes, 605 ms after the rule's threshold; stop: 2 clicks, KLM 5.3 s, stopped with no retry; recorded 11000000 of the stub's 12000000, fail |
+| H4 | Stop a runaway | spend rose before exit: yes; flagged: no; stop: no path, fail | spend rose before exit: yes; flagged: yes, 347 ms after the rule's threshold; stop: 2 clicks, KLM 5.3 s, stopped with no retry; recorded 10000000 of the stub's 10000000, pass |
 | H4s | Lost telemetry: stale | state in words: no; drawn as zero: no; Now item: no; sentence says not counted: no, fail | state in words: yes; drawn as zero: no; Now item: yes; sentence says not counted: yes, pass |
 | H4s | Lost telemetry: unavailable | state in words: no; drawn as zero: no; Now item: no; sentence says not counted: no, fail | state in words: yes; drawn as zero: no; Now item: no; sentence says not counted: yes, pass |
 | H4p | Pause dispatch | no command on this base | no command on this base (T91), skipped |
@@ -60,7 +60,7 @@ Checks on the front room with the busy run, per size and theme (failures of chec
 
 | Build | Size, theme | Contrast | Color alone | Targets | Names | Readability | Density |
 |---|---|---|---|---|---|---|---|
-| before | 3840x1080 light | 0 of 295 | 7 of 20 | 0 of 67, 0 short buttons | 0 unnamed, 1 h1 | 6 sizes (11, 12, 13, 14, 16, 20), min 11, 7% under 12 px, 0 clipped, 1 long lines | 63.9% |
+| before | 3840x1080 light | 0 of 296 | 7 of 20 | 0 of 67, 0 short buttons | 0 unnamed, 1 h1 | 6 sizes (11, 12, 13, 14, 16, 20), min 11, 7% under 12 px, 0 clipped, 1 long lines | 63.9% |
 | before | 3840x1080 dark | 0 of 296 | 7 of 20 | 0 of 67, 0 short buttons | 0 unnamed, 1 h1 | 6 sizes (11, 12, 13, 14, 16, 20), min 11, 7% under 12 px, 0 clipped, 1 long lines | 63.9% |
 | before | 1920x1080 light | 0 of 250 | 7 of 20 | 0 of 60, 0 short buttons | 0 unnamed, 1 h1 | 6 sizes (11, 12, 13, 14, 16, 20), min 11, 5.5% under 12 px, 0 clipped, 0 long lines | - |
 | before | 1920x1080 dark | 0 of 250 | 7 of 20 | 0 of 60, 0 short buttons | 0 unnamed, 1 h1 | 6 sizes (11, 12, 13, 14, 16, 20), min 11, 5.5% under 12 px, 0 clipped, 0 long lines | - |
@@ -95,7 +95,7 @@ The other rooms, at 1920x1080 in both themes, 1280x800 dark and 390x844 light (c
 | One room at a time, 390x844: nav, direct link, sheet inside, cleared fragment, live update | 20 of 20, pass | 25 of 25, pass |
 | Reduced motion: running animations after load | 0, pass | 0, pass |
 
-Runs: before 2026-10-08 00:48Z on `before`, after 2026-10-08 01:26Z. Errors recorded: before 0, after 0.
+Runs: before 2026-10-08 02:58Z on `before`, after 2026-10-08 03:07Z. Errors recorded: before 0, after 0.
 
 <!-- /results -->
 
@@ -104,7 +104,7 @@ Runs: before 2026-10-08 00:48Z on `before`, after 2026-10-08 01:26Z. Errors reco
 - **Find what needs me.** Before, the old board's needs column showed half of the six items in the first viewport at 1920 and 3840 and one at 1280x800, and its tab count left out the stuck claim. After, every item is in the first viewport at all three desktop sizes, the title carries the full count, and the prediction drops to one M. At mid widths a queue longer than three items takes the full width in two columns, ahead of the floor.
 - **Decide.** The note field is beside the option buttons instead of behind a disclosure: two pointer actions instead of three, and focus lands on the next queue item. The prediction without typing is 6.1 s against the 6 s bar. That is the floor of the method itself (M P B B H, type, M H P B B): no layout makes it shorter, so the bar is out of reach for any mouse path with a note.
 - **Judge a review.** The finding, the gate receipts and the send-back field are on one Review row: no scrolling, against 711 px and three scrolls before.
-- **Stop a runaway.** Before, the live spend rose on the card but nothing flagged it and the board had no way to stop it. After, the spend rule (`lib/runaway.js`, the same flags `status` prints) puts it in the queue as a Now item well under a second after the live total crosses the rule, and Stop on its row ends it in two clicks, through the task budget the supervisor already enforces, with no retry. H4 still fails on its last bar: after exit, the recorded spend was 11M against the stub's own 12M. That gap is T93's exit reconciliation, not the board: a claude spawn stopped before it prints its result keeps its last live reading, which lagged the session file by one reading. An earlier run of the same scenario matched exactly. It is reported to the orchestrator for T93.
+- **Stop a runaway.** Before, the live spend rose on the card but nothing flagged it and the board had no way to stop it. After, the spend rule (`lib/runaway.js`, the same flags `status` prints) puts it in the queue as a Now item well under a second after the live total crosses the rule, and Stop on its row ends it in two clicks, through the task budget the supervisor already enforces, with no retry. After exit the recorded spend matches the stub's own total. An earlier run on a T93 head before its retry and reconciliation fixes recorded one reading less (11M of 12M); on the current T93 base it matches.
 - **Lost telemetry and spend.** A stale reading and an unavailable one are drawn in words, never as zero, and the status sentence counts the agents it cannot count. The bench found that an open page never aged a reading that stopped arriving, because nothing changed on disk; the page now ages live readings and asks for a fresh render once one passes its stale limit, which raises the Now item. Budget used, burn rate, projection and the top spender are on every page's spend line, with how fresh the live number is; before, only the used total was on the primary screen.
 - **Steer.** The agent row's Message reaches the claimant through `msg`; before there was no board path to an agent.
 - **Readability and calm.** Before, the front room used six sizes from 11 px, with 5 to 7% of its text under 12 px, and every other room failed a readability check. After, every room passes: five sizes from 12 px (12, 13, 15, 17 and 28, with 21 for room titles), body text 15 px, no line over 80 characters. Status glyphs that relied on color alone went from 7 of 20 to none. The calm run shows no alarm or attention hue and no motion; the old breathing dot is gone.
@@ -116,7 +116,7 @@ Runs: before 2026-10-08 00:48Z on `before`, after 2026-10-08 01:26Z. Errors reco
 - **No measured human time.** The owner runs each scenario on the after build, cold, three times; the bench does not stand in for that.
 - **No large-plan fixture.** The 200-task, 20,000-event fixture of the plan was not run: every CLI write re-renders the board under the lock, so building it through the CLI takes most of an hour. Plan rendering at that size is not measured here.
 - **Machine load.** Both runs shared the machine with other sessions (load around 30). Wall times are not compared between builds; counts and predictions are.
-- **Partial reruns.** After fixes found by the bench, some steps were rerun with `--only` (the after build's H1, H2, checks and rooms; both builds' checks after a fix to the line-length measure). Each table row comes from the latest run of its step.
+- **Partial reruns.** Both builds ran in full after T79 merged its T93 base (T105's one-time link, T88's command argv rule). The after build's H4s then reran with `--only` once its command-harness fixture carried `{prompt}`, which that base requires. Each table row comes from the latest run of its step.
 - **One fixture per scenario.** Each scenario ran once per build at the sizes shown. The deterministic bars are also assertions in `test/board.test.js` (contrast, targets, names and readability at the four sizes in both themes; one room at a time; the queue order; routing).
 
 ## Screenshots
@@ -140,4 +140,4 @@ node test/bench/run.js --build after --tree . --out ~/.cache/bench
 node test/bench/report.js --results ~/.cache/bench --doc docs/human-bench.md --shots docs/human-bench
 ```
 
-`--only H1,H4` reruns some steps and keeps the rest of an earlier results file. Run it outside an agent task process; it needs Chrome.
+`--only H1,H4` reruns some steps and keeps the rest of an earlier results file. Run it outside an agent task process; it needs Chrome. On a build that prints a one-time link, the driver opens it once per serve run, so the page holds the write token for the scenarios that write.

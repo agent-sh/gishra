@@ -231,7 +231,7 @@ function runaway(root, bin, { harness = 'claude', variant = 'live' } = {}) {
   fs.writeFileSync(path.join(binDir, harness), '', { mode: 0o755 });
   if (variant === 'unavailable') {
     const script = `require('node:child_process').execFileSync(process.execPath, [process.argv[1], 'claim', '${id}']); setTimeout(() => {}, 600000);`;
-    s.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--clear', 'profile', '--clear', 'effort', '--command', JSON.stringify([process.execPath, '-e', script, bin]), '--supervision', JSON.stringify({ usage_ms: 500, stall_ms: 600000 })]);
+    s.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--clear', 'profile', '--clear', 'effort', '--command', JSON.stringify([process.execPath, '-e', script, bin, '{prompt}']), '--supervision', JSON.stringify({ usage_ms: 500, stall_ms: 600000 })]);
   } else {
     s.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'bench-model', '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ usage_ms: 500, stall_ms: 600000 })]);
   }
