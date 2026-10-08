@@ -463,10 +463,25 @@ test('failure at the range top opens one owner decision and blocks further dispa
   const decision = h.json(['decisions', '--open'])[0];
   assert.deepEqual(decision.blocks, ['T1']);
   assert.match(decision.question, /hard.*exit/i);
+  assert.deepEqual(decision.answerers, []);
+  assert.equal(decision.technical, false);
+  assert.equal(decision.answer_rule, null);
+  const beforeAnswers = events(h);
+  for (const agent of ['worker-T1-3', 'orchestrator']) {
+    const denied = h.run(['answer', decision.id, '--choice', 'retry', '--agent', agent]);
+    assert.equal(denied.code, 1, denied.stderr);
+    assert.match(denied.stderr, /only the owner/);
+  }
+  assert.deepEqual(events(h), beforeAnswers, 'an unauthorized answer leaves the ceiling blocked');
   h.ok(['recover', 'T1']);
   assert.equal(h.json(['decisions', '--open']).length, 1);
   assert.notEqual(h.run(['spawn', '--task', 'T1']).code, 0);
   assert.equal(h.readAttempts().length, 3);
+  h.ok(['answer', decision.id, '--choice', 'revise the plan']);
+  const answered = h.json(['decisions'])[0];
+  assert.equal(answered.answer_rule, 'owner');
+  assert.equal(answered.status, 'answered');
+  assert.equal(h.readAttempts().length, 3, 'an owner answer does not dispatch a worker');
 });
 
 test('a native harness climb records captured tokens and configured cost for the failed rung', async (t) => {
