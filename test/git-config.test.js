@@ -111,3 +111,40 @@ console.log(JSON.stringify({ state: 'OPEN', headRefName: 'feature' }));\n`);
   h.ok(['submit', 'T1', '--sha', sha, '--pr', '7', '--agent', 'worker'], { env });
   assert.deepEqual(ran(), []);
 });
+
+test('repository git proxies cannot run before command-scope overrides', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Proxy', '--acceptance', 'works']);
+  const marker = path.join(h.base, 'proxy-ran');
+  const script = path.join(h.base, 'proxy.js');
+  fs.writeFileSync(script, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\n`);
+  const proxy = path.join(h.base, 'proxy');
+  fs.writeFileSync(proxy, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(script)} "$@"\n`, { mode: 0o755 });
+  h.git(['config', 'core.gitProxy', proxy]);
+  h.git(['remote', 'add', 'origin', 'git://127.0.0.1:9/acme/demo.git']);
+
+  const result = h.run(['worktree', 'T1', '--agent', 'orchestrator']);
+  assert.match(result.stderr, /git fetch origin main failed/);
+  assert.equal(fs.existsSync(marker), false, 'repository proxy never runs');
+
+  h.run(['worktree', 'T1', '--agent', 'orchestrator'], { env: { GIT_PROXY_COMMAND: proxy } });
+  assert.equal(fs.existsSync(marker), true, 'caller-provided proxy still runs');
+});
+
+test('an incomplete config scan refuses the CLI command before a hidden driver runs', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Oversized config', '--acceptance', 'works']);
+  const marker = path.join(h.base, 'driver-ran');
+  const script = path.join(h.base, 'driver.js');
+  fs.writeFileSync(script, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\nprocess.stdin.pipe(process.stdout);\n`);
+  fs.appendFileSync(path.join(h.repo, '.git', 'config'), `\n[padding]\nvalue = ${'x'.repeat(2 * 1024 * 1024)}\n`);
+  h.git(['config', 'filter.hidden.smudge', `${shellQuote(process.execPath)} ${shellQuote(script)}`]);
+  fs.writeFileSync(path.join(h.repo, '.git', 'info', 'attributes'), '* filter=hidden\n');
+
+  const result = h.run(['worktree', 'T1', '--agent', 'orchestrator']);
+  assert.notEqual(result.code, 0);
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.existsSync(path.join(h.base, 'repo-worktrees', 'T1-oversized-config')), false);
+});

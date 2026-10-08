@@ -517,11 +517,12 @@ The tests and clean gates run code the worker wrote: the pinned command runs the
 A sandboxed worker may write the repository's git directory (`writeOutside: git`), which holds its config, hooks and `info/attributes`. Every git command the CLI and gates start themselves (worktree, spawn preparation, submit scope, the gates' checkouts, diffs and fetches), and every git that `gh` starts for them (`gh stack sync`, `checkout`, `link` and `merge`, `gh pr` calls), takes command-running settings only from the system, global and command scopes, through `GIT_CONFIG_COUNT` entries appended after any the caller already set:
 
 - `core.hooksPath` is the trusted value when it is absolute, otherwise the null device, so the repository's `hooks/` directory and a hooks path the repository names never run.
-- `core.fsmonitor` is `false`. `core.sshCommand`, `core.askPass`, `core.gitProxy`, `core.alternateRefsCommand`, `diff.external` and origin's `uploadpack` and `receivepack` take their trusted value, or a default that names no repository command (`ssh`, `git-upload-pack`, `git-receive-pack`, empty). `protocol.ext.allow` is `never`; fetches do not recurse into submodules.
+- `core.fsmonitor` is `false`. `core.sshCommand`, `core.askPass`, `core.alternateRefsCommand`, `diff.external` and origin's `uploadpack` and `receivepack` take their trusted value, or a default that names no repository command (`ssh`, `git-upload-pack`, `git-receive-pack`, empty). `protocol.ext.allow` is `never`; fetches do not recurse into submodules.
+- `GIT_PROXY_COMMAND` is the caller's value or empty, which overrides all `core.gitProxy` entries. Git proxy commands must come from that environment variable because config uses the first matching entry.
 - The credential helper list is cleared, then refilled with the trusted `credential.helper` and `credential.<url>.helper` entries in their order.
 - Each filter (`clean`, `smudge`, `process`), diff driver (`command`, `textconv`), merge driver, `remote.<name>.uploadpack` or `receivepack` and `gpg.program` key the repository's local or worktree config sets takes the trusted value, or is emptied so git refuses to run it; such a filter is not `required`.
 
-Named driver keys are read from the config just before each command, so a key the worker adds between that read and git's own can still run. The fixed keys above have no such gap. The worker's own git and gh, through their shims, keep the repository's config.
+The config scan must complete successfully before git or gh starts. An error, timeout or output buffer overflow refuses the command rather than using a partial driver list. Named driver keys are read from the config just before each command, so a key the worker adds between that read and git's own can still run. The fixed keys above have no such gap. The worker's own git and gh, through their shims, keep the repository's config.
 
 ## decisions.json
 
