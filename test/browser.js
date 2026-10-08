@@ -43,7 +43,15 @@ async function until(fn, what, ms = 15000) {
 
 async function openBrowser(t) {
   const profile = fs.mkdtempSync(path.join(process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), 'tower-crane-chrome-'));
-  const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
+  // Registered before Chrome starts, so the profile goes even when setup fails part way.
+  let proc = null;
+  let closed = Promise.resolve();
+  t.after(async () => {
+    proc?.kill();
+    await closed;
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const args =['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
   const sandboxed = process.env.TOWER_CRANE_SANDBOX === '1';
   // Chrome's user/SUID sandbox cannot nest in the harness's outer sandbox.
   // Temp-backed shared memory avoids granting writes to the host's /dev/shm.
@@ -60,22 +68,17 @@ async function openBrowser(t) {
       XDG_CONFIG_HOME: config, XDG_CACHE_HOME: cache, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
     };
   } else if (process.getuid && process.getuid() === 0) args.push('--no-sandbox');
-  const proc = cp.spawn(CHROME, [...args, 'about:blank'], {
+  proc = cp.spawn(CHROME, [...args, 'about:blank'], {
     ...(env ? { env } : {}), stdio: sandboxed ? ['ignore', 'ignore', 'pipe'] : 'ignore',
   });
   let stderr = '';
   let failure = null;
   proc.stderr?.on('data', (data) => { stderr = (stderr + data).slice(-16384); });
   proc.on('error', (error) => { failure = error.message; });
-  const closed = new Promise((resolve) => proc.on('close', (code, signal) => {
+  closed = new Promise((resolve) => proc.on('close', (code, signal) => {
     failure ||= signal ? `signal ${signal}` : `exit code ${code}`;
     resolve();
   }));
-  t.after(async () => {
-    proc.kill();
-    await closed;
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  });
   const portFile = path.join(profile, 'DevToolsActivePort');
   // A first start on a fresh machine builds the font cache, which takes 10 s
   // or more on a busy CI runner; a Chrome killed before it finishes leaves the

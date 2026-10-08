@@ -274,3 +274,32 @@ test('a malformed tests.keep fails before the command runs', async () => {
   }
   assertCleanedUp();
 });
+
+test('the gate command runs with TMPDIR under the gate temp root, and that directory is removed when the gate ends', async () => {
+  // Records the temp directories it sees, then leaves a directory behind as a test helper might.
+  const log = path.join(tmp, 'probe.log');
+  const probe = path.join(tmp, 'probe.js');
+  fs.writeFileSync(probe, `const fs = require('fs');
+const os = require('os');
+const path = require('path');
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify([process.env.TMPDIR, process.env.TMP, process.env.TEMP, os.tmpdir()]) + '\\n');
+fs.mkdtempSync(path.join(os.tmpdir(), 'tower-crane-leftover-'));
+`);
+  // The test process's own temp directory is elsewhere, so a command that inherits it is caught.
+  const inherited = path.join(tmp, 'inherited');
+  fs.mkdirSync(inherited);
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = inherited;
+  try {
+    const sha = task({ 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST });
+    const r = await gate.run(ctx(sha, { args: { cmd: `${NODE} ${quote(probe)}` }, project: { tests: { mode: 'run-only' } } }));
+    assert.equal(r.ok, true, r.summary);
+    const [seen] = fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    for (const dir of seen) assert.ok(dir.startsWith(process.env.TOWER_CRANE_TMP + path.sep), dir);
+    assert.equal(fs.existsSync(seen[0]), false, 'the gate removed its temp directory');
+    assertCleanedUp();
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+  }
+});
