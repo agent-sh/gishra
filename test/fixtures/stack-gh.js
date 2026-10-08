@@ -67,9 +67,6 @@ cp.spawnSync = function stackGh(command, args, opts) {
     return finish();
   }
   if (args[0] === 'pr' && args[1] === 'merge') {
-    if (data.refuseStackedPrMerge && data.order.includes(Number(args[2]))) {
-      return finish('', 1, 'Pull request is stacked; it must be merged using the asynchronous merge REST API');
-    }
     const pr = data.prs[args[2]];
     const match = args.indexOf('--match-head-commit');
     if (match !== -1 && args[match + 1] !== pr.headRefOid) return finish('', 1, 'PR head moved; head commit does not match');
@@ -86,6 +83,11 @@ cp.spawnSync = function stackGh(command, args, opts) {
     pr.state = 'MERGED';
     pr.mergeCommit = { oid };
     if (args.includes('--delete-branch')) git(['push', 'origin', `:${pr.headRefName}`]);
+    // GitHub rebases the PRs above the merged one onto the new base.
+    const end = data.order.indexOf(Number(args[2]));
+    for (const n of end === -1 ? [] : data.order.slice(end + 1)) {
+      if (data.rebased?.[n]) data.prs[n].headRefOid = data.rebased[n];
+    }
     return finish();
   }
   if (args[0] !== 'stack') throw new Error(`unexpected gh: ${args}`);
@@ -107,21 +109,6 @@ cp.spawnSync = function stackGh(command, args, opts) {
   }
   if (args[1] === 'checkout') return finish(opts.cwd);
   if (args[1] === 'unstack') { data.linked = false; return finish(); }
-  if (args[1] === 'merge') {
-    if (data.queued) return finish('queued');
-    if (data.mergeUnavailable) return finish('', 9, 'Stacked pull requests are not enabled');
-    const end = data.order.indexOf(Number(args[2]));
-    for (const n of data.order.slice(0, end + 1)) {
-      data.prs[n].state = 'MERGED';
-      data.prs[n].mergeCommit = { oid: data.prs[n].headRefOid };
-    }
-    // GitHub rebases the PRs above the merged ones onto the new base.
-    for (const n of data.order.slice(end + 1)) {
-      if (data.rebased?.[n]) data.prs[n].headRefOid = data.rebased[n];
-    }
-    git(['push', 'origin', `${data.prs[args[2]].headRefName}:main`]);
-    return finish();
-  }
   if (args[1] === 'sync') {
     if (process.env.TEST_STACK_SYNC_READY) {
       fs.writeFileSync(process.env.TEST_STACK_SYNC_READY, 'ready');

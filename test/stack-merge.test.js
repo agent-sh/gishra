@@ -246,18 +246,20 @@ test('a task changed during the lower merge stops before the upper merge', (t) =
   assert.equal(f.h.json(['task', 'show', 'T1']).stack_disabled, undefined);
 });
 
-test('a bottom PR with a stale local link to its dependent merges through gh stack merge', (t) => {
+test('a bottom PR with a stale local link to its dependent merges through gh pr merge pinned to its head', (t) => {
   const f = stacked(t);
   f.accept('T1');
   const state = f.h.readState('tasks.json');
   state.tasks.find((item) => item.id === 'T2').stack.linked = false;
   f.h.writeState('tasks.json', state);
-  f.write((d) => { d.refuseStackedPrMerge = true; });
 
   const r = f.h.run(['merge', 'T1']);
   assert.equal(r.code, 0, r.stdout + r.stderr);
   assert.equal(f.read().prs[11].state, 'MERGED');
-  assert.ok(f.read().calls.some((c) => c.args[0] === 'stack' && c.args[1] === 'merge' && c.args[2] === '11'));
+  const merge = f.read().calls.find((c) => c.args[0] === 'pr' && c.args[1] === 'merge' && c.args[2] === '11');
+  assert.ok(merge, 'the bottom PR merges with gh pr merge');
+  assert.equal(merge.args[merge.args.indexOf('--match-head-commit') + 1], f.sha);
+  assert.equal(f.read().calls.some((c) => c.args[0] === 'stack' && c.args[1] === 'merge'), false);
 });
 
 test('after a lower stack merge, a dependent whose head GitHub moved takes the new head and needs its gates again', (t) => {

@@ -72,9 +72,10 @@ function plant(h) {
     'echo fake gh', '',
   ].join('\n'), { mode: 0o755 });
   // A test nested inside an agent must not cycle through the parent and
-  // child git shims. Delegate local work through the parent's guarded PATH;
-  // network pushes return a fixture error without contacting a remote.
-  const parentPath = process.env.PATH;
+  // child git shims. Delegate local work through the parent's PATH without its
+  // shim directories; network pushes return a fixture error without contacting a remote.
+  const parentPath = (process.env.PATH || '').split(path.delimiter)
+    .filter((dir) => !fs.existsSync(path.join(dir, '..', '.tower-crane-origin.json'))).join(path.delimiter);
   fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}
 const cp = require('node:child_process');
 const args = process.argv.slice(2);
