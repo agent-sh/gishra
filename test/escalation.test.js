@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, BIN } = require('./helpers');
+const { gateFixture } = require('./gate-helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 async function until(fn) {
@@ -15,9 +16,10 @@ async function until(fn) {
   }
 }
 
-function setup(t, trigger = 'exit', range = 'easy..medium') {
+function setup(t, trigger = 'exit', range = 'easy..medium', prepare = null) {
   const h = makeRepo(t);
   h.init();
+  if (prepare) prepare(h);
   h.ok(['task', 'add', '--title', 'Start low', '--tier', range, '--acceptance', 'climbs on quality failure']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Finish the task.\n' });
   h.attempts = path.join(h.base, 'attempts.json');
@@ -221,6 +223,84 @@ test('a failed review waits for the monitor to finish cleaning submitted worker 
   assert.ok(log.findIndex((e) => e.cmd === 'spawn exit' && e.detail.agent === 'worker-T1-1')
     < log.findIndex((e) => e.cmd === 'escalate'));
 });
+
+test('rework records the review climb before pending worker cleanup finishes', {
+  skip: process.platform !== 'linux' && 'Linux process group cleanup',
+}, async (t) => {
+  const h = setup(t, 'cleanup');
+  h.ok(['spawn', '--task', 'T1']);
+  await until(() => fs.existsSync(h.attempts + '.ready') && h.json(['task', 'show', 'T1']).status === 'submitted');
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
+    '--agent', 'reviewer', '--summary', 'wrong result']);
+  h.ok(['rework', 'T1', '--reason', 'correct the reviewed result', '--agent', 'orchestrator']);
+  const pending = h.json(['task', 'show', 'T1']);
+  assert.equal(pending.tier, 'medium', 'rework must preserve the failed attempt before cleanup');
+  assert.equal(pending.escalation_pending, true);
+  assert.equal(pending.escalations[0].trigger, 'review');
+  assert.equal(h.readAttempts().length, 1);
+  h.ok(['recover', 'T1', '--agent', 'orchestrator']);
+  assert.equal(h.readAttempts().length, 1, 'recording the climb does not release the worktree');
+  fs.writeFileSync(h.attempts + '.exit', '');
+  await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
+  assert.deepEqual(h.readAttempts().map((a) => a.rung), ['easy', 'medium']);
+  assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
+});
+
+for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
+  const type = route === 'local-ci' ? 'ci' : route;
+  test(`a confirmed ${route} gate failure climbs and reaches the owner at the range ceiling`, async (t) => {
+    const h = setup(t, 'review', 'easy..medium', (repo) => {
+      gateFixture(repo);
+      repo.ok(['project', 'set', '--repo', 'acme/demo', '--tests-mode', 'run-only',
+        '--tests-cmd', 'node -e "process.exit(1)"']);
+      if (route === 'local-ci') repo.ok(['project', 'set', '--ci-local', JSON.stringify({
+        command: [process.execPath, '-e', 'process.exit(1)'], timeout: 5,
+      })]);
+    });
+    h.ok(['spawn', '--task', 'T1']);
+    await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+    for (const rung of ['medium', null]) {
+      const result = h.run(['check', type, 'T1'], { env: { FIXTURE_GATE_OK: '0' } });
+      assert.equal(result.code, 1, result.stderr);
+      if (rung) {
+        await until(() => h.readAttempts().length === 2 && h.json(['task', 'show', 'T1']).status === 'submitted');
+        assert.equal(h.json(['task', 'show', 'T1']).tier, rung);
+        await until(() => events(h).some((e) => e.cmd === 'spawn exit' && e.detail.agent === 'worker-T1-2'));
+      } else {
+        await until(() => h.json(['decisions', '--open']).length === 1);
+      }
+    }
+    const task = h.json(['task', 'show', 'T1']);
+    assert.deepEqual(task.escalations.map((e) => e.trigger), [type, type]);
+    assert.deepEqual(task.escalations.map((e) => e.to), ['medium', null]);
+    assert.ok(task.evidence.filter((e) => e.type === type).every((e) => e.confirmed_failure === true));
+    assert.equal(h.readAttempts().length, 2);
+  });
+}
+
+for (const type of ['clean', 'ci']) {
+  test(`unconfirmed ${type} observation failures do not climb`, async (t) => {
+    const h = setup(t, 'review', 'easy..medium', (repo) => {
+      gateFixture(repo);
+      repo.ok(['project', 'set', '--repo', 'acme/demo']);
+      if (type === 'clean') {
+        fs.writeFileSync(path.join(repo.base, 'tools', 'scanner.js'),
+          'console.log(JSON.stringify({items:[{severity:"HIGH"}],errors:["scan incomplete"]}));');
+      } else {
+        const file = path.join(repo.base, 'tools', 'gh');
+        const script = fs.readFileSync(file, 'utf8').replace("status: 'completed', conclusion: ok ? 'success' : 'failure'",
+          "status: 'in_progress', conclusion: null");
+        fs.writeFileSync(file, script);
+      }
+    });
+    h.ok(['spawn', '--task', 'T1']);
+    await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+    assert.equal(h.run(['check', type, 'T1']).code, 1);
+    h.ok(['recover', 'T1']);
+    assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy');
+    assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 0);
+  });
+}
 
 test('a later eligible passing review supersedes a failure before worker exit', async (t) => {
   const h = setup(t, 'hold');
