@@ -189,6 +189,47 @@ test('codex worker configs keep named provider and MCP fields without copying cr
   }
 });
 
+test('codex spawns reject credential tables in scalar settings in base and every profile layout', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = { apikey: `${SECRET}-APIKEY`, key: `${SECRET}-KEY`, bearer: `${SECRET}-BEARER` };
+  const safe = {
+    review_model: 'review', model_context_window: 64000, model_auto_compact_token_limit: 32000,
+    model_supports_reasoning_summaries: true, cli_auth_credentials_store: 'keyring',
+  };
+  const malformed = { model: [credentials], model_reasoning_effort: 7, model_verbosity: true };
+  const doc = { ...safe, ...malformed, profiles: { safe: { model: 'legacy', ...safe }, malformed } };
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(doc));
+  }
+  isolated(h, 'medium', 'codex');
+  const started = spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    const config = JSON.parse(JSON.stringify(TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, file), 'utf8'))));
+    for (const [key, value] of Object.entries(safe)) assert.equal(config[key], value, `${file}: ${key}`);
+    for (const key of Object.keys(malformed)) assert.equal(config[key], undefined, `${file}: ${key}`);
+    assert.deepEqual(config.profiles, { safe: { model: 'legacy', ...safe }, malformed: {} }, file);
+  }
+});
+
+test('claude spawns reject credential tables and non-string values in opted-in MCP fields', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = { apikey: `${SECRET}-APIKEY`, key: `${SECRET}-KEY`, bearer: `${SECRET}-BEARER` };
+  const safe = { type: 'stdio', command: 'safe-mcp', args: ['--headless'], url: 'https://mcp.example' };
+  const mcpServers = {
+    nested: { command: 'nested-mcp', args: [credentials], type: credentials, url: credentials },
+    mixed: { command: 'mixed-mcp', args: ['--headless', credentials] },
+    malformed: { type: true, command: credentials, args: [1], url: ['https://mcp.example'] },
+    safe,
+  };
+  fs.writeFileSync(path.join(u.home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers }));
+  isolated(h, 'medium', 'claude');
+  h.ok(['ladder', 'set', 'medium', '--mcp', JSON.stringify(Object.keys(mcpServers))]);
+  spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  assert.deepEqual(u.report().mcp, { nested: { command: 'nested-mcp' }, mixed: { command: 'mixed-mcp' }, malformed: {}, safe });
+});
+
 test('codex config allowlists also filter inline tables on Windows', () => {
   const doc = TOML.parse([
     `model_providers = { p = { name = "P", apikey = "${SECRET}", key = "${SECRET}", bearer = "${SECRET}", opaque_value = "${SECRET}" }, malformed = { name = ["${SECRET}"], env_http_headers = { Authorization = { value = "${SECRET}" } } } }`,
@@ -203,6 +244,8 @@ test('codex config allowlists also filter inline tables on Windows', () => {
     found: ['planted', 'malformed'],
   });
   assert.ok(!TOML.stringify(filtered.doc).includes(SECRET));
+  const arrays = Object.fromEntries(require('../lib/ladder').CODEX_KEYS.map(key => [key, [{ apikey: SECRET, key: SECRET, bearer: SECRET }]]));
+  assert.deepEqual(A.codexConfig(TOML.parse(TOML.stringify({ ...arrays, profiles: { malformed: arrays } })), []).doc, { profiles: { malformed: {} } });
 });
 
 test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
