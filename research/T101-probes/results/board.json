@@ -44,15 +44,15 @@
     "surface": "board",
     "command": "serve as owner; any local process (no browser, no Origin header) GETs /settings, reads the token from the meta tag, POSTs /api/decisions/D1/answer",
     "expected": "refused unless the request comes from the owner's page; a codex sandbox reaches 127.0.0.1 over TCP (lib/broker.js)",
-    "observed": "token read: yes; 200; D1 now answered by owner",
-    "verdict": "CONFIRMED"
+    "observed": "token read: no; 403; D1 now open by null",
+    "verdict": "held"
   },
   {
     "id": "W7",
     "surface": "board",
     "command": "same local process POSTs /api/ladder setting the medium rung to harness command [\"/bin/true\"] (an owner-required ladder.command change)",
     "expected": "refused for anything but the owner's page",
-    "observed": "200 {\"ok\":true,\"harness\":\"codex\",\"harness_from\":\"project\",\"user_file\":\"/home/avifenesh/.cache/t101-review/tmp/tower-crane-aXF4Md/user-config/config.json\",\"user_file_exists\":false,\"ladder\":{\"orchestrator\":",
-    "verdict": "CONFIRMED"
+    "observed": "403 {\"error\":\"missing or wrong token; open the link serve printed, which works once, or restart serve for a new one\"}",
+    "verdict": "held (see body)"
   }
 ]
