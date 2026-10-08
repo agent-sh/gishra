@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, BIN } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
+const { waitFor } = require('./canary');
+const { shellQuote } = require('../lib/gates/common');
 
 const ghStub = path.join(__dirname, 'fixtures', 'automation-gh.js');
 const harness = path.join(__dirname, 'fixtures', 'automation-harness.js');
@@ -276,6 +278,111 @@ test('concurrent event consumers execute each submission gate only once', async 
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.map((e) => e.type), ['tests', 'clean', 'ci']);
 });
 
+// A slow stub suite records each run's start and end, so the log shows how
+// many gate executors ran at once across every consumer process.
+function slowSuite(h, { executors, crash = false } = {}) {
+  const runs = path.join(h.base, 'suite-runs.log');
+  const suite = path.join(h.base, 'tools', 'slow-suite.js');
+  fs.writeFileSync(suite, `const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(runs)}, '+\\n');
+const crash = ${JSON.stringify(crash ? path.join(h.base, 'crashed') : null)};
+if (crash && !fs.existsSync(crash)) {
+  fs.writeFileSync(crash, '');
+  const events = fs.readFileSync(${JSON.stringify(path.join(h.state, 'events.jsonl'))}, 'utf8').trim().split('\\n').map(JSON.parse);
+  process.kill(events.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running').detail.pid, 'SIGKILL');
+}
+setTimeout(() => fs.appendFileSync(${JSON.stringify(runs)}, '-\\n'), 2500);
+`);
+  h.ok(['project', 'set', '--tests-cmd', `node ${JSON.stringify(suite)}`, '--tests-mode', 'run-only',
+    ...(executors ? ['--executors', String(executors)] : []), '--agent', 'orchestrator']);
+  for (const id of ['T1', 'T2', 'T3']) {
+    if (id !== 'T1') h.ok(['task', 'add', '--title', `Change ${id}`, '--acceptance', 'it works', '--kind', 'code']);
+    h.ok(['claim', id, '--agent', 'worker']);
+    h.ok(['submit', id, '--sha', h.sha, '--agent', 'worker']);
+  }
+  return () => {
+    let now = 0;
+    let peak = 0;
+    const marks = fs.existsSync(runs) ? fs.readFileSync(runs, 'utf8').trim().split('\n') : [];
+    for (const mark of marks) peak = Math.max(peak, now += mark === '+' ? 1 : -1);
+    return { starts: marks.filter((m) => m === '+').length, peak };
+  };
+}
+
+test('gate executors across several watchers stay within gates.executors and queue the rest in order', async (t) => {
+  const h = setup(t);
+  const runs = slowSuite(h);
+  assert.match(h.ok(['project', 'show']), /gates\.executors: 2/);
+  const results = await Promise.all([0, 1, 2].map(() =>
+    h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator'])));
+  assert.ok(results.every((r) => r.code === 2), JSON.stringify(results));
+  assert.deepEqual(runs(), { starts: 3, peak: 2 });
+  const queued = h.logs().filter((e) => e.cmd === 'automation queued' && e.detail.executors === 2);
+  assert.ok(queued.some((e) => e.task === 'T3'), JSON.stringify(queued));
+  const started = h.logs().filter((e) => e.cmd === 'automation' && e.detail.phase === 'running').map((e) => e.task);
+  assert.equal(started.at(-1), 'T3', 'the queued submission runs after a slot frees');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => [e.type, e.ok]), [['tests', true], ['clean', true]], task.id);
+  }
+});
+
+test('a killed executor releases its gate executor slot', (t) => {
+  const h = setup(t);
+  const runs = slowSuite(h, { executors: 1, crash: true });
+  assert.notEqual(h.consume().code, 2, 'the suite kills the first executor');
+  h.consume();
+  assert.equal(runs().starts, 4, 'the killed run is retried and the other two run');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => e.type), ['tests', 'clean'], task.id);
+  }
+});
+
+test('older queued work takes a freed executor slot before a newer arrival', async (t) => {
+  const h = setup(t);
+  const events = path.join(h.state, 'events.jsonl');
+  const suite = path.join(h.base, 'tools', 'stall-suite.js');
+  // The first run holds the only slot until T2 is queued behind it, then
+  // dies, leaving a free slot and T2 still waiting.
+  fs.writeFileSync(suite, `const fs = require('node:fs');
+const flag = ${JSON.stringify(path.join(h.base, 'stalled'))};
+if (fs.existsSync(flag)) process.exit(0);
+fs.writeFileSync(flag, '');
+const read = () => fs.readFileSync(${JSON.stringify(events)}, 'utf8').trim().split('\\n').map(JSON.parse);
+const until = Date.now() + 20000;
+const poll = () => {
+  const log = read();
+  if (log.some((e) => e.cmd === 'automation queued' && e.task === 'T2') || Date.now() > until) {
+    process.kill(log.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running').detail.pid, 'SIGKILL');
+    process.exit(1);
+  }
+  setTimeout(poll, 50);
+};
+poll();
+`);
+  h.ok(['project', 'set', '--tests-cmd', `node ${JSON.stringify(suite)}`, '--tests-mode', 'run-only',
+    '--executors', '1', '--agent', 'orchestrator']);
+  h.ok(['task', 'add', '--title', 'Change T2', '--acceptance', 'it works', '--kind', 'code']);
+  h.ok(['task', 'add', '--title', 'Change T3', '--acceptance', 'it works', '--kind', 'code']);
+  for (const id of ['T1', 'T2']) {
+    h.ok(['claim', id, '--agent', 'worker']);
+    h.ok(['submit', id, '--sha', h.sha, '--agent', 'worker']);
+  }
+  const holder = h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  assert.notEqual(await waitFor(path.join(h.base, 'stalled')), null, 'the first executor starts');
+  h.consume();
+  assert.notEqual((await holder).code, 2, 'the stalled executor is killed');
+  assert.ok(h.logs().some((e) => e.cmd === 'automation queued' && e.task === 'T2' && e.detail.executors === 1));
+  const offset = fs.statSync(events).size;
+  h.ok(['claim', 'T3', '--agent', 'worker']);
+  h.ok(['submit', 'T3', '--sha', h.sha, '--agent', 'worker']);
+  h.run(['wait', '--after', String(offset), '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
+  const started = h.logs().filter((e) => e.cmd === 'automation' && e.detail.phase === 'running').map((e) => e.task);
+  assert.deepEqual(started, ['T1', 'T1', 'T2', 'T3'], 'queued T1 and T2 run before the newer T3');
+  for (const task of h.readState('tasks.json').tasks) {
+    assert.deepEqual(task.evidence.map((e) => [e.type, e.ok]), [['tests', true], ['clean', true]], task.id);
+  }
+});
+
 for (const reason of ['unknown mergeability', 'transport error']) {
   test(`startup retries ${reason} without a new lifecycle event`, (t) => {
     const h = setup(t, { kind: 'docs' });
@@ -394,6 +501,22 @@ test('a worker identity cannot authorize reactions by passing the orchestrator n
   assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
 });
 
+test('a worker that names its own identity cannot complete CI or run reactions as the orchestrator', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.submit();
+  const worker = { env: { TOWER_CRANE_AGENT: 'worker-T1-1' } };
+  const completed = h.run(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'worker-T1-1'], worker);
+  assert.equal(completed.code, 1, completed.stderr);
+  assert.match(completed.stderr, /ci completed is an orchestrator or owner command/);
+  const waited = h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'worker-T1-1'], worker);
+  assert.equal(waited.code, 2, waited.stderr);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence, []);
+  assert.equal(h.logs().filter((e) => e.cmd === 'ci completed').length, 0);
+  h.consume();
+  assert.deepEqual(h.readState('tasks.json').tasks[0].evidence.map((e) => e.type), ['tests', 'clean', 'ci'],
+    'the orchestrator still runs the reactions');
+});
+
 test('supervisor reactions pin unconfigured gates and bypass the real restrictive agent shims', async (t) => {
   const h = setup(t);
   fs.writeFileSync(path.join(h.repo, 'package.json'), JSON.stringify({ scripts: { test: 'node test/value.test.js' } }));
@@ -459,4 +582,368 @@ test('a supervised worker submission runs gates and dispatches the offline revie
   startupContexts(h, true);
   assert.equal(events.filter((e) => e.cmd === 'spawn' && e.detail.role === 'reviewer').length, 1);
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
+});
+
+// A second PR that touches other files, and a suite command that logs each
+// run with PR #7's state at that moment.
+function queueFixture(t) {
+  const h = setup(t);
+  h.git(['switch', '-qc', 'second-change', 'main']);
+  fs.writeFileSync(path.join(h.repo, 'other.js'), 'module.exports = 2;\n');
+  fs.mkdirSync(path.join(h.repo, 'test'), { recursive: true });
+  fs.writeFileSync(path.join(h.repo, 'test', 'other.test.js'), "require('node:assert/strict').equal(require('../other'), 2);\n");
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'second change']);
+  h.second = h.git(['rev-parse', 'HEAD']);
+  h.git(['switch', '-q', 'main']);
+  h.ok(['task', 'add', '--title', 'Second', '--acceptance', 'works']);
+  const github = h.github();
+  github.prs['8'] = { ...github.prs['7'], headRefOid: h.second, headRefName: 'second-change' };
+  github.ci[h.second] = 'success';
+  h.saveGithub(github);
+  h.suiteLog = path.join(h.base, 'suites.jsonl');
+  const suite = path.join(h.base, 'suite.js');
+  fs.writeFileSync(suite, `const fs = require('node:fs'), path = require('node:path');
+const gh = JSON.parse(fs.readFileSync(${JSON.stringify(h.env.AUTOMATION_GITHUB)}, 'utf8'));
+fs.appendFileSync(${JSON.stringify(h.suiteLog)}, JSON.stringify({ pr7: gh.prs['7'].state }) + '\\n');
+// A gate run that fails once, as gates did for tasks accepted before evidence.
+const failOnce = ${JSON.stringify(path.join(h.base, 'fail-once'))};
+if (fs.existsSync(failOnce)) { fs.rmSync(failOnce); process.exit(1); }
+// One run moves main while it runs, as another merge landing would.
+if (fs.existsSync(${JSON.stringify(path.join(h.base, 'move-main-once'))})) {
+  fs.rmSync(${JSON.stringify(path.join(h.base, 'move-main-once'))});
+  const git = (a) => require('node:child_process').execFileSync('git', ['-C', ${JSON.stringify(h.repo)}, ...a], { encoding: 'utf8' }).trim();
+  git(['update-ref', 'refs/heads/main', git(['commit-tree', 'main^{tree}', '-p', 'main', '-m', 'lands during the check'])]);
+}
+// Another CLI acting while the suite runs.
+const during = ${JSON.stringify(path.join(h.base, 'during-check.js'))};
+if (fs.existsSync(during)) {
+  const script = during + '.ran';
+  fs.renameSync(during, script);
+  require(script);
+}
+for (const f of fs.readdirSync('test')) if (f.endsWith('.test.js')) require(path.resolve('test', f));
+`);
+  h.ok(['project', 'set', '--tests-cmd', `${shellQuote(process.execPath)} ${shellQuote(suite)}`]);
+  h.suites = () => (fs.existsSync(h.suiteLog)
+    ? fs.readFileSync(h.suiteLog, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []);
+  h.moveMain = (file = 'README.md', text = 'Independent base update.\n') => {
+    h.git(['switch', '-q', 'main']);
+    fs.appendFileSync(path.join(h.repo, file), text);
+    h.git(['add', file]);
+    h.git(['commit', '-qm', 'advance main']);
+  };
+  h.submit();
+  h.submit('T2', h.second, '8');
+  h.consume();
+  for (const id of ['T1', 'T2']) {
+    const gates = h.json(['task', 'show', id]).gates.gates;
+    assert.ok(gates.filter((g) => g.type !== 'review').every((g) => g.ok), JSON.stringify(gates));
+  }
+  return h;
+}
+
+const headChecks = (h) => h.logs().filter((e) => e.cmd === 'head check');
+const softwareEvidence = (h, id) => h.readState('tasks.json').tasks.find((x) => x.id === id).evidence
+  .filter((e) => ['tests', 'clean', 'ci'].includes(e.type));
+
+function acceptBoth(h) {
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T2', '--type', 'review', '--sha', h.second, '--ok', '--agent', 'reviewer']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  h.ok(['accept', 'T2', '--agent', 'orchestrator']);
+}
+
+test('main moves: a mergeable PR keeps its evidence and merges after one head-of-line check', (t) => {
+  const h = queueFixture(t);
+  const before = softwareEvidence(h, 'T1');
+  h.moveMain();
+  const suites = h.suites().length;
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  assert.deepEqual(softwareEvidence(h, 'T1'), before, 'a base move reruns no gate and resets no evidence');
+  assert.equal(h.github().prs['7'].state, 'MERGED');
+  assert.equal(h.suites().length - suites, 1);
+  const checks = headChecks(h);
+  assert.deepEqual(checks.map((e) => [e.task, e.detail.ok, e.detail.base_sha]), [['T1', true, h.git(['rev-parse', 'main'])]]);
+  assert.ok(checks[0].detail.commands.some((c) => c.args.includes('merge')));
+  h.consume();
+  assert.equal(headChecks(h).length, 1, 'a repeated reaction does not run the suite again');
+});
+
+test('the head of the line that turns CONFLICTING goes to rework with its files and the next PR merges', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 3;\n');
+  h.moveMain('value.js', '');
+  const github = h.github();
+  github.prs['7'].mergeable = 'CONFLICTING';
+  github.prs['7'].mergeStateStatus = 'DIRTY';
+  h.saveGithub(github);
+  h.consume();
+  const [t1, t2] = h.readState('tasks.json').tasks;
+  assert.equal(t1.status, 'rework');
+  assert.match(t1.notes.at(-1).text, /conflicts with main: value\.js/);
+  assert.equal(h.github().prs['7'].state, 'OPEN');
+  assert.equal(t2.evidence.at(-1).type, 'merge');
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+  assert.deepEqual(headChecks(h).map((e) => e.task), ['T2']);
+});
+
+test('two queued PRs run exactly one full suite each at their turn and none before', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  h.moveMain();
+  const suites = h.suites().length;
+  const blocked = h.github();
+  blocked.prs['7'].mergeable = blocked.prs['7'].mergeStateStatus = 'UNKNOWN';
+  blocked.advanceBase = true;
+  h.saveGithub(blocked);
+  h.consume();
+  assert.equal(h.suites().length, suites, 'nothing runs while the head of the line waits');
+  assert.equal(headChecks(h).length, 0);
+  assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false, 'the second PR does not jump the line');
+  const stopped = h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+  assert.equal(stopped.detail.blocked.task, 'T1');
+  assert.match(stopped.detail.blocked.reason, /mergeability of PR #7 is UNKNOWN/);
+
+  const ready = h.github();
+  ready.prs['7'].mergeable = 'MERGEABLE';
+  ready.prs['7'].mergeStateStatus = 'CLEAN';
+  h.saveGithub(ready);
+  h.ok(['wait', '--types', 'merged', '--task', 'T2', '--timeout', '10', '--agent', 'orchestrator']);
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['7', '8']);
+  assert.deepEqual(h.suites().slice(suites), [{ pr7: 'OPEN' }, { pr7: 'MERGED' }],
+    'T1 runs its suite before merging; T2 runs its suite only after T1 merged');
+  assert.deepEqual(headChecks(h).map((e) => [e.task, e.detail.ok]), [['T1', true], ['T2', true]]);
+  assert.equal(headChecks(h)[1].detail.base_sha, h.sha, 'T2 is checked against main after T1 landed');
+});
+
+test('a base that moves during the head check gets a new check before the merge', (t) => {
+  const h = queueFixture(t);
+  h.moveMain();
+  fs.writeFileSync(path.join(h.base, 'move-main-once'), '');
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  const checks = headChecks(h);
+  assert.equal(checks.length, 2, 'the check against the old base does not authorize the merge');
+  assert.notEqual(checks[0].detail.base_sha, checks[1].detail.base_sha);
+  assert.equal(checks[1].detail.base_sha, h.git(['rev-parse', 'main']));
+  assert.equal(h.github().prs['7'].state, 'MERGED');
+});
+
+test('a head replaced during its check is checked again at the new sha before the merge', (t) => {
+  const h = queueFixture(t);
+  h.git(['switch', '-q', 'fixture-change']);
+  fs.writeFileSync(path.join(h.repo, 'NOTES.md'), 'Replacement head.\n');
+  h.git(['add', 'NOTES.md']);
+  h.git(['commit', '-qm', 'replacement head']);
+  const replacement = h.git(['rev-parse', 'HEAD']);
+  h.git(['switch', '-q', 'main']);
+  h.moveMain();
+  // Rework, resubmit and reaccept T1 at a new head while its suite runs.
+  fs.writeFileSync(path.join(h.base, 'during-check.js'), `const cp = require('node:child_process'), fs = require('node:fs');
+const env = ${JSON.stringify(h.env)};
+const cli = (...a) => cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, ...a], { cwd: ${JSON.stringify(h.repo)}, env, encoding: 'utf8' });
+const file = env.AUTOMATION_GITHUB;
+cli('rework', 'T1', '--reason', 'replace the head', '--agent', 'orchestrator');
+const gh = JSON.parse(fs.readFileSync(file, 'utf8'));
+gh.prs['7'].headRefOid = ${JSON.stringify(replacement)};
+gh.ci[${JSON.stringify(replacement)}] = 'success';
+fs.writeFileSync(file, JSON.stringify(gh));
+cli('claim', 'T1', '--agent', 'worker');
+cli('submit', 'T1', '--sha', ${JSON.stringify(replacement)}, '--pr', '7', '--agent', 'worker');
+for (const gate of ['tests', 'clean', 'ci']) cli('check', gate, 'T1', '--agent', 'orchestrator');
+cli('evidence', 'T1', '--type', 'review', '--sha', ${JSON.stringify(replacement)}, '--ok', '--agent', 'reviewer');
+cli('accept', 'T1', '--agent', 'orchestrator');
+`);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the replacement ran during the check');
+  assert.deepEqual(headChecks(h).map((e) => [e.detail.sha, e.detail.ok]), [[h.sha, true], [replacement, true]],
+    'the check of the old head does not authorize merging the new one');
+  const merges = h.github().calls.filter((a) => a[1] === 'merge');
+  assert.equal(merges.length, 1);
+  assert.equal(merges[0][merges[0].indexOf('--match-head-commit') + 1], replacement);
+  const order = h.logs().filter((e) => e.cmd === 'head check' || e.cmd === 'merge').map((e) => e.cmd);
+  assert.deepEqual(order, ['head check', 'head check', 'merge']);
+});
+
+test('a head that stops the line and then goes to rework lets the PR behind it merge', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  const blocked = h.github();
+  blocked.prs['7'].mergeable = blocked.prs['7'].mergeStateStatus = 'UNKNOWN';
+  h.saveGithub(blocked);
+  h.consume();
+  assert.equal(h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done').detail.blocked.task, 'T1');
+  assert.equal(h.github().prs['8'].state, 'OPEN');
+
+  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 3;\n');
+  h.moveMain('value.js', '');
+  const conflicting = h.github();
+  conflicting.prs['7'].mergeable = 'CONFLICTING';
+  conflicting.prs['7'].mergeStateStatus = 'DIRTY';
+  h.saveGithub(conflicting);
+  h.ok(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'orchestrator']);
+  const [t1, t2] = h.readState('tasks.json').tasks;
+  assert.equal(t1.status, 'rework');
+  assert.equal(t2.evidence.at(-1).type, 'merge');
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+});
+
+test('a head check that fails after its settings changed checks again under the current settings', (t) => {
+  const h = queueFixture(t);
+  h.moveMain();
+  const cmd = h.readState('project.json').gates.tests_cmd;
+  // The suite fails, but only after another CLI replaced the tests command.
+  fs.writeFileSync(path.join(h.base, 'during-check.js'), `const cp = require('node:child_process');
+cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'project', 'set', '--tests-cmd', ${JSON.stringify(`${cmd} again`)}, '--agent', 'orchestrator'],
+  { cwd: ${JSON.stringify(h.repo)}, env: ${JSON.stringify(h.env)}, encoding: 'utf8' });
+process.exitCode = 1;
+`);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the settings changed during the check');
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted', 'the stale failure sends nothing to rework');
+  const stopped = h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+  assert.match(stopped.detail.blocked.reason, /tests evidence command policy/, 'the line restarted on the current command');
+
+  h.ok(['check', 'tests', 'T1', '--agent', 'orchestrator']);
+  h.consume();
+  assert.deepEqual(headChecks(h).map((e) => [e.detail.command, e.detail.ok]), [[cmd, false], [`${cmd} again`, true]]);
+  assert.equal(h.github().prs['7'].state, 'MERGED');
+});
+
+test('an accepted PR that already merged without current evidence is confirmed and the PR behind it merges', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  // T1 is a legacy task: its tests evidence no longer passes and its PR
+  // landed on GitHub before tower-crane recorded merge evidence.
+  fs.writeFileSync(path.join(h.base, 'fail-once'), '');
+  h.run(['check', 'tests', 'T1', '--agent', 'orchestrator']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
+  const github = h.github();
+  github.prs['7'].state = 'MERGED';
+  github.prs['7'].mergeCommit = { oid: 'c'.repeat(40) };
+  h.saveGithub(github);
+  h.consume();
+  const [t1, t2] = h.readState('tasks.json').tasks;
+  const receipt = t1.evidence.at(-1);
+  assert.deepEqual([receipt.type, receipt.ok, receipt.sha, receipt.ref], ['merge', true, h.sha, 'c'.repeat(40)]);
+  assert.equal(t2.evidence.at(-1).type, 'merge');
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8'], 'the landed PR is not merged again');
+  assert.equal(h.logs().filter((e) => e.cmd === 'queue skipped').length, 0);
+});
+
+test('a head the queue cannot advance is reported once and the PR behind it merges', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  const github = h.github();
+  github.prs['7'].state = 'MERGED';
+  github.prs['7'].headRefOid = 'f'.repeat(40);
+  h.saveGithub(github);
+  h.consume();
+  assert.equal(h.github().prs['8'].state, 'MERGED');
+  assert.equal(h.readState('tasks.json').tasks[1].evidence.at(-1).type, 'merge');
+  const done = h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+  assert.equal(done.detail.blocked.task, 'T1');
+  assert.deepEqual(done.detail.skipped.map((s) => s.task), ['T1']);
+  h.ok(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'orchestrator']);
+  const skips = h.logs().filter((e) => e.cmd === 'queue skipped');
+  assert.deepEqual(skips.map((e) => [e.task, e.detail.sha]), [['T1', h.sha]], 'a later pass does not report the same head again');
+  assert.match(skips[0].detail.reason, /merged with head f+, not the accepted/);
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
+});
+
+for (const failure of ['failView', 'invalidView']) {
+  test(`an unreadable queue head (${failure}) is skipped once and the ready PR behind it merges`, (t) => {
+    const h = queueFixture(t);
+    acceptBoth(h);
+    const github = h.github();
+    github.prs['7'][failure] = true;
+    h.saveGithub(github);
+    const offset = h.logs().length;
+
+    h.ok(['ci', 'completed', 'T2', '--sha', h.second, '--agent', 'orchestrator']);
+    assert.equal(h.github().prs['8'].state, 'MERGED');
+    const [t1, t2] = h.readState('tasks.json').tasks;
+    assert.equal(t1.status, 'accepted');
+    assert.ok(!t1.evidence.some((e) => e.type === 'merge'));
+    assert.equal(t2.evidence.at(-1).type, 'merge');
+    assert.equal(t2.evidence.at(-1).ok, true);
+    const done = h.logs().slice(offset).findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+    assert.equal(done.detail.blocked.task, 'T1');
+    assert.deepEqual(done.detail.skipped.map((s) => s.task), ['T1']);
+
+    // The confirmed merge event starts another pass while T1 is still unreadable.
+    h.consume();
+    const events = h.logs().slice(offset);
+    assert.ok(events.filter((e) => e.cmd === 'merge queue' && e.detail.phase === 'done').length >= 2);
+    assert.ok(!events.some((e) => e.cmd === 'merge queue' && e.detail.phase === 'error'));
+    const skips = events.filter((e) => e.cmd === 'queue skipped');
+    assert.deepEqual(skips.map((e) => [e.task, e.detail.sha, e.detail.revision]), [['T1', h.sha, t1.revision]]);
+    assert.match(skips[0].detail.reason, failure === 'failView'
+      ? /Could not resolve PullRequest number 7/ : /cannot read PR #7 mergeability/);
+    assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8']);
+  });
+}
+
+test('a concurrent CI completion retries a skipped head in the next drain pass', async (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  h.moveMain();
+  const failed = h.github();
+  failed.ci[h.sha] = 'failure';
+  h.saveGithub(failed);
+  assert.equal(h.run(['check', 'ci', 'T1', '--agent', 'orchestrator']).code, 1);
+  const green = h.github();
+  green.ci[h.sha] = 'success';
+  h.saveGithub(green);
+
+  const paused = path.join(h.base, 'queue-paused');
+  const resume = path.join(h.base, 'queue-resume');
+  // Hold T2's head check after T1 is skipped, until a second command
+  // records T1's passing CI and requests another queue pass.
+  fs.writeFileSync(path.join(h.base, 'during-check.js'), `const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(paused)}, '');
+const until = Date.now() + 20000;
+const poll = () => {
+  if (fs.existsSync(${JSON.stringify(resume)})) return;
+  if (Date.now() > until) throw new Error('queue was not resumed');
+  setTimeout(poll, 25);
+};
+poll();
+`);
+  const offset = h.logs().length;
+  const first = h.runAsync(['ci', 'completed', 'T2', '--sha', h.second, '--agent', 'orchestrator']);
+  let result;
+  try {
+    assert.notEqual(await waitFor(paused), null, 'T2 holds the queue after T1 is skipped');
+    const skipped = h.logs().slice(offset).find((e) => e.cmd === 'queue skipped');
+    assert.equal(skipped?.task, 'T1');
+    assert.match(skipped.detail.reason, /ci: latest ci .* failed/);
+    h.ok(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'orchestrator']);
+    assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+    assert.ok(h.logs().slice(offset).some((e) => e.cmd === 'merge queue' && e.detail.phase === 'requested'));
+  } finally {
+    fs.writeFileSync(resume, '');
+    result = await first;
+  }
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8', '7'],
+    'both commands finish with both PRs merged, without a later notification');
+  for (const task of h.readState('tasks.json').tasks) {
+    const receipt = task.evidence.findLast((e) => e.type === 'merge');
+    assert.equal(receipt?.ok, true, task.id);
+    assert.equal(receipt.sha, task.sha);
+  }
+  const events = h.logs().slice(offset);
+  assert.equal(events.filter((e) => e.cmd === 'queue skipped').length, 1);
+  const passes = events.filter((e) => e.cmd === 'merge queue');
+  assert.equal(passes.filter((e) => e.detail.phase === 'running').length, 2);
+  assert.equal(passes.at(-1).detail.phase, 'done');
+  assert.equal(passes.at(-1).detail.blocked, null);
+  assert.deepEqual(passes.at(-1).detail.skipped, []);
 });
