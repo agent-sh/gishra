@@ -505,7 +505,11 @@ Gate events have `{ "type", "ok", "sha", "ref", "revision", "source", "commands"
 
 `type` identifies the event and `to` names the recipient. Every state change goes to `orchestrator` unless a message supplies an explicit `--to`. Commands map to notifications: submit to `submitted`, accept to `accepted`, rework to `rework`, successful merge evidence to `merged`, msg to `worker-message`, owner task or decision notes to `owner-comment`, ask to `decision-opened`, answer to `decision-answer`, release to `released`, and owner-done to `owner-done`. Review and other gate evidence wakes as `evidence`; other changes keep their command name as the type. There is no separate notification allowlist to hide a new state change.
 
-Harness adapters use the CLI `hook` command under the identity fixed in `homes/<agent>/hook.json`. The binding contains `{agent, task, state, harness, attempt}` and cannot name owner. The bridge resolves its own binding from the dispatch environment, accepts no binding path, and refuses a binding identity that differs from the caller. Claude and Codex sandboxes protect the generated home and hide every other agent home; Codex session storage is scoped to the agent. Other harnesses have bindings and command shims but do not yet have permission renderers. Payload fields never override the binding. Hook state lives in the event log, not in another agent-written state file:
+Harness adapters use the CLI `hook` command under the identity fixed in `homes/<agent>/hook.json`. The binding contains `{agent, task, state, harness, attempt}` and cannot name owner. The bridge resolves its own binding from the dispatch environment, accepts no binding path, and refuses a binding identity that differs from the caller. Claude and Codex sandboxes protect the generated home and hide every other agent home; Codex session storage is scoped to the agent. Other harnesses have bindings and command shims but do not yet have permission renderers. Payload fields never override the binding.
+
+`homes/<agent>/policy.json` holds the shim permissions and the task's recorded `branch` at dispatch. With `gitPush: branch`, every destination of a push to another machine must resolve to `refs/heads/<branch>`. The current checkout and environment cannot replace that recorded branch. See [CLI](cli.md) for push restrictions and the local test repository exception.
+
+Hook state lives in the event log, not in another agent-written state file:
 
 | Command and type | Detail |
 | --- | --- |
