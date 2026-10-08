@@ -666,3 +666,26 @@ test('a head that stops the line and then goes to rework lets the PR behind it m
   assert.equal(t2.evidence.at(-1).type, 'merge');
   assert.equal(h.github().prs['8'].state, 'MERGED');
 });
+
+test('a head check that fails after its settings changed checks again under the current settings', (t) => {
+  const h = queueFixture(t);
+  h.moveMain();
+  const cmd = h.readState('project.json').gates.tests_cmd;
+  // The suite fails, but only after another CLI replaced the tests command.
+  fs.writeFileSync(path.join(h.base, 'during-check.js'), `const cp = require('node:child_process');
+cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'project', 'set', '--tests-cmd', ${JSON.stringify(`${cmd} again`)}, '--agent', 'orchestrator'],
+  { cwd: ${JSON.stringify(h.repo)}, env: ${JSON.stringify(h.env)}, encoding: 'utf8' });
+process.exitCode = 1;
+`);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the settings changed during the check');
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted', 'the stale failure sends nothing to rework');
+  const stopped = h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+  assert.match(stopped.detail.blocked.reason, /tests evidence command policy/, 'the line restarted on the current command');
+
+  h.ok(['check', 'tests', 'T1', '--agent', 'orchestrator']);
+  h.consume();
+  assert.deepEqual(headChecks(h).map((e) => [e.detail.command, e.detail.ok]), [[cmd, false], [`${cmd} again`, true]]);
+  assert.equal(h.github().prs['7'].state, 'MERGED');
+});
