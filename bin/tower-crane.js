@@ -86,7 +86,7 @@ const TASK_FIELDS = {
   dep: many('ID', 'a task this one depends on; repeat for more'),
   lock: many('NAME', 'exclusive resource name; repeat for several'),
   environment: str('LABEL', "environment label; '' clears it"),
-  tier: str('T', 'easy, medium, hard or research: the ladder rung that does it (default: research for kind research, else S easy, M medium, L hard)'),
+  tier: str('T', 'easy, medium, hard, research or an ascending range (easy..medium): the ladder rung that does it (default: research for kind research, else S easy, M medium, L hard)'),
   'needs-owner': str('REASON', 'what the owner has to do first'),
 };
 
@@ -176,6 +176,8 @@ const COMMANDS = [
 
   { section: 'Run', name: 'ready', usage: '[--all]', summary: 'ready tasks, those that unblock the most first; --all adds blocked ones with the reason', flags: { all: bool('also list blocked tasks and why') }, description: "ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment`", run: T.ready },
 
+  { section: 'Run', name: 'recover', pos: ['ID'], usage: 'ID', summary: 'recover a ranged task after quality failure; climb or ask the owner at the top', description: 'ranged quality recovery: climb after a failed latest review or confirmed tests, clean or CI gate failure; dispatch fresh, retry a pending climb, or open an owner decision at the range top; wait for verified worker process-group cleanup before dispatch', run: run('../lib/escalation', 'recover') },
+
   { section: 'Run', name: 'release', pos: ['ID'], usage: 'ID --reason R', summary: 'give a claimed task back; it returns to todo or rework', flags: { reason: str('R', 'why') }, required: ['reason'], description: "give it back; status returns to its prior `todo` or `rework`. The claimant or the owner (owner-required: the orchestrator's attempt opens a decision); any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event", run: T.release },
 
   { section: 'Views', name: 'render', summary: 'write sketch.md and sketch.html (self-contained, no network)', description: "write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock", run: R.render },
@@ -202,7 +204,7 @@ const COMMANDS = [
 
   { section: 'Run', name: 'submit', pos: ['ID'], usage: 'ID --sha S [--branch B] [--pr N] [--summary T]', summary: 'mark submitted as the claimant or replace a submitted head as its submitter', flags: { sha: str('S', 'commit to review'), branch: str('B', 'branch holding it'), pr: int('N', 'pull request number'), summary: str('T', 'what changed') }, required: ['sha'], description: "mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters. For a task with a recorded PR, an open PR blocks changing its PR number or head branch. After it is closed or merged, a new PR supplies its head branch unless `--branch` is given and matches it", run: T.submit },
 
-  { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], description: "add a task; prints its id. A `needs_owner` reason is trimmed; a blank value stores null. `T` is `easy`, `medium`, `hard` or `research`; without it the tier comes from kind and size (state.md). `--needs '[\"browser\"]'` declares browser capability. Refused for an unknown dependency or capability. Repeat `--lock` for exclusive resources", run: T.taskAdd },
+  { section: 'Plan', name: 'task add', usage: '--title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]', summary: 'add a task; prints its id', flags: TASK_FIELDS, required: ['title', 'acceptance'], description: "add a task; prints its id. A `needs_owner` reason is trimmed; a blank value stores null. `T` is `easy`, `medium`, `hard`, `research` or an ascending range such as `easy..medium`; without it the tier comes from kind and size (state.md). `--needs '[\"browser\"]'` declares browser capability. Refused for an unknown dependency or capability. Repeat `--lock` for exclusive resources", run: T.taskAdd },
 
   { section: 'Plan', name: 'task list', usage: '[--status S]', summary: 'list tasks (S: a status, ready or blocked)', flags: { status: str('S', 'todo, in_progress, submitted, accepted, rework, cancelled, ready or blocked') }, description: "read; `S` is a status, `ready` or `blocked`", run: T.taskList },
 
