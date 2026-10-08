@@ -9,7 +9,7 @@ const { ROOT, makeRepo, makeProjectRepo, makeTaskRepo, fixtureLadder } = require
 
 // Harness file names are not model selections.
 const harnessNames = new Set(['claude-plugin', 'claude-config', 'claude-error', 'claude-global',
-  'claude-only', 'claude-provider', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
+  'claude-only', 'claude-provider', 'claude-provider.js', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
 const selections = /\b(?:claude-[\w.-]+|gpt-[\w.-]+|opus|sonnet|haiku|sol|luna|astra)\b/gi;
 
 test('cached project and task fixtures pin their ladder and keep copies independent', (t) => {
@@ -54,16 +54,16 @@ cp.spawnSync = function (command, args, options) {
   assert.equal(fs.readFileSync(path.join(cache, 'model-swap-probe.tap'), 'utf8'), 'not ok 1 - replaced log\n');
 });
 
-test('model selections live only in BUILTIN or configuration documentation', () => {
+function modelSelections(root, env = process.env) {
   const files = cp.execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
-    { cwd: ROOT, encoding: 'utf8' }).split('\0').filter(Boolean);
+    { cwd: root, env, encoding: 'utf8' }).split('\0').filter(Boolean);
   const violations = [];
   for (const file of new Set(files)) {
     // Research records quote sources and document historical runs, not executable fixtures.
     if (file.startsWith('research/') && file.endsWith('.json')) continue;
     if ((file.startsWith('docs/') && file !== 'docs/cli.md') || file === 'README.md' || file === 'CHANGELOG.md'
       || file.startsWith('changelog.d/') || file === 'test/fixtures/usage/README.md') continue;
-    let text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    let text = fs.readFileSync(path.join(root, file), 'utf8');
     if (file === 'docs/cli.md') {
       // API JSON examples use fixture selections; configuration prose keeps real IDs.
       let json = false;
@@ -83,5 +83,22 @@ test('model selections live only in BUILTIN or configuration documentation', () 
       violations.push(`${file}:${line}: ${match[0]}`);
     }
   }
+  return violations;
+}
+
+test('model lint allows harness module paths and rejects model selections', (t) => {
+  const h = makeRepo(t);
+  const file = path.join(h.repo, 'selection.js');
+  fs.writeFileSync(file, "require('../lib/claude-provider.js');\n");
+  assert.deepEqual(modelSelections(h.repo, h.env), []);
+  const ids = [['claude', 'fixture-2099'].join('-'), ['gpt', 'fixture-2099'].join('-'), ['as', 'tra'].join('')];
+  for (const id of ids) {
+    fs.writeFileSync(file, `require('../lib/claude-provider.js');\nconst selection = '${id}';\n`);
+    assert.deepEqual(modelSelections(h.repo, h.env), [`selection.js:2: ${id}`]);
+  }
+});
+
+test('model selections live only in BUILTIN or configuration documentation', () => {
+  const violations = modelSelections(ROOT);
   assert.deepEqual(violations, [], `model selections outside configuration:\n${violations.join('\n')}`);
 });

@@ -349,6 +349,21 @@ test('arbitrary Codex profiles resolve configured models without inheriting the 
   assert.ok(prompt().includes('builder model caller-model'));
   fs.writeFileSync(path.join(home, 'config.toml'), 'model = "caller-model"\n');
   assert.ok(prompt().includes('builder model custom-review'));
+  fs.writeFileSync(path.join(home, 'custom-review.config.toml'), 'model = [\n');
+  assert.ok(prompt().includes('builder model custom-review'));
+});
+
+test('a standalone Codex profile inherits base-model pricing for review promotion', (t) => {
+  const h = setup(t, 'medium', 'other', 'fixture-main');
+  ready(h);
+  const home = h.reviewEnv.CODEX_HOME;
+  fs.writeFileSync(path.join(home, 'config.toml'), 'model = "fixture-main"\n');
+  fs.writeFileSync(path.join(home, 'inherited-review.config.toml'), 'model_reasoning_effort = "high"\n');
+  pinRung(h, 'medium', { harness: 'codex', profile: 'inherited-review', effort: 'high' });
+  sample(h, 'fixture-main', 100000, 50000, 60000);
+  sample(h, 'fixture-large', 100000, 50000, 20000, 20000);
+  assert.equal(choice(h).review_rung, 'hard');
+  assert.ok(choice(h).argv.some(arg => arg.includes('builder model fixture-main')));
 });
 
 test('a stronger model wins only when its median priced review cost is no higher', (t) => {
@@ -499,8 +514,8 @@ test('review dispatch computes its diff once outside the state lock', (t) => {
 });
 });
 
-test('real Haiku reviewers expose first-turn cache reads and writes across worktrees', {
-  skip: process.env.TOWER_CRANE_LIVE_REVIEW_CACHE !== '1' && 'set TOWER_CRANE_LIVE_REVIEW_CACHE=1 for the paid Haiku probe',
+test('real Claude reviewers expose first-turn cache reads and writes across worktrees', {
+  skip: process.env.TOWER_CRANE_LIVE_REVIEW_CACHE !== '1' && 'set TOWER_CRANE_LIVE_REVIEW_CACHE=1 for the paid Claude probe',
   timeout: 300000,
 }, async (t) => {
   const h = setup(t);
@@ -512,8 +527,8 @@ test('real Haiku reviewers expose first-turn cache reads and writes across workt
   h.ok(['brief', 'set', 'T2', '-'], { input: instruction });
   h.ok(['claim', 'T2', '--agent', 'another-builder']);
   h.ok(['submit', 'T2', '--agent', 'another-builder', '--sha', h.sha]);
-  h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'claude-haiku-5-5', '--clear', 'profile',
-    '--args', '["--max-turns","1"]']);
+  assert.ok(process.env.TOWER_CRANE_LIVE_MODEL, 'set TOWER_CRANE_LIVE_MODEL to run a live Claude probe');
+  pinRung(h, 'easy', { harness: 'claude', model: process.env.TOWER_CRANE_LIVE_MODEL, effort: 'high', args: ['--max-turns', '1'] });
   const liveHome = process.env.TOWER_CRANE_LIVE_REVIEW_HOME || require('node:os').homedir();
   const env = { HOME: liveHome, CODEX_HOME: path.join(liveHome, '.codex'),
     CLAUDE_CONFIG_DIR: process.env.TOWER_CRANE_LIVE_REVIEW_CLAUDE_CONFIG || path.join(liveHome, '.claude') };
@@ -528,13 +543,13 @@ test('real Haiku reviewers expose first-turn cache reads and writes across workt
     }).findLast((e) => e?.type === 'result');
     assert.ok(result?.result?.includes('CACHE_PROBE_OK'), log.slice(-2000));
     const usage = result.usage;
-    assert.ok(usage, 'Haiku returned usage');
+    assert.ok(usage, 'Claude returned usage');
     const startup = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
       .findLast((e) => e.cmd === 'startup' && e.detail.agent === launch.agent);
     rows.push({ task, agent: launch.agent, system_bytes: startup.detail.system_bytes,
       model: result.modelUsage, usage, total_cost_usd: result.total_cost_usd });
   }
-  t.diagnostic(`Haiku first-turn cache probe: ${JSON.stringify(rows)}`);
+  t.diagnostic(`Claude first-turn cache probe: ${JSON.stringify(rows)}`);
   assert.equal(new Set(rows.map((r) => r.system_bytes)).size, 1, 'system context size is stable across worktrees');
   assert.ok(rows.slice(1).every((r) => r.usage.cache_read_input_tokens > 0), 'warm reviewer first turns read the cache');
   for (const row of rows) {

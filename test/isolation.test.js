@@ -305,7 +305,7 @@ const PROVIDERS_KEPT = {
   'amazon-bedrock': { aws: { region: 'us-east-1', profile: 'work' } },
   azure: { ...PROVIDERS.azure, query_params: { 'api-version': '2025-04-01-preview' } },
 };
-const BEDROCK_CONFIG = { model: 'openai.gpt-oss-120b', model_provider: 'amazon-bedrock', model_providers: PROVIDERS };
+const BEDROCK_CONFIG = { model: 'openai.fixture-model', model_provider: 'amazon-bedrock', model_providers: PROVIDERS };
 
 test('codex provider sub-tables keep their named non-credential fields', () => {
   const filtered = A.codexConfig(TOML.parse(TOML.stringify(BEDROCK_CONFIG)), []).doc;
@@ -315,7 +315,7 @@ test('codex provider sub-tables keep their named non-credential fields', () => {
 
 test('a codex spawn on Bedrock starts with the region from the user config', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
-  for (const file of ['config.toml', 'sol.config.toml']) {
+  for (const file of ['config.toml', 'fixture-main.config.toml']) {
     fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(BEDROCK_CONFIG));
   }
   isolated(h, 'medium', 'codex');
@@ -326,7 +326,7 @@ test('a codex spawn on Bedrock starts with the region from the user config', { s
   const home = path.join(h.state, 'homes', started.agent);
   const { args: spawned, config } = u.report();
   assert.deepEqual(config.model_providers, PROVIDERS_KEPT);
-  const profile = TOML.parse(fs.readFileSync(path.join(home, 'sol.config.toml'), 'utf8'));
+  const profile = TOML.parse(fs.readFileSync(path.join(home, 'fixture-main.config.toml'), 'utf8'));
   assert.deepEqual(JSON.parse(JSON.stringify(profile.model_providers)), PROVIDERS_KEPT);
   // An installed codex also loads the generated home with the spawn's -c
   // overrides, so a field it refuses fails here instead of at dispatch.
