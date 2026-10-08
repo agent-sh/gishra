@@ -82,7 +82,7 @@ const env = { ...process.env, PATH: ${JSON.stringify(parentPath)} };
 if (args[0] === 'push') {
   const target = args.find((a, i) => i > 0 && !a.startsWith('-')) || 'origin';
   const remote = cp.spawnSync('git', ['remote', 'get-url', '--push', target], { env, encoding: 'utf8', timeout: 10000 });
-  if (/^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
+  if (/^(?:https?|ssh|git):|^[^/]*@/.test(target) || /^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
     process.stderr.write('fixture remote unavailable\\n');
     process.exit(1);
   }
@@ -100,6 +100,7 @@ process.exit(result.status ?? 1);
   for (const k of ['GH_TOKEN', 'GITHUB_TOKEN']) runEnv[k] = '';
   runEnv.CLAUDE_CONFIG_DIR = '';
   runEnv.CODEX_HOME = '';
+  runEnv.XDG_CACHE_HOME = '';
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
 }
 
@@ -110,7 +111,7 @@ function setup(t) {
   fs.writeFileSync(path.join(h.repo, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'planted-project-hook' }] }] } }));
   h.git(['add', '.']);
   h.git(['commit', '-q', '-m', 'project settings']);
-  h.init();
+  h.init(['--repo', 'acme/app']);
   h.ok(['task', 'add', '--title', 'Probe', '--acceptance', 'nothing planted reaches the agent']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'probe\n' });
   const wt = h.json(['worktree', 'T1']).path;
@@ -520,11 +521,12 @@ test('the next spawn removes an exited agent\'s cache even when it holds read-on
 
 test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
+  const own = `HEAD:refs/heads/${h.git(['branch', '--show-current'], wt)}`;
   const local = path.join(h.base, 'local.git');
   h.git(['init', '-q', '--bare', local]);
   // A remote on another machine; nothing listens there, so a push the shim
   // lets through fails in git itself, not with the shim's 126.
-  h.git(['remote', 'add', 'origin', 'https://127.0.0.1:9/r.git']);
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
   const NET = 'net';
   const cases = [
     [['git', 'status'], 0, 0],
@@ -542,15 +544,15 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     ...['--del', '--pru', '--forc', '--mir', '--all', '--tags', '--no-verify'].map((o) => [['git', 'push', o, 'origin', 'HEAD:refs/heads/x'], 126, 126]),
     [['git', 'push', '-o', 'x', 'origin', 'HEAD:refs/heads/x'], 126, 126],
     [['git', 'push', 'origin', '--del', 'x'], 126, 126],
-    [['git', 'push', '-u', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
-    [['git', 'push', '--set-upstream', '-q', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
+    [['git', 'push', '-u', 'origin', own], 'net', 126],
+    [['git', 'push', '--set-upstream', '-q', 'origin', own], 'net', 126],
     // Configuration that turns a plain push into a mirror.
     ...['true', 'yes', 'on', '1'].flatMap((v) => [
       [['git', 'config', 'remote.origin.mirror', v], 0, 0],
-      [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 126, 126],
+      [['git', 'push', 'origin', own], 126, 126],
       [['git', 'config', '--unset', 'remote.origin.mirror'], 0, 0],
     ]),
-    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], NET, 126],
+    [['git', 'push', 'origin', own], NET, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
     [['git', 'push', 'origin', '+HEAD:refs/heads/forced'], 126, 126],
@@ -582,6 +584,137 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
   spawn(h, u, 'hard', { STUB_RUN: JSON.stringify([['git', 'push', 'origin', 'HEAD:refs/heads/ok']]) });
   assert.deepEqual(u.report().ran.map((r) => r.code), [126], 'a valueless mirror key');
   fs.writeFileSync(config, before);
+});
+
+test('remote pushes publish only the task branch, including configured and implicit destinations', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const branch = h.git(['branch', '--show-current'], wt);
+  const own = `refs/heads/${branch}`;
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  h.git(['remote', 'add', 'elsewhere', 'https://github.com/acme/app.git']);
+  h.git(['config', `branch.${branch}.remote`, 'origin']);
+  h.git(['config', `branch.${branch}.merge`, own]);
+  const cases = [];
+  const push = (args, code) => cases.push([['git', 'push', ...args], code]);
+  const config = (key, value) => cases.push([['git', 'config', key, value], 0]);
+  const unset = (key) => cases.push([['git', 'config', '--unset-all', key], 0]);
+  push(['elsewhere', `HEAD:${own}`], 126);
+  push(['https://github.com/acme/app.git', `HEAD:${own}`], 126);
+  config('remote.origin.pushurl', 'https://github.com/acme/another.git');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('remote.origin.pushurl');
+  config('remote.origin.pushurl', 'https://github.com/acme/app.git');
+  push(['origin', `HEAD:${own}`], 1);
+  cases.push([['git', 'config', '--add', 'remote.origin.pushurl', 'https://github.com/acme/another.git'], 0]);
+  push(['origin', `HEAD:${own}`], 126);
+  unset('remote.origin.pushurl');
+  config('remote.origin.url', 'https://github.com/acme/another.git');
+  push(['origin', `HEAD:${own}`], 126);
+  config('remote.origin.url', 'https://github.com.evil.invalid/acme/app.git');
+  push(['origin', `HEAD:${own}`], 126);
+  config('remote.origin.url', 'git@github.com:acme/app.git');
+  push(['origin', `HEAD:${own}`], 1);
+  config('remote.origin.url', 'https://github.com/acme/app.git');
+  config('remote.pushDefault', 'elsewhere');
+  push([], 126);
+  unset('remote.pushDefault');
+  config(`branch.${branch}.pushRemote`, 'elsewhere');
+  push([], 126);
+  push(['origin', `HEAD:${own}`], 1);
+  unset(`branch.${branch}.pushRemote`);
+  config('url.https://github.com/acme/another.git.pushInsteadOf', 'https://github.com/acme/app.git');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('url.https://github.com/acme/another.git.pushInsteadOf');
+  // X1 and X2 reached Git instead of being refused by the shim.
+  push(['origin', 'HEAD:main'], 126);
+  push(['origin', 'HEAD:refs/tags/v9.9.9'], 126);
+  push(['origin', 'HEAD:refs/heads/another-task'], 126);
+  push(['origin', `HEAD:${own}`, 'HEAD:main'], 126);
+  push(['origin', 'refs/heads/*:refs/heads/*'], 126);
+  push(['origin', 'main'], 126);
+  cases.push([['git', 'tag', '-f', 'v9.9.9'], 0]);
+  push(['origin', 'v9.9.9'], 126);
+  push(['origin', ':'], 126);
+  for (const ref of ['HEAD', branch, own, `HEAD:${branch}`, `HEAD:${own}`, `main:${own}`]) {
+    push(['-u', 'origin', ref], 1);
+  }
+  push(['origin', `HEAD:${own}`, `${branch}:${own}`], 1);
+  push(['origin'], 1);
+  push([], 1);
+  config('remote.origin.push', 'HEAD:main');
+  push(['origin'], 126);
+  push([], 126);
+  push(['origin', `HEAD:${own}`], 1);
+  unset('remote.origin.push');
+  config('remote.origin.push', `HEAD:${own}`);
+  push(['origin'], 1);
+  cases.push([['git', 'config', '--add', 'remote.origin.push', 'HEAD:refs/tags/v9.9.9'], 0]);
+  push(['origin'], 126);
+  unset('remote.origin.push');
+  config('push.followTags', 'true');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('push.followTags');
+  config('push.recurseSubmodules', 'on-demand');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('push.recurseSubmodules');
+  cases.push([['git', '--namespace', 'other', 'push', 'origin', `HEAD:${own}`], 126]);
+  config(`branch.${branch}.merge`, 'refs/heads/main');
+  config('push.default', 'upstream');
+  push(['origin'], 126);
+  config('push.default', 'current');
+  push(['origin'], 1);
+  config('push.default', 'matching');
+  push(['origin'], 126);
+  unset('push.default');
+  config(`branch.${branch}.merge`, own);
+  cases.push([['git', 'checkout', '-q', '-B', 'another-task'], 0]);
+  push(['origin', 'HEAD'], 126);
+  push(['origin', `HEAD:${own}`], 1);
+  cases.push([['git', 'checkout', '-q', branch], 0]);
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(cases.map(([args]) => args)) });
+    const ran = u.report().ran;
+    assert.deepEqual(ran.map((r) => r.code), cases.map(([, code]) => code),
+      `${harness}: ${JSON.stringify(ran.map((r) => ({ args: r.argv, code: r.code, stderr: r.stderr })))}`);
+  }
+});
+
+test('push destinations are qualified with the recorded task branch without shebang harnesses', (t) => {
+  const h = makeRepo(t);
+  h.init(['--repo', 'acme/app']);
+  h.ok(['task', 'add', '--title', 'Publish', '--acceptance', 'only this branch']);
+  const { path: wt, branch } = h.json(['worktree', 'T1']);
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  const script = `
+const { gitDenied } = require(process.argv[1]);
+const cp = require('node:child_process');
+const branch = process.argv[2];
+const policy = { gitPush: 'branch', branch, repo: 'acme/app' };
+const probes = ['HEAD:main', 'HEAD:refs/tags/v9.9.9', 'HEAD:' + branch, 'HEAD:refs/heads/' + branch, 'HEAD'];
+const results = probes.map(ref => {
+  const args = [];
+  return { why: gitDenied(['push', 'origin', ref], policy, 'git', args), args };
+});
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { gitPush: 'branch' }, 'git') });
+results.push({ why: gitDenied(['push', 'elsewhere', 'HEAD'], policy, 'git') });
+results.push({ why: gitDenied(['push', 'https://github.com/acme/app.git', 'HEAD'], policy, 'git') });
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { ...policy, repo: 'acme/another' }, 'git') });
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { gitPush: 'branch', branch }, 'git') });
+const changed = cp.spawnSync('git', ['config', 'remote.origin.pushurl', 'https://github.com/acme/another.git']);
+if (changed.status !== 0) throw new Error('fixture pushurl could not be configured');
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], policy, 'git') });
+process.stdout.write(JSON.stringify(results));
+`;
+  const result = cp.spawnSync(process.execPath, ['-e', script, path.join(ROOT, 'lib', 'shim.js'), branch],
+    { cwd: wt, env: h.env, encoding: 'utf8', timeout: 15000 });
+  assert.equal(result.status, 0, result.stderr);
+  const probes = JSON.parse(result.stdout);
+  for (const index of [0, 1, 5, 6, 7, 8, 9, 10]) assert.ok(probes[index].why, `probe ${index} must be refused`);
+  for (const index of [2, 3, 4]) {
+    assert.equal(probes[index].why, null);
+    assert.deepEqual(probes[index].args, ['push', '--no-follow-tags', '--recurse-submodules=no', 'origin', `HEAD:refs/heads/${branch}`]);
+  }
 });
 
 test('an isolated Codex worker can publish its task branch with an allow rule and guarded git', { skip: NO_STUBS }, (t) => {

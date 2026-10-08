@@ -62,7 +62,7 @@ function choice(h, env) {
 }
 
 function model(out) {
-  const flag = out.argv.includes('-m') ? '-m' : out.argv.includes('-p') ? '-p' : '--model';
+  const flag = out.harness === 'claude' ? '--model' : out.argv.includes('-m') ? '-m' : out.argv.includes('-p') ? '-p' : '--model';
   return out.argv[out.argv.indexOf(flag) + 1];
 }
 
@@ -154,6 +154,8 @@ const args = process.argv.slice(2);
 const claude = path.basename(process.argv[1]) === 'claude';
 const system = claude ? args[args.indexOf('--append-system-prompt') + 1]
   : fs.readFileSync(path.join(process.env.CODEX_HOME, 'AGENTS.md'), 'utf8');
+const configHome = process.env[claude ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME'];
+const policy = JSON.parse(fs.readFileSync(path.join(configHome, 'policy.json'), 'utf8'));
 const hash = crypto.createHash('sha256').update(system).digest('hex');
 const previous = fs.existsSync(${JSON.stringify(checkpoint)}) ? JSON.parse(fs.readFileSync(${JSON.stringify(checkpoint)})) : {};
 const tokens = Math.ceil(Buffer.byteLength(system) / 4);
@@ -162,6 +164,7 @@ previous[claude ? 'claude' : 'codex'] = hash;
 fs.writeFileSync(${JSON.stringify(checkpoint)}, JSON.stringify(previous));
 fs.appendFileSync(${JSON.stringify(captures)}, JSON.stringify({
   harness: claude ? 'claude' : 'codex', system, args, cwd: process.cwd(),
+  repo: policy.repo,
   home: process.env.HOME, cache_read: hit ? tokens : 0, cache_write: hit ? 0 : tokens,
   cache: process.env.XDG_CACHE_HOME,
   tool_caches: [process.env.GOCACHE, process.env.GOMODCACHE, process.env.npm_config_cache],
@@ -199,6 +202,7 @@ console.log(JSON.stringify({type:'result', result:'cache probe', usage: {
       assert.equal(row.cache_write, 0);
     }
     for (const row of runs) {
+      assert.equal(row.repo, 'acme/demo', 'reviewer shims retain the recorded repository');
       assert.match(row.system, /Role instructions: tower-crane-review/);
       assert.ok(!row.system.includes('## Task'));
       assert.ok(row.cache.startsWith(path.join(caller, 'cache') + path.sep));
@@ -276,6 +280,31 @@ test('a stronger model wins only when its median priced review cost is no higher
   // Worker spend must not masquerade as a cheap review sample.
   h.ok(['spend', 'T1', '--agent', 'cheap-worker', '--tokens', '1', '--input', '1', '--cached', '0', '--output', '0', '--rung', 'hard', '--model', 'opus']);
   assert.equal(model(choice(h)), 'sol');
+});
+
+test('review selection matches Claude provider aliases to recorded provider spend', (t) => {
+  const bedrock = 'global.anthropic.claude-opus-5-5';
+  const anthropic = 'claude-opus-5-5';
+  for (const tier of ['medium', 'hard']) {
+    const h = setup(t, tier);
+    const bin = path.join(h.base, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
+    const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
+      AWS_REGION: 'eu-west-1', AWS_BEARER_TOKEN_BEDROCK: 'stub-secret-bedrock',
+      ANTHROPIC_API_KEY: 'stub-secret-anthropic' };
+    h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--provider', 'bedrock', '--model', 'opus']);
+    h.ok(['ladder', 'set', 'research', '--harness', 'claude', '--provider', 'anthropic', '--model', 'opus']);
+    h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [bedrock]: prices[anthropic] } })]);
+    ready(h);
+    sample(h, tier === 'medium' ? 'sol' : bedrock, 1000000, 0, 0);
+    sample(h, tier === 'medium' ? bedrock : anthropic, 0, 0, 1);
+    const promoted = choice(h, env);
+    assert.equal(promoted.review_rung, tier === 'medium' ? 'hard' : 'research');
+    assert.equal(model(promoted), tier === 'medium' ? bedrock : anthropic);
+    sample(h, tier === 'medium' ? bedrock : anthropic, 0, 0, 1000000);
+    assert.equal(choice(h, env).review_rung, tier, 'a higher provider median keeps the current rung');
+  }
 });
 
 test('equal cost promotes, missing components do not provide a cost sample', (t) => {
