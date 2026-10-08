@@ -568,6 +568,10 @@ commit without merging again, including after an executor dies before
 writing its receipt. A non-stacked PR GitHub reports merged at the accepted
 head needs no current gate evidence or CI receipt base, so tasks accepted
 before merge evidence existed are confirmed rather than refused.
+The confirmation lookup validates merge text and method before calling
+GitHub. Failed current gates permit this read-only lookup; an open PR still
+requires passing gates. Confirmation evidence records the lookup that
+proved the accepted head merged, without querying and merging it again.
 Waiters retain automatic events even when their actor matches the waiter.
 Reactions run before event output filters, and active PRs catch up at
 watcher startup except a default zero-timeout cursor snapshot.
