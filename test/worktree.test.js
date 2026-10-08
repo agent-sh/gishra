@@ -409,10 +409,9 @@ test('cancelling a task removes its worktree; a dirty one stays and says why', (
 
   assert.ok(!fs.existsSync(clean.path), 'the clean worktree is removed');
   assert.ok(fs.existsSync(dirty.path), 'the dirty worktree stays');
-  const registered = h.git(['worktree', 'list', '--porcelain']);
-  assert.ok(registered.includes(dirty.path), 'git still registers the dirty worktree');
-  assert.ok(!registered.includes(clean.path), 'git forgets the removed worktree');
-  assert.ok(!registered.includes(gone.path), 'prune clears the registration of a missing directory');
+  assert.ok(h.registers(dirty.path), 'git still registers the dirty worktree');
+  assert.ok(!h.registers(clean.path), 'git forgets the removed worktree');
+  assert.ok(!h.registers(gone.path), 'prune clears the registration of a missing directory');
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   const kept = events.find((e) => e.cmd === 'worktree kept');
   assert.equal(kept.task, 'T2');
@@ -429,7 +428,7 @@ test('cancelling keeps a worktree that git still has locked', (t) => {
   h.ok(['task', 'update', 'T1', '--status', 'cancelled']);
 
   assert.ok(fs.existsSync(wt.path), 'the locked worktree stays');
-  assert.ok(h.git(['worktree', 'list', '--porcelain']).includes(wt.path), 'git still registers it');
+  assert.ok(h.registers(wt.path), 'git still registers it');
   const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   const kept = events.find((e) => e.cmd === 'worktree kept');
   assert.equal(kept.task, 'T1');

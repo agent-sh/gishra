@@ -861,7 +861,7 @@ test('merge removes the merged task worktree and records it', (t) => {
   const merged = cli.run(['merge', 'T1'], { GATE_OUT: path.join(h.base, 'gate.json'), GATE_OK: '1' });
   assert.equal(merged.code, 0, merged.stderr);
   assert.ok(!fs.existsSync(wt.path), 'the worktree directory is gone');
-  assert.ok(!h.git(['worktree', 'list', '--porcelain']).includes(wt.path), 'git no longer registers it');
+  assert.ok(!h.registers(wt.path), 'git no longer registers it');
   const removed = readEvents(h).find((e) => e.cmd === 'worktree removed');
   assert.equal(removed.task, 'T1');
   assert.equal(removed.detail.removed, true);
@@ -879,7 +879,7 @@ test('merge keeps a worktree with uncommitted changes and says why', (t) => {
   const merged = cli.run(['merge', 'T1'], { GATE_OUT: path.join(h.base, 'gate.json'), GATE_OK: '1' });
   assert.equal(merged.code, 0, merged.stderr);
   assert.equal(fs.readFileSync(path.join(wt.path, 'notes.txt'), 'utf8'), 'unfinished\n');
-  assert.ok(h.git(['worktree', 'list', '--porcelain']).includes(wt.path), 'git still registers it');
+  assert.ok(h.registers(wt.path), 'git still registers it');
   const kept = readEvents(h).find((e) => e.cmd === 'worktree kept');
   assert.equal(kept.task, 'T1');
   assert.equal(kept.detail.reason, 'uncommitted changes');
