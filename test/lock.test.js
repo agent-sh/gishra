@@ -12,6 +12,26 @@ const B = require('../lib/broker');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
+for (const kind of ['stale', 'empty']) {
+  test(`continuous ${kind} lock reclaims respect the deadline and backoff`, (t) => {
+    const h = makeRepo(t);
+    h.init();
+    const attempts = path.join(h.base, 'reclaim-attempts');
+    const fixture = path.join(__dirname, 'fixtures', 'lock-reclaim-race.js');
+    const result = h.run(['task', 'add', '--title', 'must remain unwritten', '--acceptance', 'bounded'], {
+      env: {
+        NODE_OPTIONS: `--require=${JSON.stringify(SHORT_WAIT)} --require=${JSON.stringify(fixture)}`,
+        HOOK_STATE: h.state, LOCK_RECLAIM_KIND: kind, LOCK_RECLAIM_ATTEMPTS: attempts,
+      },
+      timeout: 5000,
+    });
+    assert.equal(result.code, 3, result.stderr);
+    const count = fs.readFileSync(attempts, 'utf8').length;
+    assert.ok(count >= 5 && count <= 50, `${count} attempts must back off within the one-second budget`);
+    assert.equal(h.readState('tasks.json').tasks.length, 0);
+  });
+}
+
 test('20 concurrent CLI writers survive a lock held beyond 10 seconds', { timeout: 90000 }, async (t) => {
   const h = makeRepo(t);
   h.init();

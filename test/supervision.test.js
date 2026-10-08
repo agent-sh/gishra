@@ -10,6 +10,7 @@ const { makeRepo, makeTaskRepo, BIN, HOOKS, detachedAlive } = require('./helpers
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
+const S = require('../lib/state');
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
@@ -69,6 +70,53 @@ ${waitForFinish ? `const timer = setInterval(() => {
   h.readAttempts = () => fs.existsSync(h.attempts) ? JSON.parse(fs.readFileSync(h.attempts, 'utf8')) : [];
   return h;
 }
+
+test('supervisor tool hook writers survive a lock held beyond 15 seconds', { timeout: 90000 }, async (t) => {
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Supervised tool progress', '--tier', 'easy', '--acceptance', 'tool event survives'],
+    brief: 'Record tool progress.\n',
+  }]);
+  const ready = path.join(h.base, 'harness-ready');
+  const emit = path.join(h.base, 'emit-tool');
+  const finish = path.join(h.base, 'finish');
+  const writerReady = path.join(h.base, 'writer-ready');
+  const script = `
+const fs = require('node:fs');
+require('node:child_process').execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'claim', 'T1', '--lease', '5']);
+fs.writeFileSync(${JSON.stringify(ready)}, '');
+let emitted = false;
+setInterval(() => {
+  if (!emitted && fs.existsSync(${JSON.stringify(emit)})) {
+    emitted = true;
+    console.log(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: 'supervised tool' } }));
+  }
+  if (fs.existsSync(${JSON.stringify(finish)})) process.exit(0);
+}, 25);
+`;
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}']),
+    '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 0, stall_ms: 60000 })]);
+  h.ok(['msg', '--to', 'worker-T1-1', '--task', 'T1', 'startup context']);
+  const fixture = path.join(__dirname, 'fixtures', 'supervisor-hook-lock.js');
+  const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], { env: {
+    NODE_OPTIONS: `--require=${JSON.stringify(fixture)}`,
+    TOWER_CRANE_TEST_HOOK_LOCK: path.join(h.state, 'lock'), TOWER_CRANE_TEST_HOOK_READY: writerReady,
+  } });
+  let lock;
+  try {
+    await until(() => fs.existsSync(ready) && log(h).some((event) => event.cmd === 'hook inbox'), 'startup hook did not complete');
+    lock = S.acquireLock(h.state);
+    fs.writeFileSync(emit, '');
+    await until(() => fs.existsSync(writerReady), 'tool writer did not encounter the lock');
+    await new Promise((resolve) => setTimeout(resolve, 16000));
+  } finally {
+    if (lock) S.releaseLock(lock);
+    fs.writeFileSync(finish, '');
+  }
+  const result = await completed;
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(log(h).some((event) => event.cmd === 'hook progress' && event.detail.tool === 'command_execution'), result.stderr);
+  assert.doesNotMatch(result.stderr, /harness event failed/);
+});
 
 describe('independent retry cases', { concurrency: windowsConcurrency }, () => {
 for (const attempt of bedrockOutage.attempts) {
