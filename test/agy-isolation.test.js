@@ -45,6 +45,10 @@ test('agy private HOME does not authorize unverified sandbox authority or nested
     '--clear', 'profile', '--clear', 'effort', '--clear', 'args'], { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /ladder\.reach/);
+  const argsRefused = h.run(['ladder', 'set', 'medium', '--args', '["--print-timeout","60s"]'],
+    { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
+  assert.notEqual(argsRefused.code, 0);
+  assert.match(argsRefused.stderr, /ladder\.reach/);
   h.json(['spawn', '--task', 'T1', '--wait'], { env: { ...env, TOWER_CRANE_SANDBOX: '1' } });
   assert.equal(report().sandboxMarker, '0');
   assert.equal(report().brokered, false);
@@ -187,7 +191,7 @@ test('agy rung tool and MCP opt-ins render in dry-run and native config without 
   assert.notEqual(refused.code, 0);
 });
 
-test('agy small role denies file writes, push, gh writes and sandbox escape', { skip: noStub }, t => {
+test('agy small role renders requested permission rules and uses git and gh wrappers', { skip: noStub }, t => {
   const { h, env, report } = setup(t);
   h.ok(['ladder', 'set', 'small', '--harness', 'agy', '--model', 'gemini-3-pro', '--clear', 'profile', '--clear', 'args']);
   const spawned = h.json(['spawn', '--role', 'small', '--task', 'T1', '--wait'], {
