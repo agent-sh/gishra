@@ -199,8 +199,34 @@ test('a stack PR must target its dependency branch rather than the project base'
   f.write((d) => { d.prs[12].baseRefName = 'main'; });
   const r = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(r.code, 1, r.stdout);
-  assert.match(r.stdout, /PR base/);
+  assert.match(r.stdout, /base is main, expected/);
   assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+});
+
+test('a stack merge refuses members already merged into another base', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  const landed = (d, pr) => Object.assign(d.prs[pr], { state: 'MERGED', baseRefName: 'release', mergeCommit: { oid: 'c'.repeat(40) } });
+  f.write((d) => { landed(d, 11); landed(d, 12); });
+  const all = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(all.code, 1, all.stdout);
+  assert.match(all.stdout, /T1: PR base is release, expected main/);
+  f.write((d) => { Object.assign(d.prs[12], { state: 'OPEN', baseRefName: f.lower.branch }); delete d.prs[12].mergeCommit; d.calls = []; });
+  const mixed = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(mixed.code, 1, mixed.stdout);
+  assert.match(mixed.stdout, /T1: PR base is release, expected main/);
+  assert.equal(f.read().calls.some((c) => ['edit', 'merge'].includes(c.args[1])), false);
+  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id, '--agent', 'orchestrator']).status, 'accepted');
+});
+
+test('a confirmed stack merge names the base it landed on', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  const merged = f.h.json(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(merged.ok, true, merged.summary);
+  assert.match(merged.summary, /into main/);
 });
 
 test('a partially merged stack retries on the project base and refuses an unrelated base', (t) => {
