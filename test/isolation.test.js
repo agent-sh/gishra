@@ -1320,6 +1320,40 @@ test('a gh token in the spawning environment passes through, and the keyring is 
   }
 });
 
+test('sandboxed gh uses its handed token when the user selects a custom config directory', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const custom = path.join(u.home, 'custom-config');
+  fs.mkdirSync(path.join(custom, 'gh'), { recursive: true });
+  fs.writeFileSync(path.join(h.base, 'bin', 'gh'), `#!${process.execPath}
+const path = require('node:path');
+const env = process.env;
+const config = env.GH_CONFIG_DIR || path.join(env.XDG_CONFIG_HOME || path.join(env.HOME, '.config'), 'gh');
+if (process.argv[2] === 'auth' && process.argv[3] === 'token') {
+  if (!config.startsWith(${JSON.stringify(custom)} + path.sep)) process.exit(1);
+  console.log('stub-gh-token');
+} else {
+  if (config.startsWith(${JSON.stringify(custom)} + path.sep)) {
+    process.stderr.write('permission denied reading gh config');
+    process.exit(1);
+  }
+  if (env.GH_TOKEN !== 'stub-gh-token') process.exit(1);
+  if (config !== path.join(env.HOME, '.config', 'gh')) process.exit(1);
+}
+`);
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    for (const customEnv of [{ GH_CONFIG_DIR: path.join(custom, 'gh'), XDG_CONFIG_HOME: '' }, { GH_CONFIG_DIR: '', XDG_CONFIG_HOME: custom }]) {
+      spawn(h, u, 'hard', { ...customEnv, STUB_RUN: JSON.stringify([['gh', 'pr', 'view', '1']]) });
+      const seen = u.report();
+      assert.equal(seen.ran[0].code, 0, `${harness}: ${seen.ran[0].stderr}`);
+      assert.equal(seen.ghToken, 'stub-gh-token', 'the parent reads the token from the original config');
+      const hidden = harness === 'claude' ? seen.settings.sandbox.filesystem.denyRead
+        : Object.keys(seen.config.permissions['tower-crane'].filesystem).filter((p) => seen.config.permissions['tower-crane'].filesystem[p] === 'none');
+      assert.ok(hidden.includes(path.join(custom, 'gh')), `${harness}: the original gh config stays hidden`);
+    }
+  }
+});
+
 test('a push counts as local only when every URL git would use is local, so rewriting cannot reach another machine', (t) => {
   const h = makeRepo(t);
   const local = path.join(h.base, 'local.git');
