@@ -89,6 +89,7 @@ function setup(t) {
   put('.gemini/config/mcp_config.json', JSON.stringify({ mcpServers: {
     planted: { command: 'planted-server', args: ['x'], env: { TOKEN: 'PLANTED-SECRET' } },
     approved: { serverUrl: 'https://example.invalid/mcp', headers: { Authorization: 'PLANTED-SECRET' } },
+    standard: { url: 'https://example.invalid/standard', headers: { Authorization: 'PLANTED-SECRET' } },
   } }));
   put('.gemini/GEMINI.md', 'PLANTED-MEMORY\n'.repeat(1000));
   put('.gemini/config/rules/user.md', '---\ntrigger: always_on\n---\nPLANTED-RULE\n'.repeat(1000));
@@ -175,14 +176,17 @@ test('agy excludes planted user context from startup, requested rules and file g
 
 test('agy rung tool and MCP opt-ins render in dry-run and native config without copied secrets', { skip: noStub }, t => {
   const { h, home, env, report } = setup(t);
-  h.ok(['ladder', 'set', 'medium', '--tools', '["search_web"]', '--mcp', '["approved"]'], { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
+  h.ok(['ladder', 'set', 'medium', '--tools', '["search_web"]', '--mcp', '["approved","standard"]'], { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
   const dry = h.json(['spawn', '--task', 'T1', '--dry-run'], { env });
   assert.deepEqual(dry.home.tools, ['search_web']);
-  assert.deepEqual(dry.home.mcp, ['approved']);
+  assert.deepEqual(dry.home.mcp, ['approved', 'standard']);
   h.json(['spawn', '--task', 'T1', '--wait'], { env });
   const seen = report();
   assert.ok(seen.tools.includes('search_web'));
-  assert.deepEqual(seen.mcp, { approved: { serverUrl: 'https://example.invalid/mcp' } });
+  assert.deepEqual(seen.mcp, {
+    approved: { serverUrl: 'https://example.invalid/mcp' },
+    standard: { url: 'https://example.invalid/standard' },
+  });
   assert.ok(seen.rules.allow.includes('mcp(approved/*)'));
   assert.equal(fs.realpathSync(path.join(seen.home, '.gemini', 'antigravity', 'mcp_oauth_tokens.json')),
     fs.realpathSync(path.join(home, '.gemini', 'antigravity', 'mcp_oauth_tokens.json')));
