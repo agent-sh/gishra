@@ -176,14 +176,14 @@ test('codex worker configs keep named provider and MCP fields without copying cr
       malformed: { args: [{ opaque_value: SECRET }], env_vars: [{ opaque_value: SECRET }] },
     },
   };
-  for (const file of ['config.toml', 'sol.config.toml']) {
+  for (const file of ['config.toml', 'fixture-main.config.toml']) {
     fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(doc));
   }
   isolated(h, 'medium', 'codex');
   h.ok(['ladder', 'set', 'medium', '--mcp', '["planted","malformed"]']);
   const started = spawn(h, u, 'medium');
   noSecretsCopied(h);
-  for (const file of ['config.toml', 'sol.config.toml']) {
+  for (const file of ['config.toml', 'fixture-main.config.toml']) {
     const config = JSON.parse(JSON.stringify(TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, file), 'utf8'))));
     assert.deepEqual(config.model_providers, { p: provider, malformed: {} }, file);
     assert.deepEqual(config.mcp_servers, { planted: server, malformed: {} }, file);
@@ -199,13 +199,13 @@ test('codex spawns reject credential tables in scalar settings in base and every
   };
   const malformed = { model: [credentials], model_reasoning_effort: 7, model_verbosity: true };
   const doc = { ...safe, ...malformed, profiles: { safe: { model: 'legacy', ...safe }, malformed } };
-  for (const file of ['config.toml', 'sol.config.toml']) {
+  for (const file of ['config.toml', 'fixture-main.config.toml']) {
     fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(doc));
   }
   isolated(h, 'medium', 'codex');
   const started = spawn(h, u, 'medium');
   noSecretsCopied(h);
-  for (const file of ['config.toml', 'sol.config.toml']) {
+  for (const file of ['config.toml', 'fixture-main.config.toml']) {
     const config = JSON.parse(JSON.stringify(TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, file), 'utf8'))));
     for (const [key, value] of Object.entries(safe)) assert.equal(config[key], value, `${file}: ${key}`);
     for (const key of Object.keys(malformed)) assert.equal(config[key], undefined, `${file}: ${key}`);
