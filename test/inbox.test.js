@@ -86,7 +86,11 @@ test('one fixture exposes every inbox kind and resolving commands clear their co
     assert.ok(kinds.has(kind), `missing ${kind}: ${JSON.stringify(inbox)}`);
   }
   assert.equal(inbox.executors.length, 1);
-  assert.ok(inbox.items.every((i) => i.action.command.startsWith('tower-crane ') && i.action.argv.length));
+  const executable = process.platform === 'win32' ? '"tower-crane"' : 'tower-crane';
+  for (const { action } of inbox.items) {
+    assert.ok(action.command.startsWith(`${executable} `), action.command);
+    assert.ok(action.argv.length);
+  }
   assert.match(inbox.items.find((i) => i.kind === 'review_failed').findings, /null/);
   assert.match(inbox.items.find((i) => i.kind === 'rework_ready').reason, /parser.js/);
   assert.equal(inbox.items.find((i) => i.kind === 'revuto_failed').comments.length, 1);
