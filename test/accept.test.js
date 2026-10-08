@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { cachedFixture } = require('./helpers');
+const { makeRepo, cachedFixture } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 
 // A submitted task, built once per process for each submit shape and kind.
