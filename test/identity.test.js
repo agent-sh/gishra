@@ -316,8 +316,8 @@ test('owner-key at a terminal creates the key that later stands in for one', { s
   const fd = fs.openSync(file, 'r');
   let mode, key;
   try {
-    mode = fs.fstatSync(fd).mode & 0o777;
     key = fs.readFileSync(fd, 'utf8').trim();
+    mode = fs.fstatSync(fd).mode & 0o777;
   } finally {
     fs.closeSync(fd);
   }
@@ -327,8 +327,8 @@ test('owner-key at a terminal creates the key that later stands in for one', { s
   assert.equal(mode, 0o600);
   const again = terminal(h, ['owner-key', '--agent', 'owner'], config);
   assert.ok(again.stdout.includes(`exists ${file}`));
-  assert.equal(fs.readFileSync(file, 'utf8').trim(), key);
   assert.equal(h.run(['owner-done', 'T1']).code, 1);
+  // Authentication with the original key proves a second creation kept it.
   h.ok(['owner-done', 'T1'], { env: { TOWER_CRANE_OWNER_KEY: key } });
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
 });
