@@ -68,6 +68,41 @@ test('G4: changing a submitted brief invalidates the review at the unchanged sha
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
 });
 
+test('an accepted brief needs explicit rework before edits, and dependents wait for fresh acceptance', (t) => {
+  const { h, sha } = reviewedTask(t);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  h.ok(['task', 'add', '--title', 'Uses the link', '--acceptance', 'uses the accepted link', '--kind', 'docs', '--dep', 'T1']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Check the link.\n' });
+  const state = fs.readFileSync(path.join(h.state, 'tasks.json'), 'utf8');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  for (const agent of ['orchestrator', 'owner']) {
+    const changed = h.run(['brief', 'set', 'T1', '-', '--agent', agent], { input: 'Check the link and log errors.\n' });
+    assert.equal(changed.code, 1, 'accepted requirements must stay reviewed until explicit rework');
+    assert.match(changed.stderr, /T1 is accepted.*brief.*rework T1/);
+  }
+  assert.equal(fs.readFileSync(path.join(h.state, 'tasks.json'), 'utf8'), state);
+  assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), events);
+  assert.equal(h.ok(['brief', 'get', 'T1']), 'Check the link.');
+  const accepted = h.json(['task', 'show', 'T1']);
+  assert.equal(accepted.status, 'accepted');
+  assert.equal(accepted.revision, 1);
+  assert.equal(accepted.gates.ok, true);
+  assert.ok(h.json(['ready']).ready.some(task => task.id === 'T2'));
+
+  h.ok(['rework', 'T1', '--reason', 'add error logging', '--agent', 'orchestrator']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Check the link and log errors.\n' });
+  assert.ok(!h.json(['ready']).ready.some(task => task.id === 'T2'));
+  assert.equal(h.run(['claim', 'T2', '--agent', 'dependent']).code, 1);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).review_pending, true);
+  assert.equal(h.run(['claim', 'T2', '--agent', 'dependent']).code, 1);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  h.ok(['claim', 'T2', '--agent', 'dependent']);
+  assert.equal(h.json(['task', 'show', 'T2']).claim.agent, 'dependent');
+});
+
 for (const change of ['rework', 'brief']) {
   test(`${change} invalidates software evidence as well as review evidence`, (t) => {
     const { h, sha } = reviewedTask(t, 'code');

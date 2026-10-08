@@ -21,7 +21,7 @@ Writes take the lock, re-read the files, validate, write atomically and append t
 |---|---|
 | `brief get ID [--role worker\|reviewer]` | write or read the task's brief; `brief get` filters for the caller's worker or reviewer role, and `brief set` warns about a reviewer section without a worker section |
 | | |
-| `brief set ID (--file F \| -)` | write the task's brief; changing it after the first submission bumps `revision` and invalidates earlier evidence. Identical writes keep the revision. Warns about a reviewer section without a worker section |
+| `brief set ID (--file F \| -)` | write the task's brief; changing it after the first submission bumps `revision` and invalidates earlier evidence. An accepted task requires `rework` before its brief can change. Identical writes keep the revision. Warns about a reviewer section without a worker section |
 | | |
 | `browser-kit set --servers JSON` | owner-required: save the kit server list in the user file (`TOWER_CRANE_CONFIG`, else the original user's `~/.config/tower-crane/config.json`). Names are deduplicated; `[]` disables automatic server attachment. Other user settings are preserved |
 | | |
