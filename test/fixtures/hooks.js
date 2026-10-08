@@ -212,6 +212,16 @@ if (env.HOOK_STOP_WORKTREE_ADD) {
   };
 }
 
+// HOOK_STOP_WORKTREE_STATUS=SIGNAL: stop before the first git status runs, which
+// is the first look at a worktree that a removal may delete.
+if (env.HOOK_STOP_WORKTREE_STATUS) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function hookedExecFileSync(file, args, ...rest) {
+    if (args[0] === 'status' && first('worktree-status')) stop(env.HOOK_STOP_WORKTREE_STATUS);
+    return orig.call(this, file, args, ...rest);
+  };
+}
+
 if (env.HOOK_REVIEW_DIFF_REPORT || env.HOOK_STOP_REVIEW_DIFF) {
   const orig = cp.execFileSync;
   cp.execFileSync = function reviewDiff(file, args, ...rest) {

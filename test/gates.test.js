@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, ROOT, real } = require('./helpers');
+const { makeRepo, ROOT, real, HOOKS } = require('./helpers');
+const { waitFor } = require('./canary');
 const { gateFixture, gateEvidence, changeKind } = require('./gate-helpers');
 const { shellQuote } = require('../lib/gates/common');
 
@@ -29,6 +30,15 @@ function cliCopy(h) {
     run: (args, env = {}) => {
       const r = cp.spawnSync(process.execPath, [bin, ...args], { cwd: h.repo, env: { ...h.env, ...env }, encoding: 'utf8' });
       return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+    },
+    // Starts without waiting, so a test can pause the command with a hook.
+    start: (args, env = {}) => {
+      const p = cp.spawn(process.execPath, ['--require', HOOKS, bin, ...args], {
+        cwd: h.repo, env: { ...h.env, HOOK_STATE: h.state, ...env }, stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      p.stderr.on('data', (d) => { stderr += d; });
+      return { result: new Promise((resolve) => p.on('close', (code) => resolve({ code, stderr }))) };
     },
   };
 }
@@ -898,4 +908,33 @@ test('merge keeps the worktree while merge.keep_branch is set', (t) => {
   assert.ok(fs.existsSync(wt.path), 'the worktree stays for its branch');
   const kept = readEvents(h).find((e) => e.cmd === 'worktree kept');
   assert.equal(kept.detail.reason, 'merge.keep_branch is set');
+});
+
+test('a task sent back and claimed after merge looked at its worktree keeps the worktree', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const wt = acceptedWithWorktree(h);
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates, { recursive: true });
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+
+  // Merge pauses after its first look at the worktree and before it removes anything.
+  const paused = path.join(h.base, 'paused');
+  const merge = cli.start(['merge', 'T1'], {
+    GATE_OUT: path.join(h.base, 'gate.json'), GATE_OK: '1', HOOK_STOP_WORKTREE_STATUS: paused,
+  });
+  assert.ok(await waitFor(paused), 'merge reached its first look at the worktree');
+  const sent = await h.runAsync(['rework', 'T1', '--reason', 'racing the merge']);
+  const claimed = await h.runAsync(['claim', 'T1', '--agent', 'w-2']);
+  fs.writeFileSync(`${paused}.go`, '');
+  const merged = await merge.result;
+
+  assert.equal(sent.code, 0, sent.stderr);
+  assert.equal(claimed.code, 0, claimed.stderr);
+  assert.equal(merged.code, 0, merged.stderr);
+  assert.ok(fs.existsSync(wt.path), 'the worktree of the claimed task stays');
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'in_progress');
+  const kept = readEvents(h).find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.task, 'T1');
+  assert.equal(kept.detail.reason, 'the task changed before its worktree was removed');
 });

@@ -480,3 +480,29 @@ test('cancelling keeps a worktree while the monitor of an exited reviewer still 
   assert.equal(kept.task, 'T1');
   assert.equal(kept.detail.reason, 'an agent is still running on the task');
 });
+
+test('cancelling does not remove a checkout that a symlink moves outside the worktrees root', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Linked', '--acceptance', 'not needed']);
+  const wt = h.json(['worktree', 'T1']);
+  // The registered path still reads as inside the root, but its parent is a
+  // link to a directory elsewhere, so the checkout really lives outside.
+  const pool = path.join(h.base, 'repo-worktrees', 'pool');
+  const outside = path.join(h.base, 'outside');
+  fs.mkdirSync(pool, { recursive: true });
+  h.git(['worktree', 'move', wt.path, path.join(pool, path.basename(wt.path))]);
+  fs.mkdirSync(outside);
+  fs.renameSync(pool, path.join(outside, 'pool'));
+  // A junction needs no privilege on Windows; POSIX ignores the type.
+  fs.symlinkSync(path.join(outside, 'pool'), pool, 'junction');
+
+  h.ok(['task', 'update', 'T1', '--status', 'cancelled']);
+
+  const checkout = path.join(outside, 'pool', path.basename(wt.path));
+  assert.ok(fs.existsSync(checkout), 'the checkout outside the worktrees root stays');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const kept = events.find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.task, 'T1');
+  assert.equal(kept.detail.reason, 'its real location is not under the worktrees root');
+});
