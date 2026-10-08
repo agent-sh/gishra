@@ -63,6 +63,31 @@ test('merge ok: squash, delete the branch, match the head, confirm MERGED', asyn
   assert.match(r.summary, /merged PR #42 into main in acme\/app \(squash\)/);
 });
 
+test('plain merges accept the configured project base or the recorded stack dependency base', async () => {
+  for (const [base, task] of [['release', {}], ['lower-task', { stack: { base: 'lower-task' } }]]) {
+    const gh = github({ base });
+    const r = await gate.run(ctx(gh, { project: { base: 'release' }, task }));
+    assert.equal(r.ok, true, r.summary);
+    assert.match(r.summary, new RegExp(`into ${base} in acme/app`));
+    assert.equal(gh.merges().length, 1);
+  }
+  const gh = github({ base: 'release' });
+  const wrong = await gate.run(ctx(gh, {
+    project: { base: 'release' }, task: { stack: { base: 'lower-task' } },
+  }));
+  assert.equal(wrong.ok, false, wrong.summary);
+  assert.match(wrong.summary, /base.*release.*lower-task/);
+  assert.equal(gh.merges().length, 0);
+});
+
+test('a PR response without a base cannot authorize a merge', async () => {
+  const gh = fakeExec(() => result(JSON.stringify({ state: 'OPEN', headRefOid: SHA, isCrossRepository: false })));
+  const r = await gate.run(ctx(gh));
+  assert.equal(r.ok, false, r.summary);
+  assert.match(r.summary, /base.*undefined.*main/);
+  assert.equal(gh.calls.filter((c) => c[2] === 'merge').length, 0);
+});
+
 test('--method and project admin policy reach gh', async () => {
   const gh = github();
   const r = await gate.run(ctx(gh, { args: { method: 'rebase' }, project: { merge: { admin: true } } }));

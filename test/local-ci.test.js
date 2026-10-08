@@ -68,6 +68,7 @@ cp.spawnSync = function(command, args, opts) {
   if (args[0] === 'pr' && args[1] === 'merge') fs.writeFileSync(merged, '');
   return {status: 0, stderr: '', stdout: JSON.stringify({
     headRefOid: ${JSON.stringify(h.sha)}, state: fs.existsSync(merged) ? 'MERGED' : 'OPEN',
+    baseRefName: ${JSON.stringify(h.json(['project', 'show']).base)}, isCrossRepository: false,
     mergeCommit: {oid: ${JSON.stringify(h.sha)}}
   })};
 };
@@ -180,6 +181,7 @@ for (const changedTree of [true, false]) {
     assert.equal(receipt.base_sha, remote);
     const merged = h.json(['merge', 'T1']);
     assert.equal(merged.ok, true);
+    assert.match(merged.summary, /into main/);
     assert.ok(merged.commands.some((c) => c.command === 'git' && c.args.includes('fetch') && c.status === 0));
   });
 }
@@ -241,7 +243,9 @@ test('completed local CI tasks keep their audited result without reading current
   originFixture(h);
   h.ok(['check', 'ci', 'T1']);
   h.ok(['accept', 'T1']);
-  h.ok(['merge', 'T1']);
+  const merged = h.json(['merge', 'T1']);
+  assert.equal(merged.ok, true);
+  assert.match(merged.summary, /into main/);
   fs.writeFileSync(path.join(h.repo, 'later.txt'), 'later\n');
   h.git(['add', '.']);
   h.git(['commit', '-qm', 'base moves after merge']);
