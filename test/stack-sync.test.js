@@ -5,12 +5,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { setup, stacked } = require('./stack-fixture');
+const { BIN } = require('./helpers');
 
 test('lower merge refreshes upper worktrees with gh stack sync and conflicts send upper work to rework', (t) => {
   const f = stacked(t);
   const { wt, sha } = f.upper;
   f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer',
-    '--summary', 'Resolve the upper conflict']);
+    '--summary', 'Resolve the upper conflict', '--ref', 'stack-conflict-review']);
   const before = f.h.json(['task', 'show', 'T2']);
   f.accept('T1');
   f.write((d) => { d.conflict = true; });
@@ -30,6 +31,45 @@ test('lower merge refreshes upper worktrees with gh stack sync and conflicts sen
   assert.match(task.notes.at(-1).text, /all branches restored/);
   assert.match(f.h.ok(['brief', 'get', 'T2']), /Rework notes/);
   assert.match(f.h.json(['spawn', '--task', 'T2', '--dry-run']).argv.join('\n'), /Resolve the upper conflict/);
+
+  const prompt = path.join(f.h.base, 'worker-prompt');
+  const script = `
+require('node:child_process').execFileSync(process.execPath, ${JSON.stringify([BIN, 'claim', 'T2'])}, { env: process.env });
+require('node:fs').writeFileSync(process.argv[1], process.argv[2]);
+`;
+  f.h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'model', '--clear', 'profile',
+    '--clear', 'provider', '--clear', 'effort',
+    '--command', JSON.stringify([process.execPath, '-e', script, prompt, '{prompt}'])]);
+  const spawned = f.h.json(['spawn', '--task', 'T2', '--wait']);
+  const received = fs.readFileSync(prompt, 'utf8');
+  assert.match(received, /Resolve the upper conflict/);
+  assert.match(received, /stack-conflict-review/);
+  const held = f.h.json(['task', 'show', 'T2']);
+  assert.equal(held.claim.agent, spawned.agent);
+  assert.equal(held.claim.from, 'rework');
+  assert.ok(held.revision > task.revision, 'worker dispatch retried the unresolved stack refresh');
+  assert.deepEqual(held.evidence, before.evidence);
+  assert.equal(held.gates.ok, false);
+  const retried = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    .filter(e => e.cmd === 'rework' && e.task === 'T2');
+  assert.ok(retried.length > 1);
+  assert.ok(retried.every(e => e.detail.previous_revision === before.revision));
+
+  const clock = path.join(f.h.base, 'expired-claim-clock');
+  fs.writeFileSync(clock, String(Date.parse(held.claim.until) + 1));
+  assert.equal(f.h.run(['stack', 'sync', 'T2'], { hooks: { HOOK_CLOCK_FILE: clock } }).code, 1);
+  const afterExpiry = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    .findLast(e => e.cmd === 'rework' && e.task === 'T2');
+  assert.equal(afterExpiry.detail.previous_revision, before.revision);
+  f.h.ok(['claim', 'T2', '--agent', spawned.agent]);
+  f.h.ok(['submit', 'T2', '--sha', sha, '--agent', spawned.agent]);
+  f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer-next',
+    '--summary', 'Resolve the next review']);
+  assert.equal(f.h.run(['stack', 'sync', 'T2']).code, 1);
+  f.h.json(['spawn', '--task', 'T2', '--wait']);
+  const nextPrompt = fs.readFileSync(prompt, 'utf8');
+  assert.match(nextPrompt, /Resolve the next review/);
+  assert.doesNotMatch(nextPrompt, /Failed review by reviewer at/);
 });
 
 test('sync rework preserves a brief deletion that races its append', (t) => {
