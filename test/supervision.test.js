@@ -46,7 +46,7 @@ attempts.push({ agent: process.env.TOWER_CRANE_AGENT, session: process.env.TOWER
   cwd: process.cwd(), claim: task.claim });
 fs.writeFileSync(file, JSON.stringify(attempts));
 ${sessionReceipt ? "console.log(JSON.stringify({ type: 'thread.started', thread_id: 'supervised-session' }));" : ''}
-${busy ? "cp.spawn(process.execPath, ['-e', 'const end = Date.now() + 2200; while (Date.now() < end) {}'], { stdio: 'ignore' });" : ''}
+${busy ? "cp.spawn(process.execPath, ['-e', 'const end = Date.now() + 3500; while (Date.now() < end) {}'], { stdio: 'ignore' });" : ''}
 const finish = () => {
   if (attempts.length <= ${failures}) {
     ${records ? `for (const record of ${JSON.stringify(records)}) console.log(JSON.stringify(record)); process.exit(1);`
@@ -455,10 +455,12 @@ test('rung supervision settings validate and clear through the CLI', (t) => {
 });
 
 test('descendant CPU activity postpones stall while paths remain quiet', { skip: process.platform !== 'linux' }, async (t) => {
-  const h = setup(t, { failures: 0, hold: 2500, busy: true, config: { stall_ms: 300 } });
+  const h = setup(t, { failures: 0, hold: 3800, busy: true, config: { stall_ms: 300 } });
   h.json(['spawn', '--task', 'T1']);
   await until(() => h.readAttempts().length === 1, 'CPU stub did not start');
-  await new Promise((resolve) => setTimeout(resolve, 1400));
+  // The supervisor samples once a second; two and a half seconds of busy
+  // child cover at least two samples even on a loaded machine.
+  await new Promise((resolve) => setTimeout(resolve, 2500));
   assert.equal(log(h).filter((e) => e.cmd === 'stall').length, 0);
   assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'running');
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'CPU stub did not finish');
