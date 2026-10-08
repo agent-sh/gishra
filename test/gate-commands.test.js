@@ -35,11 +35,21 @@ test('unpinned agent commands cannot execute a shell payload', (t) => {
   fs.writeFileSync(script, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed');\n`);
   const cmd = `${shellQuote(process.execPath)} ${shellQuote(script)}`;
   for (const type of ['tests', 'clean']) {
-    const r = h.run(['check', type, 'T1', '--cmd', cmd, '--agent', 'worker'],
+    const r = h.run(['check', type, 'T1', '--cmd', cmd, '--agent', 'worker', '--json'],
       { env: { TOWER_CRANE_CLEAN_CMD: cmd } });
     assert.equal(r.code, 1, r.stderr + r.stdout);
+    const summary = JSON.parse(r.stdout).summary;
+    assert.match(summary, new RegExp(`no ${type === 'tests' ? 'test' : 'cleanup'} command pinned`));
+    assert.doesNotMatch(summary, /--cmd differs from the pinned/);
     assert.equal(fs.existsSync(marker), false, `${type} executed an unpinned command`);
   }
+});
+
+test('status reports when no test or cleanup command is pinned', (t) => {
+  const { h } = fixture(t);
+  h.ok(['project', 'set', '--tests-cmd', 'null', '--clean-cmd', 'null']);
+
+  assert.match(h.ok(['status']), /gates blocked: no pinned commands/);
 });
 
 test('only the orchestrator or the explicit owner can set or clear gate commands at init and project set', (t) => {

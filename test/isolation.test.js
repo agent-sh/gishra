@@ -564,7 +564,7 @@ test('a spawned codex agent is pointed at the user\'s global rules, loads none o
   assert.equal(seen.config.model_provider, 'p', 'the provider is kept');
   assert.deepEqual(seen.config.model_providers, { p: { name: 'P', env_key: 'P_KEY' }, q: { name: 'Q', env_key: 'Q_KEY', wire_api: 'responses' } }, 'providers in any layout, without credentials');
   for (const k of ['approval_policy', 'model_instructions_file']) assert.equal(seen.config[k], undefined, `${k} is the user's, not the role's`);
-  assert.ok(seen.config.notify.includes(path.join(ROOT, 'lib', 'hook-bridge.js')));
+  assert.ok(seen.config.notify.includes(path.join(started.tool.path, 'lib', 'hook-bridge.js')));
   assert.ok(!seen.config.notify.includes('planted-notify'));
   assert.deepEqual(Object.keys(seen.config.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
   const home = path.join(h.state, 'homes', started.agent);
@@ -790,6 +790,145 @@ test('the next spawn removes an exited agent\'s cache even when it holds read-on
   const second = spawn(h, u, 'hard', env);
   assert.notEqual(second.agent, first.agent);
   assert.ok(!fs.existsSync(cache), `${cache} is removed`);
+});
+
+test('a live spawn keeps its git, gh, hooks and policy on its recorded tool after a checkout upgrade', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolated(h, 'medium', 'codex');
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  const checkout = path.join(h.base, 'tool-checkout');
+  for (const name of ['bin', 'lib', 'agents', 'skills', 'standards', 'package.json']) {
+    fs.cpSync(path.join(ROOT, name), path.join(checkout, name), { recursive: true });
+  }
+  h.git(['init', '-q', checkout]);
+  h.git(['add', '.'], checkout);
+  h.git(['commit', '-qm', 'stub tool version'], checkout);
+  const toolSha = h.git(['rev-parse', 'HEAD'], checkout);
+  const pushed = path.join(h.base, 'pushed.json');
+  fs.writeFileSync(path.join(h.base, 'bin', 'git'), `#!${process.execPath}
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === 'push') {
+  fs.writeFileSync(${JSON.stringify(pushed)}, JSON.stringify(args));
+  process.exit(0);
+}
+const r = cp.spawnSync('git', args, { env: { ...process.env, PATH: ${JSON.stringify(process.env.PATH)} }, stdio: 'inherit' });
+process.exit(r.status ?? 1);
+`, { mode: 0o755 });
+  const upgrade = `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+for (const file of ['lib/shim.js', 'lib/hook-bridge.js', 'bin/tower-crane.js']) {
+  fs.writeFileSync(${JSON.stringify(checkout)} + '/' + file, 'throw new Error("upgraded tool cannot read the old policy");\\n');
+}
+for (const args of [['add', '.'], ['commit', '-qm', 'upgraded stub tool']]) {
+  const r = cp.spawnSync('git', ['-C', ${JSON.stringify(checkout)}, ...args], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(r.stderr);
+}
+`;
+  const hooks = `
+const fs = require('node:fs');
+const path = require('node:path');
+const cp = require('node:child_process');
+const toml = require(${JSON.stringify(path.join(ROOT, 'lib', 'toml.js'))});
+const config = toml.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8'));
+const calls = [
+  [config.notify[0], [...config.notify.slice(1), JSON.stringify({ 'last-assistant-message': 'survived the upgrade' })], {}],
+  [config.hooks.PostToolUse[0].hooks[0].command, [], { shell: true, input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash' }) }],
+];
+for (const [command, args, opts] of calls) {
+  const r = cp.spawnSync(command, args, { encoding: 'utf8', ...opts });
+  if (r.status !== 0) throw new Error(r.stderr);
+}
+`;
+  const branch = h.git(['branch', '--show-current'], wt);
+  const result = cp.spawnSync(process.execPath, [
+    path.join(checkout, 'bin', 'tower-crane.js'), 'spawn', '--task', 'T1', '--wait', '--json',
+  ], {
+    cwd: h.repo, encoding: 'utf8', timeout: 60000,
+    env: { ...u.env, STUB_RUN: JSON.stringify([
+      [process.execPath, '-e', upgrade],
+      ['git', 'push', '-u', 'origin', `HEAD:refs/heads/${branch}`],
+      ['gh', 'pr', 'create'],
+      [process.execPath, '-e', hooks],
+    ]) },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(u.report().ran.map((r) => [r.code, r.stderr]), [[0, ''], [0, ''], [0, ''], [0, '']]);
+  const started = JSON.parse(result.stdout);
+  assert.equal(started.tool.sha, toolSha);
+  assert.notEqual(h.git(['rev-parse', 'HEAD'], checkout), toolSha);
+  const home = path.join(h.state, 'homes', started.agent);
+  assert.equal(started.tool.path, path.join(home, 'tool'));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'tool.json'), 'utf8')), started.tool);
+  assert.deepEqual(JSON.parse(fs.readFileSync(pushed, 'utf8')), [
+    'push', '--no-follow-tags', '--recurse-submodules=no', '-u', 'origin', `HEAD:refs/heads/${branch}`,
+  ]);
+  const policy = JSON.parse(fs.readFileSync(path.join(home, 'policy.json'), 'utf8'));
+  assert.equal(policy.branch, branch);
+  assert.equal(policy.repo, 'acme/app');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(events.find((e) => e.cmd === 'spawn').detail.tool.sha, toolSha);
+  for (const cmd of ['hook git-push', 'hook pr-created', 'hook report', 'hook progress']) {
+    assert.ok(events.some((e) => e.cmd === cmd && e.agent === started.agent), cmd);
+  }
+});
+
+test('the shim migrates a pre-T112 policy using recorded state and refuses unbound migrations', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolated(h, 'medium', 'codex');
+  spawn(h, u, 'medium');
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  const home = path.join(h.state, 'homes', 'worker-T1-1');
+  // Generated by policy() and worker frontmatter at e034a4325677ada9d0752a1acee60483acfd8849, the parent of T112.
+  const historical = fs.readFileSync(path.join(__dirname, 'fixtures', 'policy-pre-T112.json'), 'utf8').replace('@HOME@/hook.json', path.join(home, 'hook.json').replaceAll('\\', '\\\\'));
+  const policyFile = path.join(home, 'policy.json');
+  fs.writeFileSync(policyFile, historical);
+  const branch = h.git(['branch', '--show-current'], wt);
+  const env = {
+    ...u.env, PATH: `${path.join(home, 'bin')}${path.delimiter}${u.env.PATH}`,
+    TOWER_CRANE_STATE: h.state, TOWER_CRANE_TASK: 'T1', TOWER_CRANE_AGENT: 'worker-T1-1',
+  };
+  const run = (args, extra = {}) => cp.spawnSync('git', args, { cwd: wt, env: { ...env, ...extra }, encoding: 'utf8', timeout: 10000 });
+  const allowed = run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]);
+  assert.equal(allowed.status, 1, allowed.stderr);
+  assert.match(allowed.stderr, /fixture remote unavailable/);
+  assert.equal(run(['push', 'origin', 'HEAD:refs/heads/main']).status, 126);
+  assert.equal(run(['push', 'origin', `HEAD:refs/heads/${branch}`, '--force']).status, 126);
+  assert.equal(run(['push', 'origin', `HEAD:refs/heads/${branch}`], { TOWER_CRANE_AGENT: 'another-worker' }).status, 126);
+  assert.equal(fs.readFileSync(policyFile, 'utf8'), historical, 'migration does not write the protected policy');
+  const tasks = h.readState('tasks.json');
+  const recordedBranch = tasks.tasks[0].branch;
+  tasks.tasks[0].branch = null;
+  h.writeState('tasks.json', tasks);
+  const missing = run(['push', 'origin', `HEAD:refs/heads/${branch}`]);
+  assert.equal(missing.status, 126);
+  assert.match(missing.stderr, /git push without a task branch/);
+  tasks.tasks[0].branch = recordedBranch;
+  h.writeState('tasks.json', tasks);
+  // init without a GitHub origin or --repo records repo null: only remote pushes lose their binding.
+  const project = h.readState('project.json');
+  project.repo = null;
+  h.writeState('project.json', project);
+  const local = path.join(h.base, 'local-T116.git');
+  h.git(['init', '-q', '--bare', local]);
+  const status = run(['status']);
+  assert.equal(status.status, 0, status.stderr);
+  const commit = run(['commit', '--allow-empty', '-q', '-m', 'probe']);
+  assert.equal(commit.status, 0, commit.stderr);
+  const localPush = run(['push', local, 'HEAD:refs/heads/fixture']);
+  assert.equal(localPush.status, 0, localPush.stderr);
+  const remote = run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]);
+  assert.equal(remote.status, 126);
+  assert.match(remote.stderr, /git push outside the recorded origin repository/);
+  const read = cp.spawnSync('gh', ['pr', 'view'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 });
+  assert.notEqual(read.status, 126, read.stderr);
+  assert.doesNotMatch(read.stderr, /tower-crane:/);
+  fs.writeFileSync(policyFile, '{}\n');
+  assert.equal(run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]).status, 126, 'missing permissions default to deny');
+  const gh = cp.spawnSync('gh', ['pr', 'create'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 });
+  assert.equal(gh.status, 126, gh.stderr);
 });
 
 test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
