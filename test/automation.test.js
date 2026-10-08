@@ -534,7 +534,9 @@ const softwareEvidence = (h, id) => h.readState('tasks.json').tasks.find((x) => 
   .filter((e) => ['tests', 'clean', 'ci'].includes(e.type));
 
 function acceptBoth(h) {
+  h.reviewer('T1', 'reviewer');
   h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.reviewer('T2', 'reviewer');
   h.ok(['evidence', 'T2', '--type', 'review', '--sha', h.second, '--ok', '--agent', 'reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   h.ok(['accept', 'T2', '--agent', 'orchestrator']);
@@ -545,6 +547,7 @@ test('main moves: a mergeable PR keeps its evidence and merges after one head-of
   const before = softwareEvidence(h, 'T1');
   h.moveMain();
   const suites = h.suites().length;
+  h.reviewer('T1', 'reviewer');
   h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.deepEqual(softwareEvidence(h, 'T1'), before, 'a base move reruns no gate and resets no evidence');
@@ -609,6 +612,7 @@ test('a base that moves during the head check gets a new check before the merge'
   const h = queueFixture(t);
   h.moveMain();
   fs.writeFileSync(path.join(h.base, 'move-main-once'), '');
+  h.reviewer('T1', 'reviewer');
   h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   const checks = headChecks(h);
@@ -640,9 +644,17 @@ fs.writeFileSync(file, JSON.stringify(gh));
 cli('claim', 'T1', '--agent', 'worker');
 cli('submit', 'T1', '--sha', ${JSON.stringify(replacement)}, '--pr', '7', '--agent', 'worker');
 for (const gate of ['tests', 'clean', 'ci']) cli('check', gate, 'T1', '--agent', 'orchestrator');
+const events = ${JSON.stringify(path.join(h.state, 'events.jsonl'))};
+const revision = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(h.state, 'tasks.json'))}, 'utf8')).tasks.find((x) => x.id === 'T1').revision;
+const at = new Date().toISOString();
+fs.appendFileSync(events, [
+  { at, agent: 'orchestrator', cmd: 'spawn', task: 'T1', detail: { agent: 'reviewer', role: 'reviewer', rung: 'review', sha: ${JSON.stringify(replacement)}, revision, pid: 999999, attempt: 1 } },
+  { at, agent: 'orchestrator', cmd: 'spawn exit', task: 'T1', detail: { agent: 'reviewer', pid: 999999, attempt: 1, code: 0 } },
+].map((e) => JSON.stringify(e) + '\\n').join(''));
 cli('evidence', 'T1', '--type', 'review', '--sha', ${JSON.stringify(replacement)}, '--ok', '--agent', 'reviewer');
 cli('accept', 'T1', '--agent', 'orchestrator');
 `);
+  h.reviewer('T1', 'reviewer');
   h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the replacement ran during the check');
@@ -688,6 +700,7 @@ cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'project', 'set', '--
   { cwd: ${JSON.stringify(h.repo)}, env: ${JSON.stringify(h.env)}, encoding: 'utf8' });
 process.exitCode = 1;
 `);
+  h.reviewer('T1', 'reviewer');
   h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the settings changed during the check');
