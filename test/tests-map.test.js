@@ -74,6 +74,7 @@ for (const [reason, settings, flags] of [
   ['missing mapped test', { 'value.js': ['test/missing.test.js'], '**/*.md': [] }, []],
   ['outside tests.paths', { 'value.js': ['value.js'], '**/*.md': [] }, []],
   ['ci.required', map, ['--ci-required', '[]']],
+  ['ci.local', map, ['--ci-local', '{"command":["node","-e","process.exit(0)"],"timeout":60}']],
   ['tests.expensive', map, ['--tests-expensive', 'false']],
   ['tests.map', map, ['--tests-map', 'null']],
 ]) {
@@ -106,4 +107,24 @@ test('tests map validates paths and is operational at init, set, clear and uncha
   assert.deepEqual(h.readState('project.json').tests.map, { '**/*.md': [] });
   h.ok(['project', 'set', '--tests-map', 'null']);
   assert.equal(h.readState('project.json').tests?.map, undefined);
+});
+
+
+test('broad test globs still map changed helpers to their covered suites', (t) => {
+  const h = fixture(t, { ...map, 'test/helpers.js': ['test/mapped.test.js'] });
+  fs.writeFileSync(path.join(h.repo, 'test/helpers.js'), 'module.exports = 1;\n');
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'helper change']);
+  h.ok(['rework', 'T1', '--reason', 'helper coverage']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.git(['rev-parse', 'HEAD'])]);
+  h.ok(['project', 'set', '--tests-paths', '["test/**"]']);
+  const result = check(h);
+  assert.equal(result.receipt.head_mode, 'mapped');
+  assert.ok(result.receipt.head_tests.includes('test/mapped.test.js'));
+  assert.ok(!result.receipt.head_tests.includes('test/helpers.js'));
+  h.ok(['project', 'set', '--tests-map', JSON.stringify(map)]);
+  const fallback = check(h);
+  assert.equal(fallback.receipt.head_mode, 'full');
+  assert.match(fallback.receipt.head_reason, /unmapped.*test\/helpers.js/);
 });
