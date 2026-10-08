@@ -32,6 +32,9 @@ if (args[0] === 'pr') {
         .trim().split('\n').map(JSON.parse);
       const executor = events.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running');
       process.kill(executor.detail.pid, 'SIGKILL');
+      // The test reads the file as soon as the executor dies; a second write
+      // from this orphaned call could truncate it under that read.
+      process.exit(0);
     }
   } else {
     out = JSON.stringify(pr);
