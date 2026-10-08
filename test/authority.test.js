@@ -387,6 +387,7 @@ test('moving confined roles to opencode requires the owner despite its private h
     const routes = h.readState('decisions.json').decisions.at(-1).escalation.change.ladder;
     assert.ok(Object.values(routes).every((rung) => rung.unconfined.every((route) => route.harness === 'opencode')));
   }
+  assert.equal(A.CAPABILITIES.opencode.sandbox, false);
   assert.equal(A.CAPABILITIES.opencode.osSandbox, false);
 });
 

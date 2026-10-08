@@ -72,6 +72,14 @@ function setup(t, rung = 'medium', inheritedPathName = null) {
 const dry = (f) => f.h.json(['spawn', '--task', 'T1', '--role', f.rung, '--dry-run'], { env: f.env });
 const spawn = (f, env = {}) => f.h.ok(['spawn', '--task', 'T1', '--role', f.rung, '--wait'], { env: { ...f.env, ...env } });
 
+async function waitForFile(file) {
+  const deadline = Date.now() + 20000;
+  while (!fs.existsSync(file)) {
+    if (Date.now() >= deadline) throw new Error(`${file} never appeared`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 for (const [name, content] of [
   ['__proto__', '{"__proto__":{"default_agent":"polluted-agent"},"normal":{"enabled":true}}'],
   ['constructor', '{"constructor":{"prototype":{"default_agent":"polluted-agent"}},"normal":{"enabled":true}}'],
@@ -215,6 +223,62 @@ test('opencode research selects its role agent and permits native web tools', { 
   assert.deepEqual(f.report().probes, ['allow', 'allow', 'deny']);
 });
 
+for (const change of ['tier', 'ladder']) {
+  test(`opencode launch filters credentials from the final ${change} after worktree preparation`, { skip: NO_STUBS }, async (t) => {
+    const f = setup(t, 'hard');
+    const instruction = path.join(f.h.base, 'race-instructions.md');
+    fs.writeFileSync(instruction, 'RACE-REMOTE-INSTRUCTION\n');
+    let requests = 0;
+    const server = http.createServer((req, res) => {
+      requests++;
+      assert.equal(req.url, '/.well-known/opencode');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ config: {
+        instructions: [instruction], plugin: ['race-remote-plugin'],
+        mcp: { raceRemote: { type: 'local', command: ['node', 'race-remote-server'], enabled: true } },
+      } }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const url = `http://127.0.0.1:${server.address().port}`;
+    const auth = {
+      [url]: { type: 'wellknown', key: 'REMOTE_TOKEN', token: 'RACE-SECRET-REMOTE' },
+      fixture: { type: 'api', key: 'RACE-SECRET-API' },
+      oauth: { type: 'oauth', access: 'RACE-SECRET-ACCESS', refresh: 'RACE-SECRET-REFRESH', expires: 9999999999999 },
+    };
+    fs.writeFileSync(path.join(f.h.base, 'bin', 'claude'), `#!${process.execPath}\nprocess.exit(1);\n`, { mode: 0o755 });
+    f.h.ok(['ladder', 'set', 'medium', '--harness', 'claude', '--model', 'opus',
+      '--clear', 'profile', '--clear', 'effort', '--clear', 'args', '--clear', 'provider']);
+    const stopped = path.join(f.h.base, 'preparation-paused');
+    const run = f.h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
+      env: { ...f.env, CLAUDE_CONFIG_DIR: path.join(f.home, '.claude'), OPENCODE_AUTH_CONTENT: JSON.stringify(auth) },
+      hooks: { HOOK_STOP_WORKTREE_ADD: stopped },
+    });
+    let result;
+    try {
+      await waitForFile(stopped);
+      if (change === 'tier') f.h.ok(['task', 'update', 'T1', '--tier', 'hard']);
+      else f.h.ok(['ladder', 'set', 'medium', '--harness', 'opencode', '--model', 'fixture/model']);
+    } finally {
+      fs.writeFileSync(`${stopped}.go`, '');
+      result = await run;
+    }
+    assert.equal(result.code, 0, result.stderr);
+    const started = JSON.parse(result.stdout);
+    assert.equal(started.harness, 'opencode');
+    assert.equal(started.rung, change === 'tier' ? 'hard' : 'medium');
+    const report = f.report();
+    assert.equal(requests, 0, 'final launch must not fetch unselected remote config');
+    assert.deepEqual(report.remoteContacts, []);
+    assert.deepEqual(report.authKinds, { fixture: 'api', oauth: 'oauth' });
+    assert.ok(!report.memory.join('').includes('RACE-REMOTE-INSTRUCTION'));
+    assert.ok(!report.config.plugin.includes('race-remote-plugin'));
+    assert.deepEqual(report.mcp, {});
+    const events = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8');
+    assert.ok(!(result.stdout + events).includes('RACE-SECRET'));
+  });
+}
+
 test('a fallback into opencode receives filtered auth instead of restoring remote discovery', { skip: NO_STUBS }, (t) => {
   const f = setup(t);
   const auth = {
@@ -262,6 +326,23 @@ test('opencode renders worker path, web, skill, git and gh permission decisions'
   assert.ok(receipt.rules.every((rule) => rule.loaded === 'read'));
   assert.match(preview.argv.find((arg) => arg.includes('## Task')), /REPO-RULE|AGENTS\.md/);
 });
+
+for (const rung of ['medium', 'small']) {
+  test(`opencode ${rung} Bash bypasses file-tool paths and remains classified as unconfined`, { skip: NO_STUBS }, (t) => {
+    const f = setup(t, rung);
+    const canary = path.join(f.h.base, 'outside-bash-canary.txt');
+    const preview = dry(f);
+    spawn(f, { STUB_BASH_CANARY: canary, STUB_PROBES: JSON.stringify([['edit', canary]]) });
+    const report = f.report();
+    assert.deepEqual(report.probes, ['deny']);
+    assert.equal(report.bash.decision, 'allow');
+    assert.equal(report.bash.code, 0, report.bash.stderr);
+    assert.equal(fs.readFileSync(canary, 'utf8'), 'BASH-CANARY');
+    assert.equal(preview.env.TOWER_CRANE_SANDBOX, '0');
+    assert.deepEqual(A.CAPABILITIES.opencode, { sandbox: false, osSandbox: false });
+    assert.equal(A.sandboxed(rung === 'small' ? 'small' : 'worker', 'opencode'), false);
+  });
+}
 
 test('opencode rung tool and MCP opt-ins appear in dry-run and exclude copied secrets', { skip: NO_STUBS }, (t) => {
   const f = setup(t);

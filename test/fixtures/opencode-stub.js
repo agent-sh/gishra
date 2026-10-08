@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const cp = require('node:child_process');
 
 const read = (file) => {
   try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
@@ -95,6 +96,17 @@ async function main() {
     probes: JSON.parse(process.env.STUB_PROBES || '[]').map(([tool, input]) => decision(permission, tool,
       ['read', 'edit'].includes(tool) && path.isAbsolute(input) ? path.relative(process.cwd(), input).replace(/\\/g, '/') : input)),
   };
+  if (process.env.STUB_BASH_CANARY) {
+    const script = 'require("node:fs").writeFileSync(process.argv[1], "BASH-CANARY")';
+    const input = [process.execPath, '-e', script, '--', process.env.STUB_BASH_CANARY].map((word) => JSON.stringify(word)).join(' ');
+    const action = decision(permission, 'bash', input);
+    report.bash = { decision: action };
+    if (action === 'allow') {
+      const result = cp.spawnSync(process.execPath, ['-e', script, '--', process.env.STUB_BASH_CANARY], { encoding: 'utf8', timeout: 10000 });
+      report.bash.code = result.status;
+      report.bash.stderr = result.stderr;
+    }
+  }
   fs.writeFileSync(process.env.STUB_OUT, JSON.stringify(report));
 }
 
