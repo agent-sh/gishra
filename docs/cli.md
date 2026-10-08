@@ -285,6 +285,8 @@ already merged, confirms the accepted head through the merge gate. A
 reaction that starts during a manual merge queues; the merge drains it
 after releasing the task, and it finds the task merged. A reservation
 held by an unobservable executor refuses the merge.
+The merge queue takes the same reservation for the head of the line
+around its merge, since the queue can run under another task's reaction.
 Supervisors use the dispatcher's PATH and an explicit trusted
 authorization context; workers and reviewers keep their restrictive
 command shims. Software reactions may finish their

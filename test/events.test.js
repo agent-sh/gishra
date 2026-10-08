@@ -197,6 +197,49 @@ test('confirmed merge gate wakes; a failed gate never produces merged', async (t
   assert.equal((await event(result, 'merged')).detail.ref, h.sha);
 });
 
+test('a manual merge racing the merge queue under another task\'s reaction: one merges, the other confirms', async (t) => {
+  const h = setup(t);
+  h.sha = gateFixture(h);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
+  h.env.FIXTURE_GH_LOG = path.join(h.base, 'gh.jsonl');
+  h.env.FIXTURE_MERGED_PER_PR = '1';
+  const rounds = 10;
+  h.ok(['plan', 'import', '-'], { input: JSON.stringify(Array.from({ length: rounds * 2 - 1 }, (_, i) => ({ title: `Change ${i + 2}`, acceptance: ['works'] }))) });
+  for (let i = 1; i <= rounds; i++) {
+    // The lower task's reaction drains the line, so the queue merges the
+    // upper task while holding only the lower task's reaction reservation.
+    const [lower, upper] = [`T${i * 2 - 1}`, `T${i * 2}`];
+    for (const [n, id] of [[i * 2 - 1, lower], [i * 2, upper]]) {
+      h.ok(['claim', id, '--agent', 'worker']);
+      h.ok(['submit', id, '--agent', 'worker', '--sha', h.sha, '--pr', String(n)]);
+      h.ok(['accept', id, '--agent', 'owner', '--reason', 'race fixture',
+        ...['tests', 'clean', 'review', 'ci'].flatMap((type) => ['--waive', type])]);
+    }
+    const after = String(fs.statSync(path.join(h.state, 'events.jsonl')).size);
+    // State call jitter spreads the two merges over each other's checks.
+    const jitter = { HOOK_JITTER_MS: '15' };
+    const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--after', after, '--task', upper, '--types', 'merged', '--timeout', '30'], jitter);
+    // Start near the queue's move from the lower task to the upper one.
+    const deadline = Date.now() + 20000;
+    while (!log(h).some((e) => e.type === 'merged' && e.task === lower) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.random() * 600));
+    const manual = await h.runAsync(['merge', upper], { hooks: jitter });
+    assert.equal(manual.code, 0, `${upper}: ${manual.stderr}`);
+    await event(automatic, 'merged', upper);
+    const stops = log(h).filter((e) => (e.cmd === 'merge queue' && (e.detail.blocked || e.detail.error))
+      || (e.cmd === 'automation' && [lower, upper].includes(e.task) && !['running', 'done'].includes(e.detail.phase)));
+    assert.deepEqual(stops, [], `${upper}: the queue never stops on the manual merge`);
+    const calls = fs.readFileSync(h.env.FIXTURE_GH_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+    for (const [n, id] of [[i * 2 - 1, lower], [i * 2, upper]]) {
+      assert.equal(calls.filter((a) => a[0] === 'pr' && a[1] === 'merge' && a[2] === String(n)).length, 1, `${id}: GitHub merged once`);
+    }
+    const merges = h.readState('tasks.json').tasks.find((x) => x.id === upper).evidence.filter((e) => e.type === 'merge');
+    assert.ok(merges.length && merges.every((e) => e.ok), `${upper}: ${JSON.stringify(merges)}`);
+  }
+});
+
 test('a manual merge named by a lowercase id releases the reservation it took', (t) => {
   const h = setup(t);
   h.sha = gateFixture(h);
