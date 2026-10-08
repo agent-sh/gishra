@@ -63,8 +63,13 @@ cp.spawnSync=(cmd,args,opts)=>{
 
 test('submission runs real software gates once through the existing waiter', (t) => {
   const h = setup(t, { ci: 'pending' });
+  h.ok(['task', 'note', 'T1', 'live orchestrator', '--agent', 'orchestrator'], { env: { CLAUDE_SESSION_ID: 'holder' } });
+  const holder = h.readState('tasks.json').orchestrator_lease;
+  h.consume = () => h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'owner'],
+    { env: { CLAUDE_SESSION_ID: 'engine-waiter' } });
   h.submit();
   assert.equal(h.consume().code, 2);
+  assert.equal(h.readState('tasks.json').orchestrator_lease.session_id, holder.session_id, 'automation inherits the holder');
   const task = h.readState('tasks.json').tasks[0];
   assert.deepEqual(task.evidence.map((e) => [e.type, e.ok]), [['tests', true], ['clean', true], ['ci', false]]);
   assert.ok(task.evidence.every((e) => e.commands.length && e.source === `check ${e.type}`));
@@ -741,21 +746,21 @@ test('a head replaced during its check is checked again at the new sha before th
   const replacement = h.git(['rev-parse', 'HEAD']);
   h.git(['switch', '-q', 'main']);
   h.moveMain();
-  // Rework, resubmit and reaccept T1 at a new head while its suite runs.
+  // The owner reworks and reaccepts T1 at a new head while its suite runs.
   fs.writeFileSync(path.join(h.base, 'during-check.js'), `const cp = require('node:child_process'), fs = require('node:fs');
 const env = ${JSON.stringify(h.env)};
 const cli = (...a) => cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, ...a], { cwd: ${JSON.stringify(h.repo)}, env, encoding: 'utf8' });
 const file = env.AUTOMATION_GITHUB;
-cli('rework', 'T1', '--reason', 'replace the head', '--agent', 'orchestrator');
+cli('rework', 'T1', '--reason', 'replace the head', '--agent', 'owner');
 const gh = JSON.parse(fs.readFileSync(file, 'utf8'));
 gh.prs['7'].headRefOid = ${JSON.stringify(replacement)};
 gh.ci[${JSON.stringify(replacement)}] = 'success';
 fs.writeFileSync(file, JSON.stringify(gh));
 cli('claim', 'T1', '--agent', 'worker');
 cli('submit', 'T1', '--sha', ${JSON.stringify(replacement)}, '--pr', '7', '--agent', 'worker');
-for (const gate of ['tests', 'clean', 'ci']) cli('check', gate, 'T1', '--agent', 'orchestrator');
+for (const gate of ['tests', 'clean', 'ci']) cli('check', gate, 'T1', '--agent', 'owner');
 cli('evidence', 'T1', '--type', 'review', '--sha', ${JSON.stringify(replacement)}, '--ok', '--agent', 'reviewer');
-cli('accept', 'T1', '--agent', 'orchestrator');
+cli('accept', 'T1', '--agent', 'owner');
 `);
   h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
@@ -796,9 +801,9 @@ test('a head check that fails after its settings changed checks again under the 
   const h = queueFixture(t);
   h.moveMain();
   const cmd = h.readState('project.json').gates.tests_cmd;
-  // The suite fails, but only after another CLI replaced the tests command.
+  // The suite fails, but only after the owner replaces the tests command.
   fs.writeFileSync(path.join(h.base, 'during-check.js'), `const cp = require('node:child_process');
-cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'project', 'set', '--tests-cmd', ${JSON.stringify(`${cmd} again`)}, '--agent', 'orchestrator'],
+cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'project', 'set', '--tests-cmd', ${JSON.stringify(`${cmd} again`)}, '--agent', 'owner'],
   { cwd: ${JSON.stringify(h.repo)}, env: ${JSON.stringify(h.env)}, encoding: 'utf8' });
 process.exitCode = 1;
 `);

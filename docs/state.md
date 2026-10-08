@@ -42,6 +42,18 @@ When `TOWER_CRANE_TASK` is set, resolving either identity source to `owner` is r
 
 `spawn` passes the name `<job>-<task>-<n>` (`worker-T1-1`, `reviewer-T1-1`) in `TOWER_CRANE_AGENT`. A sandboxed claude or codex agent cannot write the state files (a codex agent's commands write only its own `HOME`, sessions and broker directory there); its state changes go through its spawn's [state broker](ladder.md#state-broker), which records them under the spawned name whatever the agent passes, allows only its role's commands on its own task, and refuses another identity. Its credential is the token in its private broker directory, made for that spawn and invalid once the agent exits. Its prompt says `you are not the owner; never pass --agent owner` and closes with `run tower-crane with --agent <name> if TOWER_CRANE_AGENT is missing`, so a shell that loses the environment can still record the correct identity.
 
+## Orchestrator lease
+
+The first orchestrator write takes `tasks.json.orchestrator_lease` under the state lock. Older state files can omit it; null means released. It holds `{ session_id, harness_session_id, agent, pid, host, heartbeat }`. `pid` identifies the calling harness or persistent parent, rather than the short-lived CLI process.
+
+The session key binds the host and parent process chain to the first available `CLAUDE_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID` or `CODEX_SESSION_ID`. Without a harness id it uses the host and parent chain alone. Linux process start times and pid namespace distinguish reused pids and namespaces. Two live copies of the same resumed harness session have different process chains, so they cannot both hold the lease. Transient Linux command shells are skipped.
+
+Every orchestrator command renews the matching holder's heartbeat, including reads. A read never takes a vacant lease or renews another session's lease. Writes from another live session exit 1 naming the holder, pid, host, heartbeat and recovery commands. The guard runs before CLI commands start external work and again inside every state mutation. Workers and owner commands keep their existing authority.
+
+The lease expires after `project.limits.lease_minutes` of idle time, using the existing project lease window (60 minutes by default). After expiry the next orchestrator write replaces it. `tower-crane orchestrator release` clears the calling holder's lease. Only the owner can run `tower-crane orchestrator takeover --agent owner`, which clears a live holder explicitly; the next orchestrator write acquires it. Both commands record the previous holder in the audit log.
+
+Engine reactions marked `via: automation` inherit the current lease holder, including reactions from a monitor or owner waiter. They renew that holder instead of creating a competing orchestrator session. An active reaction keeps its captured session identity; a release or takeover followed by a different holder refuses its later state writes. Without an existing holder, an engine reaction takes a lease on its first write. This lease coordinates trusted sessions, like the existing state lock; it is not an authentication boundary for processes that can write state files directly.
+
 ## Authority
 
 The owner hands the run to an orchestrator and is asked only when the owner is required. `lib/authority.js` holds the one table that classifies every guarded setting and command, and one check that every command uses:

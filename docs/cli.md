@@ -187,6 +187,10 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `msg --to NAME [--task ID] [--steer] TEXT` | send a worker message through the event log |
 | | |
+| `orchestrator release` | holding orchestrator session only: clear the lease so another session can write; refuses another session even when it uses the same agent name |
+| | |
+| `orchestrator takeover` | owner only: explicitly clear the orchestrator lease; the next orchestrator write acquires it. Records the previous holder |
+| | |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner |
 | | |
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment` |

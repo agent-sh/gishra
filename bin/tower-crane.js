@@ -166,6 +166,10 @@ const COMMANDS = [
 
   { section: 'Run', name: 'msg', pos: ['TEXT...'], usage: '--to NAME [--task ID] [--steer] TEXT', summary: 'send a worker message through the event log', flags: { to: str('NAME', 'recipient, usually orchestrator'), task: str('ID', 'task (default TOWER_CRANE_TASK)'), steer: bool('deliver into the running turn where the harness can, not after it') }, required: ['to'], run: run('../lib/events', 'message') },
 
+  { section: 'Run', name: 'orchestrator release', summary: 'release the calling orchestrator session lease', description: 'holding orchestrator session only: clear the lease so another session can write; refuses another session even when it uses the same agent name', run: run('../lib/orchestrator', 'release') },
+
+  { section: 'Run', name: 'orchestrator takeover', summary: 'owner-only clear the orchestrator lease for a new session', description: 'owner only: explicitly clear the orchestrator lease; the next orchestrator write acquires it. Records the previous holder', run: run('../lib/orchestrator', 'takeover') },
+
   { section: 'Run', name: 'owner-done', pos: ['ID'], usage: 'ID [--note T]', summary: 'the owner did what needs_owner asked; clears it', flags: { note: str('T', 'what was done') }, description: "the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner", run: T.ownerDone },
 
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', description: "add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `needs`, `size`, `tier`, `depends_on`, `needs_owner`, `locks`, `environment`; `needs_owner` is trimmed and blank values store null. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file", run: T.planImport },
@@ -448,6 +452,7 @@ async function main(argv) {
       pos: parsed.pos,
       stateDir: locate(),
     };
+    require('../lib/orchestrator').command(ctx, cmd.name);
     const res = await cmd.run(ctx);
     if (res && !res.printed) {
       if (ctx.json) out(JSON.stringify(res.data, null, 2));
