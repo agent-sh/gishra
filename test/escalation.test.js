@@ -31,12 +31,57 @@ function until(t, dir, fn) {
   });
 }
 
+function configure(h, trigger) {
+  h.attempts = path.join(h.base, 'attempts.json');
+  for (const [index, rung] of ['easy', 'medium', 'hard'].entries()) {
+    const script = `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const cli = (args) => cp.execFileSync(process.execPath, [process.argv[1], ...args], { encoding: 'utf8' });
+${index === 0 && trigger === 'preclaim' ? '' : "cli(['claim', 'T1']);"}
+const attempts = fs.existsSync(process.argv[2]) ? JSON.parse(fs.readFileSync(process.argv[2])) : [];
+attempts.push({ rung: '${rung}', agent: process.env.TOWER_CRANE_AGENT, session: process.env.TOWER_CRANE_SESSION,
+  previous: process.argv[3], cwd: process.cwd() });
+fs.writeFileSync(process.argv[2] + '.tmp', JSON.stringify(attempts));
+fs.renameSync(process.argv[2] + '.tmp', process.argv[2]);
+console.log(JSON.stringify({ type: 'thread.started', thread_id: '${rung}-thread' }));
+console.log(JSON.stringify({ type: 'result', modelUsage: { luna: {} },
+  usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 20 } }));
+${index === 0 && ['cleanup', 'orphan'].includes(trigger) ? `
+cp.spawn(process.execPath, ['-e', \`
+const fs = require('node:fs');
+process.on('SIGTERM', () => fs.writeFileSync(process.argv[1] + '.term', 'stopping'));
+fs.writeFileSync(process.argv[1] + '.ready.tmp', String(process.pid));
+fs.renameSync(process.argv[1] + '.ready.tmp', process.argv[1] + '.ready');
+setInterval(() => {}, 1000);
+\`, process.argv[2]], { stdio: 'ignore' });
+` : ''}
+${index === 0 && ['stall', 'hold', 'orphan'].includes(trigger) ? 'setInterval(() => {}, 1000);'
+    : index === 0 && trigger === 'outage' ? "console.error('HTTP 503 service unavailable'); process.exit(1);"
+      : index === 0 && trigger === 'refusal' ? "console.log(JSON.stringify({ type: 'refusal' })); process.exit(1);"
+        : trigger === 'top' || index === 0 && ['exit', 'preclaim'].includes(trigger) ? 'process.exit(0);'
+      : "cli(['submit', 'T1', '--sha', fs.readFileSync(process.argv[2] + '.sha', 'utf8')]);"}
+${index === 0 && trigger === 'cleanup' ? `
+const stop = () => { if (fs.existsSync(process.argv[2] + '.exit')) process.exit(0); };
+fs.watch(require('node:path').dirname(process.argv[2]), stop);
+stop();
+` : ''}
+`;
+    h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
+      JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{session}', '{prompt}']),
+      '--clear', 'profile', '--clear', 'effort', '--clear', 'model', '--supervision',
+      JSON.stringify({ retries: 0, ...(index === 0 && trigger === 'stall' ? { stall_ms: 100 } : {}), backoff_ms: 10, max_backoff_ms: 10 })]);
+  }
+}
+
 async function setup(t, trigger = 'exit', range = 'easy..medium', prepare = null) {
-  const h = cachedFixture(null, `escalation:${range}`, (repo) => {
+  const h = cachedFixture(null, `escalation:${range}:${trigger}`, (repo) => {
     repo.init();
     repo.ok(['task', 'add', '--title', 'Start low', '--tier', range, '--acceptance', 'climbs on quality failure']);
     repo.ok(['brief', 'set', 'T1', '-'], { input: 'Finish the task.\n' });
+    configure(repo, trigger);
   });
+  h.attempts = path.join(h.base, 'attempts.json');
   const exits = new Map();
   const sockets = new Set();
   const signal = path.join(h.base, 'process-signal.cjs');
@@ -102,46 +147,8 @@ if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
     }
   });
   if (prepare) prepare(h);
-  h.attempts = path.join(h.base, 'attempts.json');
-  for (const [index, rung] of ['easy', 'medium', 'hard'].entries()) {
-    const script = `
-const fs = require('node:fs');
-const cp = require('node:child_process');
-const cli = (args) => cp.execFileSync(process.execPath, [process.argv[1], ...args], { encoding: 'utf8' });
-${index === 0 && trigger === 'preclaim' ? '' : "cli(['claim', 'T1']);"}
-const attempts = fs.existsSync(process.argv[2]) ? JSON.parse(fs.readFileSync(process.argv[2])) : [];
-attempts.push({ rung: '${rung}', agent: process.env.TOWER_CRANE_AGENT, session: process.env.TOWER_CRANE_SESSION,
-  previous: process.argv[3], cwd: process.cwd() });
-fs.writeFileSync(process.argv[2] + '.tmp', JSON.stringify(attempts));
-fs.renameSync(process.argv[2] + '.tmp', process.argv[2]);
-console.log(JSON.stringify({ type: 'thread.started', thread_id: '${rung}-thread' }));
-console.log(JSON.stringify({ type: 'result', modelUsage: { luna: {} },
-  usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 20 } }));
-${index === 0 && ['cleanup', 'orphan'].includes(trigger) ? `
-cp.spawn(process.execPath, ['-e', \`
-const fs = require('node:fs');
-process.on('SIGTERM', () => fs.writeFileSync(process.argv[1] + '.term', 'stopping'));
-fs.writeFileSync(process.argv[1] + '.ready.tmp', String(process.pid));
-fs.renameSync(process.argv[1] + '.ready.tmp', process.argv[1] + '.ready');
-setInterval(() => {}, 1000);
-\`, process.argv[2]], { stdio: 'ignore' });
-` : ''}
-${index === 0 && ['stall', 'hold', 'orphan'].includes(trigger) ? 'setInterval(() => {}, 1000);'
-    : index === 0 && trigger === 'outage' ? "console.error('HTTP 503 service unavailable'); process.exit(1);"
-      : index === 0 && trigger === 'refusal' ? "console.log(JSON.stringify({ type: 'refusal' })); process.exit(1);"
-        : trigger === 'top' || index === 0 && ['exit', 'preclaim'].includes(trigger) ? 'process.exit(0);'
-      : `cli(['submit', 'T1', '--sha', '${h.git(['rev-parse', 'HEAD'])}']);`}
-${index === 0 && trigger === 'cleanup' ? `
-const stop = () => { if (fs.existsSync(process.argv[2] + '.exit')) process.exit(0); };
-fs.watch(require('node:path').dirname(process.argv[2]), stop);
-stop();
-` : ''}
-`;
-    h.ok(['ladder', 'set', rung, '--harness', 'command', '--command',
-      JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{session}', '{prompt}']),
-      '--clear', 'profile', '--clear', 'effort', '--clear', 'model', '--supervision',
-      JSON.stringify({ retries: 0, ...(index === 0 && trigger === 'stall' ? { stall_ms: 100 } : {}), backoff_ms: 10, max_backoff_ms: 10 })]);
-  }
+  // Gate preparation can change HEAD after the cached ladder was built.
+  fs.writeFileSync(h.attempts + '.sha', h.git(['rev-parse', 'HEAD']));
   h.readAttempts = () => fs.existsSync(h.attempts) ? JSON.parse(fs.readFileSync(h.attempts)) : [];
   return h;
 }
