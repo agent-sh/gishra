@@ -14,6 +14,8 @@ In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), co
 
 Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing.
 
+Lock attempts use private staging directories named with the process pid and a fresh random nonce. Concurrent staging cleanup retries with backoff within the usual 10 s acquisition deadline; it does not expose a staging `ENOENT` as a command or supervisor failure. Persistent contention or cleanup races exit 3. See [state.md: Lock](state.md#lock).
+
 ## Plan
 
 <!-- commands:Plan:start -->
@@ -169,6 +171,10 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 |---|---|
 | `accept ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]` | run unattempted software gates first; tests and clean use pinned project commands. Optional `--cmd` and `--proof-cmd` must match their pins; none mode needs no test command. When they pass and review is missing, dispatch it and return `review_pending: true` while keeping the task submitted. Call again after review evidence arrives to accept. Existing successful receipts are reused; attempted failures or invalid receipts require an explicit gate rerun. `--waive review` is operational when the reviewer is capped or down at the submitted head (a capped review run in its `check ci` evidence, or a review spawn that exited without a verdict) and owner-required otherwise; waiving tests, clean, sources or ci is owner-required |
 | | |
+| `ci completed ID --sha SHA` | orchestrator or owner: deliver a CI completion hint for an active submitted head, rerun the CI gate and advance passing tasks |
+| | |
+| `ci webhook FILE` | orchestrator or owner: deliver completed GitHub `check_run`, `check_suite` or `workflow_run` JSON; `-` reads stdin. Repository must match. Stale heads and incomplete checks are ignored |
+| | |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; repeating it as the live claimant renews the lease. Refused if another agent holds it, the task is not ready, a resource lock is held, or the workers limit is reached (live leases and unclaimed worker spawns); consumes that agent's reservation for this task |
 | | |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `sources`, `ci` and `merge` for every agent and either verdict; use the gate commands |
@@ -202,6 +208,45 @@ When `--branch` or `--pr` is supplied and the task already records a PR, `submit
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
 
+The trusted `wait` watcher and dispatch supervisor react to submissions,
+worker exits, review evidence, acceptance, CI completions and confirmed
+merges. Submission runs unattempted tests, cleanup and source verification
+once the PR head matches, including while mergeability is unknown. CI,
+review dispatch and merging still require known mergeability.
+A tracked worker must exit before automatic review dispatch. Native
+workers without a recorded exit use explicit `accept` to dispatch review.
+Passing independent review accepts the task; accepted PRs with green
+gates merge through the existing head guards. A watcher creates a fresh
+reconciliation request for every active PR when starting, except a default
+`wait --timeout 0` cursor snapshot. It queries current mergeability even
+when the last reaction completed, recovering conflicts after merges that
+happened without a waiter. Existing evidence at the same head is reused.
+Reconciliation does not wait on a busy state lock; the next notification
+or existing fallback tick retries it within the wait's timeout.
+Filters apply to the returned event, not to the software reactions.
+
+After a confirmed merge, outstanding submitted or accepted PRs are checked
+against their fetched base in temporary detached worktrees. Conflicts send
+the task to rework with Git's filenames in its note and brief. Trial merges
+do not resolve conflicts or update worker branches. Unknown PR heads,
+unknown mergeability and failed GitHub transport cannot authorize merging.
+
+CI completion requires notification delivery by the host's webhook or job
+integration, using `ci webhook` or `ci completed`. No listener or CI polling
+loop is installed. The notification's conclusion is never evidence: the
+CI gate queries GitHub at the current submitted head. A pending or failing
+gate remains failing until an explicit retry or another completion.
+Automatic failures are recorded in `automation` events. Concurrent
+consumers serialize per task and reuse completed event receipts; commands
+execute outside the state lock. Deferred or errored reactions remain
+retryable at watcher startup. Accepted PRs already merged remotely are
+confirmed through the merge gate, preserving the accepted head check.
+Supervisors use the dispatcher's PATH and an explicit trusted
+authorization context; workers and reviewers keep their restrictive
+command shims. Software reactions may finish their
+bounded gate commands after a wait's timeout expires. The broker retains
+its command restrictions and never executes gates.
+
 Pass the commit actually reviewed to `evidence --sha S`. A submitted head can move while a review is running; `tower-crane evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on `review` evidence is a usage error (exit 2) and writes nothing. Software evidence types are refused first (exit 1), with or without `--sha`. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
 
 `spend --cache-write N` records cache-write input separately from `--cached` cache reads. Both are included in `--input`; their sum cannot exceed input. Review pricing uses the entry when available and conservatively prices non-cached input in older records at the higher input or cache-write rate.
@@ -227,7 +272,7 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 `tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
 
 - `--after` is an event `id` or a byte `offset` returned by a previous wait. The default, `now`, starts at the log's current end; `0` replays from the beginning. Cursors are exclusive. A numeric cursor must be zero or immediately after a complete line, within the current log. Unknown ids and invalid offsets exit 2.
-- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner` and engine observations (`worker-exited` and `stall`). Owner input must reach a waiter running as `owner`, and observations must wake their observer too.
+- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner`, `via: automation` and engine observations (`worker-exited` and `stall`). Owner input and automatic results reach the waiter that shares their actor.
 - No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is `{"type":"timeout","offset":N}` followed by a newline and the exit code is 2. The offset follows the last complete line scanned, including filtered events. Interrupting the wait exits 130 and closes its watchers.
 - An event line contains `id`, `type`, `to`, `at`, `agent`, `cmd`, `task`, `detail`, and `offset`. `offset` is the byte position after that event's newline. Use either returned cursor for the next wait to retain events that arrived while handling the first.
 
@@ -387,6 +432,8 @@ Review instructions.
 ```
 
 For worker and reviewer jobs, a `claude`, `codex`, `opencode` or `agy` prompt starts with the body of the matching `skills/tower-crane-work/SKILL.md` or `skills/tower-crane-review/SKILL.md`, with frontmatter removed. If that `SKILL.md` is missing, `spawn` warns on stderr and continues without the role skill. A fresh prompt then contains a `## Goal` section (the project goal, the task's target, and an instruction to restate both in the first message), a `## House rules` section listing the rule files by path ([Agent files and homes](ladder.md#agent-files-and-homes)), the worker brief or reviewer packet, the task's id, title, acceptance and kind as JSON, and a line telling the agent to use the `tower-crane` CLI for every state change. It says `you are not the owner; never pass --agent owner`. Its closing instruction says `run tower-crane with --agent <name> if TOWER_CRANE_AGENT is missing`, using the same name passed in the environment. A resumed worker gets its rework note without another copy of the skill body. A pi worker or reviewer receives its matching skill through `--skill` instead, without a duplicate in the prompt; if its `SKILL.md` is missing, `spawn` warns on stderr and omits `--skill`. A fresh custom `command` rung receives the worker brief or reviewer packet and task prompt without an automatically embedded skill body. Its `{brief}` argument is a temporary copy of that context with the same `## Goal` and `## House rules` sections first and the task JSON after it, so an adapter that reads only `{brief}` still gets the goal, rules and acceptance; the copy is removed after foreground completion or a verified background exit. The prompt runs in the task's worktree, which is created if missing; `--dry-run` creates nothing. Both streams go to `logs/<task>-<agent>.log`; the `spawn` event records the harness pid and dispatch metadata. In the background the agent is detached and a monitor collects usage after exit through the same locked observer used by `wait`. A waiter that observes an exit also attempts collection; concurrent observers count the spawn once. With `--wait` output is also streamed to the terminal (stdout goes to stderr under `--json`), usage is collected after stream closure, and tower-crane exits with the agent code.
+
+Command `{brief}` copies are single files named `tower-crane-brief-<pid>-<uuid>-brief.md` under `TOWER_CRANE_TMP`, then `TOWER_CRANE_TEST_TMP`, then the system temporary directory. Creation is exclusive with mode `0600`. Cleanup unlinks the whole copy in one operation, leaving no per-copy directory. Foreground completion and startup failures remove the copy before returning; detached supervision removes it after the harness and its process group finish, including signal exits.
 
 `spawn --role review` selects a reviewer per task and requires a submitted head with passing software gates, including CI for a PR. It checks again under the dispatch lock and refuses a second live reviewer at that head and revision. Review prompts contain the diff, acceptance, gate results and the brief's `## Reviewer` section. They ask the reviewer to use the supplied results and re-run tests only for a focused probe. The CLI writes `reviews/<task>-<full-sha>.md`; packets over 12,000 characters are referenced from a short prompt so Windows command limits do not drop the diff. `rung` stays `review` for role and spend accounting; `review_rung` names the selected tier or fallback, and review dispatch adds the submitted `sha` and `revision`. An unsubmitted `--dry-run` previews the fallback command only; a submitted dry run checks gates and selection but writes no packet.
 Spawn logs are created exclusively with mode `0600` on POSIX. On Windows, logs inherit the state directory's ACL; the state directory normally lives under the user's profile. An occupied log name, including a leaf symlink, refuses the spawn without writing to the file or recording a spawn. Move the occupied log before retrying. The state directory and its parent directories remain trusted local storage.

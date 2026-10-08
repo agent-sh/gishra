@@ -125,7 +125,9 @@ All JSON files carry `"version": 1`. Writes go to a temp file in the same direct
 
 Every command that writes in the state directory holds the lock while it reads and writes, `render` included. Reads take no lock.
 
-A writer takes the lock by renaming a directory it prepared to `lock`. That directory holds one file named after the writer's random nonce, with its pid, host, pid namespace (`pidns`, the target of `/proc/self/ns/pid`, or null where there is none) and time. The rename fails while `lock` holds such a file, so one writer holds it at a time; the others retry with backoff for up to 10 s, then exit 3.
+A writer prepares a private `lock.<pid>.<random nonce>.new` directory for each attempt and takes the lock with one atomic rename to `lock`. That directory holds one file named after the writer's random nonce, with its pid, host, pid namespace (`pidns`, the target of `/proc/self/ns/pid`, or null where there is none) and time. The rename fails while `lock` holds such a file, so one writer holds it at a time; the others retry with backoff for up to 10 s, then exit 3. An `ENOENT` or `EEXIST` from concurrent cleanup retries within the same deadline with a fresh private directory. A missing state directory is still refused with the initialization instructions.
+
+After acquisition, a writer sweeps abandoned staging directories older than 60 s. A staging name whose pid is visible and alive is left alone, even if its marker is not written yet or its timestamps look old. Cleanup only unlinks that directory's marker and removes the directory if empty. A writer whose staging is removed by a sweeper in another pid namespace retries; a rename that arrives without its marker does not grant the lock.
 
 A marker's holder and modification time are read through one opened file descriptor, so they refer to the same file even if its path is replaced. A lock is stale when its holder process is gone or its file is older than 60 s. The holder is checked by pid only when it ran on the same host in the same pid namespace: a command sandbox gives each command a namespace of its own, where a live holder in another one looks gone, and breaking its lock would let two writers save over each other. A marker without `pidns`, from an older writer, counts only by age on hosts that have pid namespaces. The next writer breaks it by deleting that file by its name, then the directory if it is empty. A name is never reused, so breaking a stale lock cannot remove a newer holder's, however the writers interleave. If a stale lock cannot be removed, writers still exit 3 after 10 s and say so.
 
@@ -507,7 +509,58 @@ A decision blocks only the tasks it lists. Everything else keeps running. `statu
 
 ## events.jsonl
 
-The append-only log is the event source of truth. One JSON object per line: `{ "id", "type", "to", "at", "agent", "cmd", "task", "detail" }`, plus `"via": "broker"` on an event the state broker wrote for a sandboxed agent (provenance, not proof). Every append occurs under the state lock after validation and state writes. Refused commands append nothing, except the `ask` an orchestrator's owner-required change opens ([Authority](#authority)). Each new event has a unique `E<uuid>` id. `cmd` preserves the command name (`task add`, `claim`, `spawn`, `check tests` and so on); `tower-crane spawn` counts its earlier `spawn` events to number agents. Older audit lines without ids remain readable; `wait` exposes their byte offsets for resuming.
+Trusted watchers and dispatch supervisors consume lifecycle events as
+software reactions. They run submission gates, dispatch review after the
+tracked worker exits, accept independent passing review, merge accepted
+PRs with green gates, and detect conflicting outstanding PRs after merges.
+Conflict rework names the files and preserves the worker branch. Native
+workers without an exit record need explicit review dispatch.
+Tests, cleanup and source verification run when the submitted PR head
+matches, even with unknown mergeability. CI, review dispatch and merging
+retain their mergeability guards.
+
+`ci completed` records a `ci-completed` hint with `sha` and `revision`.
+The host delivers completion hints directly or through `ci webhook`
+with GitHub check-run, check-suite or workflow-run JSON. The repository
+must match, and only completed checks at active submitted heads count.
+The hint triggers a new CI gate query; payload conclusions do not produce
+evidence. There is no CI polling loop or webhook listener.
+
+`automation` events record `{source, phase}` keyed by the triggering event
+ID, or a stable digest for older records without IDs.
+`running` adds executor `pid`, `host` and Linux `start_ticks`. `done`
+deduplicates completed work. `deferred` keeps unknown or moved heads,
+unknown mergeability and failed merge attempts retryable; `error` records
+an exception. Terminal receipts include `error`, null without an exception.
+Startup can retry deferred or errored work without a new lifecycle event.
+A task has at most one observable executor.
+An exited executor's start can be retried, while an unobservable executor
+remains busy. `automation queued` records a blocked notification's source;
+the executor drains it after releasing the task. State locks cover only
+reservation and receipts, never Git, GitHub, gates or model calls.
+Automatic state changes and evidence use `agent: orchestrator` and
+`via: automation`. Reactions establish an explicit authorization context
+only after verifying the caller's authority or entering from the trusted
+supervisor. Supervisors restore the dispatcher's command PATH for these
+operations; agent commands retain their restrictive Git and GitHub shims.
+This provenance does not replace gate command receipts.
+An accepted PR already merged remotely goes through the merge gate's
+confirmation path. It records the matching accepted head without merging
+again, including after an executor dies before writing its receipt.
+Waiters retain automatic events even when their actor matches the waiter.
+Reactions run before event output filters, and active PRs catch up at
+watcher startup except a default zero-timeout cursor snapshot.
+`automation reconcile` records a fresh startup request for every active
+submitted or accepted PR, with `{sha, revision, startup}`; `startup` is a
+unique identifier for that watcher. It uses the same task reservation as
+other reactions and queries current PR state regardless of earlier
+completed receipts. A newly conflicting PR goes to rework even if its
+base moved while no watcher ran. Matching gate evidence is reused rather
+than rerun because of reconciliation. An idle startup writes no request.
+A busy state lock defers the request to the existing watch notification
+or fallback tick without holding the wait timeout.
+
+The append-only log is the event source of truth. One JSON object per line: `{ "id", "type", "to", "at", "agent", "cmd", "task", "detail" }`, plus `"via": "broker"` on an event the state broker wrote for a sandboxed agent or `"via": "automation"` on a software reaction (provenance, not proof). Every append occurs under the state lock after validation and state writes. Refused commands append nothing, except the `ask` an orchestrator's owner-required change opens ([Authority](#authority)). Each new event has a unique `E<uuid>` id. `cmd` preserves the command name (`task add`, `claim`, `spawn`, `check tests` and so on); `tower-crane spawn` counts its earlier `spawn` events to number agents. Older audit lines without ids remain readable; `wait` exposes their byte offsets for resuming.
 
 A ladder change logs `ladder harness` and one `ladder set` per rung it changed, with the rung's new fields. A ladder or tier write made from the board or Settings carries `"via": "serve"` in `detail`. All serve writes require explicit owner identity and record `agent: "owner"`; other serve identities expose read-only views and refuse POSTs without state or event changes. Read-only Settings names `tower-crane serve --agent owner` as the command for enabling edits. CLI ladder and tier commands keep their existing agent rules.
 
@@ -535,7 +588,7 @@ Hook state lives in the event log, not in another agent-written state file:
 
 Unread messages are `msg` events with `detail.to` equal to the bound agent and ids absent from its `hook inbox` receipts. Inbox reads and receipts use the state lock. Payload `ack:false` returns context and message ids without a receipt; a later inbox call with those `ids` writes the receipt. OpenCode delivers only to the session captured by the dispatch's first chat callback and writes its idle delivery receipt after `promptAsync` succeeds. Failed requests leave messages unread. A stop held for unread messages acknowledges them without emitting a final report. Once stopping is allowed, `hook stop` also emits a `msg` to `orchestrator` describing submission state and the last report. Identical reports for a dispatch are deduplicated; a changed report or submission state emits a follow-up. A supervisor stop after process exit leaves unread messages queued. Rework and transient resume prompts include pending messages and acknowledge the included ids after launch. A dry run does not acknowledge. See [CLI: event wakeups](cli.md#event-wakeups) for each harness's injection and stop limits, including Codex notify and agy's missing resume adapter.
 
-`tower-crane wait` watches this log from an exclusive id or byte cursor and returns the first matching notification as one JSON line. Its `offset` is computed when reading and counts UTF-8 bytes through the newline; it is not stored in the log. Default `now` skips complete historical lines. Save the returned id or offset and pass it to the next wait so events during handling are not missed. Filters combine recipient, task (including a decision's `detail.blocks`) and event types. Writes by the waiter's agent are skipped, except events recorded as `owner` and `worker-exited` and `stall` observations. Owner input remains visible when the waiter also runs as `owner`; observations reach the waiter that appends them. Timeout is a separate `{"type":"timeout","offset":N}` result, not an event. Its cursor includes complete lines skipped by filters. See docs/cli.md for options.
+`tower-crane wait` watches this log from an exclusive id or byte cursor and returns the first matching notification as one JSON line. Its `offset` is computed when reading and counts UTF-8 bytes through the newline; it is not stored in the log. Default `now` skips complete historical lines. Save the returned id or offset and pass it to the next wait so events during handling are not missed. Filters combine recipient, task (including a decision's `detail.blocks`) and event types. Writes by the waiter's agent are skipped, except events recorded as `owner`, `via: automation`, and `worker-exited` and `stall` observations. Owner input remains visible when the waiter also runs as `owner`; observations reach the waiter that appends them. Timeout is a separate `{"type":"timeout","offset":N}` result, not an event. Its cursor includes complete lines skipped by filters. See docs/cli.md for options.
 
 Startup and resume without a saved cursor use `wait --timeout 0` to take the current complete-line offset before reading state once. This snapshot emits no observations. The next blocking wait starts from that offset and observes current exits and stalls, keeping events that arrived during reconciliation without replaying history. Owner POST routes preserve serve's identity and require it to be explicitly `owner`; non-owner serve renders no owner forms and refuses those writes.
 
@@ -558,6 +611,8 @@ Child exit and pipe-close events wake the existing monitor immediately. Progress
 On POSIX, every natural agent exit terminates the agent's process group, including successful exits. Background processes deliberately left running by the agent are terminated too. The monitor sends SIGTERM to the remaining group, allows five seconds for cleanup, then sends SIGKILL to survivors. Stopping the monitor uses the same shutdown path. The grace period matches the software-gate command runner and lets a harness flush its output. Reruns wait for the previous group to stop and its output pipes to close, including descendants with redirected output. Windows uses `taskkill /T /F` when stopping a live harness. Natural Windows exits wait for pipe closure without sending a PID-based tree kill after the parent has exited.
 
 Signal retries use the signal reported by Node's child-process observer. Windows self-termination reports an exit code instead; a Windows adapter can use exit 75 to identify a transient stop.
+
+Command harness `{brief}` context is an exclusive mode-`0600` temporary file, with no per-copy directory. A single unlink removes the complete resource. The monitor removes the current route's copy after stream closure and process-group shutdown, and on startup or supervision failure. A failed dispatch stops its supervisor and waits for closure before removing any remaining copy and returning. `spawn --wait` removes its copy before returning on normal, nonzero and signal exits.
 
 The CLI transfers a spawn job through a private file in its startup cache directory, then removes it after the monitor reads it and reports the harness pid. Prompt size stays bounded by the harness argument, without a duplicated supervisor argument. Foreground output is captured by the monitor through the inherited log descriptor before it is forwarded to the CLI. Exit classification waits for both harness pipes to close, including when the dispatch CLI is busy rendering.
 
