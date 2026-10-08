@@ -87,3 +87,27 @@ test('git the CLI and gates run takes no command from repository config or hooks
   assert.match(h.run(['worktree', 'T4', '--agent', 'orchestrator'], { env }).stderr, /git fetch origin main failed/);
   assert.deepEqual(ran(), []);
 });
+
+// gh runs git itself (gh stack sync rebases and pushes), so the stub gh runs
+// git status in its working directory the way gh would.
+test('git started through gh takes no command from repository config or hooks', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const sha = gateFixture(h);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--pr', '7', '--agent', 'worker']);
+  h.git(['switch', '-q', 'main']);
+  const { ran } = plant(h);
+  const bin = path.join(h.base, 'gh-bin');
+  fs.mkdirSync(bin);
+  const stub = path.join(bin, 'gh.js');
+  fs.writeFileSync(stub, `require('node:child_process').execFileSync('git', ['status', '--porcelain'], { stdio: 'ignore' });
+console.log(JSON.stringify({ state: 'OPEN', headRefName: 'feature' }));\n`);
+  fs.writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(stub)} "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'gh.cmd'), `@"${process.execPath}" "${stub}" %*\r\n`);
+  const env = { GIT_TERMINAL_PROMPT: '0', PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+
+  h.ok(['submit', 'T1', '--sha', sha, '--pr', '7', '--agent', 'worker'], { env });
+  assert.deepEqual(ran(), []);
+});
