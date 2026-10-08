@@ -60,10 +60,13 @@ try {
     `${out(r).split('\n')[0]}; allowWrite: ${JSON.stringify(sfs.allowWrite)}`, (sfs.allowWrite || []).includes(cache) ? 'CONFIRMED' : 'held');
   const denied = sfs.denyRead || [];
   const credentialPaths = ['.config/gh', '.claude', '.codex', '.docker', '.npmrc', '.netrc', '.git-credentials'].map((p) => path.join(home, p));
-  const open = credentialPaths.filter((p) => !denied.some((d) => p === d || p.startsWith(`${d}${path.sep}`)));
-  rec('S2', 'sandbox/secrets', 'same spawn: compare sandbox.filesystem.denyRead with the user credential stores (gh, claude, codex, docker, npm, netrc, git-credentials)',
-    'credential stores in the user home are unreadable inside the sandbox (network allows every domain)',
-    `denyRead: ${JSON.stringify(denied)}; network.allowedDomains: ${JSON.stringify(report.settings?.sandbox?.network?.allowedDomains)}; readable: ${open.map((p) => path.relative(home, p)).join(', ')}`,
+  // Read, Grep and Glob ignore the sandbox and obey Read deny rules.
+  const reads = (report.settings?.permissions?.deny || []).filter((r) => r.startsWith('Read(//')).map((r) => r.slice(6, -1).replace(/\/\*\*$/, ''));
+  const covered = (p, dirs) => dirs.some((d) => p === d || p.startsWith(`${d}${path.sep}`));
+  const open = credentialPaths.filter((p) => !covered(p, denied) || !covered(p, reads));
+  rec('S2', 'sandbox/secrets', 'same spawn: compare sandbox.filesystem.denyRead and the Read deny rules with the user credential stores (gh, claude, codex, docker, npm, netrc, git-credentials)',
+    'credential stores in the user home are unreadable inside the sandbox and to the Read tools (network allows every domain)',
+    `denyRead: ${JSON.stringify(denied)}; Read deny: ${JSON.stringify(reads)}; network.allowedDomains: ${JSON.stringify(report.settings?.sandbox?.network?.allowedDomains)}; readable: ${open.map((p) => path.relative(home, p)).join(', ')}`,
     open.length ? 'CONFIRMED' : 'held');
   rec('S3', 'secrets', 'same spawn: gh auth token (stub) handed to the agent as GH_TOKEN; search the state directory for it',
     'the token reaches the agent process only, never a state file', `agent saw GH_TOKEN: ${report.ghToken ? 'yes' : 'no'}; state files holding it: ${JSON.stringify(holding(h.state, `${SECRET}-GH-TOKEN`))}`,
