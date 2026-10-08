@@ -1,0 +1,108 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { makeRepo } = require('./helpers');
+const { gateFixture, gateEvidence } = require('./gate-helpers');
+
+function reviewedTask(t, kind = 'docs') {
+  const h = makeRepo(t);
+  const sha = kind === 'code' ? gateFixture(h) : h.git(['rev-parse', 'HEAD']);
+  h.init(['--base', 'main']);
+  for (const rung of ['easy', 'medium', 'hard', 'research', 'review']) {
+    h.ok(['ladder', 'set', rung, '--harness', 'command', '--clear', 'model', '--clear', 'profile',
+      '--clear', 'provider', '--clear', 'effort',
+      '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}'])]);
+  }
+  h.ok(['task', 'add', '--title', 'Fix a link', '--acceptance', 'link works', '--kind', kind]);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Check the link.\n' });
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  if (kind === 'code') {
+    for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
+  }
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+  return { h, sha };
+}
+
+for (const status of ['submitted', 'accepted']) {
+  test(`G3: rework of a ${status} task cannot reuse a review when the same sha is resubmitted`, (t) => {
+    const { h, sha } = reviewedTask(t);
+    if (status === 'accepted') h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+    const before = h.json(['task', 'show', 'T1']);
+    h.ok(['rework', 'T1', '--reason', 'the reviewer missed a broken link', '--agent', 'orchestrator']);
+    h.ok(['claim', 'T1', '--agent', 'worker']);
+    h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+
+    const result = h.json(['accept', 'T1', '--agent', 'orchestrator']);
+    assert.equal(result.status, 'submitted', 'accept must wait for a new review');
+    assert.equal(result.review_pending, true);
+    const shown = h.json(['task', 'show', 'T1']);
+    assert.equal(shown.revision, before.revision + 1);
+    assert.equal(shown.sha, sha);
+    assert.deepEqual(shown.evidence, before.evidence);
+    assert.equal(shown.gates.ok, false);
+    assert.match(h.ok(['task', 'show', 'T1']), /review ok .* \(revision 1, does not count\)/);
+
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
+    assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
+  });
+}
+
+test('G4: changing a submitted brief invalidates the review at the unchanged sha', (t) => {
+  const { h, sha } = reviewedTask(t);
+  const before = h.json(['task', 'show', 'T1']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Check the link and cover the CLI docs.\n' });
+  const shown = h.json(['task', 'show', 'T1']);
+  assert.equal(shown.gates.ok, false, 'the changed brief needs a new review');
+  assert.equal(shown.revision, before.revision + 1);
+  assert.equal(shown.status, 'submitted');
+  assert.equal(shown.sha, sha);
+  assert.deepEqual(shown.evidence, before.evidence);
+  assert.match(h.ok(['task', 'show', 'T1']), /review ok .* \(revision 1, does not count\)/);
+  assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).review_pending, true);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
+  assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
+});
+
+for (const change of ['rework', 'brief']) {
+  test(`${change} invalidates software evidence as well as review evidence`, (t) => {
+    const { h, sha } = reviewedTask(t, 'code');
+    const before = h.json(['task', 'show', 'T1']);
+    if (change === 'rework') {
+      h.ok(['rework', 'T1', '--reason', 'check the link again', '--agent', 'orchestrator']);
+      h.ok(['claim', 'T1', '--agent', 'worker']);
+      h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+    } else {
+      h.ok(['brief', 'set', 'T1', '-'], { input: 'Check another link too.\n' });
+    }
+    const shown = h.json(['task', 'show', 'T1']);
+    assert.deepEqual(shown.gates.gates.filter((g) => !g.ok).map((g) => g.type), ['tests', 'clean', 'review']);
+    assert.deepEqual(shown.evidence, before.evidence);
+    for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
+    assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
+  });
+}
+
+test('brief edits before submission and identical writes preserve the revision', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Link', '--acceptance', 'works', '--kind', 'docs']);
+  for (const input of ['First draft.\n', 'Final brief.\n']) {
+    h.ok(['brief', 'set', 'T1', '-'], { input });
+    assert.equal(h.json(['task', 'show', 'T1']).revision, 1);
+  }
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  const before = h.json(['task', 'show', 'T1']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Final brief.\n' });
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  const shown = h.json(['task', 'show', 'T1']);
+  assert.equal(shown.revision, before.revision);
+  assert.deepEqual(shown.evidence, before.evidence);
+  assert.equal(shown.gates.ok, true);
+});
