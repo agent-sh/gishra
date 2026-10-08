@@ -23,7 +23,7 @@ function reviewedTask(t, kind = 'docs') {
   if (kind === 'code') {
     for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
   }
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '1', '--agent', 'reviewer']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
   return { h, sha };
 }
@@ -62,7 +62,7 @@ for (const status of ['submitted', 'accepted']) {
     assert.match(h.ok(['task', 'show', 'T1']), /review ok .* \(revision 1, does not count\)/);
 
     await reviewSettled(h);
-    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'new-reviewer']);
     assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
   });
 }
@@ -80,7 +80,7 @@ test('G4: changing a submitted brief invalidates the review at the unchanged sha
   assert.match(h.ok(['task', 'show', 'T1']), /review ok .* \(revision 1, does not count\)/);
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).review_pending, true);
   await reviewSettled(h);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'new-reviewer']);
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
 });
 
@@ -114,7 +114,7 @@ test('an accepted brief needs explicit rework before edits, and dependents wait 
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).review_pending, true);
   assert.equal(h.run(['claim', 'T2', '--agent', 'dependent']).code, 1);
   await reviewSettled(h);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', String(h.json(['task', 'show', 'T1']).revision), '--agent', 'new-reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   h.ok(['claim', 'T2', '--agent', 'dependent']);
   assert.equal(h.json(['task', 'show', 'T2']).claim.agent, 'dependent');
@@ -135,7 +135,7 @@ for (const change of ['rework', 'brief']) {
     assert.deepEqual(shown.gates.gates.filter((g) => !g.ok).map((g) => g.type), ['tests', 'clean', 'review']);
     assert.deepEqual(shown.evidence, before.evidence);
     for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
-    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'new-reviewer']);
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'new-reviewer']);
     assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
   });
 }
@@ -151,7 +151,7 @@ test('brief edits before submission and identical writes preserve the revision',
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '1', '--agent', 'reviewer']);
   const before = h.json(['task', 'show', 'T1']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Final brief.\n' });
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
@@ -208,3 +208,24 @@ setTimeout(() => process.exit(2), 60000).unref();
     assert.equal(shown.gates.ok, false);
   });
 }
+
+test('a reviewer spawn did not start names the revision it reviewed, and a stale one does not count', (t) => {
+  const { h, sha } = reviewedTask(t);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'Check the link and cover the CLI docs.\n' });
+  const review = (...more) => h.run(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, ...more, '--agent', 'native-reviewer']);
+
+  const unnamed = review();
+  assert.equal(unnamed.code, 1);
+  assert.match(unnamed.stderr, /needs --revision/);
+  const ahead = review('--revision', '3');
+  assert.equal(ahead.code, 1);
+  assert.match(ahead.stderr, /revision 2; --revision 3 is ahead/);
+  assert.equal(review('--revision', '0').code, 2);
+
+  review('--revision', '1');
+  const stale = h.json(['task', 'show', 'T1']);
+  assert.equal(stale.evidence.at(-1).revision, 1);
+  assert.equal(stale.gates.ok, false, 'a review of the old brief cannot pass the new revision');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'native-reviewer']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+});

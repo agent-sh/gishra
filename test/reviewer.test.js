@@ -199,9 +199,9 @@ test('review escalation climbs one tier after failed reviews', (t) => {
   const h = setup(t);
   ready(h);
   assert.equal(model(choice(h)), 'luna');
-  h.ok(['evidence', 'T1', '--agent', 'r1', '--type', 'review', '--fail', '--sha', h.sha, '--summary', 'needs stronger reasoning']);
+  h.ok(['evidence', 'T1', '--agent', 'r1', '--type', 'review', '--fail', '--sha', h.sha, '--revision', h.revision('T1'), '--summary', 'needs stronger reasoning']);
   assert.equal(model(choice(h)), 'sol');
-  h.ok(['evidence', 'T1', '--agent', 'r2', '--type', 'review', '--fail', '--sha', h.sha]);
+  h.ok(['evidence', 'T1', '--agent', 'r2', '--type', 'review', '--fail', '--sha', h.sha, '--revision', h.revision('T1')]);
   assert.equal(model(choice(h)), 'opus');
 });
 

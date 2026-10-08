@@ -298,7 +298,7 @@ test('lower acceptance cannot hide failing current gate evidence', (t) => {
   const f = stacked(t);
   f.accept('T1');
   f.accept('T2');
-  f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
+  f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--revision', h.revision('T1'), '--agent', 'reviewer-independent']);
   assert.match(f.h.run(['merge', 'T2']).stdout, /T1.*passing gates/);
   assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
 });

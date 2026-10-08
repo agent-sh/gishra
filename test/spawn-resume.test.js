@@ -66,9 +66,9 @@ if (process.env.RESUME_EXIT_DELAY) setTimeout(() => {}, Number(process.env.RESUM
 
 function sendBack(h, agent = 'worker-T1-1') {
   h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', agent]);
-  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer-T1-1',
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--revision', h.revision('T1'), '--agent', 'reviewer-T1-1',
     '--summary', 'Missing worktree validation', '--ref', 'review-receipt']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef2', '--agent', 'reviewer-T1-2',
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef2', '--revision', h.revision('T1'), '--agent', 'reviewer-T1-2',
     '--summary', 'Unrelated older head']);
   h.ok(['rework', 'T1', '--reason', 'Add the worktree guard']);
 }
@@ -139,7 +139,7 @@ for (const format of ['codex', 'claude']) {
     assert.equal(reworked.revision, 2);
     assert.equal(reworked.evidence[0].revision, 1);
     h.ok(['task', 'update', 'T1', '--acceptance', 'rework resumes with the revised acceptance']);
-    h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'later-reviewer',
+    h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--revision', h.revision('T1'), '--agent', 'later-reviewer',
       '--summary', 'Unrelated later revision']);
     const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
     const dry = h.json(['spawn', '--task', 'T1', '--dry-run']);

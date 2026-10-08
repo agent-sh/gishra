@@ -14,7 +14,7 @@ function setup(t) {
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--sha', sha, '--pr', '1', '--agent', 'worker']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', h.revision('T1'), '--agent', 'reviewer']);
   return h;
 }
 

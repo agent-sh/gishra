@@ -10,7 +10,7 @@ const { BIN } = require('./helpers');
 test('lower merge refreshes upper worktrees with gh stack sync and conflicts send upper work to rework', (t) => {
   const f = stacked(t);
   const { wt, sha } = f.upper;
-  f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer',
+  f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--revision', h.revision('T2'), '--agent', 'reviewer',
     '--summary', 'Resolve the upper conflict', '--ref', 'stack-conflict-review']);
   const before = f.h.json(['task', 'show', 'T2']);
   f.accept('T1');
@@ -63,7 +63,7 @@ require('node:fs').writeFileSync(process.argv[1], process.argv[2]);
   assert.equal(afterExpiry.detail.previous_revision, before.revision);
   f.h.ok(['claim', 'T2', '--agent', spawned.agent]);
   f.h.ok(['submit', 'T2', '--sha', sha, '--agent', spawned.agent]);
-  f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer-next',
+  f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--revision', h.revision('T2'), '--agent', 'reviewer-next',
     '--summary', 'Resolve the next review']);
   assert.equal(f.h.run(['stack', 'sync', 'T2']).code, 1);
   f.h.json(['spawn', '--task', 'T2', '--wait']);

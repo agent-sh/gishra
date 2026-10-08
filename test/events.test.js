@@ -92,7 +92,7 @@ function submit(h, extra = []) {
 
 function gates(h, ci = false) {
   for (const type of ['tests', 'clean', 'review', ...(ci ? ['ci'] : [])]) {
-    if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, '--ok']);
+    if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, '--revision', h.revision(), '--ok']);
     else gateEvidence(h, type, 'reviewer');
   }
 }
@@ -149,7 +149,7 @@ test('review and software gate pass or failure wake as evidence with their verdi
   for (const type of ['review', 'tests', 'clean', 'ci']) {
     for (const ok of [true, false]) {
       const result = await waiting(t, h, ['--types', 'evidence', '--task', 'T1']);
-      if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, ok ? '--ok' : '--fail']);
+      if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, '--revision', h.revision(), ok ? '--ok' : '--fail']);
       else gateEvidence(h, type, 'gate-runner', ok);
       const e = await event(result, 'evidence');
       assert.equal(e.detail.type, type);

@@ -26,7 +26,7 @@ function populate(h) {
   h.ok(['claim', 'T5', '--agent', 'w-2']);
   const sha = h.git(['rev-parse', 'HEAD']).trim();
   h.ok(['submit', 'T5', '--sha', sha, '--agent', 'w-2']);
-  h.ok(['evidence', 'T5', '--type', 'review', '--ok', '--sha', sha, '--ref', 'https://example.com/acme/demo/pull/1#review', '--summary', 'reads well', '--agent', 'rev-1']);
+  h.ok(['evidence', 'T5', '--type', 'review', '--ok', '--sha', sha, '--revision', h.revision('T5'), '--ref', 'https://example.com/acme/demo/pull/1#review', '--summary', 'reads well', '--agent', 'rev-1']);
 }
 
 // serve runs in the repository, and Windows cannot delete a directory a live
@@ -199,7 +199,7 @@ test('accepted task gate pips and ledger stop counting tests after the owner cha
   h.ok(['project', 'set', '--tests-mode', 'run-only']);
   gateEvidence(h, 'tests', 'checker');
   gateEvidence(h, 'clean', 'checker');
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', h.revision('T1'), '--agent', 'reviewer']);
   h.ok(['accept', 'T1']);
   const sheet = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article id="T1"[\s\S]*?<\/article>/)[0];
   assert.match(sheet(), /class="pip pass">tests<\/span>/);

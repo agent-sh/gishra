@@ -17,7 +17,7 @@ function submitted(h, extra = [], kind = 'code') {
 
 const ev = (h, type, agent, ok = true) => ['tests', 'clean', 'ci'].includes(type)
   ? gateEvidence(h, type, agent, ok)
-  : h.ok(['evidence', 'T1', '--type', type, ok ? '--ok' : '--fail', '--sha', h.sha, '--agent', agent]);
+  : h.ok(['evidence', 'T1', '--type', type, ok ? '--ok' : '--fail', '--sha', h.sha, '--revision', h.revision(), '--agent', agent]);
 
 test('accept refuses a code task without gates, and a review by the submitter does not count', (t) => {
   const h = makeRepo(t);
@@ -247,7 +247,7 @@ test('evidence needs a sha and exactly one verdict', (t) => {
   const r = h.run(['evidence', 'T1', '--type', 'review', '--ok']);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /review evidence needs --sha/);
-  assert.equal(h.run(['evidence', 'T1', '--type', 'review', '--ok', '--fail', '--sha', 'abcdef1']).code, 2);
+  assert.equal(h.run(['evidence', 'T1', '--type', 'review', '--ok', '--fail', '--sha', 'abcdef1', '--revision', h.revision('T1')]).code, 2);
   assert.equal(h.run(['evidence', 'T1', '--type', 'vibes', '--ok', '--sha', 'abcdef1']).code, 2);
   h.ok(['evidence', 'T1', '--type', 'note', '--ok', '--sha', 'abcdef1', '--ref', 'run 42']);
   assert.equal(h.readState('tasks.json').tasks[0].evidence[0].ref, 'run 42');
