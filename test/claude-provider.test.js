@@ -110,7 +110,7 @@ test('ladder show marks missing Claude provider config and the supervisor skips 
   h.login();
   h.primary('anthropic');
   h.env.TOWER_CRANE_TEST_FAIL_PROVIDER = 'anthropic';
-  h.fallbacks([{ provider: 'bedrock', model: 'opus' }, { harness: 'command', command: [process.execPath, '-e', 'process.exit(0)'] }]);
+  h.fallbacks([{ provider: 'bedrock', model: 'opus' }, { harness: 'command', command: [process.execPath, '-e', 'process.exit(0)', '{prompt}'] }]);
   const shown = h.json(['ladder', 'show']);
   assert.match(shown.problems.join('\n'), /hard fallback 1.*bedrock.*region.*skipped/);
   assert.match(shown.problems.join('\n'), /credentials/);
