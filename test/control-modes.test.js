@@ -180,6 +180,31 @@ test('an approved waiver lets the orchestrator accept, and only that approval ma
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
 });
 
+test('a spawned orchestrator applies an approved waiver under its recorded role', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const sha = gateFixture(h);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works']);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
+  h.ok(['ladder', 'set', 'orchestrator', '--harness', 'command',
+    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}']),
+    ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
+  const { agent } = h.json(['spawn', '--task', 'T1', '--role', 'orchestrator', '--wait']);
+  assert.match(agent, /^orchestrator-T1-\d+$/);
+  h.ok(['claim', 'T1', '--agent', 'w-1']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'w-1']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
+  const waive = ['accept', 'T1', '--waive', 'tests', '--reason', 'no harness yet'];
+  assert.match(h.run(waive, as(agent)).stderr, /opened D1/);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  h.ok(waive, as(agent));
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
+  assert.equal(decisions(h)[0].applied.by, agent);
+  const audit = audits(h).find((e) => e.detail.settings['waive.tests']);
+  assert.deepEqual([audit.agent, audit.detail.actor, audit.detail.approved_by], [agent, 'orchestrator', 'D1']);
+});
+
 test('ask --setting requests an owner-required change no command makes, and applies the approval once', (t) => {
   const h = makeRepo(t);
   h.init();
