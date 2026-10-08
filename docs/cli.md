@@ -10,6 +10,8 @@ When `TOWER_CRANE_TASK` is set, resolving either identity source to `owner` is r
 
 Guarded settings and commands are operational or owner-required, per the one table in [state.md: Authority](state.md#authority). The orchestrator or the owner makes operational changes; the orchestrator's owner-required change opens a decision for the owner (exit 1, naming the decision) and changes nothing. The owner is the resolved name `owner`, supplied explicitly by `--agent owner` or `TOWER_CRANE_AGENT=owner`; the terminal fallback never grants authority. Workers and reviewers ask the orchestrator for operational changes with `tower-crane msg --to orchestrator` or a task note. Any agent may release a spawned claim verified exited under the lock.
 
+Decision delegation (`decision delegate` and `project set --decision-delegation`), waiving tests, clean or CI, waiving review when no reviewer is capped or down at the submitted head, and releasing another agent's live or unverified claim require explicit owner identity. The terminal fallback never grants owner authority. Clearing or replacing an existing `needs_owner` reason and `owner-done` are operational; waiving a capped or down review is operational. An agent requests owner-required action with `tower-crane ask` or a task note.
+
 In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), commands that only read, and `worktree` for the worktree spawn made, run as usual, and every other command on the spawn's state directory is sent to the [state broker](ladder.md#state-broker), which runs it as the spawned agent if its role allows it on its own task, and prints its output and exits with its code. A refused command exits 1 and writes nothing. The broker refuses `check`: it runs outside the sandbox and never runs the agent's code, so a worker runs its tests directly and the orchestrator runs the gates.
 
 Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing.
@@ -43,9 +45,9 @@ Lock attempts use private staging directories named with the process pid and a f
 | | |
 | `project set [--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-cmd CMD] [--clean-cmd CMD] [--tests-proof-cmd CMD] [--executors N] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-capped-review JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--research-min-sources N] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]` | change settings, limits and budget |
 | | |
-| `project show` | print settings, including `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd`, `gates.executors`, `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch` and `merge.admin`, and the resolved ladder |
+| `project show` | print settings, including `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd`, `gates.executors`, `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch`, `merge.admin` and `decision_delegation.orchestrator_technical`, and the resolved ladder |
 | | |
-| `task add --title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]` | add a task; prints its id. A `needs_owner` reason is trimmed; a blank value stores null. `T` is `easy`, `medium`, `hard` or `research`; without it the tier comes from kind and size (state.md). `--needs '["browser"]'` declares browser capability. Refused for an unknown dependency or capability. Repeat `--lock` for exclusive resources |
+| `task add --title T --acceptance A [--acceptance A2] [--kind K] [--needs JSON] [--size S] [--tier T] [--dep ID] [--lock NAME]... [--environment LABEL] [--needs-owner REASON]` | add a task; prints its id. A `needs_owner` reason is trimmed; a blank value stores null. `T` is `easy`, `medium`, `hard`, `research` or an ascending range such as `easy..medium`; without it the tier comes from kind and size (state.md). `--needs '["browser"]'` declares browser capability. Refused for an unknown dependency or capability. Repeat `--lock` for exclusive resources |
 | | |
 | `task list [--status S]` | read; `S` is a status, `ready` or `blocked` |
 | | |
@@ -53,7 +55,7 @@ Lock attempts use private staging directories named with the process pid and a f
 | | |
 | `task show ID` | read; `S` is a status, `ready` or `blocked` |
 | | |
-| `task update ID [--title T] [--acceptance A]... [--dep ID]... [--lock NAME]... [--environment LABEL] [--size S] [--kind K] [--needs JSON] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--status cancelled]` | change a task; acceptance, dependency or capability changes bump `revision`. `--needs '[]'` clears capabilities, `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. `--lock` replaces all resource locks; `--lock ''` clears them. Lock changes require no live lease or dispatch reservation. `--environment ''` clears the label. Changing `--tier`, and clearing or replacing an existing owner ask, are operational (the orchestrator or the owner); any agent may set a new ask or keep the same reason. Changing `--kind` is operational, except that leaving `code` is owner-required and a submitted or accepted task refuses any kind change until `rework` ([Authority](state.md#authority)). Cancelling a task that has an owner ask is owner-required. `--ci-local` sets or clears an operational local CI override. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies, capabilities, kind and local CI override change only after `rework` |
+| `task update ID [--title T] [--acceptance A]... [--dep ID]... [--lock NAME]... [--environment LABEL] [--size S] [--kind K] [--needs JSON] [--tier T] [--needs-owner REASON] [--ci-local JSON] [--interrupt] [--status cancelled]` | change a task; acceptance, dependency or capability changes bump `revision`. A live claim refuses changes to acceptance, dependencies, `--needs`, kind or the local CI override unless `--interrupt` stops it first (see `interrupt`); notes, title, size, tier and priority never stop a run. `--needs '[]'` clears capabilities, `--dep ''` clears dependencies, `--needs-owner ''` clears the owner ask. `--lock` replaces all resource locks; `--lock ''` clears them. Lock changes require no live lease or dispatch reservation. `--environment ''` clears the label. Changing `--tier`, and clearing or replacing an existing owner ask, are operational (the orchestrator or the owner); any agent may set a new ask or keep the same reason. Changing `--kind` is operational, except that leaving `code` is owner-required and a submitted or accepted task refuses any kind change until `rework` ([Authority](state.md#authority)). Cancelling a task that has an owner ask is owner-required. `--ci-local` sets or clears an operational local CI override. Refused if it would form a cycle. An accepted task cannot be cancelled, and its acceptance, dependencies, capabilities, kind and local CI override change only after `rework` |
 | | |
 | `validate` | report cycles, unknown dependencies, tasks without acceptance, `L` tasks without a `split:` note, oversize budgets (planned hours at S=1, M=4, L=8 over `budget.hours`, or spend over either budget); exit 1 if anything is reported. It reconciles tasks.json with `events.jsonl` and reports drift: tasks or task notes the log records that tasks.json lacks, and a `next` the log has already used. It also reports every ladder rung that cannot run, and warns per open task when no reviewer rung can run |
 <!-- commands:Plan:end -->
@@ -181,11 +183,15 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `hook ACTION --binding FILE [--payload JSON\|-]` | deliver harness messages and record activity under the home identity |
 | | |
+| `interrupt ID` | owner or orchestrator only: stop the live agent through its supervisor and release the claim to its prior `todo` or `rework`. The revision, branch, evidence and dirty worktree stay, so the next dispatch resumes the work (Codex warm resume, or a fresh Claude worker in the same worktree). Distinct from `rework`, which sends a submitted task back with a reason, and from a requirements edit, which bumps the revision |
+| | |
 | `msg --to NAME [--task ID] [--steer] TEXT` | send a worker message through the event log |
 | | |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner |
 | | |
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment` |
+| | |
+| `recover ID` | ranged quality recovery: climb after a failed latest review or confirmed tests, clean or CI gate failure; dispatch fresh, retry a pending climb, or open an owner decision at the range top; wait for verified worker process-group cleanup before dispatch |
 | | |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or the owner (owner-required: the orchestrator's attempt opens a decision); any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event |
 | | |
@@ -236,9 +242,19 @@ events. A stack is one entry, ordered by its lowest unmerged task: it holds
 that task and the accepted, linked tasks directly above it, and an upper
 task whose lower task is not accepted waits outside the line. Only the head
 of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
-goes to rework with its files and leaves the line. Unknown mergeability, a
-moved head, failing gates or a refused merge stop the line until a later
-reaction; the executor's `done` event names the blocking task and why.
+goes to rework with its files and leaves the line. Unknown mergeability
+stops the line until a later reaction. A head the queue cannot advance (a
+closed or unreadable PR, a moved or differently merged head, failing gates, a refused
+merge or head check) is reported once in a `queue skipped` event and passed
+over, so the next entry merges; later passes try it again. The executor's
+next pass starts with no skipped heads, including when a concurrent CI
+completion requests that pass while the executor is still running. Its
+`done` event names the first head that did not merge and lists the skipped
+ones. An accepted PR already merged on GitHub at its accepted head is
+confirmed through the merge gate without current gate evidence.
+Merge text and method are validated before any GitHub call. With failed
+current gates, a read-only PR lookup can confirm a completed merge; an open
+PR is refused until its gates pass.
 Gate evidence belongs to the submitted sha, so a base move alone reruns no
 gate. The fail-before proof reruns only for a new head. Before merging, the
 head runs the pinned `gates.tests_cmd` once on the merge of `project.base`'s
@@ -299,17 +315,34 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 ## Decisions
 
+`--tier` accepts a single rung or an ascending range such as `easy..medium` in `task add`, `task update` and `plan import`. A range starts at its minimum and lets spawned workers climb after quality failure; a single tier retains manual recovery. Setting a new range resets the current tier to its minimum, while a single tier clears the range.
+
+`recover ID` handles a ranged task's failed independent review or confirmed tests, clean or CI gate failure at the current submitted head, exit without submit, or confirmed supervisor stall. The engine calls it after review failure and supervised exit; orchestrator `wait` also recovers observed exits and retries pending climbs. It waits for the old worker to stop, collects usage, records the climb and reason, sets rework, and starts a fresh session one rung higher in the same worktree. Provider outages and harness refusals follow same-rung availability fallback. Failed launches, full worker capacity and reviewer sandbox permission denials leave a pending climb that can be retried with `recover ID`. The reviewer's host monitor or orchestrator `wait` can complete a climb that its sandbox cannot launch.
+
+A passing latest eligible verdict cancels an older failure of the same gate as a climb trigger. Gate runners mark `confirmed_failure` only for a failed test command, a completed cleanup scan with HIGH findings, or a completed failing CI run. Missing configuration, incomplete scans and pending CI do not climb. `rework` records a known failed attempt before changing task status, even while worker cleanup is pending; dispatch still waits for verified cleanup. Submitted workers still need their live monitor's terminal receipt before another worker starts; parent exit alone does not finish descendant cleanup. `wait` retries recorded failures that have no climb record, including after spend already recorded the exit notification or recovery timed out on the state lock. If a supervisor is lost without a terminal receipt, host recovery must verify that the old process group stopped. A live or unverifiable group leaves recovery waiting, with the reason in CLI output, task notes and a deduplicated `recover waiting` event; JSON exposes `waiting`. Linux supports this group probe.
+
+Failure at the range top opens one blocking owner decision. Answer it and apply the chosen plan before dispatching again. `task show --json` includes `tier_range`, `escalations` and `spend_by_rung`; text output shows the range and rung totals. New spend entries include `cost_usd` priced with configured `review.prices`. Missing prices or telemetry remain null. Each escalation records a spend snapshot; later usage collection can enrich the current task totals.
+
+
 <!-- commands:Decisions:start -->
 | Command | Does |
 |---|---|
-| `answer DID --choice C [--note T]` | answer it (any agent may record the owner's answer; the event names who). `C` must be one of the options when there are any; an answered decision stays answered |
+| `answer DID --choice C [--note T]` | answer it as the owner with explicit identity, as an agent the owner named on the decision (`decision delegate --answerers`), or as the orchestrator for a decision marked technical when the project's `decision-delegation` setting allows it. Anyone else exits 1 naming who can answer. A decision that escalates an owner-required setting is answered by the owner only. The answer event records `answered_by` and `answer_rule` (`owner`, `owner-named-agent` or `owner-technical-delegation`). `C` must be one of the options when there are any; an answered decision stays answered |
 | | |
 | `ask --question Q --option A --option B [--recommend A] [--why W] [--blocks ID]...` | open a decision; prints its id |
+| | |
+| `decision delegate DID [--answerers JSON] [--technical JSON]` | owner-only: set the agents that may answer the decision (`--answerers`, a JSON array; `[]` clears it) or mark it technical (`--technical true\|false`), which lets the orchestrator answer it when the project's `decision-delegation` setting allows. At least one field is required; an answered decision cannot be delegated again |
 | | |
 | `decision note DID TEXT` | append a comment; an explicit owner comment wakes the orchestrator and tasks blocked by the decision |
 | | |
 | `decisions [--open]` | list |
 <!-- commands:Decisions:end -->
+
+`decision delegate DID --answerers '["worker-1"]'` replaces the decision's named answerers; `[]` clears them. `--technical true` marks it technical and `false` removes that mark. Both settings require explicit owner identity. `project set --decision-delegation '{"orchestrator_technical":true}' --agent owner` enables orchestrator answers for decisions the owner marked technical; it does not allow the orchestrator to answer other decisions. `null` clears the project rule. The answer event records the actor and its rule: `owner`, `owner-named-agent` or `owner-technical-delegation`.
+
+Technical delegation recognizes the literal `orchestrator` identity and generated agents whose spawn events all record `role: orchestrator`. A name starting with `orchestrator-` alone grants no permission. The owner answers with `answer DID --choice C --agent owner` or through the local board. The orchestrator answers under its own identity only a technical decision, and only when delegation allows it.
+
+An orchestrator still requires both technical settings when listed in `answerers`; naming it cannot grant the general agent rule. A sandboxed agent sends `answer` through its state broker under the bound identity, and the same decision authorization check permits or refuses it.
 
 `project set --research-min-sources N --agent owner` sets the required number of distinct cited pages (default 10); `init` accepts the same flag. `check sources ID` reads committed `research/ID.json`, fetches every source and verifies its quotes. The file contains `sources: [{id, url}]` and `claims: [{claim, quote, source}]`. Each source must be cited, and each quote must appear on its cited page. Duplicates, unreachable URLs and uncited entries fail. Only public HTTP(S) HTML or plain text pages are supported. DNS answers are validated and pinned before connecting; each manual redirect repeats validation, with up to five redirects. Private, loopback, link-local and special-use addresses are refused. Tasks of kind research on every tier require this gate before independent review and acceptance; changing kind alone keeps the existing tier and its role; review checks that each quote supports its claim. See [state.md](state.md#research-sources) for the receipt, matching and resource limits.
 
@@ -607,6 +640,10 @@ The CLI refuses manual software verdicts, and software receipts require matching
 | | |
 | `merge ID [--subject S] [--body B] [--method M]` | merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise). Linked stacks merge bottom up with `--merge`, pinning each accepted head and confirming it before the next member. If an upper member fails, the target reports `merge FAIL` while confirmed lower members retain successful merge evidence. Inspect each member with `task show ID` and check its PR state; fix the refusal or wait for queued merges to complete. Sync the idle remaining chain when needed with `stack sync ID`; changed heads need rework, a new submission, passing gates, review and acceptance. Refresh stale gates and retry `merge ID` on the target; confirmed lower members are skipped. Records `merge` |
 <!-- commands:Gates:end -->
+
+For a ranged task, `check tests` climbs after a confirmed test failure. A missing test command, including cmd.exe's command-not-found results on Windows, leaves the rung unchanged. Fix the pinned command and run the gate again.
+
+`check ci` records a completed uncapped failure even when a required check is missing or still pending. Those required checks continue to block acceptance, and the known failure can trigger a rung climb. Missing or pending checks alone do not trigger a climb.
 
 `check sources` scans HTML without using tag replacement expressions. It preserves inline punctuation, skips nested comments and templates plus script/style blocks, and excludes unfinished or ambiguous markup from quote matching. Its pinned DNS lookup supplies all validated public addresses for IPv6/IPv4 fallback within the same page deadline. See [Research sources](state.md#research-sources) for the deliverable and fetch limits.
 

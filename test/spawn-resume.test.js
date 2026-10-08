@@ -4,7 +4,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, makeTaskRepo, BIN } = require('./helpers');
+const { makeRepo, makeTaskRepo, BIN, detachedAlive } = require('./helpers');
 const Sessions = require('../lib/spawn-session');
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
@@ -101,7 +101,7 @@ if (format === 'codex') {
   const flag = args.indexOf('--resume');
   const prior = flag >= 0 ? args[flag + 1] : args.includes('worker-session-1') ? 'worker-session-1' : '';
   const assigned = args.includes('--session-id') ? args[args.indexOf('--session-id') + 1] : '';
-  const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework'));
+  const prompt = args.find((arg) => arg.includes('## Task') || arg.includes('## Rework') || arg.includes('## Interrupt'));
   process.argv = [process.execPath, ${JSON.stringify(script)}, ...${JSON.stringify([BIN, seen])}, prior, prompt, '${harness}', 'true', assigned];
   require(${JSON.stringify(script)});
 `, { mode: 0o755 });
@@ -127,6 +127,52 @@ cp.spawn = function(command, args, options) {
   h.env.RESUME_USAGE = '1';
   h.ok(['ladder', 'set', 'medium', '--harness', harness, '--clear', 'command',
     ...(harness === 'codex' ? ['--profile', 'sol', '--effort', 'high'] : ['--model', 'opus', '--effort', 'high'])]);
+}
+
+for (const harness of ['codex', 'claude']) {
+  test(`${harness} interrupted native worker keeps dirty files and collects usage before redispatch`, async (t) => {
+    const { h, script, seen } = setup(t, harness);
+    nativeHarness(h, script, seen, harness);
+    h.env.RESUME_EXIT_DELAY = '60000';
+    const first = h.json(['spawn', '--task', 'T1']);
+    const deadline = Date.now() + 15000;
+    while (!events(h).some((e) => e.cmd === 'spawn session')) {
+      assert.ok(Date.now() < deadline, 'session not recorded');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    // Claude's session id is assigned before launch, so the session event does not show that the agent
+    // printed anything. Wait for its usage to reach the log, so the interrupt keeps that usage.
+    const logged = Date.now() + 15000;
+    while (!fs.readFileSync(first.log, 'utf8').includes('"usage"')) {
+      assert.ok(Date.now() < logged, 'usage not logged');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    fs.writeFileSync(path.join(first.cwd, 'README.md'), '# native unfinished work\n');
+    fs.writeFileSync(path.join(first.cwd, 'unfinished.txt'), 'keep native edits\n');
+    h.ok(['interrupt', 'T1', '--agent', 'orchestrator']);
+    while (detachedAlive({ pid: first.monitor_pid })) {
+      assert.ok(Date.now() < deadline, 'supervisor did not stop');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(h.json(['task', 'show', 'T1']).spend.entries.length, 1);
+    h.env.RESUME_EXIT_DELAY = '0';
+    const second = h.json(['spawn', '--task', 'T1', '--wait']);
+    assert.equal(second.resumed, harness === 'codex');
+    assert.equal(second.agent === first.agent, harness === 'codex');
+    assert.equal(second.cwd, first.cwd);
+    const input = JSON.parse(fs.readFileSync(seen, 'utf8'));
+    assert.equal(input.prior, harness === 'codex' ? 'worker-session-1' : '');
+    assert.match(input.prompt, /Interrupt T1/);
+    assert.equal(fs.readFileSync(path.join(first.cwd, 'README.md'), 'utf8'), '# native unfinished work\n');
+    assert.equal(fs.readFileSync(path.join(first.cwd, 'unfinished.txt'), 'utf8'), 'keep native edits\n');
+    const task = h.json(['task', 'show', 'T1']);
+    assert.equal(task.revision, 1);
+    assert.equal(task.claim.from, 'todo');
+    assert.equal(task.spend.entries.length, 2);
+    assert.equal(task.spend.tokens, harness === 'codex' ? 275 : 130);
+    h.ok(['spend', 'T1', '--from-spawn', second.agent]);
+    assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, task.spend.tokens);
+  });
 }
 
 for (const format of ['codex', 'claude']) {
