@@ -176,6 +176,42 @@ for (const fresh of [false, true]) {
   });
 }
 
+test('interrupting a rework run keeps its failed review feedback for the next dispatch, resumed or fresh', async (t) => {
+  const h = setup(t);
+  const first = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not record its session');
+  h.ok(['interrupt', 'T1']);
+  await until(() => !detachedAlive({ pid: first.monitor_pid }), 'interrupted monitor did not finish');
+  h.ok(['claim', 'T1', '--agent', first.agent]);
+  h.ok(['submit', 'T1', '--sha', 'abcdef1', '--agent', first.agent]);
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer-T1-1',
+    '--summary', 'Add the missing regression', '--ref', 'current-review']);
+  h.ok(['rework', 'T1', '--reason', 'Fix the current review feedback']);
+  // A new route starts the rework run fresh, so it stays alive until it is interrupted.
+  h.ok(['ladder', 'set', 'medium', '--args', '["new-route"]']);
+  const rework = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn session' && e.detail.agent === rework.agent), 'rework run did not record its session');
+  h.ok(['interrupt', 'T1']);
+  await until(() => !detachedAlive({ pid: rework.monitor_pid }), 'interrupted rework monitor did not finish');
+  const feedback = (dry) => {
+    const prompt = dry.argv.join('\n');
+    for (const text of [/Interrupt T1/, /Rework T1/, /Fix the current review feedback/, /Add the missing regression/, /current-review/]) {
+      assert.match(prompt, text);
+    }
+  };
+  const resumed = h.json(['spawn', '--task', 'T1', '--dry-run']);
+  assert.equal(resumed.resumed, true);
+  feedback(resumed);
+  h.ok(['ladder', 'set', 'medium', '--args', '["newer-route"]']);
+  const fresh = h.json(['spawn', '--task', 'T1', '--dry-run']);
+  assert.equal(fresh.resumed, false);
+  feedback(fresh);
+  h.finish();
+  h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.match(h.seen()[2].prompt, /Add the missing regression/);
+  assert.equal(h.json(['task', 'show', 'T1']).claim.from, 'rework');
+});
+
 test('interrupt stops supervision, preserves dirty work and resumes the original worker without rework', async (t) => {
   const h = setup(t);
   const first = h.json(['spawn', '--task', 'T1']);
@@ -242,6 +278,7 @@ test('live requirements need an authorized interrupt; metadata and unchanged req
   const updated = h.json(['task', 'update', 'T1', '--acceptance', 'new requirement', '--interrupt', '--agent', 'orchestrator']);
   assert.equal(updated.revision, 2);
   assert.equal(updated.claim, null);
+  assert.equal(events(h).findLast((e) => e.cmd === 'interrupt').detail.revision, 2);
   await until(() => !detachedAlive({ pid: first.monitor_pid }), 'requirements interrupt did not stop');
   h.json(['spawn', '--task', 'T1', '--wait']);
   assert.match(h.seen()[1].prompt, /new requirement/);
