@@ -252,10 +252,12 @@ for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
   test(`a confirmed ${route} gate failure climbs and reaches the owner at the range ceiling`, async (t) => {
     const h = setup(t, 'review', 'easy..medium', (repo) => {
       gateFixture(repo);
+      // Spawn exit runs every software gate, so each fails only where the check asks it to.
+      const exit = "process.exit(process.env.FIXTURE_GATE_OK === '0' ? 1 : 0)";
       repo.ok(['project', 'set', '--repo', 'acme/demo', '--tests-mode', 'run-only',
-        '--tests-cmd', 'node -e "process.exit(1)"']);
+        '--tests-cmd', `node -e "${exit}"`]);
       if (route === 'local-ci') repo.ok(['project', 'set', '--ci-local', JSON.stringify({
-        command: [process.execPath, '-e', 'process.exit(1)'], timeout: 5,
+        command: [process.execPath, '-e', exit], timeout: 5,
       })]);
     });
     h.ok(['spawn', '--task', 'T1']);
@@ -274,7 +276,8 @@ for (const route of ['tests', 'clean', 'ci', 'local-ci']) {
     const task = h.json(['task', 'show', 'T1']);
     assert.deepEqual(task.escalations.map((e) => e.trigger), [type, type]);
     assert.deepEqual(task.escalations.map((e) => e.to), ['medium', null]);
-    assert.ok(task.evidence.filter((e) => e.type === type).every((e) => e.confirmed_failure === true));
+    assert.ok(task.evidence.filter((e) => e.type === type && !e.ok).every((e) => e.confirmed_failure === true));
+    assert.equal(task.evidence.filter((e) => e.type === type && !e.ok).length, 2);
     assert.equal(h.readAttempts().length, 2);
   });
 }
