@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, makeProjectRepo, makeTaskRepo } = require('./helpers');
+const A = require('../lib/agents');
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -171,8 +172,8 @@ for (const [primaryHarness, reason, chain, routes] of [['claude', 'refusal', tru
     const h = setup(t, { reason, primaryHarness, chain });
     h.spawnEnv.TOWER_CRANE_TEST_FALLBACK_NOTE = '1';
     assert.equal(h.spawn().code, 0);
-    const sandboxed = (text) => !text.startsWith('agy');
-    assert.deepEqual(h.attempts().map((a) => a.broker), routes.map(sandboxed), 'claude and codex routes get the broker; agy is not sandboxed');
+    const sandboxed = (text) => A.CAPABILITIES[text.split(' ')[0]].osSandbox;
+    assert.deepEqual(h.attempts().map((a) => a.broker), routes.map(sandboxed), 'routes with an OS sandbox get the broker');
     const notes = events(h).filter((e) => e.cmd === 'task note').map((e) => [e.detail.text, e.agent, e.via ?? null]);
     assert.deepEqual(notes, routes.map((text) => [text, 'worker-T1-1', sandboxed(text) ? 'broker' : null]));
   });

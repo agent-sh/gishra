@@ -103,6 +103,7 @@ test('agy isolates planted user context and reports only house rules requested b
   const global = startup.rules.find(r => r.path === path.join(home, '.gemini', 'GEMINI.md'));
   assert.equal(global.loaded, 'read');
   assert.ok(startup.rules.every(r => r.loaded === 'read'));
+  assert.ok(startup.rules.some(r => r.path === path.join(home, '.gemini', 'config', 'rules', 'user.md') && r.loaded === 'read'));
   const after = [];
   for (let n = 0; n < 3; n++) {
     const r = cp.spawnSync(process.execPath, [stub, '--agent', 'gishra-worker'], {
@@ -117,7 +118,7 @@ test('agy isolates planted user context and reports only house rules requested b
 
 test('agy rung tool and MCP opt-ins render in dry-run and native config without copied secrets', { skip: noStub }, t => {
   const { h, home, env, report } = setup(t);
-  h.ok(['ladder', 'set', 'medium', '--tools', '["search_web"]', '--mcp', '["approved"]'], { env });
+  h.ok(['ladder', 'set', 'medium', '--tools', '["search_web"]', '--mcp', '["approved"]'], { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
   const dry = h.json(['spawn', '--task', 'T1', '--dry-run'], { env });
   assert.deepEqual(dry.home.tools, ['search_web']);
   assert.deepEqual(dry.home.mcp, ['approved']);
