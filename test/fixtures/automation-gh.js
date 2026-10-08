@@ -38,6 +38,8 @@ if (args[0] === 'pr') {
       const executor = events.findLast((e) => e.cmd === 'automation' && e.detail.phase === 'running');
       process.kill(executor.detail.pid, 'SIGKILL');
       // The killed executor is the test's CLI call, so the test resumes now.
+      // The test reads the file as soon as the executor dies; a second write
+      // from this orphaned call could truncate it under that read.
       process.exit(0);
     }
   } else {
