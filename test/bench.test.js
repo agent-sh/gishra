@@ -18,8 +18,9 @@ function history(h) {
   const at = () => new Date(clock += 1000).toISOString();
   const evidence = { T1: [], T2: [], T3: [] };
   const gate = (task, type, sha, ok, summary = null) => {
+    // The gate stamps its evidence entry before the event, so the two differ.
     const time = at();
-    lines.push({ at: time, agent: 'orchestrator', cmd: type === 'merge' ? 'merge' : `check ${type}`, task, detail: { type, ok, sha, source: `check ${type}` } });
+    lines.push({ at: new Date(Date.parse(time) + 3).toISOString(), agent: 'orchestrator', cmd: type === 'merge' ? 'merge' : `check ${type}`, task, detail: { type, ok, sha, source: `check ${type}` } });
     evidence[task].push({ type, ok, sha, agent: 'orchestrator', at: time, summary, ref: null, revision: 1 });
   };
   const ev = (task, cmd, detail, agent = 'orchestrator') => lines.push({ at: at(), agent, cmd, task, detail });
@@ -31,6 +32,8 @@ function history(h) {
   ev('T1', 'evidence', { type: 'review', ok: false, sha: A }, 'reviewer-T1-1');
   // An agent's own tests note is not a gate run.
   ev('T1', 'evidence', { type: 'tests', ok: true, sha: A }, 'worker-T1-1');
+  // A failed check run after the review blocker contradicts the same pass.
+  gate('T1', 'ci', A, false, `CI not green at ${A.slice(0, 10)} in o/r:\nfailing: lint (failure)`);
   // T2: a fail that stood until a new sha, a pass a review confirms despite a
   // mergeability failure, then a pass a failing check run contradicts.
   ev('T2', 'submit', { sha: A });
@@ -48,6 +51,7 @@ function history(h) {
   ev('T3', 'submit', { sha: A });
   gate('T3', 'ci', A, false, `CI not green at ${A.slice(0, 10)} in o/r:\nnot completed: test (ubuntu-latest, node 24) (in_progress)`);
   ev('T3', 'submit', { sha: B });
+  gate('T3', 'ci', B, false, `CI not green at ${B.slice(0, 10)} in o/r:\nnot completed: lint (queued)`);
   gate('T3', 'ci', B, false, `CI not green at ${B.slice(0, 10)} in o/r:\nfailing: lint (failure)`);
   ev('T3', 'submit', { sha: C });
   fs.appendFileSync(path.join(h.state, 'events.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
@@ -64,17 +68,17 @@ test('bench gates labels gate fails overturned at the same sha and passes later 
   const tests = r.gates.find((g) => g.gate === 'tests');
   // T1's two passes at A count once; T1 and T2 fails are one fp and one tp.
   assert.deepEqual([tests.runs, tests.results, tests.tp, tests.fp, tests.fn, tests.tn, tests.open], [5, 4, 1, 1, 1, 1, 0]);
-  assert.deepEqual(tests.fn_by, { review: 1, ci: 0 });
+  assert.deepEqual(tests.fn_by, { review: 1, ci: 1 }, 'the CI contradiction counts though the review came first');
   assert.equal(tests.precision, 0.5);
   assert.equal(tests.recall, 0.5);
   const clean = r.gates.find((g) => g.gate === 'clean');
   assert.deepEqual([clean.fn, clean.fn_by.ci], [1, 1], 'a failed check run contradicts the clean pass');
   const ci = r.gates.find((g) => g.gate === 'ci');
-  assert.deepEqual([ci.tp, ci.fp, ci.tn, ci.open, ci.noncode], [1, 0, 1, 1, 2], 'mergeability and pending fails are neither true nor false');
+  assert.deepEqual([ci.tp, ci.fp, ci.tn, ci.open, ci.noncode], [1, 0, 1, 2, 3], 'mergeability and pending fails are neither true nor false');
   assert.equal(ci.precision, 1);
   assert.equal(ci.recall_ci, null, 'the ci gate is not scored against itself');
-  assert.equal(tests.recall_ci, 1);
-  assert.deepEqual(r.ci_fail_reasons, { mergeability: 1, checks: 2, pending: 1 });
+  assert.equal(tests.recall_ci, 0.5);
+  assert.deepEqual(r.ci_fail_reasons, { mergeability: 1, checks: 3, pending: 2 });
   assert.deepEqual(r.ci_checks.map((c) => c.check).sort(), ['lint', 'test (windows-latest, node 24)']);
   assert.equal(r.labels.filter((l) => l.task === 'T1' && l.gate === 'tests').length, 3, 'manual tests evidence is not labeled');
 });

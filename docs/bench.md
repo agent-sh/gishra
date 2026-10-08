@@ -26,9 +26,10 @@ Precision is `tp / (tp + fp)`. Recall is `tp / (tp + fn)`. Open and noncode resu
 
 Rules that keep the labels honest:
 
-- A CI failure is a verdict on the code only when it names failed check runs (`failure`, `timed_out`, `startup_failure`). A pending run, an uncomputed or conflicting PR, a moved head or a failed GitHub query says nothing about the code. One rule holds on both sides: such a failure contradicts no pass, and as a ci gate result it is labeled `noncode`, never a true or false positive. The reason comes from the evidence summary stored with the task; failures whose summary is missing count as `unknown` and are noncode.
+- A CI failure is a verdict on the code only when it names failed check runs (`failure`, `timed_out`, `startup_failure`). A pending run, an uncomputed or conflicting PR, a moved head or a failed GitHub query says nothing about the code. One rule holds on both sides: such a failure contradicts no pass, and as a ci gate result it is labeled `noncode`, never a true or false positive. The reason comes from the evidence summary stored with the task. The gate stamps that entry and its event separately, a few milliseconds apart, so a fail event takes the latest unused failed ci entry of its task and sha stamped no later than the event. Failures with no such entry count as `unknown` and are noncode.
 - A failure that the same kind of check later reversed at that sha (a CI rerun, a second review) contradicts nothing.
-- Gates often rerun on one sha. The score counts one result per gate, sha and outcome, labeled by its earliest run, which has the most later evidence. `runs` shows the raw count, and `--json` lists every labeled run with the event that decided it.
+- A pass contradicted by both a review blocker and a failed CI check run counts once as a false negative and once under each source, so `recall(ci)` does not depend on which came first.
+- Gates often rerun on one sha. The score counts one result per gate, sha and outcome, labeled by its earliest run, which has the most later evidence. A noncode CI fail and a CI fail that names check runs are different outcomes, so a pending run cannot hide a later real failure at the same sha. `runs` shows the raw count, and `--json` lists every labeled run with the event that decided it.
 - Per CI check run, a failure is a false positive when CI later passes the same sha.
 
 ### Deslop checks
@@ -50,7 +51,7 @@ Tokens come from `spend.entries`. Every harness parser records input inclusive o
 
 ## Results
 
-Snapshot: this project's state copied at 2026-10-08 02:46 (Jerusalem), 16,029 events, 114 tasks. The state is live, so later runs on it give other counts; token figures move most, because running tasks keep adding spend. Deslop inputs: the 2026-10-06 slop research set (3,367 hand-labeled hits from deslop 1.3.0, 106 reviewer-found defects across agent-sh and darklanes PRs), the eval run of the rewritten detector on the same PRs, and its one agent-confirmed report.
+Snapshots: the gate figures come from this project's state copied at 2026-10-08 05:47 (Jerusalem), 19,778 events, 115 tasks; the token figures from an earlier copy at 2026-10-08 02:46, 16,029 events, 114 tasks. The state is live, so later runs on it give other counts; token figures move most, because running tasks keep adding spend. Deslop inputs: the 2026-10-06 slop research set (3,367 hand-labeled hits from deslop 1.3.0, 106 reviewer-found defects across agent-sh and darklanes PRs), the eval run of the rewritten detector on the same PRs, and its one agent-confirmed report.
 
 Prices, per million tokens (input / cache write / cache read / output), Bedrock global rates:
 
@@ -63,18 +64,18 @@ Prices, per million tokens (input / cache write / cache read / output), Bedrock 
 
 The 1M-context Opus id has its own row at the base Opus rates, since no long-context premium for it is recorded. Without that row its 4 entries are unpriced and the overall USD median covers 40 tasks instead of 42. Haiku 5.5 has no rate: its 3 entries leave two tasks unpriced.
 
-Both benches read recorded data and are deterministic: three runs of each on the snapshot gave byte-identical output (text and `--json`), so each figure is the value of every run. The deslop eval run is a detector run over git history and is deterministic as well.
+Both benches read recorded data and are deterministic: three runs of each on its snapshot gave byte-identical output (text and `--json`), so each figure is the value of every run. The deslop eval run is a detector run over git history and is deterministic as well.
 
 ### Gates
 
 | Gate | Runs | Results | TP | FP | FN | TN | Open | Noncode | Precision | Recall | Recall (CI) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| tests | 310 | 263 | 15 | 11 | 113 | 67 | 57 | 0 | 57.7% | 11.7% | 24.6% |
-| clean | 275 | 249 | 8 | 2 | 117 | 67 | 55 | 0 | 80.0% | 6.4% | 14.3% |
-| ci | 248 | 220 | 43 | 3 | 33 | 56 | 10 | 75 | 93.5% | 56.6% | - |
-| merge | 70 | 69 | 5 | 2 | 1 | 1 | 60 | 0 | 71.4% | 83.3% | - |
+| tests | 350 | 302 | 21 | 11 | 126 | 73 | 71 | 0 | 65.6% | 14.3% | 28.0% |
+| clean | 315 | 288 | 9 | 2 | 136 | 72 | 69 | 0 | 81.8% | 6.2% | 12.9% |
+| ci | 293 | 271 | 58 | 3 | 39 | 62 | 13 | 96 | 95.1% | 59.8% | - |
+| merge | 76 | 75 | 5 | 2 | 1 | 1 | 66 | 0 | 71.4% | 83.3% | - |
 
-False negatives by source: tests 67 review and 46 CI, clean 69 and 48, ci 33 review, merge 1 review. Recall (CI) is `-` for ci and merge because they read CI themselves.
+False negatives by source: tests 75 review and 54 CI, clean 76 and 61, ci 39 review, merge 1 review. A pass both sources contradicted counts under each, so the two can sum to more than FN. Recall (CI) is `-` for ci and merge because they read CI themselves.
 
 What the false positives were:
 
@@ -83,19 +84,19 @@ What the false positives were:
 - merge (2): GitHub refusing a direct merge of a stacked PR.
 - ci (3): the Windows Node 24 run passing on rerun.
 
-So most gate false positives are configuration and refusals, not wrong verdicts about code. Recall is low for tests and clean because reviewers block on what neither gate checks. Against CI alone, tests recall is 25%. The CI failures it misses name revuto-review 26 times, test runs on other platforms and Node versions 26 times and CodeQL 5 times (one failure can name several checks): review blockers and environments the local gate never runs.
+So most gate false positives are configuration and refusals, not wrong verdicts about code. Recall is low for tests and clean because reviewers block on what neither gate checks. Against CI alone, tests recall is 28%. Of the 54 shas where CI contradicted a tests pass, revuto-review failed at 30, a test run on another platform or Node version at 23 and CodeQL at 5 (one sha can fail several checks): review blockers and environments the local gate never runs.
 
-CI failures by reason (distinct results): failed check runs 52, mergeability 38, pending 22, unknown 9, GitHub query 5, moved head 1. All but the first are the 75 noncode results.
+CI failures by reason (distinct results): failed check runs 71, mergeability 61, pending 27, GitHub query 5, moved head 2, unknown 1. All but the first are the 96 noncode results.
 
 | CI check run | Fails | TP | FP | Open | Precision |
 |---|---|---|---|---|---|
-| revuto-review | 27 | 21 | 0 | 6 | 100% |
-| test (windows-latest, node 24) | 12 | 9 | 3 | 0 | 75.0% |
-| test (ubuntu-latest, node 24) | 9 | 9 | 0 | 0 | 100% |
-| test (windows-latest, node 26) | 7 | 7 | 0 | 0 | 100% |
-| test (ubuntu-latest, node 20) | 6 | 6 | 0 | 0 | 100% |
-| CodeQL | 5 | 5 | 0 | 0 | 100% |
-| test (ubuntu-latest, node 26) | 5 | 5 | 0 | 0 | 100% |
+| revuto-review | 35 | 27 | 0 | 8 | 100% |
+| test (ubuntu-latest, node 24) | 18 | 17 | 0 | 1 | 100% |
+| test (windows-latest, node 26) | 15 | 14 | 0 | 1 | 100% |
+| test (windows-latest, node 24) | 14 | 11 | 3 | 0 | 78.6% |
+| test (ubuntu-latest, node 26) | 13 | 13 | 0 | 0 | 100% |
+| test (ubuntu-latest, node 20) | 7 | 7 | 0 | 0 | 100% |
+| CodeQL | 6 | 6 | 0 | 0 | 100% |
 
 The Windows Node 24 run is the one flaky check.
 
@@ -157,7 +158,7 @@ Cache reads are 98.0% of the complete tasks' tokens, fresh input 1.6% and output
 
 - Labels need later evidence. Results still in flight are open and do not count, and merge passes stay open because nothing is recorded after a merge.
 - A review blocker counts against every gate that passed that sha, whether or not the blocker is the kind of fault the gate checks. `recall(ci)` is the narrower view.
-- Only failures recorded with a summary can be split by reason; older gishra-era events without a matching evidence entry count as `unknown`, so a real check failure among them is noncode rather than a true positive.
+- Only failures recorded with a summary can be split by reason; a fail event without a matching evidence entry counts as `unknown` (1 on the snapshot), so a real check failure among them would be noncode rather than a true positive.
 - Spend entries come from harness telemetry. Claude thinking tokens that the API usage does not report are missing, and long-context surcharges per request cannot be rebuilt from totals.
 - The deslop precision against reviewer findings is a lower bound, and its location match can credit an unrelated item.
-- The bench reads the live state. Results are reproducible only on a copied snapshot; the figures above come from the 16,029-event snapshot named under Results.
+- The bench reads the live state. Results are reproducible only on a copied snapshot; the figures above come from the two snapshots named under Results.
