@@ -433,13 +433,12 @@ test('failed test diagnostics redact process, project, rung and env_file secrets
     token(chars(115, 107, 45), 'T83GenericSecret0123456789abcdef'),
     token(chars(65, 75, 73, 65), 'ABCDEFGHIJKLMNOP'),
     token(chars(120, 111, 120, 112, 45), 'T83GenericSlack-0123456789abcdef'),
-    'abcdef0123456789abcdef0123456789abcdef01',
-    'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/ab',
+    token('Authorization: Bearer ', 'T83GenericAuth0123456789abcdef'),
   ];
   const projectEnvFile = path.join(h.base, 'project.env');
   const rungEnvFile = path.join(h.base, 'rung.env');
   fs.writeFileSync(projectEnvFile, `T83_PROJECT_FILE_CANARY=${canaries.projectFile}\n`);
-  fs.writeFileSync(rungEnvFile, `T83_RUNG_FILE_CANARY=${canaries.rungFile}\n`);
+  fs.writeFileSync(rungEnvFile, `T83_RUNG_FILE_TOKEN=${canaries.rungFile}\n`);
   fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
   const defaultEasy = require('../lib/ladder').resolve({}, h.env).ladder.easy.own;
   fs.writeFileSync(h.userConfig, JSON.stringify({
@@ -482,8 +481,8 @@ test('failure ' + process.env.T83_PROCESS_TOKEN, () => {
   assert.match(evidence.test_failure.output_tail, /\[redacted:T83_PROJECT_CANARY\]/);
   assert.match(evidence.test_failure.output_tail, /\[redacted:T83_PROJECT_FILE_CANARY\]/);
   assert.match(evidence.test_failure.output_tail, /\[redacted:T83_RUNG_CANARY\]/);
-  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_RUNG_FILE_CANARY\]/);
-  for (const label of ['GITHUB_TOKEN', 'API_KEY', 'AWS_ACCESS_KEY_ID', 'SLACK_TOKEN', 'HEX', 'BASE64']) {
+  assert.match(evidence.test_failure.output_tail, /\[redacted:T83_RUNG_FILE_TOKEN\]/);
+  for (const label of ['GITHUB_TOKEN', 'API_KEY', 'AWS_ACCESS_KEY_ID', 'SLACK_TOKEN', 'AUTHORIZATION']) {
     assert.ok(evidence.test_failure.output_tail.includes(`[redacted:${label}]`), label);
   }
 
@@ -494,6 +493,43 @@ test('failure ' + process.env.T83_PROCESS_TOKEN, () => {
   for (const secret of [...Object.values(canaries), ...commonTokens]) {
     assert.equal(output.includes(secret), false, `raw canary leaked: ${secret}`);
   }
+});
+
+test('paths, long file names, commit SHAs and ordinary env values survive a failed test run', (t) => {
+  const h = makeRepo(t);
+  const file = 'test/T83-long-file-name-kept-intact-for-diagnostics.test.js';
+  const fullSha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+  const worktree = '/home/builder/worktrees/T83-gate-command-errors-name-the-real-cause/checkout';
+  const literals = [file, fullSha, worktree].map((value) => JSON.stringify(value)).join(', ');
+  const testFile = `const test = require('node:test');
+const assert = require('node:assert/strict');
+test('NODE_ENV is ' + process.env.NODE_ENV, () => {
+  console.log([${literals}, process.env.NODE_ENV, process.env.CI, process.env.LOG_LEVEL].join(' '));
+  assert.fail('fixture failure');
+});
+`;
+  const sha = manifestTask(h, { submitted: { [file]: testFile } });
+  submitTestsFixture(h, sha, null, ['--env', JSON.stringify({ NODE_ENV: 'test' })]);
+  for (const key of Object.keys(h.env)) {
+    if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  }
+
+  const cmd = `${shellQuote(process.execPath)} --test --test-reporter=tap ${shellQuote(file)}`;
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd', cmd]);
+  const result = h.run(['check', 'tests', 'T1', '--agent', 'checker'], {
+    env: { NODE_ENV: 'test', CI: 'true', LOG_LEVEL: 'debug' },
+  });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+
+  const evidence = h.readState('tasks.json').tasks[0].evidence.at(-1);
+  assert.equal(evidence.test_failure.names.length, 1);
+  assert.match(evidence.test_failure.names[0], /^NODE_ENV is test\b/);
+  const output = evidence.test_failure.output_tail;
+  assert.ok(output.includes(file), 'the test file name stays whole');
+  assert.ok(output.includes(fullSha), 'the commit SHA stays whole');
+  assert.ok(output.includes(worktree), 'the worktree path stays whole');
+  assert.match(output, / test true debug/);
+  assert.equal(output.includes('[redacted:'), false, output);
 });
 
 test('a token that straddles the output tail cut is redacted, not kept as a fragment', (t) => {
