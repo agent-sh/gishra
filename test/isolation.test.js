@@ -131,13 +131,13 @@ function noSecretsCopied(h) {
   for (const f of walk(h.state)) assert.ok(!fs.readFileSync(f, 'utf8').includes(SECRET), `${f} holds a copied credential`);
 }
 
-function spawn(h, u, role, env = {}) {
+function spawn(h, u, role, env = {}, opts = {}) {
   if (role === 'review' && h.readState('tasks.json').tasks[0].status !== 'submitted') {
     h.ok(['task', 'update', 'T1', '--kind', 'docs']);
     h.ok(['claim', 'T1', '--agent', 'builder']);
     h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder']);
   }
-  const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { env: { ...u.env, ...env } });
+  const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { ...opts, env: { ...u.env, ...env } });
   assert.equal(r.code, 0, r.stderr);
   return JSON.parse(r.stdout);
 }
@@ -773,7 +773,8 @@ test('remote pushes publish only the task branch, including configured and impli
   cases.push([['git', 'checkout', '-q', branch], 0]);
   for (const harness of ['claude', 'codex']) {
     isolated(h, 'hard', harness);
-    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(cases.map(([args]) => args)) });
+    // The full push matrix starts several guarded Git processes per case.
+    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(cases.map(([args]) => args)) }, { timeout: 120000 });
     const ran = u.report().ran;
     assert.deepEqual(ran.map((r) => r.code), cases.map(([, code]) => code),
       `${harness}: ${JSON.stringify(ran.map((r) => ({ args: r.argv, code: r.code, stderr: r.stderr })))}`);
