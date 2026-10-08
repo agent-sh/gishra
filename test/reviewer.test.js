@@ -163,6 +163,8 @@ fs.writeFileSync(${JSON.stringify(checkpoint)}, JSON.stringify(previous));
 fs.appendFileSync(${JSON.stringify(captures)}, JSON.stringify({
   harness: claude ? 'claude' : 'codex', system, args, cwd: process.cwd(),
   home: process.env.HOME, cache_read: hit ? tokens : 0, cache_write: hit ? 0 : tokens,
+  cache: process.env.XDG_CACHE_HOME,
+  tool_caches: [process.env.GOCACHE, process.env.GOMODCACHE, process.env.npm_config_cache],
   ttl: process.env.FORCE_PROMPT_CACHING_5M,
   memory: claude ? fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'CLAUDE.md'), 'utf8') : null,
 }) + '\\n');
@@ -177,6 +179,7 @@ console.log(JSON.stringify({type:'result', result:'cache probe', usage: {
   fs.writeFileSync(path.join(caller, '.claude', 'CLAUDE.md'), 'STUB_GLOBAL_RULE\n');
   fs.writeFileSync(path.join(caller, '.codex', 'AGENTS.md'), 'STUB_GLOBAL_RULE\n');
   const env = { HOME: caller, CLAUDE_CONFIG_DIR: path.join(caller, '.claude'), CODEX_HOME: path.join(caller, '.codex'),
+    XDG_CACHE_HOME: path.join(caller, 'cache'),
     PATH: bin + path.delimiter + (h.env.PATH || ''), FORCE_PROMPT_CACHING_5M: '0' };
   for (const harness of ['claude', 'codex']) {
     h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'fixture', '--clear', 'profile']);
@@ -189,6 +192,7 @@ console.log(JSON.stringify({type:'result', result:'cache probe', usage: {
     assert.equal(runs[0].cache_read, 0);
     assert.notEqual(runs[0].cwd, runs[1].cwd);
     assert.equal(new Set(runs.map((r) => r.home)).size, 4);
+    assert.equal(new Set(runs.map((r) => r.cache)).size, 4, 'reviewer filesystem caches are isolated');
     for (const row of runs.slice(1)) {
       assert.equal(row.system, runs[0].system);
       assert.equal(row.cache_read, runs[0].cache_write);
@@ -197,6 +201,9 @@ console.log(JSON.stringify({type:'result', result:'cache probe', usage: {
     for (const row of runs) {
       assert.match(row.system, /Role instructions: tower-crane-review/);
       assert.ok(!row.system.includes('## Task'));
+      assert.ok(row.cache.startsWith(path.join(caller, 'cache') + path.sep));
+      assert.deepEqual(row.tool_caches, ['go-build', 'go-mod', 'npm'].map((dir) => path.join(row.cache, dir)));
+      assert.ok(!row.system.includes(row.cache), 'per-agent filesystem paths stay out of the shared prefix');
       if (harness === 'claude') {
         assert.equal(row.ttl, '1');
         assert.equal(row.memory, '');
