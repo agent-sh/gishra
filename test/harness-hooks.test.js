@@ -141,6 +141,21 @@ test('successful push and PR creation publish events, and submitted stops retain
   assert.match(reports[0].detail.text, /last report from command/);
 });
 
+test('R1: a push or PR event recorded with no command is marked as an unverified hint', async (t) => {
+  const { h, ready } = setup(t, 'command');
+  const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json']);
+  await until(ready);
+  fs.writeFileSync(ready + '.go', '');
+  assert.equal((await run).code, 0);
+  // The worker's own binding, and no push or PR made: the shim never ran.
+  const binding = path.join(h.state, 'homes', 'worker-T1-1', 'hook.json');
+  for (const action of ['git-push', 'pr-created']) {
+    h.ok(['hook', action, '--binding', binding, '--agent', 'worker-T1-1', '--state', h.state]);
+    const e = events(h).findLast((row) => row.cmd === `hook ${action}`);
+    assert.equal(e?.detail.unverified, true, `hook ${action} must not read as a verified push or PR`);
+  }
+});
+
 test('the bridge refuses path-selected bindings and another dispatch identity', async (t) => {
   const { h, ready } = setup(t, 'command');
   const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json']);
