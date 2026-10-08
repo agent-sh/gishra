@@ -31,8 +31,10 @@ const [bin, seen, session, prompt] = process.argv.slice(2);
 const cli = (...args) => cp.execFileSync(process.execPath, [bin, ...args], { encoding: 'utf8' });
 ${stubborn ? `
 process.on('SIGTERM', () => {});
-const child = cp.spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
-fs.writeFileSync(seen + '.child', String(child.pid));
+if (!session) {
+  const child = cp.spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
+  fs.writeFileSync(seen + '.child', String(child.pid));
+}
 ` : ''}
 const task = JSON.parse(cli('task', 'show', 'T1', '--json'));
 if (!task.claim) cli('claim', 'T1');
@@ -337,6 +339,49 @@ test('an interrupted supervisor holds its worker slot until the process group st
   assert.equal(detachedAlive({ pid: first.pid }), false);
   assert.equal(detachedAlive({ pid: child }), false);
   h.ok(['claim', 'T2', '--agent', 'replacement']);
+});
+
+test('a supervisor killed after an interrupt does not wedge the claim or the next dispatch', { skip: process.platform === 'win32' }, async (t) => {
+  const h = setup(t, false, true);
+  const first = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not start');
+  const child = Number(fs.readFileSync(path.join(h.base, 'seen.json.child'), 'utf8'));
+  h.ok(['interrupt', 'T1']);
+  const stop = events(h).findLast((e) => e.cmd === 'interrupt');
+  assert.equal(stop.detail.phase, 'stopping');
+  assert.equal(stop.detail.active, true);
+  const kill = (pid) => { if (detachedAlive({ pid })) process.kill(pid, 'SIGKILL'); };
+  kill(first.monitor_pid);
+  kill(first.pid);
+  kill(child);
+  await until(() => !detachedAlive({ pid: first.monitor_pid }) && !detachedAlive({ pid: first.pid }), 'killed supervisor did not stop');
+  // No record can follow the SIGKILL, so the reservation holds for one lease.
+  const held = h.run(['claim', 'T1', '--agent', first.agent]);
+  assert.equal(held.code, 1, held.stderr);
+  assert.match(held.stderr, /still stopping/);
+  // Age the killed monitor's records past the default 60-minute lease.
+  const log = path.join(h.state, 'events.jsonl');
+  fs.writeFileSync(log, fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => {
+    const e = JSON.parse(line);
+    if (e.task === 'T1' && e.detail?.agent === first.agent && ['interrupt', 'spawn phase'].includes(e.cmd)) {
+      e.at = new Date(Date.parse(e.at) - 61 * 60000).toISOString();
+    }
+    return JSON.stringify(e);
+  }).join('\n') + '\n');
+  h.ok(['claim', 'T1', '--agent', first.agent]);
+  const second = h.json(['spawn', '--task', 'T1', '--wait']);
+  assert.equal(second.resumed, true);
+  assert.equal(second.agent, first.agent);
+  assert.match(h.seen()[1].prompt, /Interrupt T1/);
+});
+
+test('cancelling a live claim in the same edit that changes its requirements keeps it cancelled', async (t) => {
+  const h = setup(t);
+  const first = h.json(['spawn', '--task', 'T1']);
+  await until(() => events(h).some((e) => e.cmd === 'spawn session'), 'worker did not start');
+  h.ok(['task', 'update', 'T1', '--status', 'cancelled', '--acceptance', 'cancelled requirement', '--interrupt']);
+  assert.equal(h.json(['task', 'show', 'T1']).status, 'cancelled');
+  await until(() => !detachedAlive({ pid: first.monitor_pid }), 'supervisor did not stop');
 });
 
 test('a generated orchestrator identity may interrupt; an expired lease needs no requirements interrupt', (t) => {
