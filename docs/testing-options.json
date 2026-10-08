@@ -3,64 +3,116 @@
   "runs": 3,
   "workers": 2,
   "commands": {
-    "files": [
-      "test/run.js",
-      "--test-concurrency=2",
-      "test/browser-startup.test.js",
-      "test/gates/tests.test.js",
-      "test/test-tools.test.js"
-    ],
-    "shards": [
-      "test/run.js",
-      "--test-concurrency=1",
-      "--test-shard=N/3",
-      "test/browser-startup.test.js",
-      "test/gates/tests.test.js",
-      "test/test-tools.test.js"
-    ],
-    "real timers": [
-      "--test",
-      "--test-concurrency=1",
-      "<probe>/options.test.cjs"
-    ],
-    "mock timers": [
-      "--test",
-      "--test-concurrency=1",
-      "<probe>/options.test.cjs"
-    ],
-    "manual stub": [
-      "--test",
-      "--test-concurrency=1",
-      "<probe>/options.test.cjs"
-    ],
-    "t.mock.method": [
-      "--test",
-      "--test-concurrency=1",
-      "<probe>/options.test.cjs"
-    ],
-    "t.mock.module": [
-      "--test",
-      "--test-concurrency=1",
-      "--experimental-test-module-mocks",
-      "<probe>/options.test.cjs"
-    ],
-    "all cases": [
-      "--test",
-      "--test-concurrency=1",
-      "<probe>/options.test.cjs"
-    ],
-    "name filter": [
-      "--test",
-      "--test-concurrency=1",
-      "--test-name-pattern=^selected$",
-      "<probe>/options.test.cjs"
-    ],
-    "tag filter": [
-      "--test",
-      "--test-concurrency=1",
-      "--experimental-test-tag-filter=focus",
-      "<probe>/options.test.cjs"
-    ]
+    "files": {
+      "argv": [
+        "test/run.js",
+        "--test-concurrency=2",
+        "test/browser-startup.test.js",
+        "test/gates/tests.test.js",
+        "test/test-tools.test.js"
+      ]
+    },
+    "shards": {
+      "argv": [
+        "test/run.js",
+        "--test-concurrency=1",
+        "--test-shard=N/3",
+        "test/browser-startup.test.js",
+        "test/gates/tests.test.js",
+        "test/test-tools.test.js"
+      ]
+    },
+    "real timers": {
+      "argv": [
+        "--test",
+        "--test-concurrency=1",
+        "<probe>/options.test.cjs"
+      ],
+      "env": {
+        "OPTION_PROBE": "real-timers",
+        "OPTION_COUNT": "<probe>/count"
+      }
+    },
+    "mock timers": {
+      "argv": [
+        "--test",
+        "--test-concurrency=1",
+        "<probe>/options.test.cjs"
+      ],
+      "env": {
+        "OPTION_PROBE": "mock-timers",
+        "OPTION_COUNT": "<probe>/count"
+      }
+    },
+    "manual stub": {
+      "argv": [
+        "--test",
+        "--test-concurrency=1",
+        "<probe>/options.test.cjs"
+      ],
+      "env": {
+        "OPTION_PROBE": "manual",
+        "OPTION_COUNT": "<probe>/count"
+      }
+    },
+    "t.mock.method": {
+      "argv": [
+        "--test",
+        "--test-concurrency=1",
+        "<probe>/options.test.cjs"
+      ],
+      "env": {
+        "OPTION_PROBE": "method",
+        "OPTION_COUNT": "<probe>/count"
+      }
+    },
+    "t.mock.module": {
+      "argv": [
+        "--test",
+        "--test-concurrency=1",
+        "--experimental-test-module-mocks",
+        "<probe>/options.test.cjs"
+      ],
+      "env": {
+        "OPTION_PROBE": "module",
+        "OPTION_COUNT": "<probe>/count"
+      }
+    },
+    "all cases": {
+      "argv": [
+        "--test",
+        "--test-concurrency=1",
+        "<probe>/options.test.cjs"
+      ],
+      "env": {
+        "OPTION_PROBE": "filter",
+        "OPTION_COUNT": "<probe>/count"
+      }
+    },
+    "name filter": {
+      "argv": [
+        "--test",
+        "--test-concurrency=1",
+        "--test-name-pattern=^selected$",
+        "<probe>/options.test.cjs"
+      ],
+      "env": {
+        "OPTION_PROBE": "filter",
+        "OPTION_COUNT": "<probe>/count"
+      }
+    },
+    "tag filter": {
+      "argv": [
+        "--test",
+        "--test-concurrency=1",
+        "--experimental-test-tag-filter=focus",
+        "<probe>/options.test.cjs"
+      ],
+      "env": {
+        "OPTION_PROBE": "filter",
+        "OPTION_COUNT": "<probe>/count"
+      }
+    }
   },
   "samples": {
     "files": [

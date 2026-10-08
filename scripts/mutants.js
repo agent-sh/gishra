@@ -111,7 +111,7 @@ function runTests(files) {
   const r = cp.spawnSync(process.execPath, ['test/run.js', `--test-concurrency=${jobs}`, ...(skip ? [`--test-skip-pattern=${skip}`] : []), ...files], {
     cwd: copy, encoding: 'utf8', env: process.env, maxBuffer: 1 << 28, timeout: 60 * 60 * 1000,
   });
-  if (r.status !== 0) runTests.failures = (r.stdout || '').split('\n').filter((l) => /^\s*✖|^not ok/.test(l)).slice(0, 20).join('\n');
+  if (r.status !== 0) runTests.failures = `${r.error?.message || ''}\n${r.stdout || ''}\n${r.stderr || ''}`.slice(-8192);
   return r.status === 0;
 }
 

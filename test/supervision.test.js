@@ -597,19 +597,23 @@ test('quiet supervision samples state and progress paths on a seconds-scale inte
   try {
     await until(() => fs.existsSync(h.attempts), 'quiet worker did not finish claiming');
     await until(() => read().filter((sample) => sample.kind === 'path').length >= 2, 'quiet sampling did not start');
+    const before = read().filter((sample) => sample.kind === 'state').length;
     h.ok(['task', 'note', 'T1', 'wake the state observer']);
-    await until(() => read().filter((sample) => sample.kind === 'path').length >= 4, 'quiet sampling did not continue');
+    await until(() => read().filter((sample) => sample.kind === 'state').length > before, 'the state observer did not see the note');
+    // Startup writes may still arrive. Once they settle, several path samples
+    // must reuse the state; polling it every tick never reaches this interval.
+    await until(() => {
+      const samples = read();
+      const lastRead = samples.findLast((sample) => sample.kind === 'state');
+      return samples.filter((sample) => sample.kind === 'path' && sample.at > lastRead.at).length >= 3;
+    }, 'quiet monitor repeatedly reloads state');
     const samples = read();
     const walks = samples.filter((sample) => sample.kind === 'path');
-    // Startup and shutdown have their own state writes; inspect the live interval.
-    const states = samples.filter((sample) => sample.kind === 'state' && sample.at > walks[0].at && sample.at <= walks.at(-1).at);
-    assert.ok(states.length > 0, 'the state observer saw the note');
-    assert.equal(new Set(states.map((sample) => sample.version)).size, states.length, JSON.stringify(states));
     for (let i = 1; i < walks.length; i++) assert.ok(walks[i].at - walks[i - 1].at >= 900, JSON.stringify(walks));
   } finally {
     fs.writeFileSync(h.attempts + '.finish', '');
+    await until(() => log(h).some((e) => e.cmd === 'spawn phase' && e.detail.phase === 'waiting'), 'quiet worker did not finish');
   }
-  await until(() => log(h).some((e) => e.cmd === 'spawn phase' && e.detail.phase === 'waiting'), 'quiet worker did not finish');
 });
 
 describe('supervision completion cases', { concurrency: windowsConcurrency }, () => {

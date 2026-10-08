@@ -120,7 +120,11 @@ What is left is mostly the CLI's own cost: every call starts Node and loads the 
 
 The original 31/31 before and after claims included invalid fallback results: the scratch copy omitted inputs that the full suite reads, and that baseline was never run unmutated. The historical before run establishes **26/31 scoped catches**; its five fallback results are unverified. The reviewer independently confirmed **30/31 scoped catches at beacafc**. These replace the original scores.
 
-| bug | area | before: caught by | after: caught by |
+With the repaired fixtures, the complete fixed sample catches **31/31 with `--no-full`**, after a green unmodified scoped baseline. The command is `node scripts/mutants.js --jobs 2 --no-full --skip "publish its task branch"`. The skip is limited to the nested worker publishing another task's branch; no full-suite fallback contributes to the score.
+
+After merging main at `4b9c3d2`, the changed supervision and stack paths were checked again: **4/4 caught**, with a green unmodified baseline, using `node scripts/mutants.js --jobs 2 --no-full --only supervisor-retries-permanent-exit,supervisor-extra-retry,supervisor-ignores-cpu,stack-merge-unaccepted-lower`. The quiet sampler test holds its worker until a stable interval has been observed; a control that forces state reloads every tick fails that test.
+
+| bug | area | historical before: scoped evidence | repaired after: caught by |
 | --- | --- | --- | --- |
 | `tests-pass-without-change` | gates | test/gates/tests.test.js | test/gates/tests.test.js |
 | `tests-deleted-test-counts` | gates | test/gates/tests.test.js | test/gates/tests.test.js |
@@ -145,7 +149,7 @@ The original 31/31 before and after claims included invalid fallback results: th
 | `lock-ignores-pid-namespace` | state lock | test/lock.test.js | test/lock.test.js |
 | `lock-never-ages-out` | state lock | test/lock.test.js | test/lock.test.js |
 | `merge-moved-head` | merge/stacks | test/gates/merge.test.js | test/gates/merge.test.js |
-| `stack-merge-unaccepted-lower` | merge/stacks | unverified fallback | survived at beacafc |
+| `stack-merge-unaccepted-lower` | merge/stacks | unverified fallback | test/stack-merge.test.js |
 | `stack-merge-untracked-lower` | merge/stacks | test/stack-merge.test.js | test/stack-merge.test.js |
 | `stack-merge-admin` | merge/stacks | test/stack-merge.test.js | test/stack-merge.test.js |
 | `codex-config-keeps-secrets` | secrets | test/isolation.test.js | test/isolation.test.js |
@@ -154,7 +158,7 @@ The original 31/31 before and after claims included invalid fallback results: th
 | `serve-no-page-token` | board | test/settings.test.js | test/settings.test.js |
 | `serve-anyone-owner` | board | test/events.test.js | test/events.test.js |
 
-The before run is `origin/main` at e2f5277 with two additions so it could run here: each test repository's own `HOME` (spawn writes receipts under the home cache) and this branch's `test/run.js`; the after run is this branch. Both ran inside a Tower Crane worker sandbox. There the parent's git shim refuses a nested push of another task's branch, so the before run passed `--skip "publish its task branch"` for the one isolation test that makes such a push.
+The before run is `origin/main` at e2f5277 with two additions so it could run here: each test repository's own `HOME` (spawn writes receipts under the home cache) and this branch's `test/run.js`; the repaired after run uses this branch with full-suite fallback disabled. Both ran inside a Tower Crane worker sandbox. There the parent's git shim refuses a nested push of another task's branch, so the before run passed `--skip "publish its task branch"` for the one isolation test that makes such a push.
 
 Working through the sample found one test that passed for the wrong reason and two checks that only a slow or timing-bound test made:
 

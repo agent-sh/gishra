@@ -63,7 +63,10 @@ if (mode.endsWith('timers')) {
   const samples = {};
   const commands = {};
   const run = async (name, argv, env = process.env) => {
-    commands[name] = argv;
+    commands[name] = {
+      argv: argv.map((arg) => arg === fixture ? '<probe>/options.test.cjs' : arg),
+      ...(env.OPTION_PROBE ? { env: { OPTION_PROBE: env.OPTION_PROBE, OPTION_COUNT: '<probe>/count' } } : {}),
+    };
     const sample = await measure(ROOT, argv, env);
     assert.equal(sample.status, 0, `${name} failed`);
     (samples[name] ||= []).push(sample);
@@ -87,7 +90,7 @@ if (mode.endsWith('timers')) {
         wall: shards.reduce((sum, batch) => sum + Math.max(...batch.map((s) => s.wall)), 0),
         cpu: shards.flat().reduce((sum, s) => sum + s.cpu, 0), status: 0,
       });
-      commands.shards = ['test/run.js', '--test-concurrency=1', '--test-shard=N/3', ...FILES];
+      commands.shards = { argv: ['test/run.js', '--test-concurrency=1', '--test-shard=N/3', ...FILES] };
       for (const [name, mode, flags, count] of [
         ['real timers', 'real-timers', [], 24],
         ['mock timers', 'mock-timers', [], 24],
