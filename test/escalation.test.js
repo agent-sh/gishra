@@ -42,10 +42,10 @@ async function setup(t, trigger = 'exit', range = 'easy..medium', prepare = null
   const signal = path.join(h.base, 'process-signal.cjs');
   // Socket closure observes detached exits even when SIGKILL prevents a receipt.
   fs.writeFileSync(signal, `
-const net = require('node:net');
 const path = require('node:path');
-if (process.execArgv.includes('-e') || ['spawn-monitor.js', 'usage-harness.js'].includes(path.basename(process.argv[1] || ''))) {
-  const socket = net.connect(Number(process.env.HOOK_ESCALATION_SIGNAL_PORT), '127.0.0.1', () => {
+if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
+  || ['spawn-monitor.js', 'usage-harness.js'].includes(path.basename(process.argv[1] || ''))) {
+  const socket = require('node:net').connect(Number(process.env.HOOK_ESCALATION_SIGNAL_PORT), '127.0.0.1', () => {
     socket.write(String(process.pid) + '\\n');
     socket.unref();
   });
