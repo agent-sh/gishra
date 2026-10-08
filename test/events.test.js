@@ -98,7 +98,7 @@ function gates(h, ci = false) {
 }
 
 function commandWorker(h, argv) {
-  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify(argv),
+  h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([...argv, '{prompt}']),
     ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
 }
 
@@ -330,7 +330,7 @@ setInterval(() => {}, 1000);\n`);
     await created(claimed);
     h.ok(['task', 'add', '--title', 'Sandboxed worker', '--acceptance', 'works']);
     h.ok(['brief', 'set', 'T2', '-'], { input: 'stand-in\n' });
-    commandWorker(h, [process.execPath, '-e', 'process.exit(0)']);
+    commandWorker(h, [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
     const exited = h.json(['spawn', '--task', 'T2', '--wait']);
     const args = command === 'wait'
       ? ['wait', '--task', 'T1', '--after', '0', '--types', 'worker-exited', '--timeout', '0.1']
@@ -349,7 +349,7 @@ setInterval(() => {}, 1000);\n`);
 test('a spawned worker that exits before claiming wakes without waiting for a lease', async (t) => {
   const h = setup(t);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
-  commandWorker(h, [process.execPath, '-e', 'process.exit(0)']);
+  commandWorker(h, [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const result = await waiting(t, h, ['--types', 'worker-exited']);
   const started = h.json(['spawn', '--task', 'T1', '--wait']);
   const e = await event(result, 'worker-exited');
@@ -363,7 +363,7 @@ test('a spawned worker that exits before claiming wakes without waiting for a le
 test('exit observers include attempts for spawns recorded without an attempt field', (t) => {
   const h = setup(t);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
-  commandWorker(h, [process.execPath, '-e', 'process.exit(0)']);
+  commandWorker(h, [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   h.json(['spawn', '--task', 'T1', '--wait']);
   const cursor = fs.statSync(path.join(h.state, 'events.jsonl')).size;
   const hook = path.join(h.base, 'older-spawn.js');
@@ -425,7 +425,7 @@ test('a spawned orchestrator observes stale leases under its generated identity'
   const h = setup(t);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'stand-in\n' });
   h.ok(['ladder', 'set', 'orchestrator', '--harness', 'command',
-    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)']),
+    '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}']),
     ...['model', 'profile', 'provider', 'effort', 'args'].flatMap((field) => ['--clear', field])]);
   const observer = h.json(['spawn', '--task', 'T1', '--role', 'orchestrator', '--wait']);
   const clock = path.join(h.base, 'clock');

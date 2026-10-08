@@ -51,7 +51,7 @@ test('every authority row has a CLI path, and tower-crane authority lists the ta
   const rows = h.json(['authority']);
   assert.deepEqual(rows.map((r) => r.setting), Object.keys(Authority.TABLE));
   for (const row of rows) {
-    assert.ok([Authority.OPERATIONAL, Authority.OWNER].includes(row.class), row.setting);
+    assert.ok([Authority.OPERATIONAL, Authority.OWNER, Authority.REFUSED].includes(row.class), row.setting);
     // Each --flag the row names must be an option of a command it names.
     const named = COMMANDS.filter((c) => new RegExp(`(^|[\\s,(])${c.name.replace(/[-\s]/g, (m) => `\\${m}`)}(?=$|[\\s,])`).test(row.how));
     assert.ok(named.length, `${row.setting}: "${row.how}" names no tower-crane command`);
