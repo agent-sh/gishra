@@ -84,7 +84,7 @@ const env = { ...process.env, PATH: ${JSON.stringify(parentPath)} };
 if (args[0] === 'push') {
   const target = args.find((a, i) => i > 0 && !a.startsWith('-')) || 'origin';
   const remote = cp.spawnSync('git', ['remote', 'get-url', '--push', target], { env, encoding: 'utf8', timeout: 10000 });
-  if (/^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
+  if (/^(?:https?|ssh|git):|^[^/]*@/.test(target) || /^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
     process.stderr.write('fixture remote unavailable\\n');
     process.exit(1);
   }
@@ -100,6 +100,7 @@ process.exit(result.status ?? 1);
   for (const k of ['GH_TOKEN', 'GITHUB_TOKEN']) runEnv[k] = '';
   runEnv.CLAUDE_CONFIG_DIR = '';
   runEnv.CODEX_HOME = '';
+  runEnv.XDG_CACHE_HOME = '';
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
 }
 
@@ -110,7 +111,7 @@ function setup(t) {
   fs.writeFileSync(path.join(h.repo, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'planted-project-hook' }] }] } }));
   h.git(['add', '.']);
   h.git(['commit', '-q', '-m', 'project settings']);
-  h.init();
+  h.init(['--repo', 'acme/app']);
   h.ok(['task', 'add', '--title', 'Probe', '--acceptance', 'nothing planted reaches the agent']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'probe\n' });
   const wt = h.json(['worktree', 'T1']).path;
@@ -147,13 +148,13 @@ function noSecretsCopied(h) {
   for (const f of walk(h.state)) assert.ok(!fs.readFileSync(f, 'utf8').includes(SECRET), `${f} holds a copied credential`);
 }
 
-function spawn(h, u, role, env = {}) {
+function spawn(h, u, role, env = {}, opts = {}) {
   if (role === 'review' && h.readState('tasks.json').tasks[0].status !== 'submitted') {
     h.ok(['task', 'update', 'T1', '--kind', 'docs']);
     h.ok(['claim', 'T1', '--agent', 'builder']);
     h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder']);
   }
-  const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { env: { ...u.env, ...env } });
+  const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { ...opts, env: { ...u.env, ...env } });
   assert.equal(r.code, 0, r.stderr);
   return JSON.parse(r.stdout);
 }
@@ -162,6 +163,187 @@ const isolated = (h, rung, harness) => {
   const model = harness === 'claude' ? ['--model', 'opus', '--clear', 'profile'] : ['--profile', 'sol', '--clear', 'model'];
   h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
+
+test('codex worker configs keep named provider and MCP fields without copying credentials', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = Object.fromEntries(['apikey', 'key', 'bearer', 'api_key', 'opaque_value'].map(k => [k, `${SECRET}-${k}`]));
+  const provider = {
+    name: 'P', base_url: 'https://provider.example/v1', env_key: 'P_KEY', wire_api: 'responses',
+    requires_openai_auth: false, request_max_retries: 3, stream_max_retries: 4, stream_idle_timeout_ms: 1000,
+    env_http_headers: { 'X-Provider': 'PROVIDER_HEADER' },
+  };
+  const server = {
+    command: 'planted-mcp', args: ['x'], cwd: '/server', url: 'https://mcp.example',
+    env_vars: ['MCP_KEY'], env_http_headers: { Authorization: 'MCP_AUTH' }, bearer_token_env_var: 'MCP_BEARER',
+    enabled: true, required: false, startup_timeout_sec: 10, tool_timeout_sec: 20,
+    enabled_tools: ['read'], disabled_tools: ['write'], default_tools_approval_mode: 'prompt',
+    tools: { read: { enabled: true, approval_mode: 'prompt' } },
+  };
+  const doc = {
+    model_provider: 'p',
+    model_providers: {
+      p: { ...provider, ...credentials, metadata: { opaque_value: SECRET } },
+      malformed: { name: { opaque_value: SECRET }, request_max_retries: { key: SECRET } },
+    },
+    mcp_servers: {
+      planted: {
+        ...server, ...credentials, env: { MCP_KEY: SECRET }, http_headers: { Authorization: SECRET },
+        tools: { read: { ...server.tools.read, ...credentials, metadata: { opaque_value: SECRET } } },
+      },
+      malformed: { args: [{ opaque_value: SECRET }], env_vars: [{ opaque_value: SECRET }] },
+    },
+  };
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(doc));
+  }
+  isolated(h, 'medium', 'codex');
+  h.ok(['ladder', 'set', 'medium', '--mcp', '["planted","malformed"]']);
+  const started = spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    const config = JSON.parse(JSON.stringify(TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, file), 'utf8'))));
+    assert.deepEqual(config.model_providers, { p: provider, malformed: {} }, file);
+    assert.deepEqual(config.mcp_servers, { planted: server, malformed: {} }, file);
+  }
+});
+
+test('codex spawns reject credential tables in scalar settings in base and every profile layout', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = { apikey: `${SECRET}-APIKEY`, key: `${SECRET}-KEY`, bearer: `${SECRET}-BEARER` };
+  const safe = {
+    review_model: 'review', model_context_window: 64000, model_auto_compact_token_limit: 32000,
+    model_supports_reasoning_summaries: true, cli_auth_credentials_store: 'keyring',
+  };
+  const malformed = { model: [credentials], model_reasoning_effort: 7, model_verbosity: true };
+  const doc = { ...safe, ...malformed, profiles: { safe: { model: 'legacy', ...safe }, malformed } };
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(doc));
+  }
+  isolated(h, 'medium', 'codex');
+  const started = spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    const config = JSON.parse(JSON.stringify(TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, file), 'utf8'))));
+    for (const [key, value] of Object.entries(safe)) assert.equal(config[key], value, `${file}: ${key}`);
+    for (const key of Object.keys(malformed)) assert.equal(config[key], undefined, `${file}: ${key}`);
+    assert.deepEqual(config.profiles, { safe: { model: 'legacy', ...safe }, malformed: {} }, file);
+  }
+});
+
+test('claude spawns reject credential tables and non-string values in opted-in MCP fields', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = { apikey: `${SECRET}-APIKEY`, key: `${SECRET}-KEY`, bearer: `${SECRET}-BEARER` };
+  const safe = { type: 'stdio', command: 'safe-mcp', args: ['--headless'], url: 'https://mcp.example' };
+  const mcpServers = {
+    nested: { command: 'nested-mcp', args: [credentials], type: credentials, url: credentials },
+    mixed: { command: 'mixed-mcp', args: ['--headless', credentials] },
+    malformed: { type: true, command: credentials, args: [1], url: ['https://mcp.example'] },
+    safe,
+  };
+  fs.writeFileSync(path.join(u.home, '.claude', 'mcp.json'), JSON.stringify({ mcpServers }));
+  isolated(h, 'medium', 'claude');
+  h.ok(['ladder', 'set', 'medium', '--mcp', JSON.stringify(Object.keys(mcpServers))]);
+  spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  assert.deepEqual(u.report().mcp, { nested: { command: 'nested-mcp' }, mixed: { command: 'mixed-mcp' }, malformed: {}, safe });
+});
+
+test('codex config allowlists also filter inline tables on Windows', () => {
+  const doc = TOML.parse([
+    `model_providers = { p = { name = "P", apikey = "${SECRET}", key = "${SECRET}", bearer = "${SECRET}", opaque_value = "${SECRET}" }, malformed = { name = ["${SECRET}"], env_http_headers = { Authorization = { value = "${SECRET}" } } } }`,
+    `mcp_servers = { planted = { command = "mcp", args = ["x"], apikey = "${SECRET}", key = "${SECRET}", bearer = "${SECRET}", opaque_value = "${SECRET}", tools = { read = { enabled = true, approval_mode = "prompt", opaque_value = "${SECRET}" } } }, malformed = { args = [{ value = "${SECRET}" }], env_http_headers = { Authorization = { value = "${SECRET}" } } } }`,
+  ].join('\n'));
+  const filtered = A.codexConfig(doc, ['planted', 'malformed']);
+  assert.deepEqual(filtered, {
+    doc: {
+      model_providers: { p: { name: 'P' }, malformed: {} },
+      mcp_servers: { planted: { command: 'mcp', args: ['x'], tools: { read: { enabled: true, approval_mode: 'prompt' } } }, malformed: {} },
+    },
+    found: ['planted', 'malformed'],
+  });
+  assert.ok(!TOML.stringify(filtered.doc).includes(SECRET));
+  const arrays = Object.fromEntries(require('../lib/ladder').CODEX_KEYS.map(key => [key, [{ apikey: SECRET, key: SECRET, bearer: SECRET }]]));
+  assert.deepEqual(A.codexConfig(TOML.parse(TOML.stringify({ ...arrays, profiles: { malformed: arrays } })), []).doc, { profiles: { malformed: {} } });
+});
+
+test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
+  isolated(h, 'hard', 'claude');
+  spawn(h, u, 'hard');
+  const worker = u.report();
+  const filesystem = report => {
+    const { allowRead, ...shared } = report.settings.sandbox.filesystem;
+    const ownHome = path.dirname(report.home);
+    assert.deepEqual(allowRead, [ownHome, path.join(h.state, 'brokers', path.basename(ownHome))]);
+    assert.ok(shared.denyWrite.includes(h.state));
+    // Each agent writes a cache of its own.
+    const cache = path.join(u.home, '.cache', 'tower-crane', 'agents');
+    shared.allowWrite = shared.allowWrite.map((w) => (path.dirname(path.dirname(w)) === cache && path.basename(w) === path.basename(ownHome) ? '<agent cache>' : w));
+    return shared;
+  };
+  isolated(h, 'research', 'claude');
+  const dry = h.json(['spawn', '--role', 'research', '--task', 'T1', '--dry-run'], { env: u.env });
+  assert.match(dry.home.agent_file, /tower-crane-researcher\.md$/);
+  spawn(h, u, 'research');
+  const native = u.report();
+  assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebSearch'));
+  assert.ok(native.args[native.args.indexOf('--allowedTools') + 1].includes('WebFetch'));
+  assert.deepEqual(filesystem(native), filesystem(worker));
+  assert.deepEqual(native.settings.sandbox.network.allowedDomains, ['*']);
+  assert.ok(native.memory.join('\n').includes('Use the network'));
+  h.ok(['ladder', 'set', 'research', '--web-mcp', '{"name":"harness-web","command":"node","args":["/configured/server.mjs"]}']);
+  spawn(h, u, 'research');
+  const web = u.report();
+  assert.deepEqual(web.mcp, { 'harness-web': { command: 'node', args: ['/configured/server.mjs'] } });
+  assert.ok(web.args.includes('--strict-mcp-config'));
+  assert.ok(web.args.includes('--mcp-config'));
+  const allowed = web.args[web.args.indexOf('--allowedTools') + 1].split(',');
+  assert.ok(allowed.includes('mcp__harness-web__websearch'));
+  assert.ok(allowed.includes('mcp__harness-web__webfetch'));
+  assert.ok(!allowed.includes('mcp__harness-web'));
+  assert.deepEqual(filesystem(web), filesystem(worker));
+  noSecretsCopied(h);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[],"env":{"TOKEN":"secret"}}']).code, 2);
+  assert.equal(h.run(['ladder', 'set', 'research', '--web-mcp', '{"name":"web","command":"node","args":[]}', '--agent', 'worker-T1-1']).code, 1);
+});
+
+test('research Codex explicitly enables live search with worker file and git confinement', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
+  isolated(h, 'hard', 'codex');
+  spawn(h, u, 'hard');
+  const worker = u.report();
+  assert.ok(worker.args.includes('web_search="disabled"'));
+  isolated(h, 'research', 'codex');
+  spawn(h, u, 'research');
+  const researcher = u.report();
+  assert.ok(researcher.args.includes('web_search="live"'));
+  const workerFs = worker.config.permissions['tower-crane'].filesystem;
+  const researchFs = researcher.config.permissions['tower-crane'].filesystem;
+  for (const [report, rules] of [[worker, workerFs], [researcher, researchFs]]) {
+    const ownHome = path.dirname(report.home);
+    const sessions = path.join(h.state, 'homes', '.codex', path.basename(ownHome));
+    assert.equal(rules[path.join(h.state, 'homes')], 'none');
+    assert.equal(rules[ownHome], 'read');
+    assert.equal(rules[sessions], 'write');
+    assert.equal(rules[report.home], 'write');
+    const broker = path.join(h.state, 'brokers', path.basename(ownHome));
+    assert.equal(rules[h.state], 'read');
+    assert.equal(rules[path.join(h.state, 'brokers')], 'none');
+    assert.equal(rules[broker], 'write');
+    const cache = Object.keys(rules).filter((k) => path.dirname(path.dirname(k)) === path.join(u.home, '.cache', 'tower-crane', 'agents'));
+    assert.deepEqual(cache.map((k) => [path.basename(k), rules[k]]), [[path.basename(ownHome), 'write']]);
+    delete rules[cache[0]];
+    delete rules[ownHome];
+    delete rules[sessions];
+    delete rules[report.home];
+    delete rules[broker];
+  }
+  assert.deepEqual(researchFs, workerFs);
+  assert.deepEqual(researcher.rules, worker.rules);
+  noSecretsCopied(h);
+});
 
 test('a spawned claude agent imports the user\'s global rules by path, loads none of the user settings hooks, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
@@ -511,13 +693,68 @@ test('a codex agent writes only where its agent file says; a worker writes its g
   }
 });
 
+test('worker and reviewer sandboxes write a cache of their own, never the user cache root, the tower-crane install, the CLI on PATH or a gate program', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  // Installed tools and scratch under the user cache run outside any sandbox.
+  const root = path.join(u.home, '.cache');
+  const tools = path.join(root, 'tools');
+  fs.mkdirSync(path.join(tools, 'bin'), { recursive: true });
+  for (const f of ['bin/tower-crane', 'run-tests', 'clean-cmd.sh']) fs.writeFileSync(path.join(tools, f), '#!/bin/sh\n', { mode: 0o755 });
+  h.ok(['project', 'set', '--tests-cmd', `${path.join(tools, 'run-tests')} --all`, '--clean-cmd', path.join(tools, 'clean-cmd.sh')]);
+  const env = { PATH: `${path.join(tools, 'bin')}${path.delimiter}${u.env.PATH}`, XDG_CACHE_HOME: '' };
+  const forbidden = [root, ROOT, path.join(tools, 'bin', 'tower-crane'), path.join(tools, 'run-tests'), path.join(tools, 'clean-cmd.sh')].map((p) => fs.realpathSync(p));
+  const contains = (dir, p) => p === dir || p.startsWith(dir + path.sep);
+  const probe = [process.execPath, '-e', `process.stderr.write(JSON.stringify(${JSON.stringify(['XDG_CACHE_HOME', 'GOCACHE', 'GOMODCACHE', 'npm_config_cache'])}.map((k) => process.env[k])))`];
+  const covered = new Set();
+  for (const harness of ['claude', 'codex']) {
+    // A reviewer runs on the first tier rung at or above the task's tier.
+    for (const rung of ['easy', 'medium', 'hard', 'review']) isolated(h, rung, harness);
+    for (const rung of ['hard', 'review']) {
+      const started = spawn(h, u, rung, { ...env, STUB_RUN: JSON.stringify([probe]) });
+      const seen = u.report();
+      covered.add(`${seen.harness} ${rung}`);
+      const writes = seen.harness === 'claude' ? seen.settings.sandbox.filesystem.allowWrite
+        : Object.entries(seen.config.permissions['tower-crane'].filesystem).filter(([k, v]) => !k.startsWith(':') && v === 'write').map(([k]) => k);
+      for (const w of writes) {
+        for (const p of forbidden) assert.ok(!contains(w, p), `${seen.harness} ${rung}: ${w} grants a write on ${p}`);
+      }
+      const own = writes.filter((w) => contains(root, w));
+      assert.equal(own.length, 1, `${seen.harness} ${rung}: one directory under the cache root: ${JSON.stringify(own)}`);
+      assert.ok(contains(path.join(fs.realpathSync(root), 'tower-crane', 'agents'), own[0]) && path.basename(own[0]) === started.agent, own[0]);
+      assert.ok(fs.statSync(own[0]).isDirectory(), 'the granted cache exists');
+      assert.deepEqual(JSON.parse(seen.ran[0].stderr), [own[0], ...['go-build', 'go-mod', 'npm'].map((d) => path.join(own[0], d))], `${seen.harness} ${rung}: tool caches point at the agent cache`);
+    }
+  }
+  assert.deepEqual([...covered].sort(), ['claude hard', 'claude review', 'codex hard', 'codex review']);
+});
+
+test('the next spawn removes an exited agent\'s cache even when it holds read-only module trees', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  isolated(h, 'hard', 'claude');
+  const env = { XDG_CACHE_HOME: '' };
+  const first = spawn(h, u, 'hard', env);
+  const cache = u.report().settings.sandbox.filesystem.allowWrite.find((w) => path.basename(w) === first.agent);
+  // The layout Go leaves in GOMODCACHE: read-only files in read-only directories.
+  const mod = path.join(cache, 'go-mod', 'example.com', 'm@v1.0.0');
+  fs.mkdirSync(mod, { recursive: true });
+  fs.writeFileSync(path.join(mod, 'go.mod'), 'module example.com/m\n');
+  for (const p of [path.join(mod, 'go.mod'), mod, path.dirname(mod)]) fs.chmodSync(p, p === mod || p === path.dirname(mod) ? 0o555 : 0o444);
+  t.after(() => {
+    for (const p of [path.dirname(mod), mod]) try { fs.chmodSync(p, 0o700); } catch {}
+  });
+  const second = spawn(h, u, 'hard', env);
+  assert.notEqual(second.agent, first.agent);
+  assert.ok(!fs.existsSync(cache), `${cache} is removed`);
+});
+
 test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
+  const own = `HEAD:refs/heads/${h.git(['branch', '--show-current'], wt)}`;
   const local = path.join(h.base, 'local.git');
   h.git(['init', '-q', '--bare', local]);
   // A remote on another machine; nothing listens there, so a push the shim
   // lets through fails in git itself, not with the shim's 126.
-  h.git(['remote', 'add', 'origin', 'https://127.0.0.1:9/r.git']);
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
   const NET = 'net';
   const cases = [
     [['git', 'status'], 0, 0],
@@ -535,15 +772,15 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     ...['--del', '--pru', '--forc', '--mir', '--all', '--tags', '--no-verify'].map((o) => [['git', 'push', o, 'origin', 'HEAD:refs/heads/x'], 126, 126]),
     [['git', 'push', '-o', 'x', 'origin', 'HEAD:refs/heads/x'], 126, 126],
     [['git', 'push', 'origin', '--del', 'x'], 126, 126],
-    [['git', 'push', '-u', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
-    [['git', 'push', '--set-upstream', '-q', 'origin', 'HEAD:refs/heads/ok'], 'net', 126],
+    [['git', 'push', '-u', 'origin', own], 'net', 126],
+    [['git', 'push', '--set-upstream', '-q', 'origin', own], 'net', 126],
     // Configuration that turns a plain push into a mirror.
     ...['true', 'yes', 'on', '1'].flatMap((v) => [
       [['git', 'config', 'remote.origin.mirror', v], 0, 0],
-      [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], 126, 126],
+      [['git', 'push', 'origin', own], 126, 126],
       [['git', 'config', '--unset', 'remote.origin.mirror'], 0, 0],
     ]),
-    [['git', 'push', 'origin', 'HEAD:refs/heads/ok'], NET, 126],
+    [['git', 'push', 'origin', own], NET, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
     [['git', 'push', 'origin', '+HEAD:refs/heads/forced'], 126, 126],
@@ -575,6 +812,138 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
   spawn(h, u, 'hard', { STUB_RUN: JSON.stringify([['git', 'push', 'origin', 'HEAD:refs/heads/ok']]) });
   assert.deepEqual(u.report().ran.map((r) => r.code), [126], 'a valueless mirror key');
   fs.writeFileSync(config, before);
+});
+
+test('remote pushes publish only the task branch, including configured and implicit destinations', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const branch = h.git(['branch', '--show-current'], wt);
+  const own = `refs/heads/${branch}`;
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  h.git(['remote', 'add', 'elsewhere', 'https://github.com/acme/app.git']);
+  h.git(['config', `branch.${branch}.remote`, 'origin']);
+  h.git(['config', `branch.${branch}.merge`, own]);
+  const cases = [];
+  const push = (args, code) => cases.push([['git', 'push', ...args], code]);
+  const config = (key, value) => cases.push([['git', 'config', key, value], 0]);
+  const unset = (key) => cases.push([['git', 'config', '--unset-all', key], 0]);
+  push(['elsewhere', `HEAD:${own}`], 126);
+  push(['https://github.com/acme/app.git', `HEAD:${own}`], 126);
+  config('remote.origin.pushurl', 'https://github.com/acme/another.git');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('remote.origin.pushurl');
+  config('remote.origin.pushurl', 'https://github.com/acme/app.git');
+  push(['origin', `HEAD:${own}`], 1);
+  cases.push([['git', 'config', '--add', 'remote.origin.pushurl', 'https://github.com/acme/another.git'], 0]);
+  push(['origin', `HEAD:${own}`], 126);
+  unset('remote.origin.pushurl');
+  config('remote.origin.url', 'https://github.com/acme/another.git');
+  push(['origin', `HEAD:${own}`], 126);
+  config('remote.origin.url', 'https://github.com.evil.invalid/acme/app.git');
+  push(['origin', `HEAD:${own}`], 126);
+  config('remote.origin.url', 'git@github.com:acme/app.git');
+  push(['origin', `HEAD:${own}`], 1);
+  config('remote.origin.url', 'https://github.com/acme/app.git');
+  config('remote.pushDefault', 'elsewhere');
+  push([], 126);
+  unset('remote.pushDefault');
+  config(`branch.${branch}.pushRemote`, 'elsewhere');
+  push([], 126);
+  push(['origin', `HEAD:${own}`], 1);
+  unset(`branch.${branch}.pushRemote`);
+  config('url.https://github.com/acme/another.git.pushInsteadOf', 'https://github.com/acme/app.git');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('url.https://github.com/acme/another.git.pushInsteadOf');
+  // X1 and X2 reached Git instead of being refused by the shim.
+  push(['origin', 'HEAD:main'], 126);
+  push(['origin', 'HEAD:refs/tags/v9.9.9'], 126);
+  push(['origin', 'HEAD:refs/heads/another-task'], 126);
+  push(['origin', `HEAD:${own}`, 'HEAD:main'], 126);
+  push(['origin', 'refs/heads/*:refs/heads/*'], 126);
+  push(['origin', 'main'], 126);
+  cases.push([['git', 'tag', '-f', 'v9.9.9'], 0]);
+  push(['origin', 'v9.9.9'], 126);
+  push(['origin', ':'], 126);
+  for (const ref of ['HEAD', branch, own, `HEAD:${branch}`, `HEAD:${own}`, `main:${own}`]) {
+    push(['-u', 'origin', ref], 1);
+  }
+  push(['origin', `HEAD:${own}`, `${branch}:${own}`], 1);
+  push(['origin'], 1);
+  push([], 1);
+  config('remote.origin.push', 'HEAD:main');
+  push(['origin'], 126);
+  push([], 126);
+  push(['origin', `HEAD:${own}`], 1);
+  unset('remote.origin.push');
+  config('remote.origin.push', `HEAD:${own}`);
+  push(['origin'], 1);
+  cases.push([['git', 'config', '--add', 'remote.origin.push', 'HEAD:refs/tags/v9.9.9'], 0]);
+  push(['origin'], 126);
+  unset('remote.origin.push');
+  config('push.followTags', 'true');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('push.followTags');
+  config('push.recurseSubmodules', 'on-demand');
+  push(['origin', `HEAD:${own}`], 126);
+  unset('push.recurseSubmodules');
+  cases.push([['git', '--namespace', 'other', 'push', 'origin', `HEAD:${own}`], 126]);
+  config(`branch.${branch}.merge`, 'refs/heads/main');
+  config('push.default', 'upstream');
+  push(['origin'], 126);
+  config('push.default', 'current');
+  push(['origin'], 1);
+  config('push.default', 'matching');
+  push(['origin'], 126);
+  unset('push.default');
+  config(`branch.${branch}.merge`, own);
+  cases.push([['git', 'checkout', '-q', '-B', 'another-task'], 0]);
+  push(['origin', 'HEAD'], 126);
+  push(['origin', `HEAD:${own}`], 1);
+  cases.push([['git', 'checkout', '-q', branch], 0]);
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    // The full push matrix starts several guarded Git processes per case.
+    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(cases.map(([args]) => args)) }, { timeout: 120000 });
+    const ran = u.report().ran;
+    assert.deepEqual(ran.map((r) => r.code), cases.map(([, code]) => code),
+      `${harness}: ${JSON.stringify(ran.map((r) => ({ args: r.argv, code: r.code, stderr: r.stderr })))}`);
+  }
+});
+
+test('push destinations are qualified with the recorded task branch without shebang harnesses', (t) => {
+  const h = makeRepo(t);
+  h.init(['--repo', 'acme/app']);
+  h.ok(['task', 'add', '--title', 'Publish', '--acceptance', 'only this branch']);
+  const { path: wt, branch } = h.json(['worktree', 'T1']);
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  const script = `
+const { gitDenied } = require(process.argv[1]);
+const cp = require('node:child_process');
+const branch = process.argv[2];
+const policy = { gitPush: 'branch', branch, repo: 'acme/app' };
+const probes = ['HEAD:main', 'HEAD:refs/tags/v9.9.9', 'HEAD:' + branch, 'HEAD:refs/heads/' + branch, 'HEAD'];
+const results = probes.map(ref => {
+  const args = [];
+  return { why: gitDenied(['push', 'origin', ref], policy, 'git', args), args };
+});
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { gitPush: 'branch' }, 'git') });
+results.push({ why: gitDenied(['push', 'elsewhere', 'HEAD'], policy, 'git') });
+results.push({ why: gitDenied(['push', 'https://github.com/acme/app.git', 'HEAD'], policy, 'git') });
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { ...policy, repo: 'acme/another' }, 'git') });
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], { gitPush: 'branch', branch }, 'git') });
+const changed = cp.spawnSync('git', ['config', 'remote.origin.pushurl', 'https://github.com/acme/another.git']);
+if (changed.status !== 0) throw new Error('fixture pushurl could not be configured');
+results.push({ why: gitDenied(['push', 'origin', 'HEAD'], policy, 'git') });
+process.stdout.write(JSON.stringify(results));
+`;
+  const result = cp.spawnSync(process.execPath, ['-e', script, path.join(ROOT, 'lib', 'shim.js'), branch],
+    { cwd: wt, env: h.env, encoding: 'utf8', timeout: 15000 });
+  assert.equal(result.status, 0, result.stderr);
+  const probes = JSON.parse(result.stdout);
+  for (const index of [0, 1, 5, 6, 7, 8, 9, 10]) assert.ok(probes[index].why, `probe ${index} must be refused`);
+  for (const index of [2, 3, 4]) {
+    assert.equal(probes[index].why, null);
+    assert.deepEqual(probes[index].args, ['push', '--no-follow-tags', '--recurse-submodules=no', 'origin', `HEAD:refs/heads/${branch}`]);
+  }
 });
 
 test('an isolated Codex worker can publish its task branch with an allow rule and guarded git', { skip: NO_STUBS }, (t) => {
@@ -774,7 +1143,7 @@ test('a sandboxed role cannot write the state directory itself', () => {
   const text = fs.readFileSync(A.file('worker'), 'utf8').replace(/^writeOutside:(\r?\n)/m, 'writeOutside:$1  - state$1');
   assert.match(text, /- state/);
   assert.throws(() => A.parse(text, 'worker.md'), /state needs sandbox: false/);
-  for (const job of ['worker', 'reviewer', 'small']) assert.ok(!A.load(job).writeOutside.includes('state'), job);
+  for (const job of ['worker', 'researcher', 'reviewer', 'small']) assert.ok(!A.load(job).writeOutside.includes('state'), job);
 });
 
 test('a gh token in the spawning environment passes through, and the keyring is asked only without one', { skip: NO_STUBS }, (t) => {

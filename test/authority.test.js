@@ -49,10 +49,73 @@ const OPERATIONAL = [
   ['project', 'set', '--workers', '3', '--lease-minutes', '45', '--budget-hours', '10'],
   ['project', 'set', '--review-policy', '{"small_lines":50}'],
   ['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'sonnet', '--effort', 'high', '--args', '[]', '--tools', '["web_search"]', '--mcp', '["docs"]'],
-  ['task', 'update', 'T1', '--kind', 'docs', '--tier', 'medium'],
+  ['ladder', 'save-user'],
+  ['task', 'update', 'T1', '--tier', 'hard'],
   ['task', 'update', 'T1', '--needs-owner', 'approve other access'],
   ['owner-done', 'T1'],
 ];
+
+test('research web MCP changes use owner-required authority and deduplicate escalation', (t) => {
+  const h = setup(t);
+  const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };
+  const args = ['ladder', 'set', 'research', '--web-mcp', JSON.stringify(server)];
+  const before = h.readState('project.json');
+  for (let i = 0; i < 2; i++) {
+    const r = h.run(args, as('orchestrator'));
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /ladder\.web_mcp is owner-required; opened D1/);
+    assert.deepEqual(h.readState('project.json'), before);
+    assert.equal(h.readState('decisions.json').decisions.length, 1);
+  }
+  const d = h.readState('decisions.json').decisions[0];
+  assert.deepEqual(d.escalation, {
+    settings: ['ladder.web_mcp'], change: { ladder: { research: { web_mcp: server } } },
+  });
+  for (const agent of ['worker-T1-1', 'reviewer-T1-1']) {
+    const r = h.run(args, as(agent));
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /only the owner/);
+    assert.deepEqual(h.readState('project.json'), before);
+    assert.equal(h.readState('decisions.json').decisions.length, 1);
+  }
+  h.ok(args);
+  assert.deepEqual(h.readState('project.json').ladder.research.web_mcp, server);
+  const clear = h.run(['ladder', 'set', 'research', '--clear', 'web_mcp'], as('orchestrator'));
+  assert.equal(clear.code, 1, clear.stderr);
+  assert.match(clear.stderr, /ladder\.web_mcp is owner-required; opened D2/);
+  assert.deepEqual(h.readState('project.json').ladder.research.web_mcp, server);
+  assert.deepEqual(h.readState('decisions.json').decisions[1].escalation.change,
+    { ladder: { research: { web_mcp: null } } });
+  h.ok(['ladder', 'set', 'research', '--clear', 'web_mcp']);
+  assert.equal(h.readState('project.json').ladder.research.web_mcp, undefined);
+});
+
+test('research source policy and waivers retain owner-required authority', (t) => {
+  const h = setup(t);
+  for (const [args, key] of [
+    [['project', 'set', '--research-min-sources', '4'], 'research.min_sources'],
+    [['accept', 'T1', '--waive', 'sources', '--reason', 'owner exception'], 'waive.sources'],
+  ]) {
+    const before = { project: h.readState('project.json'), tasks: h.readState('tasks.json') };
+    const r = h.run(args, as('orchestrator'));
+    assert.equal(r.code, 1, r.stderr);
+    assert.match(r.stderr, /owner-required; opened D/);
+    assert.deepEqual(h.readState('decisions.json').decisions.at(-1).escalation.settings, [key]);
+    assert.deepEqual({ project: h.readState('project.json'), tasks: h.readState('tasks.json') }, before);
+    assert.equal(h.run(args, as('worker-T1-1')).code, 1);
+  }
+  h.ok(['project', 'set', '--research-min-sources', '4']);
+  assert.equal(h.readState('project.json').research.min_sources, 4);
+});
+
+test('research defaults and operational model tuning need no new authority grant', (t) => {
+  const h = makeRepo(t);
+  h.env.TOWER_CRANE_AGENT = 'orchestrator';
+  h.init();
+  h.ok(['ladder', 'set', 'research', '--model', 'tuned', '--effort', 'high']);
+  assert.equal(h.readState('project.json').ladder.research.model, 'tuned');
+  assert.equal(h.readState('decisions.json').decisions.length, 0);
+});
 
 test('the orchestrator changes operational settings under its own identity; a worker is sent to the orchestrator', (t) => {
   const h = setup(t);
@@ -77,6 +140,20 @@ test('the orchestrator changes operational settings under its own identity; a wo
   assert.equal(events(h).findLast((e) => e.cmd === 'project set').detail.authority, 'orchestrator');
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
   assert.equal(h.readState('decisions.json').decisions.length, 0);
+});
+
+test('ladder save-user is operational: the orchestrator saves with no decision and the event records it; a worker writes no user file', (t) => {
+  const h = setup(t);
+  const worker = h.run(['ladder', 'save-user'], as('worker-T1-1'));
+  assert.equal(worker.code, 1, worker.stderr);
+  assert.match(worker.stderr, /ladder\.save_user is operational: only the orchestrator or the owner/);
+  assert.equal(fs.existsSync(h.userConfig), false);
+  h.ok(['ladder', 'save-user'], as('orchestrator'));
+  assert.equal(fs.existsSync(h.userConfig), true);
+  assert.equal(h.readState('decisions.json').decisions.length, 0);
+  const saved = events(h).findLast((e) => e.cmd === 'ladder save-user');
+  assert.equal(saved.agent, 'orchestrator');
+  assert.equal(saved.detail.authority, 'orchestrator');
 });
 
 test('only a real orchestrator identity acts as orchestrator', (t) => {
@@ -105,7 +182,6 @@ test('owner-required changes by the orchestrator open one decision and change no
     [['ladder', 'set', 'easy', '--scope', '{}'], ['scope']],
     [['ladder', 'set', 'easy', '--command', '["node"]'], ['ladder.command']],
     [['project', 'set', '--budget-hours', '9'], ['budget.raise']],
-    [['ladder', 'save-user'], ['ladder.save_user']],
     [['accept', 'T1', '--waive', 'tests', '--reason', 'flaky'], ['waive.tests']],
   ];
   let opened = 0;
@@ -293,4 +369,60 @@ test('an orchestrator init with an owner-required setting is told to init withou
   assert.doesNotMatch(r.stderr, /open a decision/);
   assert.ok(!fs.existsSync(h.state), 'refused init creates no state directory');
   h.ok(['init', '--name', 'demo', '--goal', 'autonomy'], as('orchestrator'));
+});
+
+test('the orchestrator cannot downgrade a code task to docs, which drops its tests gate', (t) => {
+  const h = setup(t);
+  h.ok(['task', 'add', '--title', 'Code change', '--acceptance', 'it works']);
+  const before = h.readState('tasks.json');
+  const r = h.run(['task', 'update', 'T2', '--kind', 'docs'], as('orchestrator'));
+  assert.equal(r.code, 1, r.stderr);
+  assert.match(r.stderr, /task\.downgrade is owner-required; opened D1 /);
+  assert.deepEqual(h.readState('tasks.json'), before);
+  assert.deepEqual(h.readState('decisions.json').decisions[0].escalation, {
+    settings: ['task.downgrade'], change: { task: 'T2', kind: 'docs' },
+  });
+  const worker = h.run(['task', 'update', 'T2', '--kind', 'docs'], as('worker-T2-1'));
+  assert.equal(worker.code, 1);
+  assert.match(worker.stderr, /only the owner/);
+  assert.equal(h.readState('decisions.json').decisions.length, 1);
+  assert.equal(h.json(['task', 'show', 'T2']).kind, 'code');
+  h.ok(['task', 'update', 'T2', '--kind', 'docs']);
+  assert.equal(h.json(['task', 'show', 'T2']).kind, 'docs');
+  // Moving between the non-code kinds stays operational.
+  h.ok(['task', 'update', 'T2', '--kind', 'ops'], as('orchestrator'));
+  assert.equal(h.json(['task', 'show', 'T2']).kind, 'ops');
+  assert.equal(h.readState('decisions.json').decisions.length, 1);
+});
+
+test('a submitted task keeps its kind until it is sent back for rework', (t) => {
+  const h = setup(t);
+  const sha = gateFixture(h);
+  h.ok(['task', 'add', '--title', 'Code change', '--acceptance', 'it works']);
+  h.ok(['claim', 'T2', '--agent', 'worker-T2-1']);
+  h.ok(['submit', 'T2', '--sha', sha, '--branch', 'fixture-change', '--pr', '7', '--agent', 'worker-T2-1']);
+  for (const agent of ['owner', 'orchestrator', 'worker-T2-1']) {
+    const before = { tasks: h.readState('tasks.json'), decisions: h.readState('decisions.json') };
+    const r = h.run(['task', 'update', 'T2', '--kind', 'docs'], as(agent));
+    assert.equal(r.code, 1, `${agent}: ${r.stderr}`);
+    assert.match(r.stderr, /on a submitted or accepted task is refused; rework the task first/);
+    assert.deepEqual({ tasks: h.readState('tasks.json'), decisions: h.readState('decisions.json') }, before);
+  }
+  h.ok(['rework', 'T2', '--reason', 'move to docs', '--agent', 'owner']);
+  h.ok(['task', 'update', 'T2', '--kind', 'docs']);
+  assert.equal(h.json(['task', 'show', 'T2']).kind, 'docs');
+});
+
+test('cancelling a task that waits on the owner needs the owner', (t) => {
+  const h = setup(t);
+  const before = h.readState('tasks.json');
+  const r = h.run(['task', 'update', 'T1', '--status', 'cancelled'], as('orchestrator'));
+  assert.equal(r.code, 1, r.stderr);
+  assert.match(r.stderr, /task\.cancel_needs_owner is owner-required; opened D1 /);
+  assert.deepEqual(h.readState('tasks.json'), before);
+  const worker = h.run(['task', 'update', 'T1', '--status', 'cancelled'], as('worker-T1-1'));
+  assert.equal(worker.code, 1);
+  assert.match(worker.stderr, /only the owner/);
+  h.ok(['task', 'update', 'T1', '--status', 'cancelled']);
+  assert.equal(h.json(['task', 'show', 'T1']).status, 'cancelled');
 });

@@ -37,12 +37,29 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   }
   const modelFlag = args.includes('-m') ? '-m' : harness === 'codex' ? '-p' : '--model';
   const model = args[args.indexOf(modelFlag) + 1];
+  const providerTest = process.env.TOWER_CRANE_TEST_CLAUDE_PROVIDER;
+  const providerEnv = providerTest ? {
+    ...process.env,
+    ...JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), 'utf8')).env,
+  } : {};
+  const provider = providerTest ? providerEnv.CLAUDE_CODE_USE_BEDROCK === '1' ? 'bedrock' : 'anthropic' : null;
   if (!attempts.length) cli(['claim', process.env.TOWER_CRANE_TASK]);
+  const claudeHome = process.env.CLAUDE_CONFIG_DIR;
+  const claude = harness === 'claude' ? {
+    mcp: JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8')).mcpServers,
+    sandbox: JSON.parse(fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8')).sandbox,
+    policy: JSON.parse(fs.readFileSync(path.join(claudeHome, 'policy.json'), 'utf8')),
+  } : {};
   attempts.push({
     harness, model, args, session: process.env.TOWER_CRANE_SESSION, retry: process.env.TOWER_CRANE_RETRY,
     agent: process.env.TOWER_CRANE_AGENT, claim: JSON.parse(cli(['task', 'show', process.env.TOWER_CRANE_TASK, '--json'])).claim,
     env: process.env.ROUTE_ENV || null, broker: Boolean(process.env.TOWER_CRANE_BROKER),
+    ...claude,
     node_test: Object.keys(process.env).filter((key) => /^NODE_TEST_/i.test(key)),
+    ...(providerTest ? { provider, provider_env: Object.fromEntries([
+      'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+      'ANTHROPIC_MODEL', 'AWS_PROFILE', 'AWS_REGION', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE',
+    ].map((key) => [key, providerEnv[key] || null])) } : {}),
   });
   if (process.env.TOWER_CRANE_TEST_FALLBACK_NOTE) cli(['task', 'note', process.env.TOWER_CRANE_TASK, `${harness} ${model} ${process.env.TOWER_CRANE_RETRY}`]);
   fs.writeFileSync(file, JSON.stringify(attempts));
@@ -59,7 +76,8 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
     console.log(JSON.stringify({ type: 'result', is_error: false, model,
       usage: { input_tokens: 20, output_tokens: 4 } }));
   }
-  if (model === 'first' || model === 'second' && process.env.TOWER_CRANE_TEST_FALLBACK_CHAIN) {
+  if (model === 'first' || model === 'second' && process.env.TOWER_CRANE_TEST_FALLBACK_CHAIN
+    || providerTest && provider === process.env.TOWER_CRANE_TEST_FAIL_PROVIDER) {
     if (process.env.TOWER_CRANE_TEST_FALLBACK_REASON === 'refusal') {
       console.log(JSON.stringify(harness === 'codex'
         ? { type: 'item.completed', item: { type: 'refusal', text: 'Request refused by policy' } }

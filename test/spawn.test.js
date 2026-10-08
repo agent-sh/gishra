@@ -26,7 +26,10 @@ function setRung(h, rung, flags) {
   h.ok(['ladder', 'set', rung, ...flags, ...FIELDS.filter((k) => !given.includes(k)).flatMap((k) => ['--clear', k])]);
 }
 
-const commandRung = (h, rung, argv) => setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(argv)]);
+const commandRung = (h, rung, argv) => {
+  const command = argv.some((arg) => /\{(prompt|brief)\}/.test(arg)) ? argv : [...argv, '{prompt}'];
+  setRung(h, rung, ['--harness', 'command', '--command', JSON.stringify(command)]);
+};
 
 test('design tasks dispatch without a kit on unsupported worker, review and small harnesses and report the omission', (t) => {
   const h = setup(t);
@@ -34,7 +37,7 @@ test('design tasks dispatch without a kit on unsupported worker, review and smal
   for (const harness of ['pi', 'opencode', 'command']) {
     for (const role of ['medium', 'review', 'small']) {
       setRung(h, role, harness === 'command'
-        ? ['--harness', harness, '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)'])]
+        ? ['--harness', harness, '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}'])]
         : ['--harness', harness, '--model', 'fixture']);
       const seen = dry(h, role);
       assert.deepEqual(seen.home.mcp, []);
@@ -55,7 +58,7 @@ test('design tasks dispatch without a kit on unsupported worker, review and smal
 test('explicit browser needs refuse only when no route can provide the kit', (t) => {
   const h = setup(t);
   h.ok(['task', 'update', 'T1', '--needs', '["browser"]']);
-  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const missing = h.run(['spawn', '--task', 'T1', '--dry-run']);
   assert.notEqual(missing.code, 0);
   assert.match(missing.stderr, /browser/);
@@ -476,17 +479,37 @@ test('command brief placeholders point to role-filtered temporary copies', async
   fs.mkdirSync(tempRoot);
   const workerOut = path.join(h.base, 'worker-brief.json');
   const reviewerOut = path.join(h.base, 'reviewer-brief.json');
-  const script = 'const fs = require("node:fs"); fs.writeFileSync(process.argv[1], JSON.stringify({ path: process.argv[2], text: fs.readFileSync(process.argv[2], "utf8") }));';
+  const cleanupOut = path.join(h.base, 'brief-cleanup.jsonl');
+  const hook = path.join(h.base, 'brief-cleanup.js');
+  fs.writeFileSync(hook, `
+// Record the unlink boundary before the supervisor finishes its exit path.
+const fs = require('node:fs');
+const rm = fs.rmSync;
+fs.rmSync = function(file, ...args) {
+  const result = rm.call(this, file, ...args);
+  if (String(file).startsWith(${JSON.stringify(tempRoot + path.sep)} + 'tower-crane-brief-') && String(file).endsWith('brief.md')) {
+    fs.appendFileSync(${JSON.stringify(cleanupOut)}, JSON.stringify(fs.readdirSync(${JSON.stringify(tempRoot)})) + '\\n');
+  }
+  return result;
+};
+`);
+  const env = { TOWER_CRANE_TMP: tempRoot, NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` };
+  const script = `
+const fs = require('node:fs');
+fs.writeFileSync(process.argv[1], JSON.stringify({ path: process.argv[2], text: fs.readFileSync(process.argv[2], 'utf8') }));
+process.once('SIGTERM', () => process.exit(0));
+setImmediate(() => process.platform === 'win32' ? process.exit(0) : process.kill(process.pid, 'SIGTERM'));
+`;
   commandRung(h, 'medium', [process.execPath, '-e', script, workerOut, '{brief}']);
   commandRung(h, 'review', [process.execPath, '-e', script, reviewerOut, '{brief}']);
 
   const planned = dry(h, 'medium', { TOWER_CRANE_TMP: tempRoot });
-  const dryCopy = planned.argv.find((arg) => arg.endsWith(`${path.sep}brief.md`));
+  const dryCopy = planned.argv.find((arg) => arg.startsWith(tempRoot + path.sep) && arg.endsWith('brief.md'));
   assert.ok(dryCopy);
   assert.ok(dryCopy.startsWith(tempRoot + path.sep));
   assert.ok(!fs.existsSync(dryCopy), 'dry-run only prints the copy path');
 
-  const worker = h.run(['spawn', '--role', 'medium', '--task', 'T1', '--wait'], { env: { TOWER_CRANE_TMP: tempRoot } });
+  const worker = h.run(['spawn', '--role', 'medium', '--task', 'T1', '--wait'], { env });
   assert.equal(worker.code, 0, worker.stderr);
   const workerCopy = JSON.parse(fs.readFileSync(workerOut, 'utf8'));
   assert.match(workerCopy.text, /SHARED_FOR_COMMANDS/);
@@ -497,23 +520,82 @@ test('command brief placeholders point to role-filtered temporary copies', async
 
   reviewable(h);
   commandRung(h, 'medium', [process.execPath, '-e', script, reviewerOut, '{brief}']);
-  const reviewer = h.json(['spawn', '--role', 'review', '--task', 'T1'], { env: { TOWER_CRANE_TMP: tempRoot } });
+  fs.writeFileSync(cleanupOut, '');
+  const cleaned = new Promise((resolve, reject) => {
+    const watcher = fs.watch(cleanupOut, () => {
+      watcher.close();
+      clearTimeout(timeout);
+      resolve();
+    });
+    const timeout = setTimeout(() => {
+      watcher.close();
+      reject(new Error('the reviewer did not remove its brief copy'));
+    }, 10000);
+    t.after(() => { watcher.close(); clearTimeout(timeout); });
+  });
+  const reviewer = h.json(['spawn', '--role', 'review', '--task', 'T1'], { env });
   assert.equal(reviewer.agent, 'reviewer-T1-1');
-  const deadline = Date.now() + 10000;
-  while (!fs.existsSync(reviewerOut)) {
-    if (Date.now() > deadline) throw new Error('the reviewer did not read its brief copy');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await cleaned;
   const reviewerCopy = JSON.parse(fs.readFileSync(reviewerOut, 'utf8'));
   assert.ok(!reviewerCopy.text.includes('SHARED_FOR_COMMANDS'));
   assert.match(reviewerCopy.text, /REVIEWER_ONLY_COMMAND/);
   assert.ok(!reviewerCopy.text.includes('REWORK_SHARED_COMMAND'));
   assert.ok(!reviewerCopy.text.includes('WORKER_ONLY_COMMAND'));
-  while (fs.existsSync(reviewerCopy.path)) {
-    if (Date.now() > deadline) throw new Error('the monitor did not remove the reviewer brief copy');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
   assert.ok(!fs.existsSync(reviewerCopy.path));
+  assert.deepEqual(fs.readdirSync(tempRoot), []);
+  const snapshots = fs.readFileSync(cleanupOut, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(snapshots.length > 0, 'cleanup reached the unlink boundary');
+  for (const snapshot of snapshots) assert.deepEqual(snapshot, []);
+});
+
+test('temporary brief copies are removed before normal and signalled foreground exits return', (t) => {
+  const h = setup(t);
+  const tempRoot = path.join(h.base, 'tower-crane-tmp');
+  const out = path.join(h.base, 'brief-path');
+  fs.mkdirSync(tempRoot);
+  h.ok(['ladder', 'set', 'medium', '--supervision', '{"retries":0}']);
+  for (const [exit, code] of [
+    ['process.exit(0)', 0],
+    ['process.exit(7)', 7],
+    ['setImmediate(() => process.kill(process.pid, "SIGTERM"))', 1],
+  ]) {
+    const script = `require('node:fs').writeFileSync(process.argv[1], process.argv[2]); ${exit};`;
+    commandRung(h, 'medium', [process.execPath, '-e', script, out, '{brief}']);
+    const result = h.run(['spawn', '--task', 'T1', '--wait'], { env: { TOWER_CRANE_TMP: tempRoot } });
+    assert.equal(result.code, code, result.stderr);
+    assert.ok(!fs.existsSync(fs.readFileSync(out, 'utf8')));
+    assert.deepEqual(fs.readdirSync(tempRoot), []);
+  }
+});
+
+test('temporary brief copies are removed before spawn startup failure returns', (t) => {
+  const h = setup(t);
+  const tempRoot = path.join(h.base, 'tower-crane-tmp');
+  const hook = path.join(h.base, 'brief-launch-failure.js');
+  fs.mkdirSync(tempRoot);
+  fs.writeFileSync(hook, `
+if (process.argv[1].endsWith('spawn-monitor.js')) {
+  const cp = require('node:child_process');
+  const spawn = cp.spawn;
+  cp.spawn = function(file, args, opts) {
+    return spawn.call(this, ${JSON.stringify(path.join(h.base, 'missing-harness'))}, args, opts);
+  };
+}
+`);
+  commandRung(h, 'medium', [process.execPath, '-e', 'process.exit(0)', '{brief}']);
+  for (const flags of [[], ['--wait']]) {
+    const result = h.run(['spawn', '--task', 'T1', ...flags], {
+      env: { TOWER_CRANE_TMP: tempRoot, NODE_OPTIONS: `--require "${hook.replace(/\\/g, '/')}"` },
+    });
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /could not start.*ENOENT/);
+    assert.deepEqual(fs.readdirSync(tempRoot), []);
+  }
+  const dispatch = h.run(['spawn', '--task', 'T1'], {
+    env: { TOWER_CRANE_TMP: tempRoot }, hooks: { HOOK_SPAWN_FAIL: '1' },
+  });
+  assert.notEqual(dispatch.code, 0);
+  assert.match(dispatch.stderr, /supervisor startup failed/);
   assert.deepEqual(fs.readdirSync(tempRoot), []);
 });
 
@@ -608,7 +690,7 @@ const leftover = (h) => path.join(h.base, 'repo-worktrees', 'T1-idempotency-key-
 
 test('a spawn whose program fails to start records nothing and leaves its worktree for the next spawn', (t) => {
   const h = setup(t);
-  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks, events } = footprint(h);
   for (const mode of [[], ['--wait']]) {
     const r = h.run(['spawn', '--role', 'small', '--task', 'T1', ...mode], { hooks: { HOOK_SPAWN_FAIL: '1' } });
@@ -628,7 +710,7 @@ test('a spawn whose program fails to start records nothing and leaves its worktr
 
 test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', async (t) => {
   const h = setup(t);
-  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)']);
+  commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks } = footprint(h);
   const paused = path.join(h.base, 'holder');
   const holder = h.runAsync(['task', 'note', 'T1', 'holding the lock'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
@@ -729,7 +811,7 @@ test('spawn runs the rung of the tier and ladder it finds under the lock, not th
   h.git(['worktree', 'remove', '--force', ev.detail.cwd]);
   const b = h.runAsync(['spawn', '--task', 'T1', '--wait'], { hooks: { HOOK_STOP_WORKTREE_ADD: stopped2 } });
   await waitForFile(stopped2);
-  setRung(h, 'hard', ['--harness', 'command', '--command', JSON.stringify([path.join(h.base, 'no-such-program')])]);
+  setRung(h, 'hard', ['--harness', 'command', '--command', JSON.stringify([path.join(h.base, 'no-such-program'), '{prompt}'])]);
   fs.writeFileSync(`${stopped2}.go`, '');
   const rb = await b;
   assert.equal(rb.code, 1);

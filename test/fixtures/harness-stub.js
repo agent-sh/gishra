@@ -33,14 +33,23 @@ const files = (dir, ext) => {
 const withImports = (file, depth = 0) => {
   const text = read(file);
   if (text === null) return [];
-  const found = [...text.matchAll(/(?:^|\s)@(\S+)/g)].map((m) => (m[1].startsWith('~/') ? path.join(os.homedir(), m[1].slice(2)) : path.resolve(path.dirname(file), m[1])));
+  const found = [...text.matchAll(/(?:^|\s)@(?:"((?:\\.|[^"\\])*)"|((?:\\\s|\S)+))/g)].map((m) => {
+    const raw = (m[1] ?? m[2]).replace(/\\([\\"\s])/g, '$1').replace(/[),.;:]+$/, '');
+    return raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : path.resolve(path.dirname(file), raw);
+  });
   return [text, ...(depth < 5 ? found.flatMap((f) => withImports(f, depth + 1)) : [])];
 };
 // Instruction files in dir and each directory above it, up to stop.
 const walkUp = (dir, names, stop = null) => {
   const out = [];
   for (let d = path.resolve(dir); ; d = path.dirname(d)) {
-    for (const n of names) out.unshift(...withImports(path.join(d, n)));
+    for (const n of names) {
+      const file = path.join(d, n);
+      if (read(file) !== null) {
+        out.unshift(...(stop ? [read(file)] : withImports(file)));
+        if (stop) break;
+      }
+    }
     if (d === stop || path.dirname(d) === d) return out;
   }
 };
@@ -88,7 +97,7 @@ module.exports = function stub(harness) {
       const status = cp.spawnSync('git', ['status', '--short', '--untracked-files=all'], { encoding: 'utf8' });
       report.placeholderGitStatus = { code: status.status, stdout: status.stdout || '', stderr: status.stderr || '' };
     }
-  } else {
+  } else if (harness === 'codex') {
     const dir = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
     const disabled = args.filter((a, i) => args[i - 1] === '--disable');
     const config = toml(path.join(dir, 'config.toml'));
@@ -100,7 +109,7 @@ module.exports = function stub(harness) {
     ].filter(Boolean);
     // codex reads AGENTS.md from the git root down to its working directory.
     const top = cp.spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim();
-    report.projectDocs = top ? walkUp(process.cwd(), ['AGENTS.md'], path.resolve(top)) : [];
+    report.projectDocs = top ? walkUp(process.cwd(), ['AGENTS.override.md', 'AGENTS.md'], path.resolve(top)) : [];
     report.prompt = args.find((a) => a.includes('## Task')) || null;
     report.rules = files(path.join(dir, 'rules'), '.rules');
     // codex finds skills in its home and in the user's ~/.agents/skills.
@@ -120,6 +129,8 @@ module.exports = function stub(harness) {
       process.stdout.write(`${JSON.stringify({ type: 'thread.started', thread_id: id })}\n`);
     }
     report.sessions = fs.existsSync(sessions) ? fs.readdirSync(sessions) : [];
+  } else {
+    report.prompt = args.find((a) => a.includes('## Task')) || null;
   }
   for (const argv of JSON.parse(process.env.STUB_RUN || '[]')) {
     const r = cp.spawnSync(argv[0], argv.slice(1), { encoding: 'utf8' });
