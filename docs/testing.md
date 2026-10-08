@@ -124,6 +124,8 @@ With the repaired fixtures, the complete fixed sample catches **31/31 with `--no
 
 After merging main at `4b9c3d2`, the changed supervision and stack paths were checked again: **4/4 caught**, with a green unmodified baseline, using `node scripts/mutants.js --jobs 2 --no-full --only supervisor-retries-permanent-exit,supervisor-extra-retry,supervisor-ignores-cpu,stack-merge-unaccepted-lower`. The quiet sampler test holds its worker until a stable interval has been observed; a control that forces state reloads every tick fails that test.
 
+The subsequent main refresh at `d29d4e5` changed merge confirmation. Its queue, CI-policy and merge-option checks passed 47/47, and `--only merge-moved-head,stack-merge-unaccepted-lower,stack-merge-untracked-lower,stack-merge-admin --jobs 2 --no-full` caught **4/4** after a green unmodified baseline.
+
 | bug | area | historical before: scoped evidence | repaired after: caught by |
 | --- | --- | --- | --- |
 | `tests-pass-without-change` | gates | test/gates/tests.test.js | test/gates/tests.test.js |
