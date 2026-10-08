@@ -55,6 +55,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | Setting | Class | Changed by |
 | --- | --- | --- |
 | `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd` | operational | `project set --tests-cmd`, `--clean-cmd`, `--tests-proof-cmd`; gate self-pinning below |
+| `gates.executors` | operational | `project set --executors` |
 | `ci.required`, `ci.ignore_apps`, `ci.capped_review` | operational | `project set --ci-required`, `--ci-ignore-apps`, `--ci-capped-review` |
 | `ci.local` | operational | `project set --ci-local`, `task update --ci-local` |
 | `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive` | operational | `project set --tests-*` |
@@ -173,6 +174,8 @@ If an expired pre-claim already belongs to the generated worker, dispatch renews
 `ci.local`, when present, selects local CI instead of hosted checks: `{ "command": ["python3", "tools/check.py"], "timeout": 120 }`. The CLI writes it through `project set --ci-local JSON` or `init --ci-local JSON`; `null` clears it. The command is a nonempty string argv with a nonblank executable and no NUL bytes. Arguments are preserved, including empty strings. The timeout is required in positive seconds and must fit Node's 2147483647-millisecond timer range. No timeout is chosen implicitly. Other fields under `ci` are preserved.
 
 `gates` is an optional object with `tests_cmd` (the full test shell command), `clean_cmd` (the cleanup shell command prefix) and `tests_proof_cmd` (the expensive-mode scoped shell template with `{tests}`). Commands must be non-blank strings without NUL bytes; absent or null means unpinned. They are operational ([Authority](#authority)): the orchestrator or the owner sets or clears them through `init` or `project set --tests-cmd CMD --clean-cmd CMD --tests-proof-cmd CMD`. Prove and run-only require `tests_cmd`; clean requires `clean_cmd`. An unpinned project does not block: when the orchestrator or the owner runs `check tests`, `check clean` or `accept` and a needed pin is missing, the engine pins the detected command under that identity first. `tests_cmd` becomes `npm test` when the repository's `package.json` has a test script other than npm's placeholder; `clean_cmd` becomes the configured cleanup tool: `TOWER_CRANE_CLEAN_CMD`, else `deslop` on PATH, else the deslop plugin's `~/.agentsys/plugins/deslop/scripts/detect.js`. Each pin logs a `gates pin` event with `key`, `value`, `from` and `authority`, and `status` lists pins that still stand. Workers and reviewers pin nothing, and a gate with nothing detected refuses as before. Tests mode none needs no command. Gate flags `--cmd`, `--proof-cmd` and a non-blank `TOWER_CRANE_CLEAN_CMD` can only repeat the corresponding pinned value after whitespace trimming. They refuse a different value before any process runs. Clean appends the checkout directory, `--base=SHA` and `--json` to its prefix.
+
+`gates.executors` is a positive integer, default 2, that caps automation executors running at once on this host ([events.jsonl](#eventsjsonl)). The default fits one full suite at tests concurrency 3, about 6 processes, so two keep tests under half the cores of a 24-core box. The orchestrator or the owner raises it with `project set --executors N` on a larger machine.
 
 `merge` is an optional object with boolean `keep_branch` and `admin` fields, both defaulting to false. `keep_branch: true` omits `gh pr merge --delete-branch` so retained worktrees can keep their task branches; it also keeps branches without a worktree. Only owner-set `admin: true` (owner-required) adds `--admin` for repositories solely owned by the project owner, as allowed by SHARED.md. A command argument cannot enable admin merging; `merge --admin` is refused. Neither option skips Tower Crane's acceptance gates or its accepted-head check.
 
@@ -547,8 +550,17 @@ an exception. Terminal receipts include `error`, null without an exception.
 Startup can retry deferred or errored work without a new lifecycle event.
 A task has at most one observable executor.
 An exited executor's start can be retried, while an unobservable executor
-remains busy. `automation queued` records a blocked notification's source;
-the executor drains it after releasing the task. State locks cover only
+remains busy. At most `gates.executors` executors run on one host across
+every watcher and supervisor. The running receipt in the event log is the
+executor's lease: its terminal receipt releases it on exit, and its PID
+identity releases it when the process dies. Running receipts from other
+hosts do not count against this host's cap.
+`automation queued` records a blocked notification's source, with
+`executors` set to the cap when the cap blocked it rather than another
+executor of the same task. Queued notifications run in submission order:
+while one waits, a later notification queues behind it even if a slot is
+free. Each executor drains the queue after releasing its slot; watchers
+also retry their pending notifications on their next check. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
 `via: automation`. Reactions establish an explicit authorization context
