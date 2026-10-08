@@ -7,6 +7,8 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { makeRepo, real, BIN, PTY_AVAILABLE } = require('./helpers');
 const A = require('../lib/agents');
+const S = require('../lib/state');
+const SHORT_WAIT = path.join(__dirname, 'fixtures', 'lock-wait.js');
 
 function setup(t) {
   const h = makeRepo(t);
@@ -717,23 +719,24 @@ test('a spawn whose program fails to start records nothing and leaves its worktr
   assert.equal(h.readState('tasks.json').tasks[0].branch, 'tower-crane/T1-idempotency-key-on-retries');
 });
 
-test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', async (t) => {
+test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', (t) => {
   const h = setup(t);
   commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks } = footprint(h);
-  const paused = path.join(h.base, 'holder');
-  const holder = h.runAsync(['task', 'note', 'T1', 'holding the lock'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
-  await waitForFile(paused);
+  // The test process keeps the lock until the spawn exhausts its short budget.
+  const lock = S.acquireLock(h.state);
   try {
-    const r = h.run(['spawn', '--role', 'small', '--task', 'T1']);
+    const r = h.run(['spawn', '--role', 'small', '--task', 'T1'], {
+      env: { NODE_OPTIONS: `--require=${JSON.stringify(SHORT_WAIT)}` },
+    });
     assert.equal(r.code, 3, r.stderr);
     assert.match(r.stderr, /state is locked by .*; its worktree stays at .*T1-idempotency-key-on-retries for the next spawn/);
+    assert.ok(fs.existsSync(lock.file), 'the holder keeps its lock through the refusal');
     assert.equal(footprint(h).tasks, tasks);
     assert.ok(fs.existsSync(leftover(h)));
   } finally {
-    fs.writeFileSync(`${paused}.go`, '');
+    S.releaseLock(lock);
   }
-  assert.equal((await holder).code, 0);
   assert.equal(real(h.json(['spawn', '--role', 'small', '--task', 'T1', '--wait']).cwd), real(leftover(h)));
 });
 
