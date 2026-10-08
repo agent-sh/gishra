@@ -190,7 +190,7 @@ test('opencode inline config keeps caller fields and plugins when adding the hom
   assert.deepEqual(config, { ...original, plugin: [...original.plugin, generated] });
 });
 
-test('spawn embeds the role skill before the brief for claude, codex, opencode and agy', (t) => {
+test('spawn embeds the role skill in the system context for isolated reviewers and before the brief for other jobs', (t) => {
   const h = setup(t);
   h.ok(['task', 'update', 'T1', '--tier', 'easy']);
   reviewable(h);
@@ -215,13 +215,22 @@ test('spawn embeds the role skill before the brief for claude, codex, opencode a
       ['review', 'reviewer', 'worker'],
     ]) {
       setRung(h, rung, ['--harness', harness, '--model', model]);
-      const prompt = dry(h, rung, env).argv.find((arg) => arg.includes('## Task'));
+      const out = dry(h, rung, env);
+      const user = out.argv.find((arg) => arg.includes('## Task'));
+      if (job === 'reviewer' && harness === 'codex') {
+        assert.ok(!user.includes(bodies[job]));
+        assert.ok(out.startup.system_bytes > bodies[job].length);
+        continue;
+      }
+      const prompt = job === 'reviewer' && harness === 'claude'
+        ? out.system : user;
       assert.ok(prompt.includes(bodies[job]), `${harness} ${job} has its skill body`);
       assert.ok(!prompt.includes(bodies[other]), `${harness} ${job} excludes the other role's skill`);
       assert.ok(!prompt.includes(`name: tower-crane-${job === 'worker' ? 'work' : 'review'}`));
       assert.ok(!prompt.includes('description: fixture frontmatter'), 'skill frontmatter is omitted');
       const context = job === 'worker' ? 'start from the webhook handler' : 'Review T1 at';
-      assert.ok(prompt.indexOf(bodies[job]) < prompt.indexOf(context), 'the role skill comes before the task context');
+      if (prompt === user) assert.ok(prompt.indexOf(bodies[job]) < prompt.indexOf(context), 'the role skill comes before the task context');
+      else assert.ok(!user.includes(bodies[job]), 'the user message holds only task context');
     }
   }
 });

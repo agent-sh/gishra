@@ -93,7 +93,18 @@ test('pi ignores planted user memory, MCP extension and approved rules, links au
   assert.ok(!nested.startup.rules.some((rule) => rule.path.startsWith(last.home + path.sep)));
   for (const file of fs.readdirSync(last.home)) {
     const at = path.join(last.home, file);
-    if (fs.lstatSync(at).isFile()) assert.ok(!fs.readFileSync(at, 'utf8').includes('PI-PLANTED-SECRET'));
+    let fd;
+    try {
+      fd = fs.openSync(at, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    } catch (error) {
+      if (error.code === 'ELOOP') continue;
+      throw error;
+    }
+    try {
+      if (fs.fstatSync(fd).isFile()) assert.ok(!fs.readFileSync(fd, 'utf8').includes('PI-PLANTED-SECRET'));
+    } finally {
+      fs.closeSync(fd);
+    }
   }
 });
 
