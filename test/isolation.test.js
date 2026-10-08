@@ -146,6 +146,65 @@ const isolated = (h, rung, harness) => {
   h.ok(['ladder', 'set', rung, '--harness', harness, ...model, '--clear', 'effort', '--clear', 'args']);
 };
 
+test('codex worker configs keep named provider and MCP fields without copying credentials', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const credentials = Object.fromEntries(['apikey', 'key', 'bearer', 'api_key', 'opaque_value'].map(k => [k, `${SECRET}-${k}`]));
+  const provider = {
+    name: 'P', base_url: 'https://provider.example/v1', env_key: 'P_KEY', wire_api: 'responses',
+    requires_openai_auth: false, request_max_retries: 3, stream_max_retries: 4, stream_idle_timeout_ms: 1000,
+    env_http_headers: { 'X-Provider': 'PROVIDER_HEADER' },
+  };
+  const server = {
+    command: 'planted-mcp', args: ['x'], cwd: '/server', url: 'https://mcp.example',
+    env_vars: ['MCP_KEY'], env_http_headers: { Authorization: 'MCP_AUTH' }, bearer_token_env_var: 'MCP_BEARER',
+    enabled: true, required: false, startup_timeout_sec: 10, tool_timeout_sec: 20,
+    enabled_tools: ['read'], disabled_tools: ['write'], default_tools_approval_mode: 'prompt',
+    tools: { read: { enabled: true, approval_mode: 'prompt' } },
+  };
+  const doc = {
+    model_provider: 'p',
+    model_providers: {
+      p: { ...provider, ...credentials, metadata: { opaque_value: SECRET } },
+      malformed: { name: { opaque_value: SECRET }, request_max_retries: { key: SECRET } },
+    },
+    mcp_servers: {
+      planted: {
+        ...server, ...credentials, env: { MCP_KEY: SECRET }, http_headers: { Authorization: SECRET },
+        tools: { read: { ...server.tools.read, ...credentials, metadata: { opaque_value: SECRET } } },
+      },
+      malformed: { args: [{ opaque_value: SECRET }], env_vars: [{ opaque_value: SECRET }] },
+    },
+  };
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(doc));
+  }
+  isolated(h, 'medium', 'codex');
+  h.ok(['ladder', 'set', 'medium', '--mcp', '["planted","malformed"]']);
+  const started = spawn(h, u, 'medium');
+  noSecretsCopied(h);
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    const config = JSON.parse(JSON.stringify(TOML.parse(fs.readFileSync(path.join(h.state, 'homes', started.agent, file), 'utf8'))));
+    assert.deepEqual(config.model_providers, { p: provider, malformed: {} }, file);
+    assert.deepEqual(config.mcp_servers, { planted: server, malformed: {} }, file);
+  }
+});
+
+test('codex config allowlists also filter inline tables on Windows', () => {
+  const doc = TOML.parse([
+    `model_providers = { p = { name = "P", apikey = "${SECRET}", key = "${SECRET}", bearer = "${SECRET}", opaque_value = "${SECRET}" }, malformed = { name = ["${SECRET}"], env_http_headers = { Authorization = { value = "${SECRET}" } } } }`,
+    `mcp_servers = { planted = { command = "mcp", args = ["x"], apikey = "${SECRET}", key = "${SECRET}", bearer = "${SECRET}", opaque_value = "${SECRET}", tools = { read = { enabled = true, approval_mode = "prompt", opaque_value = "${SECRET}" } } }, malformed = { args = [{ value = "${SECRET}" }], env_http_headers = { Authorization = { value = "${SECRET}" } } } }`,
+  ].join('\n'));
+  const filtered = A.codexConfig(doc, ['planted', 'malformed']);
+  assert.deepEqual(filtered, {
+    doc: {
+      model_providers: { p: { name: 'P' }, malformed: {} },
+      mcp_servers: { planted: { command: 'mcp', args: ['x'], tools: { read: { enabled: true, approval_mode: 'prompt' } } }, malformed: {} },
+    },
+    found: ['planted', 'malformed'],
+  });
+  assert.ok(!TOML.stringify(filtered.doc).includes(SECRET));
+});
+
 test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   fs.mkdirSync(path.join(u.home, '.cache'), { recursive: true });
