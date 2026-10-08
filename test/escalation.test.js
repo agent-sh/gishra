@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, detachedAlive, BIN } = require('./helpers');
+const { makeRepo, pinRung, detachedAlive, BIN } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -45,7 +45,7 @@ attempts.push({ rung: '${rung}', agent: process.env.TOWER_CRANE_AGENT, session: 
   previous: process.argv[3], cwd: process.cwd() });
 fs.writeFileSync(process.argv[2], JSON.stringify(attempts));
 console.log(JSON.stringify({ type: 'thread.started', thread_id: '${rung}-thread' }));
-console.log(JSON.stringify({ type: 'result', modelUsage: { luna: {} },
+console.log(JSON.stringify({ type: 'result', modelUsage: { 'fixture-light': {} },
   usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 20 } }));
 ${index === 0 && ['cleanup', 'orphan'].includes(trigger) ? `
 cp.spawn(process.execPath, ['-e', \`
@@ -109,7 +109,7 @@ for (const trigger of ['exit', 'preclaim', 'stall', 'review']) {
   }, async (t) => {
     const h = setup(t, trigger);
     h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: {
-      luna: { input: 1, cache_write: 1, cache_read: 1, output: 1 },
+      'fixture-light': { input: 1, cache_write: 1, cache_read: 1, output: 1 },
     } })]);
     h.ok(['spawn', '--task', 'T1']);
     if (trigger === 'review') {
@@ -527,14 +527,14 @@ test('failure at the range top opens one owner decision and blocks further dispa
 test('a native harness climb records captured tokens and configured cost for the failed rung', async (t) => {
   const h = setup(t);
   h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: {
-    luna: { input: 1, cache_write: 1, cache_read: 1, output: 1 },
+    'fixture-light': { input: 1, cache_write: 1, cache_read: 1, output: 1 },
   } })]);
-  h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'luna', '--clear', 'command']);
+  pinRung(h, 'easy', { harness: 'claude', model: 'fixture-light', effort: 'high' });
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
   fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
   const usage = path.join(h.base, 'usage.json');
-  fs.writeFileSync(usage, JSON.stringify({ type: 'result', modelUsage: { luna: {} },
+  fs.writeFileSync(usage, JSON.stringify({ type: 'result', modelUsage: { 'fixture-light': {} },
     usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 20 } }));
   h.ok(['spawn', '--task', 'T1'], {
     env: { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''), USAGE_CLAIM: '1', USAGE_EXIT: '1' },

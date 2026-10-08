@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
+const { createRequire } = require('node:module');
 const { ROOT, makeRepo, makeProjectRepo, makeTaskRepo, fixtureLadder } = require('./helpers');
 
 // Harness file names are not model selections.
@@ -67,10 +68,14 @@ function modelSelections(root, env = process.env) {
   for (const file of new Set(files)) {
     if (!/\.(?:cjs|mjs|js)$/.test(file)) continue;
     const text = fs.readFileSync(path.join(root, file), 'utf8');
-    for (const match of text.matchAll(/\brequire(?:\.resolve)?\(\s*(['"])([^'"]+\.json)\1\s*\)/g)) {
-      if (!match[2].startsWith('.') && !path.isAbsolute(match[2])) continue;
-      const imported = path.resolve(root, path.dirname(file), match[2]);
-      importedJSON.add(path.relative(root, imported).split(path.sep).join('/'));
+    const resolve = createRequire(path.resolve(root, file)).resolve;
+    for (const match of text.matchAll(/\brequire(?:\.resolve)?\(\s*(['"])([^'"]+)\1\s*\)/g)) {
+      try {
+        const imported = resolve(match[2]);
+        if (path.extname(imported) === '.json') importedJSON.add(path.relative(root, imported).split(path.sep).join('/'));
+      } catch {
+        // An unresolved request cannot load a documentary record.
+      }
     }
   }
   const violations = [];
@@ -133,8 +138,43 @@ test('model lint scans research JSON and imported documentary records', (t) => {
     claims: [{ claim: 'A historical model measurement', quote: id, source: 'stub' }],
   }));
   assert.deepEqual(modelSelections(h.repo, h.env), []);
-  fs.writeFileSync(module, 'module.exports = require(' + JSON.stringify('../' + record) + ');\n');
-  assert.deepEqual(modelSelections(h.repo, h.env), [`${record}:1: ${id}`]);
+  fs.writeFileSync(path.join(h.repo, 'research', 'package.json'), JSON.stringify({ main: 'T38.json' }));
+  for (const request of ['../' + record, '../research/T38', '../research']) {
+    fs.writeFileSync(module, 'module.exports = require(' + JSON.stringify(request) + ');\n');
+    const loaded = cp.execFileSync(process.execPath,
+      ['-e', 'process.stdout.write(require(process.argv[1]).claims[0].quote)', module], { env: h.env, encoding: 'utf8' });
+    assert.equal(loaded, id, `${request} loads the documentary JSON`);
+    assert.deepEqual(modelSelections(h.repo, h.env), [`${record}:1: ${id}`], request);
+  }
+});
+
+test('model lint follows JavaScript precedence over extensionless documentary JSON', (t) => {
+  const h = makeRepo(t);
+  fs.mkdirSync(path.join(h.repo, 'research'));
+  const id = ['gpt', 'fixture-2099'].join('-');
+  fs.writeFileSync(path.join(h.repo, 'research', 'T38.json'), JSON.stringify({ quote: id }));
+  fs.writeFileSync(path.join(h.repo, 'research', 'T38.js'), 'module.exports = "javascript";\n');
+  const module = path.join(h.repo, 'selection.js');
+  fs.writeFileSync(module, 'module.exports = require(' + JSON.stringify('./research/T38') + ');\n');
+  const loaded = cp.execFileSync(process.execPath,
+    ['-e', 'process.stdout.write(require(process.argv[1]))', module], { env: h.env, encoding: 'utf8' });
+  assert.equal(loaded, 'javascript');
+  assert.deepEqual(modelSelections(h.repo, h.env), []);
+});
+
+test('model lint scans documentary JSON loaded through a directory index', (t) => {
+  const h = makeRepo(t);
+  fs.mkdirSync(path.join(h.repo, 'research', 'entry'), { recursive: true });
+  const id = ['gpt', 'fixture-2099'].join('-');
+  fs.writeFileSync(path.join(h.repo, 'research', 'T38.json'), JSON.stringify({ quote: id }));
+  fs.writeFileSync(path.join(h.repo, 'research', 'entry', 'index.js'),
+    'module.exports = require(' + JSON.stringify('../T38') + ');\n');
+  const module = path.join(h.repo, 'selection.js');
+  fs.writeFileSync(module, 'module.exports = require(' + JSON.stringify('./research/entry') + ');\n');
+  const loaded = cp.execFileSync(process.execPath,
+    ['-e', 'process.stdout.write(require(process.argv[1]).quote)', module], { env: h.env, encoding: 'utf8' });
+  assert.equal(loaded, id);
+  assert.deepEqual(modelSelections(h.repo, h.env), [`research/T38.json:1: ${id}`]);
 });
 
 test('model selections live only in BUILTIN or configuration documentation', () => {
