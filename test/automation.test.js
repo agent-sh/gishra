@@ -841,6 +841,39 @@ test('a head the queue cannot advance is reported once and the PR behind it merg
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
 });
 
+for (const failure of ['failView', 'invalidView']) {
+  test(`an unreadable queue head (${failure}) is skipped once and the ready PR behind it merges`, (t) => {
+    const h = queueFixture(t);
+    acceptBoth(h);
+    const github = h.github();
+    github.prs['7'][failure] = true;
+    h.saveGithub(github);
+    const offset = h.logs().length;
+
+    h.ok(['ci', 'completed', 'T2', '--sha', h.second, '--agent', 'orchestrator']);
+    assert.equal(h.github().prs['8'].state, 'MERGED');
+    const [t1, t2] = h.readState('tasks.json').tasks;
+    assert.equal(t1.status, 'accepted');
+    assert.ok(!t1.evidence.some((e) => e.type === 'merge'));
+    assert.equal(t2.evidence.at(-1).type, 'merge');
+    assert.equal(t2.evidence.at(-1).ok, true);
+    const done = h.logs().slice(offset).findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done');
+    assert.equal(done.detail.blocked.task, 'T1');
+    assert.deepEqual(done.detail.skipped.map((s) => s.task), ['T1']);
+
+    // The confirmed merge event starts another pass while T1 is still unreadable.
+    h.consume();
+    const events = h.logs().slice(offset);
+    assert.ok(events.filter((e) => e.cmd === 'merge queue' && e.detail.phase === 'done').length >= 2);
+    assert.ok(!events.some((e) => e.cmd === 'merge queue' && e.detail.phase === 'error'));
+    const skips = events.filter((e) => e.cmd === 'queue skipped');
+    assert.deepEqual(skips.map((e) => [e.task, e.detail.sha, e.detail.revision]), [['T1', h.sha, t1.revision]]);
+    assert.match(skips[0].detail.reason, failure === 'failView'
+      ? /Could not resolve PullRequest number 7/ : /cannot read PR #7 mergeability/);
+    assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8']);
+  });
+}
+
 test('a concurrent CI completion retries a skipped head in the next drain pass', async (t) => {
   const h = queueFixture(t);
   acceptBoth(h);

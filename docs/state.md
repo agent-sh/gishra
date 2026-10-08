@@ -603,9 +603,11 @@ that found a live executor, then `done`, or `error` with `error`. `done` and
 `{task, reason}` naming the first head of the pass that did not merge, and
 `skipped`: the `{task, reason}` heads passed over in the pass. A head
 waiting on GitHub's mergeability stops the line. A head refused for any
-other reason (a closed PR, a moved or differently merged head, failing
+other reason (a closed or unreadable PR, a moved or differently merged head, failing
 gates, a refused merge or head check) is passed over for the rest of the
 pass and the next entry takes the line; each later pass tries it again.
+PR lookup refusals and unreadable GitHub responses use this skip path;
+unexpected execution errors still abort the queue.
 `queue skipped` records `{sha, revision, reason}` on that task once per
 sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain

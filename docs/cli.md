@@ -238,7 +238,7 @@ task whose lower task is not accepted waits outside the line. Only the head
 of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
 goes to rework with its files and leaves the line. Unknown mergeability
 stops the line until a later reaction. A head the queue cannot advance (a
-closed PR, a moved or differently merged head, failing gates, a refused
+closed or unreadable PR, a moved or differently merged head, failing gates, a refused
 merge or head check) is reported once in a `queue skipped` event and passed
 over, so the next entry merges; later passes try it again. The executor's
 next pass starts with no skipped heads, including when a concurrent CI
