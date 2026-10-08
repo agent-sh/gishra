@@ -135,6 +135,13 @@ for (const harness of ['codex', 'claude']) {
       assert.ok(Date.now() < deadline, 'session not recorded');
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
+    // Claude's session id is assigned before launch, so the session event does not show that the agent
+    // printed anything. Wait for its usage to reach the log, so the interrupt keeps that usage.
+    const logged = Date.now() + 15000;
+    while (!fs.readFileSync(first.log, 'utf8').includes('"usage"')) {
+      assert.ok(Date.now() < logged, 'usage not logged');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     fs.writeFileSync(path.join(first.cwd, 'README.md'), '# native unfinished work\n');
     fs.writeFileSync(path.join(first.cwd, 'unfinished.txt'), 'keep native edits\n');
     h.ok(['interrupt', 'T1', '--agent', 'orchestrator']);
