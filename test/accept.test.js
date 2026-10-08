@@ -103,12 +103,14 @@ test('an accepted task keeps its acceptance, dependencies and kind until it is s
   for (const [flags, what] of [
     [['--acceptance', 'a new unmet criterion'], 'acceptance'],
     [['--dep', 'T3'], 'dependencies'],
-    [['--kind', 'docs'], 'kind'],
   ]) {
     const r = h.run(['task', 'update', 'T1', ...flags]);
     assert.equal(r.code, 1, `${flags.join(' ')}: ${r.stderr}`);
     assert.match(r.stderr, new RegExp(`T1 is accepted, so its ${what} cannot change; send it back first with tower-crane rework T1`));
   }
+  const kind = h.run(['task', 'update', 'T1', '--kind', 'docs']);
+  assert.equal(kind.code, 1, kind.stderr);
+  assert.match(kind.stderr, /on a submitted or accepted task is refused; rework the task first/);
   assert.equal(fs.readFileSync(path.join(h.state, 'tasks.json'), 'utf8'), before, 'a refused update writes nothing');
   const t1 = h.json(['task', 'show', 'T1']);
   assert.deepEqual([t1.status, t1.revision, t1.gates.ok], ['accepted', 1, true]);
