@@ -14,7 +14,7 @@ In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), co
 
 Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing.
 
-Lock attempts use private staging directories named with the process pid and a fresh random nonce. Concurrent staging cleanup retries with backoff within the usual 10 s acquisition deadline; it does not expose a staging `ENOENT` as a command or supervisor failure. Persistent contention or cleanup races exit 3. See [state.md: Lock](state.md#lock).
+Lock attempts use private staging directories named with the process pid and a fresh random nonce. Every CLI, hook and broker write retries with jittered exponential backoff for up to 60 s per acquisition, measured with a monotonic clock. A known live holder is never reclaimed by age; a dead holder is reclaimed immediately, including at the deadline. Concurrent staging cleanup retries within that bound; it does not expose a staging `ENOENT` as a command or supervisor failure. Persistent live contention or unremovable stale locks and cleanup races exit 3. The hook bridge allows 65 s per CLI call, and generated hooks allow 135 s for two calls, so transient contention within the bound does not block a prompt with a hook error. See [state.md: Lock](state.md#lock).
 
 ## Plan
 
