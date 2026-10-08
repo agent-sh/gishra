@@ -59,6 +59,12 @@ test('init copies the built-in ladder, and a rung the project leaves out falls b
   assert.match(h.ok(['ladder', 'show']), /^ {2}easy +claude +model claude-haiku-5-5, effort high +from built-in$/m);
 });
 
+test('docs/builtin-ladder.json is the built-in ladder', () => {
+  const doc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'docs', 'builtin-ladder.json'), 'utf8'));
+  assert.equal(doc.harness, 'codex');
+  assert.deepEqual(doc.ladder, BUILTIN);
+});
+
 test('the user file supplies the defaults a new project copies, and the project file then wins', (t) => {
   const h = makeRepo(t);
   writeUser(h, {
@@ -231,7 +237,9 @@ test('fallback-only user rungs keep the built-in primary when projects omit them
 test('ladder harness moves every rung without its own harness, and spawn runs each tier there', (t) => {
   const h = makeRepo(t);
   h.init();
-  for (const rung of ['easy', 'medium', 'review', 'small']) h.ok(['ladder', 'set', rung, '--model', `m-${rung}`, '--clear', 'profile', '--clear', 'harness']);
+  for (const rung of ['easy', 'medium', 'review', 'small']) h.ok(['ladder', 'set', rung, '--model', `m-${rung}`, '--effort', 'high', '--clear', 'profile', '--clear', 'harness']);
+  h.ok(['ladder', 'set', 'hard', '--model', 'm-hard', '--effort', 'medium']);
+  h.ok(['ladder', 'set', 'research', '--model', 'm-research', '--effort', 'high']);
   h.ok(['task', 'add', '--title', 'Small', '--acceptance', 'a', '--size', 'S']);
   h.ok(['task', 'add', '--title', 'Medium', '--acceptance', 'a']);
   h.ok(['task', 'add', '--title', 'Large', '--acceptance', 'a', '--size', 'L']);
@@ -255,8 +263,8 @@ test('ladder harness moves every rung without its own harness, and spawn runs ea
   assert.deepEqual(flags(medium.argv), ['pi', '-p', '--mode', 'json', '--model', 'm-medium', '--thinking', 'high', ...piExtension(medium.agent)]);
   const hard = spawn('T3');
   const research = spawn('T4');
-  assert.deepEqual(flags(hard.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'medium', '--output-format', 'json']);
-  assert.deepEqual(flags(research.argv).slice(0, 8), ['claude', '-p', '--model', 'opus', '--effort', 'high', '--output-format', 'json']);
+  assert.deepEqual(flags(hard.argv).slice(0, 8), ['claude', '-p', '--model', 'm-hard', '--effort', 'medium', '--output-format', 'json']);
+  assert.deepEqual(flags(research.argv).slice(0, 8), ['claude', '-p', '--model', 'm-research', '--effort', 'high', '--output-format', 'json']);
   assert.equal(hard.argv[hard.argv.indexOf('--session-id') + 1], hard.session_id);
   assert.equal(research.argv[research.argv.indexOf('--session-id') + 1], research.session_id);
   const review = spawn('T2', 'review');
