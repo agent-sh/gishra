@@ -571,7 +571,7 @@ for (const hook of ['HOOK_NO_WATCH', 'HOOK_SILENT_WATCH']) {
 async function board(t, h) {
   const c = child(t, h, ['serve', '--port', '0', '--json'], { TOWER_CRANE_AGENT: h.serveAgent || 'owner' });
   const [data] = await once(c.p.stdout, 'data');
-  return JSON.parse(String(data)).url;
+  return JSON.parse(String(data));
 }
 
 test('non-owner serve hides owner forms and refuses all owner write routes', async (t) => {
@@ -579,9 +579,9 @@ test('non-owner serve hides owner forms and refuses all owner write routes', asy
   h.ok(['task', 'update', 'T1', '--needs-owner', 'access']);
   h.ok(['ask', '--question', 'which?', '--option', 'a', '--option', 'b', '--blocks', 'T1']);
   h.serveAgent = 'worker-evil';
-  const url = await board(t, h);
+  const { url } = await board(t, h);
   const page = await (await fetch(url)).text();
-  const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
+  const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})?">/.exec(page)[1] || '';
   assert.doesNotMatch(page, /data-api="\/api\/(?:tasks|decisions)\//);
   const before = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
   for (const [route, body] of [
@@ -607,8 +607,8 @@ for (const agent of ['orchestrator', 'owner']) {
     const h = setup(t);
     h.ok(['task', 'update', 'T1', '--needs-owner', 'access']);
     h.ok(['ask', '--question', 'which?', '--option', 'a', '--option', 'b', '--blocks', 'T1']);
-    const url = await board(t, h);
-    const page = await (await fetch(url)).text();
+    const { url, open } = await board(t, h);
+    const page = await (await fetch(open)).text();
     const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
     assert.match(page, /data-api="\/api\/tasks\/T1\/comments"/);
     assert.match(page, /data-api="\/api\/decisions\/D1\/answer"/);
@@ -643,8 +643,8 @@ for (const agent of ['orchestrator', 'owner']) {
 
 test('serve preserves an owner comment fragmented inside UTF-8 bytes', async (t) => {
   const h = setup(t);
-  const url = await board(t, h);
-  const page = await (await fetch(url)).text();
+  const { url, open } = await board(t, h);
+  const page = await (await fetch(open)).text();
   const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
   const text = 'שלום 😀';
   const body = Buffer.from(JSON.stringify({ text }));

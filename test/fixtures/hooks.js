@@ -47,6 +47,16 @@ if (env.HOOK_HIDDEN_PIDS) {
   };
 }
 
+// HOOK_KEEP_SPAWN_DIRS=1: spawn's job and receipt files stay in the cache, as
+// they do when the dispatching CLI is killed before it removes them.
+if (env.HOOK_KEEP_SPAWN_DIRS) {
+  const rm = fs.rmSync;
+  fs.rmSync = function keepSpawnDir(file, ...args) {
+    if (typeof file === 'string' && /[\\/]tower-crane[\\/]spawn-[^\\/]+([\\/]started\.json)?$/.test(file)) return;
+    return rm.call(this, file, ...args);
+  };
+}
+
 // HOOK_PIDNS=ID: this process reports ID as its pid namespace, as a command
 // in a sandbox of its own does.
 if (env.HOOK_PIDNS) {
