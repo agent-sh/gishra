@@ -102,11 +102,16 @@ const selected = only ? MUTANTS.filter((m) => only.includes(m.id)) : MUTANTS;
 const scratchRoot = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
 fs.mkdirSync(scratchRoot, { recursive: true });
 const copy = fs.mkdtempSync(path.join(scratchRoot, 'tower-crane-mutants-'));
-fs.cpSync(ROOT, copy, { recursive: true, filter: (src) => !/[\\/](\.git|node_modules|\.tower-crane)$/.test(src) });
+// The package, its tests and tools; nothing a checkout or an agent home adds.
+for (const entry of ['bin', 'lib', 'test', 'scripts', 'skills', 'agents', 'standards', 'docs', '.claude-plugin', 'package.json', 'components.json']) {
+  if (fs.existsSync(path.join(ROOT, entry))) fs.cpSync(path.join(ROOT, entry), path.join(copy, entry), { recursive: true });
+}
 
+// The repository's runner, so each test has its timeout and a hung run ends.
 function runTests(files) {
-  const testArgs = ['--test', `--test-concurrency=${jobs}`, ...files];
-  const r = cp.spawnSync(process.execPath, testArgs, { cwd: copy, encoding: 'utf8', env: process.env, maxBuffer: 1 << 28 });
+  const r = cp.spawnSync(process.execPath, ['test/run.js', `--test-concurrency=${jobs}`, ...files], {
+    cwd: copy, encoding: 'utf8', env: process.env, maxBuffer: 1 << 28, timeout: 60 * 60 * 1000,
+  });
   return r.status === 0;
 }
 

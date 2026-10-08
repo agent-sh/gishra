@@ -57,6 +57,25 @@ test('the broker rejects an identity that differs from its spawn', () => {
   }
 });
 
+test('the broker answers no request without its token and acts on its own task only', async (t) => {
+  const { job } = scratch(t);
+  for (const argv of [['task', 'note', 'T2', 'x'], ['claim', 'T2'], ['ask', '--question', 'q', '--option', 'a', '--option', 'b', '--blocks', 'T2']]) {
+    assert.throws(() => B.authorize(job, argv), /works on T1 only, not T2/, argv.join(' '));
+  }
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const at = JSON.parse(fs.readFileSync(job.broker, 'utf8'));
+  const reply = await new Promise((resolve, reject) => {
+    const s = require('node:net').connect(at.socket || { host: at.host, port: at.port }, () => {
+      s.write(JSON.stringify({ token: '0'.repeat(64), argv: ['task', 'note', 'T1', 'forged'] }) + '\n');
+    });
+    let out = '';
+    s.on('data', (d) => { out += d; }).on('end', () => resolve(JSON.parse(out))).on('error', reject);
+  });
+  assert.equal(reply.code, 1);
+  assert.match(reply.stderr, /without its token/);
+});
+
 test('closing the broker stops the commands it is running and what they started', async (t) => {
   const { base, state, job } = scratch(t);
   const pids = path.join(base, 'pids.json');
