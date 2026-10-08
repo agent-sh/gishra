@@ -327,6 +327,34 @@ for (const type of ['tests', 'clean', 'ci']) {
   });
 }
 
+for (const { status, failingTest } of [{ status: 1 }, { status: 9009 }, { status: 1, failingTest: true }]) {
+  test(failingTest ? 'a failing test reporting a missing-command diagnostic still climbs'
+    : `Windows command-not-found exit ${status} does not climb`, async (t) => {
+    const h = setup(t, 'review', 'easy..medium', (repo) => {
+      gateFixture(repo);
+      repo.ok(['project', 'set', '--repo', 'acme/demo', '--tests-mode', 'run-only',
+        '--tests-cmd', 'tower-crane-missing-test-program']);
+      const hook = path.join(__dirname, 'fixtures', 'windows-missing-command.js').replace(/\\/g, '/');
+      repo.env.NODE_OPTIONS = `--require "${hook}"`;
+      repo.env.TOWER_CRANE_TEST_MISSING_STATUS = String(status);
+      if (failingTest) repo.env.TOWER_CRANE_TEST_DIAGNOSTIC_IN_TEST = '1';
+    });
+    h.ok(['spawn', '--task', 'T1']);
+    await until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+    const checked = h.run(['check', 'tests', 'T1', '--json']);
+    assert.equal(checked.code, 1, checked.stderr);
+    const result = JSON.parse(checked.stdout);
+    assert.ok(result.commands.some((command) => command.command === 'tower-crane-missing-test-program'
+      && command.status === status), 'the CLI records the Windows shell status');
+    assert.equal(result.confirmed_failure, failingTest ? true : undefined);
+    h.ok(['recover', 'T1']);
+    assert.equal(h.json(['task', 'show', 'T1']).tier, failingTest ? 'medium' : 'easy');
+    const climbs = events(h).filter((e) => e.cmd === 'escalate');
+    if (failingTest) assert.ok(climbs.length > 0 && climbs.every((e) => e.detail.trigger === 'tests'));
+    else assert.equal(climbs.length, 0);
+  });
+}
+
 test('a later eligible passing review supersedes a failure before worker exit', async (t) => {
   const h = setup(t, 'hold');
   h.ok(['ladder', 'set', 'easy', '--supervision', '{"stall_ms":60000}']);
