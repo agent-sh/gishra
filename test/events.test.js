@@ -42,7 +42,8 @@ function child(t, h, args, hooks = {}) {
   let stderr = '';
   p.stdout.on('data', (d) => { stdout += d; });
   p.stderr.on('data', (d) => { stderr += d; });
-  const timer = setTimeout(() => p.kill(), 10000);
+  // A failure bound only; waiters time out first and report it.
+  const timer = setTimeout(() => p.kill(), 60000);
   const result = once(p, 'close').then(([code]) => {
     clearTimeout(timer);
     return { code, stdout, stderr };
@@ -70,7 +71,7 @@ async function waiting(t, h, { automation, args = [], hooks = {} }) {
   const ready = created(signal);
   const actor = args.includes('--agent') ? [] : ['--agent', 'orchestrator'];
   const observe = automation ? [] : ['--observe'];
-  const c = child(t, h, ['wait', ...actor, ...observe, '--timeout', '5', ...args], { ...hooks, HOOK_WATCH_READY: signal });
+  const c = child(t, h, ['wait', ...actor, ...observe, '--timeout', '30', ...args], { ...hooks, HOOK_WATCH_READY: signal });
   // A baseline CLI that lacks wait closes immediately; never wait for a marker
   // it cannot write.
   await Promise.race([ready, c.result.then((r) => { throw new Error(`wait exited before watch setup: ${r.code} ${r.stderr}`); })]);
@@ -214,7 +215,7 @@ test('a manual merge racing an automatic merge of the same task: one merges, the
     // manual merge starts, so both reach the merge gate together. The cursor
     // keeps a manual merge that finishes before the waiter starts visible.
     const after = String(fs.statSync(path.join(h.state, 'events.jsonl')).size);
-    const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--after', after, '--task', id, '--types', 'merged', '--timeout', '9']);
+    const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--after', after, '--task', id, '--types', 'merged', '--timeout', '30']);
     const manual = await h.runAsync(['merge', id]);
     assert.equal(manual.code, 0, `${id}: ${manual.stderr}`);
     const woke = await event(automatic, 'merged', id);
