@@ -197,6 +197,14 @@ test('a capitalized Tests/ directory holds tests: the gate runs them', async () 
   assertCleanedUp();
 });
 
+test('a helper or fixture edited under test/ is not a test for the change', async () => {
+  const sha = task({ 'lib/add.js': FIX, 'test/helpers.js': 'module.exports = {};\n', 'test/fixtures/hooks.js': 'module.exports = [];\n' });
+  const r = await gate.run(ctx(sha));
+  assert.equal(r.ok, false, r.summary);
+  assert.match(r.summary, /no test covers this change: .*adds or changes no test file/);
+  assertCleanedUp();
+});
+
 // One layout per language convention the default patterns must know.
 for (const [layout, p] of [
   ['SwiftPM', 'Tests/AppTests/FooTests.swift'],
@@ -215,8 +223,12 @@ for (const [layout, p] of [
 }
 
 test('test file patterns', () => {
-  for (const p of ['test/a.js', 'src/tests/b.py', 'a/__tests__/c.ts', 'spec/d.rb', 'pkg/e_test.go', 'f.test.js', 'g.spec.ts', 'py/test_h.py', 'test_i.py', 'TestFoo.java', 'MyApp.UnitTests/A.cs']) {
+  for (const p of ['test/a.js', 'src/tests/b.py', 'a/__tests__/c.ts', 'spec/d.rb', 'pkg/e_test.go', 'f.test.js', 'g.spec.ts', 'py/test_h.py', 'test_i.py', 'TestFoo.java', 'MyApp.UnitTests/A.cs', 'test/helpers.test.js']) {
     assert.equal(gate.isTestFile(p), true, p);
+  }
+  // Fixtures and helpers load the tests; they are support code, not tests, even under test/.
+  for (const p of ['test/helpers.js', 'test/gate-helpers.js', 'test/stack-fixture.js', 'test/fixtures/hooks.js', 'test/helpers/run.js', 'spec/spec_helper.rb', 'tests/conftest.py']) {
+    assert.equal(gate.isTestFile(p), false, p);
   }
   // A code file taken for a test would never be reverted, so near misses stay code.
   for (const p of ['lib/a.js', 'contest/b.js', 'latest/c.js', 'testdata/d.json', 'respec/h.js', 'src/latest.js', 'contest.py', 'attest.go', 'docs/testing.md', 'src/Testimony.js', 'AUDIT.md']) {
