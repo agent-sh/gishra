@@ -33,3 +33,4 @@ fs.writeFileSync(process.env.STUB_OUT, JSON.stringify({
   home, agentFile, agent, args, memory, settings, mcp, rules, tools, skills, contextBytes, ran,
   sandboxMarker: process.env.TOWER_CRANE_SANDBOX,
 }));
+if (process.env.STUB_HOLD) setTimeout(() => {}, Number(process.env.STUB_HOLD));

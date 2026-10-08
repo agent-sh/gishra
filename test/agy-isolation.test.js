@@ -49,6 +49,30 @@ test('agy private HOME does not authorize unverified sandbox authority or nested
   assert.equal(report().sandboxMarker, '0');
 });
 
+test('a later non-agy spawn refreshes the live agy home before its broker appears', { skip: noStub }, async t => {
+  const { h, env } = setup(t);
+  const first = h.json(['spawn', '--task', 'T1'], { env: { ...env, STUB_HOLD: '120000' } });
+  const settingsFile = path.join(h.state, 'homes', first.agent, 'home', '.gemini', 'antigravity-cli', 'settings.json');
+  const before = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  h.ok(['task', 'add', '--title', 'Later sibling', '--acceptance', 'refresh live permissions']);
+  h.ok(['brief', 'set', 'T2', '-'], { input: 'Start a sibling.\n' });
+  h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--model', 'fixture', '--clear', 'profile', '--clear', 'args']);
+  h.ok(['task', 'update', 'T2', '--tier', 'hard']);
+  fs.writeFileSync(path.join(path.dirname(env.STUB_OUT), 'bin', 'claude'),
+    `#!${process.execPath}\nrequire(${JSON.stringify(stub)});\n`, { mode: 0o755 });
+  const second = h.json(['spawn', '--task', 'T2', '--wait'], { env });
+  const resource = target => `read_file(${target.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')})`;
+  const homeRule = resource(path.join(h.state, 'homes', second.agent));
+  const brokerRule = resource(path.join(h.state, 'brokers', second.agent));
+  assert.ok(!before.permissions.deny.includes(homeRule));
+  const after = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  assert.ok(after.permissions.deny.includes(homeRule));
+  assert.ok(after.permissions.deny.includes(brokerRule));
+  assert.ok(!after.permissions.deny.includes(resource(path.join(h.state, 'homes', first.agent))));
+  assert.deepEqual(after.permissions.allow, before.permissions.allow);
+  assert.equal(after.toolPermission, before.toolPermission);
+});
+
 function setup(t) {
   const h = makeRepo(t);
   const home = path.join(h.base, 'user');

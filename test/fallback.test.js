@@ -179,6 +179,18 @@ for (const [primaryHarness, reason, chain, routes] of [['claude', 'refusal', tru
   });
 }
 
+test('a verified agy adapter brokers every retry and its Codex fallback', t => {
+  const h = setup(t, { primaryHarness: 'agy' });
+  h.spawnEnv.TOWER_CRANE_TEST_VERIFIED_AGY = '1';
+  h.spawnEnv.TOWER_CRANE_TEST_FALLBACK_NOTE = '1';
+  assert.equal(h.spawn().code, 0);
+  assert.deepEqual(h.attempts().map(a => a.harness), ['agy', 'agy', 'agy', 'codex']);
+  assert.deepEqual(h.attempts().map(a => a.broker), [true, true, true, true]);
+  const notes = events(h).filter(e => e.cmd === 'task note');
+  assert.equal(notes.length, 4);
+  assert.ok(notes.every(e => e.via === 'broker' && e.agent === 'worker-T1-1'));
+});
+
 for (const primaryHarness of ['agy', 'claude']) {
   test(`fresh ${primaryHarness} outage retries record each invocation without counting usage twice`, (t) => {
     const h = setup(t, { primaryHarness });
