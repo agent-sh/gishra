@@ -21,11 +21,22 @@ if (require.main !== module) {
 }
 
 const given = process.argv.slice(2);
-const flags = given.filter((arg) => arg.startsWith('--'));
-const files = given.filter((arg) => !arg.startsWith('--'));
-const requested = flags.find((flag) => flag.startsWith('--test-concurrency='));
-const cap = Math.max(1, os.availableParallelism() - 1);
-const concurrency = Math.min(cap, requested ? Number(requested.split('=')[1]) || 1 : 4);
+const flags = [];
+const files = [];
+let requested = 4;
+for (let i = 0; i < given.length; i++) {
+  const arg = given[i];
+  if (arg === '--test-concurrency' || arg.startsWith('--test-concurrency=')) {
+    const value = arg === '--test-concurrency' ? given[++i] : arg.slice('--test-concurrency='.length);
+    if (!/^[1-9]\d*$/.test(value || '') || !Number.isSafeInteger(Number(value))) {
+      console.error('--test-concurrency requires a positive integer');
+      process.exit(1);
+    }
+    requested = Number(value);
+  } else if (arg.startsWith('--')) flags.push(arg);
+  else files.push(arg);
+}
+const concurrency = Math.min(4, Math.max(1, os.availableParallelism() - 1), requested);
 const args = [
   '--test', `--test-concurrency=${concurrency}`,
   // The clean git seed every test repository copies, built once per run.
@@ -33,7 +44,7 @@ const args = [
   // A hung test fails after five minutes, about three times the slowest test
   // measured on a loaded machine, instead of holding CI to its job timeout.
   '--test-timeout=300000', '--test-force-exit',
-  ...flags.filter((flag) => flag !== requested),
+  ...flags,
 ];
 const shard = process.env.TC_TEST_SHARD;
 if (shard) args.push(`--test-shard=${shard}`);
@@ -41,6 +52,8 @@ args.push(...(files.length ? files : testFiles()));
 
 const env = { ...process.env };
 delete env.TC_TEST_SHARD;
+// A runner invoked from a test must launch a new run, not Node's recursive no-op.
+delete env.NODE_TEST_CONTEXT;
 const result = cp.spawnSync(process.execPath, args, { stdio: 'inherit', env });
 if (result.error) {
   console.error(result.error.message);

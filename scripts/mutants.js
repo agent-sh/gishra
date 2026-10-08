@@ -6,7 +6,7 @@
 // named files miss is run against the whole suite before it counts as missed,
 // so the score is the suite's, and the file lists only make it cheap.
 //
-//   node scripts/mutants.js [--jobs 4] [--only ID,ID] [--no-full] [--skip PATTERN]
+//   node scripts/mutants.js [--root DIR] [--jobs 4] [--only ID,ID] [--no-full] [--skip PATTERN]
 //
 // --skip passes --test-skip-pattern to every run, for a test the current
 // environment cannot run, such as a nested git push inside an agent's sandbox.
@@ -15,8 +15,6 @@ const cp = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-
-const ROOT = path.join(__dirname, '..');
 
 // from must occur exactly once in file. tests are the files expected to catch it.
 const MUTANTS = [
@@ -101,16 +99,13 @@ const jobs = Number(opt('--jobs', '4'));
 const only = opt('--only', null)?.split(',');
 const full = !args.includes('--no-full');
 const skip = opt('--skip', null);
+const root = path.resolve(opt('--root', path.join(__dirname, '..')));
 const selected = only ? MUTANTS.filter((m) => only.includes(m.id)) : MUTANTS;
+if (!selected.length || only?.some((id) => !MUTANTS.some((m) => m.id === id))) throw new Error('unknown or empty mutation selection');
 
 const scratchRoot = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
 fs.mkdirSync(scratchRoot, { recursive: true });
 const copy = fs.mkdtempSync(path.join(scratchRoot, 'tower-crane-mutants-'));
-// The package, its tests and tools; nothing a checkout or an agent home adds.
-for (const entry of ['bin', 'lib', 'test', 'scripts', 'skills', 'agents', 'standards', 'docs', '.claude-plugin', 'package.json', 'components.json']) {
-  if (fs.existsSync(path.join(ROOT, entry))) fs.cpSync(path.join(ROOT, entry), path.join(copy, entry), { recursive: true });
-}
-
 // The repository's runner, so each test has its timeout and a hung run ends.
 function runTests(files) {
   const r = cp.spawnSync(process.execPath, ['test/run.js', `--test-concurrency=${jobs}`, ...(skip ? [`--test-skip-pattern=${skip}`] : []), ...files], {
@@ -124,6 +119,14 @@ const allFiles = () => require(path.join(copy, 'test', 'run.js')).testFiles();
 
 let caught = 0;
 try {
+  // Include test inputs outside the npm package, without local state or caches.
+  const files = cp.execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8' });
+  for (const file of new Set(files.split('\0').filter(Boolean))) {
+    const source = path.join(root, file);
+    if (!fs.existsSync(source)) continue;
+    fs.mkdirSync(path.dirname(path.join(copy, file)), { recursive: true });
+    fs.cpSync(source, path.join(copy, file), { recursive: true });
+  }
   for (const m of selected) {
     if (fs.readFileSync(path.join(copy, m.file), 'utf8').split(m.from).length !== 2) {
       throw new Error(`${m.id}: the text to mutate must occur once in ${m.file}`);
@@ -132,6 +135,7 @@ try {
   // A file that fails unmutated would count every mutant as caught.
   const named = [...new Set(selected.flatMap((m) => m.tests))];
   if (!runTests(named)) throw new Error(`the unmutated tests fail:\n${runTests.failures}`);
+  let fullValidated = false;
   for (const m of selected) {
     const file = path.join(copy, m.file);
     const source = fs.readFileSync(file, 'utf8');
@@ -139,7 +143,15 @@ try {
     let by = null;
     try {
       if (!runTests(m.tests)) by = m.tests.join(', ');
-      else if (full && !runTests(allFiles())) by = 'full suite';
+      else if (full) {
+        if (!fullValidated) {
+          fs.writeFileSync(file, source);
+          if (!runTests(allFiles())) throw new Error(`the unmutated full suite fails:\n${runTests.failures}`);
+          fullValidated = true;
+          fs.writeFileSync(file, source.replace(m.from, m.to));
+        }
+        if (!runTests(allFiles())) by = 'full suite';
+      }
     } finally {
       fs.writeFileSync(file, source);
     }

@@ -24,6 +24,9 @@ process.exit(failed ? 1 : 0);
 `,
   'lib/add.js': 'module.exports = (a, b) => a - b;\n',
   'lib/mul.js': 'module.exports = (a, b) => a * b;\n',
+  'package.json': '{"name":"fixture-base","private":true}\n',
+  'package-lock.json': '{"name":"fixture-base","lockfileVersion":3}\n',
+  'Cargo.lock': '# fixture-base\nversion = 3\n',
   'test/mul.test.js': "require('assert').strictEqual(require('../lib/mul')(2, 3), 6);\n",
   // Fails with exit 2 when a build file named in argv lost its head content, else runs the suite.
   'verify-build.js': `const fs = require('fs');
@@ -308,7 +311,7 @@ const MANIFESTS = {
 const KEEP = { tests: { keep: ['Makefile', 'tools/**/*.gradle'] } };
 const verify = (files) => `${NODE} verify-build.js ${files.map(shellQuote).join(' ')}`;
 
-test('prove keeps npm, Cargo, Go and Python manifests and tests.keep globs at the head and fails on the reverted code', async () => {
+test('prove keeps modified npm manifests and Cargo.lock, added manifests and tests.keep globs at the head', async () => {
   const sha = task({ 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST, ...MANIFESTS });
   const cmd = verify(Object.keys(MANIFESTS));
   const r = await gate.run(ctx(sha, { args: { cmd }, project: KEEP }));

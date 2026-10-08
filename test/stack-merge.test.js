@@ -149,7 +149,15 @@ test('stack merge rechecks every accepted head and records evidence for all merg
 test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents stack merge', (t) => {
   const f = stacked(t);
   f.accept('T2');
-  assert.match(f.h.run(['merge', 'T2']).stdout, /T1.*accepted/);
+  // Passing gate receipts do not authorize merging a still-submitted lower task.
+  f.write((d) => { Object.assign(d.prs[11], { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
+  const ci = f.h.run(['check', 'ci', 'T1']);
+  assert.equal(ci.code, 0, ci.stdout + ci.stderr);
+  f.h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', f.sha, '--agent', 'independent-reviewer', '--summary', 'checked']);
+  assert.equal(f.h.json(['task', 'show', 'T1']).status, 'submitted');
+  const calls = f.read().calls.length;
+  assert.match(f.h.run(['merge', 'T2']).stdout, /T1: every lower task must be accepted with passing gates/);
+  assert.equal(f.read().calls.length, calls, 'an unaccepted member stops the merge before contacting GitHub');
   f.accept('T1');
   f.write((d) => { d.order.unshift(99); });
   assert.match(f.h.run(['merge', 'T2']).stdout, /untracked lower PR/);

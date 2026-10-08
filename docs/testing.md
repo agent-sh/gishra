@@ -4,7 +4,7 @@ The suite proves behavior through the real CLI on temporary git repositories. It
 
 ## Running
 
-- `npm test` runs every file in `test/` and `test/gates/`. File workers are capped at 4 and at one below the machine's core count, since each file also starts CLI, git and stub processes.
+- `npm test` runs every file in `test/` and `test/gates/`. Every concurrency option, including repeated and space-separated values, is consumed before emitting one value. File workers are capped at 4 and at one below the machine's core count, since each file also starts CLI, git and stub processes.
 - `npm test -- test/claim.test.js test/gates/tests.test.js` runs only those files. Pass node:test flags the same way: `npm test -- test/events.test.js --test-name-pattern="decision answer"`.
 - Run only the files a change touches. The tests gate runs the full suite once at the submitted head, and CI runs it on Linux (Node 24 and 26) and on Windows in three shards.
 - Set `TOWER_CRANE_TEST_TMP` to keep temporary repositories off `/tmp`.
@@ -23,14 +23,18 @@ For projects Tower Crane manages, expensive proof is the default: the orchestrat
 ## Tools
 
 - `node scripts/test-cost.js [--before DIR] [files...]` measures CPU and wall seconds per file, median of three runs, four files at a time. With `--before`, it measures another checkout interleaved with this one.
-- `node scripts/mutants.js` plants each bug in its list in a scratch copy and runs the files named for it. A bug those files miss runs against the full suite before it counts as missed. Every bug must be caught.
+- `node scripts/mutants.js` copies git-listed repository inputs, including workflow files, hooks and rules. It requires the named tests to pass without mutations. Before a full-suite fallback, it restores the original source and requires that same copy to pass the full suite too. A broken baseline aborts the run. `--root DIR` selects another checkout; `--only ID,ID --no-full` confines a rerun to selected bugs and their named files.
 - `node scripts/test-coverage.js` uses node:test coverage, which follows the CLI processes a test starts. For each file it lists the lib lines it runs and how many no other file runs. A file with no unique lines is a candidate to merge or delete.
 
 ## Cost
 
 `node scripts/test-cost.js --before <main checkout>`: each file alone, median of three runs, four files at a time, the two checkouts interleaved so both saw the same load. The before checkout is `origin/main` at e2f5277 with its own `HOME` per test repository; without that, 15 of its files failed early here and measured too low. The machine was at a load of 40 to 80 from other sessions throughout, so wall times run long; CPU seconds compare.
 
-Total CPU: **1967 s before, 1408 s after, 28% less**. Both trees are the 55 files as of e2f5277; test files added to main since then are not in this table. Summed wall time: 6156 s before, 4479 s after.
+The shared Chrome originally exited without being reaped, so its CPU was absent from the after column. Chrome now closes in awaited file teardown. The two affected rows were remeasured on this machine, interleaved at two workers, median of three: `e2f5277` before and `e681590` after with the teardown fix. Each temporary repository gets its own `HOME`, and both Plan probes wait for the load frame before setting scroll. All twelve file runs passed. [Raw samples](testing-browser-cost.json) include the overlays and medians.
+
+Summing the 53 unchanged historical rows with those two refreshed rows gives **1928.4 CPU s before and 1394.7 CPU s after, about 28% less**. Summed wall time is 5831.3 s before and 4285.6 s after. This is the historical 55-file comparison, with corrected browser rows; it is not a new whole-suite timing of the current branch. Files added to main since that comparison are excluded.
+
+Reproduce the affected rows with `node scripts/test-cost.js --runs 3 --jobs 2 --before BEFORE --after AFTER --json browser-cost.json test/board.test.js test/settings.test.js`, applying the overlays recorded in the samples. CPU uses Linux `cutime`/`cstime`, which counts descendants their parents reaped; a timed-out or abandoned child is not a valid CPU sample.
 
 | file | covers | before CPU s | before wall s | after CPU s | after wall s |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -38,7 +42,7 @@ Total CPU: **1967 s before, 1408 s after, 28% less**. Both trees are the 55 file
 | `test/sources.test.js` | sources gate: fetch, visible text, public addresses and redirects, citations, research tiers | 155.6 | 411.4 | 46.4 | 142.5 |
 | `test/reviewer.test.js` | reviewer choice by tier, diff and price history; review packet; accept dispatch | 151.7 | 594.5 | 93.2 | 401.0 |
 | `test/local-ci.test.js` | ci.local: merged-tree runs, receipts, base movement, variants, overrides | 149.2 | 589.9 | 116.0 | 436.0 |
-| `test/board.test.js` | board snapshot and live serve: escaping, offline load, forms, live updates keep focus and scroll, viewer limits | 109.5 | 403.0 | 61.2 | 243.8 |
+| `test/board.test.js` | board snapshot and live serve: escaping, offline load, forms, live updates keep focus and scroll, viewer limits | 73.0 | 95.6 | 47.9 | 65.9 |
 | `test/gates.test.js` | CLI gate wiring: audited tests mode, policy at accept and merge, missing gate modules, gate context | 107.6 | 270.9 | 19.1 | 48.2 |
 | `test/supervision.test.js` | supervised retries, outage classification, stalls, monitor teardown | 83.7 | 228.9 | 62.3 | 187.1 |
 | `test/spawn-resume.test.js` | rework resumes the recorded session or starts fresh | 71.8 | 179.1 | 72.1 | 176.5 |
@@ -72,7 +76,7 @@ Total CPU: **1967 s before, 1408 s after, 28% less**. Both trees are the 55 file
 | `test/plan.test.js` | task add and update, plan import, validate, briefs | 8.7 | 43.0 | 8.8 | 44.7 |
 | `test/claim.test.js` | claims, leases, renewals, worker limit and release rules | 8.6 | 21.9 | 8.6 | 19.6 |
 | `test/lock.test.js` | state lock: wait, stale breaking, pid namespaces, id continuity | 8.3 | 51.9 (1/3 failed) | 8.4 | 58.0 (1/3 failed) |
-| `test/settings.test.js` | Settings view edits ladder and tiers through the CLI with the page token | 7.2 | 24.4 | 4.7 | 21.9 |
+| `test/settings.test.js` | Settings view edits ladder and tiers through the CLI with the page token | 4.9 | 7.1 | 4.3 | 6.8 |
 | `test/ready.test.js` | ready ordering and status summary | 5.7 | 32.1 | 5.7 | 30.6 |
 | `test/browser-kit.test.js` | browser kit user setting, needs round trip, rework before capability change | 5.0 | 19.3 | 5.0 | 14.9 |
 | `test/broker.test.js` | state broker authorization: role commands, own identity, own task, token, no git, shutdown | 4.5 | 13.7 | 4.6 | 15.7 |
@@ -89,7 +93,7 @@ Total CPU: **1967 s before, 1408 s after, 28% less**. Both trees are the 55 file
 | `test/gates/merge.test.js` | merge gate: accepted only, head match, admin policy, merge queue, already merged | 0.1 | 0.3 | 0.1 | 0.4 |
 | `test/live-rules.test.js` | live: a real worker reads the rules chain (skipped unless its TOWER_CRANE_LIVE_* flag is set) | 0.1 | 0.2 | 0.1 | 0.2 |
 | `test/live-sandbox.test.js` | live: real claude and codex sandboxes refuse forged state edits (skipped unless TOWER_CRANE_LIVE_CLAUDE=1 or its codex flag) | 0.1 | 0.3 | 0.1 | 0.4 |
-| **total** | 55 files | **1967.2** | **6156.0** | **1408.4** | **4478.6** |
+| **total** | 55 files | **1928.4** | **5831.3** | **1394.7** | **4285.6** |
 
 `isolation.test.js` fails 3 of 3 in both trees, only inside a Tower Crane worker sandbox: its nested `git push` of another task's branch meets the parent sandbox's git shim. `worktree.test.js` fails its 30-second dispatch bound above a load of about 70, in both trees. `fallback`, `events` and `lock` each failed one run of three under load.
 
@@ -114,7 +118,7 @@ What is left is mostly the CLI's own cost: every call starts Node and loads the 
 | secrets | 2 | the codex config keeps credentials, an env_file error echoes its contents |
 | board | 3 | unescaped `<`, Settings writes without the page token, any serve acts as owner |
 
-Before: 31/31 caught, 5 of them only by the full suite. After: 31/31 caught, 1 only by the full suite.
+The original 31/31 before and after claims included invalid fallback results: the scratch copy omitted inputs that the full suite reads, and that baseline was never run unmutated. The historical before run establishes **26/31 scoped catches**; its five fallback results are unverified. The reviewer independently confirmed **30/31 scoped catches at beacafc**. These replace the original scores.
 
 | bug | area | before: caught by | after: caught by |
 | --- | --- | --- | --- |
@@ -127,21 +131,21 @@ Before: 31/31 caught, 5 of them only by the full suite. After: 31/31 caught, 1 o
 | `review-by-submitter` | gates | test/accept.test.js | test/accept.test.js |
 | `evidence-old-revision` | gates | test/accept.test.js | test/accept.test.js |
 | `spawned-agent-is-orchestrator` | authority | test/authority.test.js | test/authority.test.js |
-| `brokered-command-has-authority` | authority | full suite | test/authority.test.js, test/broker.test.js |
+| `brokered-command-has-authority` | authority | unverified fallback | test/authority.test.js, test/broker.test.js |
 | `orchestrator-makes-owner-changes` | authority | test/authority.test.js | test/authority.test.js |
 | `terminal-fallback-is-owner` | authority | test/identity.test.js | test/identity.test.js |
 | `broker-any-command` | broker | test/broker.test.js | test/broker.test.js |
-| `broker-other-task` | broker | full suite | test/broker.test.js |
-| `broker-no-token` | broker | full suite | test/broker.test.js |
+| `broker-other-task` | broker | unverified fallback | test/broker.test.js |
+| `broker-no-token` | broker | unverified fallback | test/broker.test.js |
 | `supervisor-retries-permanent-exit` | spawn/supervisor | test/supervision.test.js | test/supervision.test.js |
 | `supervisor-extra-retry` | spawn/supervisor | test/supervision.test.js | test/supervision.test.js |
-| `supervisor-ignores-cpu` | spawn/supervisor | full suite | test/supervision.test.js |
+| `supervisor-ignores-cpu` | spawn/supervisor | unverified fallback | test/supervision.test.js |
 | `workers-limit-off-by-one` | spawn/supervisor | test/claim.test.js, test/worker-slots.test.js | test/claim.test.js, test/worker-slots.test.js |
 | `lock-breaks-live-holder` | state lock | test/lock.test.js | test/lock.test.js |
 | `lock-ignores-pid-namespace` | state lock | test/lock.test.js | test/lock.test.js |
 | `lock-never-ages-out` | state lock | test/lock.test.js | test/lock.test.js |
 | `merge-moved-head` | merge/stacks | test/gates/merge.test.js | test/gates/merge.test.js |
-| `stack-merge-unaccepted-lower` | merge/stacks | full suite | full suite |
+| `stack-merge-unaccepted-lower` | merge/stacks | unverified fallback | survived at beacafc |
 | `stack-merge-untracked-lower` | merge/stacks | test/stack-merge.test.js | test/stack-merge.test.js |
 | `stack-merge-admin` | merge/stacks | test/stack-merge.test.js | test/stack-merge.test.js |
 | `codex-config-keeps-secrets` | secrets | test/isolation.test.js | test/isolation.test.js |
@@ -158,7 +162,7 @@ Working through the sample found one test that passed for the wrong reason and t
 - Broker refusals for another task's id and for a missing token were only proven through a full sandboxed spawn in `test/isolation.test.js`. `test/broker.test.js` now checks both directly, in milliseconds.
 - The CPU stall test in `test/supervision.test.js` looked for a stall after 1.4 s, while the supervisor samples once a second. On a loaded machine its second sample came late, so a supervisor that ignored CPU passed. The window now covers two samples.
 
-`stack-merge-unaccepted-lower` is caught only by the full suite: in `test/stack-merge.test.js` the gate report refuses an unaccepted lower task before the status check is reached.
+`stack-merge-unaccepted-lower` survived the scoped run at beacafc. Its fixture now gives the submitted lower task passing CI and review receipts, then checks that merge refuses it before contacting GitHub. This separates acceptance from passing gates. The manifest fixture also modifies existing npm manifests and `Cargo.lock`, alongside added manifests; restoring kept files must not create a false proof failure.
 
 ## node:test options
 
@@ -169,13 +173,16 @@ Measured on this machine, which other sessions kept at a load of 30 to 80 for th
 | `--test-concurrency` | the owner's report: unbounded runs loaded the machine | yes | `npm test` passes 4, and `test/run.js` caps it at one below the core count. Each file also starts its own CLI and git processes, so the cap is on file workers, not cores. |
 | `--test-isolation=none` | 12 light files, 3 runs: 61.1 CPU s with process isolation, 58.5 s with none; wall 51 s against 148 s | no | It saves 4% CPU and loses file parallelism, so a run takes three times longer. Every file then shares one `process.env` and module cache, and files set git identity and gate variables in the environment. |
 | `--test-global-setup` | the seed is six small files: no measurable CPU | yes | `test/global-setup.js` builds the clean git seed once per run and hands it to every file through the environment. It replaces the wrapper's own seed handling and also covers scoped runs. |
-| `--test-shard` | the Windows job in three shards, as T85 set up | yes | CI keeps three Windows shards. `test/run.js` no longer keeps a Windows file priority list: native sharding does not keep the runner's file order (found in review of T85), so the list had no effect. |
-| `mock.timers`, `t.mock`, `--experimental-test-module-mocks` | the waits that remain are on real child processes | no | A mocked clock in the test process does not move the clock of the CLI, the supervisor or a git hook it waits for. Where a child's time matters, preloaded fixture clocks already run inside the child (`test/fixtures/supervision-backoff-clock.js`). Spawned stubs were replaced by in-process calls with the modules' own injection points: `fetchPublic` with a resolver and a fetcher, `errorReader`, `authorize`. |
+| `--test-shard` | three touched files: 5.83 CPU s / 7.724 wall s unsharded; 6.17 CPU s / 11.067 wall s in three shards, at the same two-worker limit | CI only | Local sharding adds setup and a second batch, so local runs keep file scheduling. The existing three Windows CI jobs remain separate jobs with their own time budgets. This Linux probe does not measure Windows latency. |
+| `mock.timers` | 24 callbacks at 50 ms each: real 0.09 CPU s / 1.316 wall s; mocked 0.08 CPU s / 0.104 wall s | no suite conversion | Advancing an in-process clock removes its waits. The remaining integration waits are on CLI, supervisor and git-hook processes; mocking the parent clock does not advance those. Existing child preloads already control those clocks. |
+| `t.mock`, `--experimental-test-module-mocks` | 24 local stub calls: manual, `t.mock.method` and CommonJS module mock each 0.08 CPU s; wall 0.106, 0.094 and 0.097 s respectively | no | No measured CPU saving over existing injection points. A module-mock flag adds no benefit to `fetchPublic`, `errorReader` or `authorize`, which already accept direct calls or injected dependencies. |
 | `describe` or `test` concurrency inside a file | evidence and accept, 3 runs: 54.0 CPU s sequential, 53.9 s with four tests at once; wall 92 s against 62 s | no | It saves no CPU, and it multiplies the processes a run starts past the file cap the owner asked for. |
 | `--test-rerun-failures` | tried on a fixture: after one green rerun, the next run with the same state file ran no test and reported a pass | no, for `npm test` and the gate | A gate retry could then accept a head no test ran on. For a local loop, `npm test -- FILE --test-rerun-failures=$TOWER_CRANE_TEST_TMP/rerun.json`, and delete the file once it passes. |
 | `--experimental-test-coverage` | coverage follows the CLI processes a test starts: `test/claim.test.js` alone runs 37% of `lib/tasks.js` | yes, as a tool | `scripts/test-coverage.js` maps the lib lines each file runs and how many no other file runs, to find files to merge before deleting any. |
-| `--test-name-pattern` | passes through `npm test --` | yes | For one case of a file: `npm test -- test/events.test.js --test-name-pattern="decision answer"`. |
-| `--experimental-test-tag-filter` | works with `{ tags: [...] }` on a test | no | It is experimental, and files are already named by area, which is what the gate's scoped proof selects. |
+| `--test-name-pattern` | 20 cases: 0.11 CPU s / 0.627 wall s; selecting one: 0.09 CPU s / 0.119 wall s | yes, local loops | Verified exactly one case executed. For one case: `npm test -- test/events.test.js --test-name-pattern="decision answer"`. The proof gate still selects complete files. |
+| `--experimental-test-tag-filter` | selecting the same case by tag: 0.09 CPU s / 0.140 wall s, against 0.09 / 0.119 by name | no | The probe verifies the same one case executed. Tags save no CPU over names and require a separate maintained classification; files already define proof scopes. |
 | `--test-timeout`, `--test-force-exit` | slowest test seen: 107 s, on a machine at load 68 | yes | 300 s per test, about three times that, so a hung test fails in minutes instead of holding CI to its job timeout. Force exit ends a run that a stray handle would keep open. |
 | `NODE_COMPILE_CACHE` | evidence and accept, 3 runs: 50.1 CPU s without, 50.0 s with; 60 CLI calls: 8.4 s against 8.0 s | no | No measurable gain on the suite. A CLI call's cost is its git subprocess and the board render on every write, not compiling. |
 | `--v8-pool-size=0`, `--jitless` | 60 CLI calls, 2 runs: 8.4 CPU s plain, 8.9 s and 9.9 s | no | Both are slower. |
+
+The missing-option comparisons above come from `TOWER_CRANE_TEST_TMP=CACHE node scripts/test-options.js --json options.json` on Node 26.10.0/Linux. [All three samples, min/max ranges and commands](testing-options.json) are recorded. The shard probe runs `test/browser-startup.test.js`, `test/gates/tests.test.js` and `test/test-tools.test.js`, with two total file workers in either layout; three shards run in two batches. Timer, stub and filter probes are controlled fixtures generated by the script. Their assertion counts are checked, and every measured run must pass. They measure the native mechanisms, not a projected saving for the full suite.

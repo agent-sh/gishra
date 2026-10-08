@@ -1,0 +1,4 @@
+- Test concurrency stays capped with repeated or space-separated flags. Nested runs clear Node's inherited test context so they execute their files.
+- Mutation copies include all git-listed test inputs and require a passing unmodified full-suite baseline before a fallback can count as a catch. The earlier 31/31 claims included invalid fallback results; `docs/testing.md` records the corrected scores.
+- The gate fixture covers modified npm manifests and `Cargo.lock` as well as added manifests. The stack fixture distinguishes passing gates from acceptance.
+- Shared Chrome is reaped at file teardown. Browser CPU rows and totals are refreshed, and sharding, timers, mocks and filters have reproducible three-run measurements.

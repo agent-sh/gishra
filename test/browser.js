@@ -53,6 +53,12 @@ function startChrome() {
   return chrome;
 }
 
+async function closeBrowser() {
+  const started = chrome;
+  chrome = null;
+  if (started) await (await started).close();
+}
+
 async function launch() {
   const profile = fs.mkdtempSync(path.join(process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), 'tower-crane-chrome-'));
   const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
@@ -100,16 +106,25 @@ async function launch() {
     remove();
     throw new Error(`Chrome failed to start (${CHROME}): ${error.message}${stderr ? `\n${stderr.trim()}` : ''}`);
   }
-  // The test process exits when its tests end; Chrome must not hold it open.
+  // File teardown refs and reaps Chrome before the runner records child CPU.
   proc.unref();
   proc.stderr?.unref?.();
-  process.once('exit', () => {
+  const lastResort = () => proc.kill('SIGKILL');
+  process.once('exit', lastResort);
+  const close = async () => {
+    proc.ref();
+    proc.stderr?.ref?.();
     proc.kill();
-    try { remove(); } catch {
-      // Windows can hold the profile until Chrome has exited; the temp root is the test run's.
+    const deadline = setTimeout(() => proc.kill('SIGKILL'), 5000);
+    try {
+      await closed;
+      remove();
+    } finally {
+      clearTimeout(deadline);
+      process.removeListener('exit', lastResort);
     }
-  });
-  return { port };
+  };
+  return { port, close };
 }
 
 async function openBrowser(t) {
@@ -165,4 +180,4 @@ async function openBrowser(t) {
   };
 }
 
-module.exports = { CHROME, openBrowser };
+module.exports = { CHROME, openBrowser, closeBrowser };
