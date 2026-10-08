@@ -167,6 +167,10 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 |---|---|
 | `accept ID [--cmd CMD] [--proof-cmd CMD] [--waive TYPE --reason R]` | run unattempted software gates first; tests and clean use pinned project commands. Optional `--cmd` and `--proof-cmd` must match their pins; none mode needs no test command. When they pass and review is missing, dispatch it and return `review_pending: true` while keeping the task submitted. Call again after review evidence arrives to accept. Existing successful receipts are reused; attempted failures or invalid receipts require an explicit gate rerun. `--waive review` is operational when the reviewer is capped or down at the submitted head (a capped review run in its `check ci` evidence, or a review spawn that exited without a verdict) and owner-required otherwise; waiving tests, clean, sources or ci is owner-required |
 | | |
+| `ci completed ID --sha SHA` | orchestrator or owner: deliver a CI completion hint for an active submitted head, rerun the CI gate and advance passing tasks |
+| | |
+| `ci webhook FILE` | orchestrator or owner: deliver completed GitHub `check_run`, `check_suite` or `workflow_run` JSON; `-` reads stdin. Repository must match. Stale heads and incomplete checks are ignored |
+| | |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; repeating it as the live claimant renews the lease. Refused if another agent holds it, the task is not ready, a resource lock is held, or the workers limit is reached (live leases and unclaimed worker spawns); consumes that agent's reservation for this task |
 | | |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `sources`, `ci` and `merge` for every agent and either verdict; use the gate commands |
@@ -200,6 +204,45 @@ When `--branch` or `--pr` is supplied and the task already records a PR, `submit
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
 
+The trusted `wait` watcher and dispatch supervisor react to submissions,
+worker exits, review evidence, acceptance, CI completions and confirmed
+merges. Submission runs unattempted tests, cleanup and source verification
+once the PR head matches, including while mergeability is unknown. CI,
+review dispatch and merging still require known mergeability.
+A tracked worker must exit before automatic review dispatch. Native
+workers without a recorded exit use explicit `accept` to dispatch review.
+Passing independent review accepts the task; accepted PRs with green
+gates merge through the existing head guards. A watcher creates a fresh
+reconciliation request for every active PR when starting, except a default
+`wait --timeout 0` cursor snapshot. It queries current mergeability even
+when the last reaction completed, recovering conflicts after merges that
+happened without a waiter. Existing evidence at the same head is reused.
+Reconciliation does not wait on a busy state lock; the next notification
+or existing fallback tick retries it within the wait's timeout.
+Filters apply to the returned event, not to the software reactions.
+
+After a confirmed merge, outstanding submitted or accepted PRs are checked
+against their fetched base in temporary detached worktrees. Conflicts send
+the task to rework with Git's filenames in its note and brief. Trial merges
+do not resolve conflicts or update worker branches. Unknown PR heads,
+unknown mergeability and failed GitHub transport cannot authorize merging.
+
+CI completion requires notification delivery by the host's webhook or job
+integration, using `ci webhook` or `ci completed`. No listener or CI polling
+loop is installed. The notification's conclusion is never evidence: the
+CI gate queries GitHub at the current submitted head. A pending or failing
+gate remains failing until an explicit retry or another completion.
+Automatic failures are recorded in `automation` events. Concurrent
+consumers serialize per task and reuse completed event receipts; commands
+execute outside the state lock. Deferred or errored reactions remain
+retryable at watcher startup. Accepted PRs already merged remotely are
+confirmed through the merge gate, preserving the accepted head check.
+Supervisors use the dispatcher's PATH and an explicit trusted
+authorization context; workers and reviewers keep their restrictive
+command shims. Software reactions may finish their
+bounded gate commands after a wait's timeout expires. The broker retains
+its command restrictions and never executes gates.
+
 Pass the commit actually reviewed to `evidence --sha S`. A submitted head can move while a review is running; `tower-crane evidence ID --type review --ok --sha S --agent REVIEWER` pins the result to that commit. Missing `--sha` on `review` evidence is a usage error (exit 2) and writes nothing. Software evidence types are refused first (exit 1), with or without `--sha`. A `note` without `--sha` needs an existing submitted sha. Software gates record their own sha.
 
 `spend --cache-write N` records cache-write input separately from `--cached` cache reads. Both are included in `--input`; their sum cannot exceed input. Review pricing uses the entry when available and conservatively prices non-cached input in older records at the higher input or cache-write rate.
@@ -225,7 +268,7 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 `tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
 
 - `--after` is an event `id` or a byte `offset` returned by a previous wait. The default, `now`, starts at the log's current end; `0` replays from the beginning. Cursors are exclusive. A numeric cursor must be zero or immediately after a complete line, within the current log. Unknown ids and invalid offsets exit 2.
-- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner` and engine observations (`worker-exited` and `stall`). Owner input must reach a waiter running as `owner`, and observations must wake their observer too.
+- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner`, `via: automation` and engine observations (`worker-exited` and `stall`). Owner input and automatic results reach the waiter that shares their actor.
 - No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is `{"type":"timeout","offset":N}` followed by a newline and the exit code is 2. The offset follows the last complete line scanned, including filtered events. Interrupting the wait exits 130 and closes its watchers.
 - An event line contains `id`, `type`, `to`, `at`, `agent`, `cmd`, `task`, `detail`, and `offset`. `offset` is the byte position after that event's newline. Use either returned cursor for the next wait to retain events that arrived while handling the first.
 
