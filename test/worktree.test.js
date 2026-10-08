@@ -418,3 +418,20 @@ test('cancelling a task removes its worktree; a dirty one stays and says why', (
   assert.equal(kept.task, 'T2');
   assert.equal(kept.detail.reason, 'uncommitted changes');
 });
+
+test('cancelling keeps a worktree that git still has locked', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Locked', '--acceptance', 'not needed']);
+  const wt = h.json(['worktree', 'T1']);
+  h.git(['worktree', 'lock', '--reason', 'tower-crane: creating worktree', wt.path]);
+
+  h.ok(['task', 'update', 'T1', '--status', 'cancelled']);
+
+  assert.ok(fs.existsSync(wt.path), 'the locked worktree stays');
+  assert.ok(h.git(['worktree', 'list', '--porcelain']).includes(wt.path), 'git still registers it');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const kept = events.find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.task, 'T1');
+  assert.equal(kept.detail.reason, 'worktree is locked');
+});
