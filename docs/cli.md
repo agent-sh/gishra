@@ -175,13 +175,15 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `claim ID [--lease MIN]` | take a ready task for `--agent`; repeating it as the live claimant renews the lease. Refused if another agent holds it, the task is not ready, a resource lock is held, or the workers limit is reached (live leases and unclaimed worker spawns); consumes that agent's reservation for this task |
 | | |
+| `event ID` | print one event with its detail, as a wake line names it |
+| | |
 | `evidence ID --type T (--ok \| --fail) [--sha S] [--summary T] [--ref URL]` | record `review` or `note` evidence; `review` requires `--sha`, while `note` defaults to the task's submitted sha. Refuses `tests`, `clean`, `sources`, `ci` and `merge` for every agent and either verdict; use the gate commands |
 | | |
 | `hook ACTION --binding FILE [--payload JSON\|-]` | deliver harness messages and record activity under the home identity |
 | | |
 | `interrupt ID` | owner or orchestrator only: stop the live agent through its supervisor and release the claim to its prior `todo` or `rework`. The revision, branch, evidence and dirty worktree stay, so the next dispatch resumes the work (Codex warm resume, or a fresh Claude worker in the same worktree). Distinct from `rework`, which sends a submitted task back with a reason, and from a requirements edit, which bumps the revision |
 | | |
-| `msg --to NAME [--task ID] TEXT` | send a worker message through the event log |
+| `msg --to NAME [--task ID] [--steer] TEXT` | send a worker message through the event log |
 | | |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner |
 | | |
@@ -197,7 +199,7 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `submit ID --sha S [--branch B] [--pr N] [--summary T]` | mark submitted as the claimant or replace a submitted head as its submitter. `S` is 7 to 64 hex characters. For a task with a recorded PR, an open PR blocks changing its PR number or head branch. After it is closed or merged, a new PR supplies its head branch unless `--branch` is given and matches it |
 | | |
-| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` | block until one matching event; print one JSON line (timeout exits 2) |
+| `wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC \| --follow]` | block until one matching event; print one JSON line (timeout exits 2); --follow prints an id-only line per event until interrupted |
 <!-- commands:Run:end -->
 
 `task add --lock lab/rdma --lock gpu/0 --environment lab` stores exclusive resource names and an informational environment label. Names are case-sensitive, trimmed and deduplicated. Tasks with any shared lock cannot hold worker leases or dispatch reservations at the same time, regardless of `limits.workers` or environment labels. Claim, worker spawn and expired renewal check under the state lock and name the holding task and agent on refusal. An unclaimed spawn reserves its locks with its worker slot, including retry backoff; its generated agent consumes that reservation on claim. Reviewer and other non-worker dispatches do not acquire resource locks. Environment labels do not select a harness or change its environment variables.
@@ -207,10 +209,6 @@ When `--branch` or `--pr` is supplied and the task already records a PR, `submit
 `submit` runs the scope gate on the submitted diff before taking the state lock: the changed files are compared with the repository paths named in the task's title, acceptance and brief (a token with a slash whose directory exists at the base or the head; a glob such as `test/**` works too). Absolute paths under the main checkout or a registered worktree become repository-relative paths; quote paths containing spaces. Naming a checkout or worktree root scopes the whole repository. Quoted commands such as `node lib/scope.js` scope the paths inside them when the complete span is not a repository path. The diff starts at the newest merge base with the configured base's local and origin refs, so files changed only by a merged base update are excluded even when the local base is stale. Test files under the project's test layouts and `CHANGELOG.md` are always in scope; a task naming no path is scoped to the whole repository. Out-of-scope files are not refused: the output gains a `scope:` line, `--json` adds `scope: { basis, named, outside }` (or `{ error }` when git cannot read the diff), the `submit` event records it, a task note lists the files for the orchestrator, and the review packet's `## Scope` section lists them for the reviewer.
 
 While a task is `submitted`, its recorded `submitted_by` agent can submit another head without claiming again. The task stays `submitted`; omitted `--branch` and `--pr` keep their current values. Evidence stays in the audit trail, but evidence at the older head stops satisfying gates for the new head. Submitting the same sha keeps its evidence valid. The `submit` event records `previous_sha` and `sha`. Once accepted, the task needs `rework` and a new claim before another submission.
-
-`interrupt ID` accepts explicit owner identity, `orchestrator`, or a generated agent whose recorded spawn role is `orchestrator`. It requires a claim. The command records a stop request; the existing supervisor shuts down its process group, cancels pending retries, records exit and collects spend. The stopping supervisor retains its worker slot until cleanup completes. Claim and dispatch of that task refuse while it is stopping. If the supervisor dies before it records `stopped`, that refusal lasts one lease after its last record, as a worker slot does, and then claim and dispatch proceed. A monitor that has recorded `active: false` is already finished supervising, even if usage collection keeps its process alive; interruption releases that claim directly. Manual claims without a supervisor are also simply released. Exit finalization acknowledges interruptions committed while exit hooks were pending.
-
-`task update ID --acceptance A --interrupt` applies the same stop request and the requirements edit under one lock. Acceptance, dependency and capability changes still bump the revision; interruption by itself does not. Adding or clearing `needs` on a live claim requires an authorized `--interrupt`; repeating the same capabilities keeps the claim and revision. Invalid edits write no stop request. Unchanged requirements, notes, titles, size and tier changes leave the run alone, even if a metadata update includes `--interrupt`. Ready-task priority is computed from dependencies; changing dependencies counts as a requirements edit.
 
 The trusted `wait` watcher and dispatch supervisor react to submissions,
 worker exits, review evidence, acceptance, CI completions and confirmed
@@ -273,18 +271,35 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 ## Event wakeups
 
-`tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
+The orchestrator does not run a waiter of its own. Its harness delivers events into the session (table below); `tower-crane wait` is the interface underneath and the fallback for a harness with nothing better.
+
+| Orchestrator harness | Busy | Idle |
+| --- | --- | --- |
+| Claude Code, interactive, with this plugin | The mod `hooks/tower-crane.mjs` runs one `wait --follow` child per session and turns each line into a prompt with `$.prompt.submit`, queued until the turn ends; events arriving meanwhile go out together. An owner message sent with `--steer` joins the running turn (`$.session.append`) and is pushed again after the turn if the turn made no further model request | The queued prompt starts a turn |
+| Claude (`claude -p`) spawned on the orchestrator rung | Home `PostToolUse` and `UserPromptSubmit` hooks return the notice as `additionalContext` | Home `Stop` returns `decision: block` with pending events; with none and a task still open it blocks in `tower-crane wait` (hook timeout one day) and then blocks with the event |
+| Codex spawned on the orchestrator rung | The same home hooks in `config.toml` | The same blocking `Stop`; Codex has no asynchronous rewake |
+| pi, OpenCode | Their home adapters add the notice at tool boundaries (and OpenCode on `session.idle`) | Unsupported: no idle hold; use `tower-crane wait` |
+| agy, command | Unsupported: use `tower-crane wait` | Unsupported: use `tower-crane wait` |
+
+In Claude Code, arm the mod once after the startup snapshot: the model calls the `mcp__tower-crane__watch` tool with `after` set to the snapshot's offset (and `agent` or `state` when they differ from `TOWER_CRANE_AGENT`, `TOWER_CRANE_STATE` or the state found from the working directory), or the person runs `/tower-crane-watch [cursor]`. A session started with `TOWER_CRANE_AGENT=orchestrator` arms itself at session start. Arming again restarts the follower from the given cursor or from where the last one stopped. If the follower exits, a toast says so and names the command.
+
+A push carries ids, never content: one line per event (`- E…: decision-answer D5 from owner`, `- E…: worker-message T3 from worker-T3-1`), then `Read each with tower-crane event <id>` and the cursor. Spawned orchestrator homes acknowledge what they delivered with `hook inbox` receipts and count events from the log offset their home was built at (`after` in `hook.json`).
+
+`tower-crane wait [--after CURSOR] [--for NAME] [--task ID] [--types TYPES] [--timeout SEC | --follow]` blocks until the first matching event. Run this single command in your harness's background executor and act on its completion.
 
 - `--after` is an event `id` or a byte `offset` returned by a previous wait. The default, `now`, starts at the log's current end; `0` replays from the beginning. Cursors are exclusive. A numeric cursor must be zero or immediately after a complete line, within the current log. Unknown ids and invalid offsets exit 2.
-- `--for` defaults to `orchestrator`. `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner`, `via: automation` and engine observations (`worker-exited` and `stall`). Owner input and automatic results reach the waiter that shares their actor.
+- `--for` defaults to `orchestrator`. A message addressed to the waiter's own agent name also wakes it, and every event recorded as `owner` wakes an `orchestrator` waiter whoever it was addressed to (an owner message to a worker included). `--task` restricts to that task, including comments and answers on decisions that block it. `--types` is a comma-separated list of event types; `all` adds the bookkeeping the default skips: `hook progress`, `hook report`, `hook inbox`, `renew`, `spend` and `spawn session`. The orchestrator never needs a type list. Filters are combined. The wait skips writes from its own agent identity, except events recorded as `owner`, `via: automation` and engine observations (`worker-exited` and `stall`). Owner input and automatic results reach the waiter that shares their actor, and observations wake their observer too.
 - No timeout is imposed unless `--timeout` supplies seconds (fractions allowed). On timeout, stdout is `{"type":"timeout","offset":N}` followed by a newline and the exit code is 2. The offset follows the last complete line scanned, including filtered events. Interrupting the wait exits 130 and closes its watchers.
 - An event line contains `id`, `type`, `to`, `at`, `agent`, `cmd`, `task`, `detail`, and `offset`. `offset` is the byte position after that event's newline. Use either returned cursor for the next wait to retain events that arrived while handling the first.
+- `--follow` never exits on an event: it prints `{"type":"ready","offset":N}` once its cursor is set, then one line per matching event with `id`, `type`, `to`, `agent`, `task`, `offset`, `decision` for decision events and `steer: true` for a steered message, and no `detail`. It runs until interrupted or until its reader closes stdout, and refuses `--timeout`.
+
+`tower-crane event ID` prints one event with its detail and offset, for a pushed id. It only reads.
 
 On startup or resume without a saved cursor, run `tower-crane wait --timeout 0` once. It exits 2 with a timeout and the current cursor, without observing worker exits or stalls. Save that offset, read state once, then start the background wait with `--after <offset>`. Events during the state read remain available, and the blocking wait observes current exits and stalls. With an explicit earlier `--after`, a zero timeout returns an already available matching event or a timeout cursor.
 
-Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review and gate results). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
+Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review, CI and gate results, and the CI gate's conflict refusal). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
 
-`tower-crane msg --to NAME [--task ID] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes.
+`tower-crane msg --to NAME [--task ID] [--steer] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes, and the orchestrator too when the sender is `owner`. `--steer` records `steer: true`: a harness that can join a running turn delivers it there instead of after the turn. The orchestrator answers the owner with `msg --to owner`, which reaches the owner's channel on `serve` (below).
 
 Spawned harnesses deliver messages automatically through the adapters below. Messages are addressed to the generated agent name, across all tasks. `wait` remains the orchestrator's event interface.
 
@@ -358,7 +373,9 @@ The Settings view (`/settings`) edits the default harness, every rung and each t
 | `GET /`, `GET /sketch.html` | the live board, rendered from the state on each request, with the owner forms when serve runs as the owner |
 | `GET /settings` | the Settings view |
 | any page with `?key=<key>` | the first request with the one-time key serve printed also carries the run's token in `<meta name="tower-crane-token">`; the key is then spent. Every other page has that tag empty |
-| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state |
+| `GET /events` | server-sent events; `reload` whenever `project.json`, `tasks.json` or `decisions.json` changes, with data `{ "version": "<v>" }`, an opaque token for that state; `wake` for each new event on the owner channel, with data `{ "id", "type", "to", "offset" }` and no content |
+| `GET /api/messages?after=OFFSET` | the owner channel from a byte offset (default 0): `{ "messages": [event, ...], "cursor": N }`, where messages are `msg` events to or from `owner`, `decision-opened` and `decision-answer`, each with its detail and `offset`. Pass `cursor` as the next `after` |
+| `POST /api/messages` | owner only: `{ "text", "mode": "queue" \| "steer", "task" }` sends `msg --to orchestrator` as the owner; `steer` sets `--steer`. The reply is `{ "ok": true, "message": {...} }` |
 | `POST /api/ladder` | owner only: change the default harness and rungs, as `ladder harness` and `ladder set` do |
 | `POST /api/tiers` | owner only: change task tiers, as `task update --tier` does |
 
@@ -369,6 +386,10 @@ Every POST needs:
 - an `Origin`, if the browser sends one, of `http://127.0.0.1:<port>` or `http://localhost:<port>`.
 
 serve answers any request only when its `Host` is `127.0.0.1:<port>` or `localhost:<port>`, so a page on another site cannot reach it through a name rebound to 127.0.0.1 and read the token.
+
+### Owner channel
+
+The owner talks to the orchestrator the way a phone client talks to an agent: a message stream, push wake-ups and the decisions to approve. A client reads the token from the board's `<meta name="tower-crane-token">`, keeps an `EventSource` on `/events`, and on each `wake` fetches `/api/messages?after=<cursor>` for the text, so a wake-up never carries content. It sends with `POST /api/messages` (`queue` waits for the orchestrator's turn to end, `steer` joins the running one) and answers a decision with `POST /api/decisions/D<n>/answer`, the board's own route. Both wake the orchestrator session through its harness delivery; the orchestrator replies with `tower-crane msg --to owner`, which arrives on the same stream. Board comments and answers take the same path.
 
 `POST /api/ladder` body, with `harness` and `rungs` optional but at least one change, and `base` required:
 
@@ -451,10 +472,6 @@ Codex roles with `gitPush: branch` receive an explicit `git push` allow rule so 
 `spawn` also records the host and, on Linux when available, the process start time in clock ticks. `status` and `ready` match the most recent spawn to the current claim's agent, including workers that claim after starting. An exited process is reported as `exited without submit`, with the pid, log path, the last 20 log lines within the final 8192 bytes, and guidance to release with a reason. Neither view prints a command that supplies owner identity. The engine rechecks exit under the lock before another agent can recover it. A live or unverified process still requires the claimant or an explicit owner. The tail is bounded so a large harness log cannot overwhelm a status check. A missing or unreadable log is reported without hiding the exit. Foreground spawns retain their logs; legacy events with a null log report `foreground output; no log`.
 
 After `rework`, `spawn --task ID` resumes the last submitting Codex worker's recorded session when its resolved rung and worktree still match. Codex runs `codex exec [-p PROFILE] resume --json <thread> <note>`. Model, effort and extra rung arguments still apply. Native Claude starts fresh because the measured resume rewrote its conversation cache. Both paths include a note with the rework reason and failed review summaries and refs for the submitted head and current revision. Session ids travel in harness arguments and spawn receipts, never in the note or brief.
-
-After `interrupt`, dispatch uses the same session policy for the interrupted worker, including command adapters and the missing-session fallback. Codex keeps its identity and restores the prior claim's `since` and `from`; Claude starts fresh with the full brief and existing worktree. The interruption note supplies the current title, acceptance, kind and `needs`, and tells the worker to read the current brief. Fresh worker prompts also include `needs`. Tracked and untracked edits remain available. A requirements edit with `--interrupt` therefore resumes with the updated requirements. The stopped attempt's exit must be verified before dispatch, including on a fresh Claude route.
-
-A subsequent submission or rework ends that interruption's eligibility, even when no worker was spawned in between. Rework dispatch then uses the submitted claim and current rework reason and failed review evidence.
 
 Resume keeps the worker's agent name. If submission cleared its lease, spawn restores its claim with the original `since`, a new default lease, and `from: rework` before dispatch. A live claim already held by that worker stays unchanged. An expired claim needs a worker slot before its lease is restored. Blockers and the worker limit still apply. The resumed worker can submit directly. A different claimant or a running or unverified prior process refuses resume with a recovery command. A foreground exit receipt proves that attempt exited even if the OS reused its pid; an earlier attempt's receipt does not. Before an isolated Codex resume, spawn checks for the recorded rollout under `homes/.codex/<agent>/sessions`. If the rollout is missing, spawn starts a fresh numbered worker with the full brief and review note and records `resume_fallback_reason` in the spawn event. If the previous worker holds a live rework claim, spawn transfers it to the fresh worker; an expired claim must pass the blocker and worker-limit checks before transfer. If preparation or launch fails before a child starts, spawn restores the prior claim under the lock so the attempt can be retried. Missing session records, a changed rung configuration or harness, or a moved worktree also start a fresh worker. Fresh workers without a transferred claim claim normally. Reviewers always start fresh.
 
