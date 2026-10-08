@@ -462,6 +462,32 @@ test('review dispatch hands revuto findings to the reviewer and an ok that ignor
   assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false);
 });
 
+test('brokered review evidence clears a revuto finding whose file changed since the comment', async (t) => {
+  const h = setup(t);
+  configureHarness(h);
+  const state = h.github();
+  const before = h.git(['rev-parse', `${h.sha}^`]);
+  const comment = (id, commit) => ({ id, in_reply_to_id: null, path: 'value.js', line: 1, original_line: 1, body: `[P1] finding ${id}`,
+    user: 'revuto-review[bot]', original_commit_id: commit, html_url: null });
+  // value.js changed between before and the head; nothing changed after the head.
+  state.comments = [comment(201, before), comment(202, h.sha)];
+  h.saveGithub(state);
+  assert.equal((await h.runAsync(['spawn', '--task', 'T1', '--wait', '--agent', 'orchestrator'])).code, 0);
+  const deadline = Date.now() + 60000;
+  while (!h.logs().some((e) => e.cmd === 'spawn exit' && e.detail.role === 'reviewer')) {
+    if (Date.now() > deadline) throw new Error(JSON.stringify(h.logs().slice(-10)));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const review = h.logs().find((e) => e.cmd === 'spawn' && e.detail.role === 'reviewer');
+  assert.deepEqual(review.detail.revuto.map((f) => [f.id, f.changed]), [[201, true], [202, false]]);
+  // The state broker runs evidence with TOWER_CRANE_VIA=broker, where tower-crane reads no repository.
+  const broker = { env: { ...h.env, TOWER_CRANE_VIA: 'broker' } };
+  const refused = h.run(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', review.detail.agent, '--state', h.state], broker);
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stderr, /review ok refused; revuto \[P1\] comment 202 at value\.js:1 has no code change/);
+  assert.doesNotMatch(refused.stderr, /comment 201/);
+});
+
 test('a supervised worker submission runs gates and dispatches the offline reviewer after exit', async (t) => {
   const h = setup(t);
   configureHarness(h, { rules: true });
