@@ -41,6 +41,11 @@ cp.spawnSync = function stackGh(command, args, opts) {
     if (r.status !== 0) throw new Error(String(r.stderr));
     return String(r.stdout).trim();
   };
+  if (args[1] === 'merge' && data.moveOnMerge && (!data.moveOnMerge.onPr || Number(args[2]) === data.moveOnMerge.onPr)) {
+    const { pr, head } = data.moveOnMerge;
+    data.prs[pr].headRefOid = head;
+    delete data.moveOnMerge;
+  }
   if (args[0] === 'api') {
     if (data.unavailable) return finish('', 9, 'Stacked pull requests are not enabled');
     if (args[1].includes('/stacks')) return finish(data.linked ? [{ id: 5, pull_requests: data.order.map((number) => ({ number })) }] : []);
@@ -57,6 +62,10 @@ cp.spawnSync = function stackGh(command, args, opts) {
   }
   if (args[0] === 'pr' && args[1] === 'merge') {
     const pr = data.prs[args[2]];
+    const match = args.indexOf('--match-head-commit');
+    if (match !== -1 && args[match + 1] !== pr.headRefOid) return finish('', 1, 'PR head moved; head commit does not match');
+    if (data.queued) return finish('queued');
+    if (data.refuseMergePr === Number(args[2])) return finish('', 1, 'Base branch policy prohibits the merge');
     pr.state = 'MERGED';
     pr.mergeCommit = { oid: pr.headRefOid };
     git(['push', 'origin', `${pr.headRefName}:main`]);
