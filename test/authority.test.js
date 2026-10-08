@@ -289,6 +289,32 @@ test('the orchestrator opts a rung in only to MCP servers the owner already defi
   h.ok(['ladder', 'set', 'easy', '--effort', 'low'], as('orchestrator'));
 });
 
+test('opencode MCP authority and dispatch read the same inline configuration', (t) => {
+  const h = setup(t);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'probe inline MCP\n' });
+  const user = path.join(h.base, 'inline-user');
+  fs.mkdirSync(user);
+  const env = {
+    HOME: user, USERPROFILE: user, XDG_CONFIG_HOME: path.join(user, '.config'),
+    XDG_DATA_HOME: path.join(user, '.local', 'share'), OPENCODE_CONFIG: '', OPENCODE_CONFIG_DIR: '',
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: {
+      inlineDocs: { type: 'local', command: ['node', 'inline-docs.js'] },
+    } }),
+  };
+  h.ok(['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'fixture',
+    '--clear', 'profile', '--clear', 'effort', '--clear', 'args']);
+  h.ok(['ladder', 'set', 'hard', '--mcp', '["inlineDocs"]'], { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
+  assert.equal(h.readState('decisions.json').decisions.length, 0);
+  const preview = h.json(['spawn', '--task', 'T1', '--role', 'hard', '--dry-run'], { env });
+  assert.deepEqual(preview.home.mcp, ['inlineDocs']);
+  const before = h.readState('project.json');
+  const missing = h.run(['ladder', 'set', 'hard', '--mcp', '["inlineMissing"]'],
+    { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
+  assert.equal(missing.code, 1, missing.stderr);
+  assert.match(missing.stderr, /inlineMissing.*OPENCODE_CONFIG_CONTENT/);
+  assert.deepEqual(h.readState('project.json'), before);
+});
+
 test('a tool that is not a harness built-in or changes the rung sandbox is owner-required', (t) => {
   const h = setup(t);
   h.ok(['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'sonnet']);

@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
+const http = require('node:http');
+const { promisify } = require('node:util');
 const { makeRepo } = require('./helpers');
 const A = require('../lib/agents');
 
@@ -33,7 +35,7 @@ function setup(t, rung = 'medium', inheritedPathName = null) {
   };
   put(path.join(global, 'opencode.json'), JSON.stringify(userConfig));
   put(path.join(global, 'skills', 'planted', 'SKILL.md'), '---\nname: planted\ndescription: PLANTED-SKILL ' + 's'.repeat(512) + '\n---\nuser skill body\n');
-  put(path.join(home, '.local', 'share', 'opencode', 'auth.json'), '{"token":"PLANTED-SECRET"}');
+  put(path.join(home, '.local', 'share', 'opencode', 'auth.json'), '{"fixture":{"type":"api","key":"PLANTED-SECRET"}}');
   put(path.join(h.base, 'AGENTS.md'), 'ANCESTOR-RULE\n');
   put(path.join(h.repo, 'AGENTS.md'), 'REPO-RULE\n');
   put(path.join(h.repo, 'CLAUDE.md'), 'REPO-CLAUDE-RULE\n');
@@ -109,7 +111,8 @@ test('opencode isolates config, memory, skills, MCP, approved rules and credenti
     assert.equal(report.config.plugin.length, 1);
     assert.ok(report.config.plugin[0].endsWith('/hook.mjs'));
     assert.ok(!JSON.stringify(report).includes('PLANTED-'));
-    assert.equal(fs.statSync(report.authPath).ino, fs.statSync(path.join(f.home, '.local', 'share', 'opencode', 'auth.json')).ino);
+    assert.equal(fs.statSync(report.authSource).ino, fs.statSync(path.join(f.home, '.local', 'share', 'opencode', 'auth.json')).ino);
+    assert.deepEqual(report.authKinds, { fixture: 'api' });
     assert.ok(!fs.existsSync(path.join(own, 'rules', 'approved.json')));
     after.push(report.context_bytes);
   }
@@ -117,11 +120,93 @@ test('opencode isolates config, memory, skills, MCP, approved rules and credenti
   console.log('opencode startup bytes', JSON.stringify({ before, after }));
 });
 
+test('opencode excludes credential-triggered remote instructions, plugins and MCP at startup', { skip: NO_STUBS }, async (t) => {
+  const f = setup(t);
+  const instruction = path.join(f.h.base, 'remote-instructions.md');
+  fs.writeFileSync(instruction, 'REMOTE-INSTRUCTION-CANARY\n');
+  let requests = 0;
+  const server = http.createServer((req, res) => {
+    requests++;
+    assert.equal(req.url, '/.well-known/opencode');
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ config: {
+      instructions: [instruction], plugin: ['remote-plugin-canary'],
+      mcp: { remoteCanary: { type: 'local', command: ['node', 'remote-server-canary'], enabled: true } },
+    } }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const authPath = path.join(f.home, '.local', 'share', 'opencode', 'auth.json');
+  const auth = {
+    [url]: { type: 'wellknown', key: 'REMOTE_TOKEN', token: 'REMOTE-SECRET-CANARY' },
+    fixture: { type: 'api', key: 'API-SECRET-CANARY' },
+    oauth: { type: 'oauth', access: 'ACCESS-SECRET-CANARY', refresh: 'REFRESH-SECRET-CANARY', expires: 9999999999999 },
+  };
+  fs.writeFileSync(authPath, JSON.stringify(auth));
+  const preview = dry(f);
+  await promisify(cp.execFile)(process.execPath, [STUB, ...preview.argv.slice(1)], {
+    cwd: f.h.repo, env: f.env, timeout: 10000,
+  });
+  const baseline = f.report();
+  assert.ok(baseline.memory.some((text) => text.includes('REMOTE-INSTRUCTION-CANARY')));
+  assert.ok(baseline.config.plugin.includes('remote-plugin-canary'));
+  assert.ok(baseline.mcp.remoteCanary);
+  assert.equal(requests, 1);
+  const result = await f.h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], { env: f.env });
+  assert.equal(result.code, 0, result.stderr);
+  const report = f.report();
+  assert.equal(requests, 1, 'isolated dispatch must not contact the remote configuration endpoint');
+  assert.deepEqual(report.remoteContacts, []);
+  assert.deepEqual(report.authKinds, { fixture: 'api', oauth: 'oauth' });
+  assert.ok(!report.memory.some((text) => text.includes('REMOTE-INSTRUCTION-CANARY')));
+  assert.ok(!report.config.plugin.includes('remote-plugin-canary'));
+  assert.deepEqual(report.mcp, {});
+  assert.equal(fs.statSync(report.authSource).ino, fs.statSync(authPath).ino);
+  fs.writeFileSync(report.authPath, '{"oauth":{"type":"oauth","access":"refreshed"}}');
+  assert.deepEqual(JSON.parse(fs.readFileSync(authPath)), auth, 'agent auth writes must not alter the source credential store');
+  const visible = JSON.stringify(preview) + result.stdout
+    + fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8')
+    + fs.readFileSync(path.join(path.dirname(report.home), 'opencode.json'), 'utf8');
+  assert.ok(!visible.includes('SECRET-CANARY'));
+  const inherited = await f.h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: { ...f.env, OPENCODE_AUTH_CONTENT: JSON.stringify(auth) },
+  });
+  assert.equal(inherited.code, 0, inherited.stderr);
+  assert.equal(requests, 1, 'an inherited auth override must exclude remote discovery too');
+  assert.deepEqual(f.report().authKinds, { fixture: 'api', oauth: 'oauth' });
+  assert.ok(!JSON.stringify(dry(f)).includes('SECRET-CANARY'));
+});
+
 test('opencode research selects its role agent and permits native web tools', { skip: NO_STUBS }, (t) => {
   const f = setup(t, 'research');
   spawn(f, { STUB_PROBES: '[["webfetch","https://example.invalid"],["websearch","query"],["task","general"]]' });
   assert.equal(f.report().name, 'gishra-researcher');
   assert.deepEqual(f.report().probes, ['allow', 'allow', 'deny']);
+});
+
+test('a fallback into opencode receives filtered auth instead of restoring remote discovery', { skip: NO_STUBS }, (t) => {
+  const f = setup(t);
+  const auth = {
+    'http://127.0.0.1:1': { type: 'wellknown', key: 'REMOTE_TOKEN', token: 'FALLBACK-SECRET-CANARY' },
+    fixture: { type: 'api', key: 'API-SECRET-CANARY' },
+  };
+  fs.writeFileSync(path.join(f.home, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify(auth));
+  fs.mkdirSync(path.dirname(f.h.userConfig), { recursive: true });
+  fs.writeFileSync(f.h.userConfig, JSON.stringify({
+    ladder: { medium: { fallbacks: [{ harness: 'opencode', model: 'fixture/model' }] } },
+  }));
+  const command = [process.execPath, '-e',
+    'console.log(JSON.stringify({type:"turn.failed",error:{message:"HTTP 503 service unavailable"}}));process.exit(1)', '{prompt}'];
+  f.h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify(command),
+    '--clear', 'model', '--supervision', '{"retries":0,"backoff_ms":1,"max_backoff_ms":1}']);
+  spawn(f);
+  const report = f.report();
+  assert.deepEqual(report.authKinds, { fixture: 'api' });
+  assert.deepEqual(report.remoteContacts, []);
+  const events = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(events.some((event) => event.cmd === 'spawn fallback' && event.detail.harness === 'opencode'));
+  assert.ok(!JSON.stringify(events).includes('SECRET-CANARY'));
 });
 
 test('opencode renders worker path, web, skill, git and gh permission decisions', { skip: NO_STUBS }, (t) => {
