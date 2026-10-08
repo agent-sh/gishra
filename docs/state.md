@@ -194,6 +194,8 @@ Worktree creation has no added timeout and uses Git's native initialization lock
 
 Task preparation, temporary gate preparation and stack sync run `git worktree prune` before using worktree registrations. Gate cleanup prunes after every removal attempt, including successful removals. This clears orphan admin directories, including empty read-only `commondir` and `config.worktree` mount points recreated by a sandbox after removal. Git owns admin-file writes and initialization ordering; Tower Crane does not synthesize or repair those files. Prune preserves locked registrations while another checkout or its hooks are running.
 
+A merge or cancel retires the task's worktree after its state change is recorded, and only for accepted or cancelled tasks. A `worktree removed` event records each removal. The worktree stays, with a `worktree kept` event whose `reason` says why, when `merge.keep_branch` is set, when git still has it locked, when a worker or reviewer process recorded for the task has not exited, or when it has uncommitted changes. Each retirement ends with `git worktree prune`.
+
 ### Ladder
 
 The ladder says which harness, model and effort runs each kind of work. It has seven rungs:

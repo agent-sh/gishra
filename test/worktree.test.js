@@ -435,3 +435,27 @@ test('cancelling keeps a worktree that git still has locked', (t) => {
   assert.equal(kept.task, 'T1');
   assert.equal(kept.detail.reason, 'worktree is locked');
 });
+
+test('cancelling keeps a worktree while its worker process is still running', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  for (const title of ['Live', 'Exited']) h.ok(['task', 'add', '--title', title, '--acceptance', 'not needed']);
+  const live = h.json(['worktree', 'T1']);
+  const exited = h.json(['worktree', 'T2']);
+  // This test process is alive; 999999 is a pid that has exited.
+  for (const [task, pid] of [['T1', process.pid], ['T2', 999999]]) {
+    fs.appendFileSync(path.join(h.state, 'events.jsonl'), `${JSON.stringify({
+      at: new Date().toISOString(), agent: 'orchestrator', cmd: 'spawn', task,
+      detail: { agent: 'w-1', role: 'worker', rung: 'easy', pid, attempt: 1 },
+    })}\n`);
+  }
+
+  for (const id of ['T1', 'T2']) h.ok(['task', 'update', id, '--status', 'cancelled']);
+
+  assert.ok(fs.existsSync(live.path), 'the worktree of a running worker stays');
+  assert.ok(!fs.existsSync(exited.path), 'the worktree of an exited worker is removed');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const kept = events.find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.task, 'T1');
+  assert.equal(kept.detail.reason, 'an agent is still running on the task');
+});
