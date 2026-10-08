@@ -17,9 +17,9 @@ let out = '';
 if (args[0] === 'pr') {
   const pr = state.prs[args[2]];
   if (!pr) throw new Error(`unknown fixture PR ${args[2]}`);
-  if (args[1] === 'view' && state.failView) {
+  if (args[1] === 'view' && (state.failView || pr.failView)) {
     save();
-    console.error('GitHub transport unavailable');
+    console.error(pr.failView ? `Could not resolve PullRequest number ${args[2]}` : 'GitHub transport unavailable');
     process.exit(1);
   }
   if (args[1] === 'merge') {
@@ -43,7 +43,7 @@ if (args[0] === 'pr') {
       process.exit(0);
     }
   } else {
-    out = JSON.stringify(pr);
+    out = pr.invalidView ? '{' : JSON.stringify(pr);
     if (state.becomeMergeableAfterView) {
       pr.mergeable = 'MERGEABLE';
       pr.mergeStateStatus = 'CLEAN';
