@@ -549,9 +549,13 @@ test('browser tasks attach the user kit on every rung with approved tools and no
     } },
   }));
   for (const harness of ['claude', 'codex']) {
-    for (const declaration of [['--kind', 'design', '--needs', '[]'], ['--kind', 'code', '--needs', '["browser"]']]) {
+    // Every rung for the design kind; an explicit browser need takes the same path.
+    for (const [declaration, roles] of [
+      [['--kind', 'design', '--needs', '[]'], ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']],
+      [['--kind', 'code', '--needs', '["browser"]'], ['hard', 'review']],
+    ]) {
       h.ok(['task', 'update', 'T1', ...declaration]);
-      for (const role of ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']) {
+      for (const role of roles) {
         isolated(h, role, harness);
         const dry = h.json(['spawn', '--role', role, '--task', 'T1', '--dry-run'], { env: u.env });
         assert.deepEqual(dry.home.mcp, ['playwright'], `${harness} ${role} ${declaration}`);

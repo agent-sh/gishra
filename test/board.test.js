@@ -6,8 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const { pathToFileURL } = require('node:url');
-const { makeRepo, BIN } = require('./helpers');
-const { CHROME, openBrowser } = require('./browser');
+const { makeRepo, cachedFixture, BIN } = require('./helpers');
+const { CHROME, openBrowser, closeBrowser } = require('./browser');
+test.after(closeBrowser);
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const { preserve } = require('../lib/board/identity');
 const { POSITION } = require('../lib/board/position');
@@ -28,6 +29,9 @@ function populate(h) {
   h.ok(['submit', 'T5', '--sha', sha, '--agent', 'w-2']);
   h.ok(['evidence', 'T5', '--type', 'review', '--ok', '--sha', sha, '--ref', 'https://example.com/acme/demo/pull/1#review', '--summary', 'reads well', '--agent', 'rev-1']);
 }
+
+// The populated project, built once per process and copied for each test.
+const populated = (t) => cachedFixture(t, 'populated', (h) => { h.init(); populate(h); });
 
 // serve runs in the repository, and Windows cannot delete a directory a live
 // process runs in, so every server stops before makeRepo's cleanup: each
@@ -157,9 +161,7 @@ test('Settings signals restoration only after a delayed animation frame restores
 });
 
 test('the snapshot names no network resource and carries no token or owner forms', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   const page = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
   // Allowed: the SVG namespace inside the data: icon, which is a name, not a
   // request, and evidence links, which open only when clicked.
@@ -175,9 +177,7 @@ test('the snapshot names no network resource and carries no token or owner forms
 });
 
 test('the board escapes every text the state holds', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   const sha = h.git(['rev-parse', 'HEAD']).trim();
   h.ok(['ask', '--question', 'Pick <script>alert(1)</script>?', '--option', '<b>a</b>', '--option', 'b', '--why', 'why <i>', '--blocks', 'T2']);
   h.ok(['msg', '--to', 'owner', '--task', 'T1', 'look <img src=x onerror=alert(1)>', '--agent', 'w-1']);
@@ -221,9 +221,7 @@ test('accepted task gate pips and ledger stop counting tests after the owner cha
 });
 
 test('the snapshot opens offline in a browser, with and without scripts, and requests nothing but itself', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   const file = pathToFileURL(path.join(h.state, 'sketch.html')).href;
   const b = await openBrowser(t);
   await b.send('Network.enable');
@@ -286,9 +284,7 @@ test('in a browser, JS displays only the routed view by nav and direct hash at d
 });
 
 test('serve sends a submitted or accepted task back for rework only as the owner, through the CLI rework', async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   await withServers(async (servers) => {
     const viewer = await startServe(servers, h, 'viewer');
     const viewerPage = await (await fetch(viewer)).text();
@@ -317,9 +313,7 @@ test('serve sends a submitted or accepted task back for rework only as the owner
 });
 
 test('in a browser, every board write goes through its form: answer, comments, owner-done, rework and tier', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   await withServers(async (servers) => {
     const url = await startServe(servers, h);
     const b = await openBrowser(t);
@@ -374,9 +368,7 @@ test('in a browser, every board write goes through its form: answer, comments, o
 });
 
 test('in a browser, a change elsewhere updates the board in place and waits while the owner is typing', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   await withServers(async (servers) => {
     const url = await startServe(servers, h);
     const b = await openBrowser(t);
@@ -410,9 +402,7 @@ test('in a browser, a change elsewhere updates the board in place and waits whil
 });
 
 test('live CLI writes keep Plan, its task sheet, scroll and the focused control on desktop and phone', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   for (let i = 0; i < 8; i++) h.ok(['task', 'add', '--title', `Plan task ${i}`, '--acceptance', 'verified']);
   let dep = 'T2';
   for (let i = 0; i < 4; i++) {
@@ -427,6 +417,8 @@ test('live CLI writes keep Plan, its task sheet, scroll and the focused control 
       await b.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await b.goto(`${url}#plan`);
       await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
+      // The load handler resets the fragment scroll on its next frame.
+      await b.inPage(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
       await b.inPage(`(() => {
         window.firstLoad = true;
         document.querySelector(${link}).focus({ preventScroll: true });
@@ -508,9 +500,7 @@ test('live CLI writes keep Settings and Spend focus and table scroll at 390px', 
 });
 
 test('every view keeps disclosures, event identity, focus and scroll through live CLI updates', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   for (let i = 6; i <= 24; i++) h.ok(['task', 'add', '--title', `Task ${i}`, '--acceptance', 'verified']);
   for (let i = 1; i <= 24; i++) h.ok(['spend', `T${i}`, '--tokens', String((25 - i) * 100), '--rung', 'easy']);
   await withServers(async (servers) => {
@@ -690,9 +680,7 @@ test('live updates match task sheet buttons by form and fall back when the focus
 });
 
 test('a viewer cannot edit tiers or the ladder from a sheet, Settings or a forged POST', async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   await withServers(async (servers) => {
     const url = await startServe(servers, h, 'viewer');
     const page = await (await fetch(url)).text();
@@ -720,9 +708,7 @@ test('a viewer cannot edit tiers or the ladder from a sheet, Settings or a forge
 });
 
 test('Working now uses only the current claimant and claim, then the submitter context', (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   const card = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article class="card[^"]*" data-key="T1"[\s\S]*?<\/article>/)[0];
   h.ok(['task', 'note', 'T1', 'orchestrator planning note', '--agent', 'orchestrator']);
   assert.match(card(), /tests green, waiting on CI/);
@@ -830,9 +816,7 @@ test('desktop columns keep headings visible, reach the last items and keep their
 });
 
 test('task sheets contain keyboard focus, restore the invoking link and keep modal state through refresh', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   await withServers(async (servers) => {
     const url = await startServe(servers, h, 'viewer');
     const b = await openBrowser(t);
@@ -871,9 +855,7 @@ test('task sheets contain keyboard focus, restore the invoking link and keep mod
 });
 
 test('phone gates keep whole names and states in both themes without horizontal overflow', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
-  const h = makeRepo(t);
-  h.init();
-  populate(h);
+  const h = populated(t);
   h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'w-1']);
   const b = await openBrowser(t);
   await b.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: false });
