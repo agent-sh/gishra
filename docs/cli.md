@@ -10,7 +10,9 @@ Resolving either identity source to `owner` (the terminal fallback included) is 
 
 - `TOWER_CRANE_TASK` is set: a task process never acts as owner.
 - `TOWER_CRANE_AGENT` names any identity other than `owner`: a process started as another identity, such as `orchestrator` or a spawned `worker-T1-1`, never acts as owner, whatever `--agent` it passes.
-- stdin or stdout is not a terminal, and `TOWER_CRANE_OWNER_KEY` does not hold the owner key. The key is the owner's own credential for scripts and other non-interactive owner commands: `tower-crane owner-key --agent owner`, run at a terminal, creates it (mode 600, in a mode 700 directory) as `owner/key` beside the [user file](ladder.md) (`~/.config/tower-crane/owner/key` by default) and prints its path, never the key. Every spawn creates that directory and hides it from claude's and codex's sandboxes, so no sandboxed agent reads the key. The CLI removes `TOWER_CRANE_OWNER_KEY` from its environment after the check, so nothing it starts (agents, gates, git) inherits it. An unsandboxed process running as the same user can read the user's files, the key included; the key keeps owner identity out of reach of `--agent owner` alone, not of a process that deliberately reads the owner's secrets.
+- stdin or stdout is not a terminal, and `TOWER_CRANE_OWNER_KEY` does not hold the owner key. The key is the owner's own credential for scripts and other non-interactive owner commands: `tower-crane owner-key --agent owner`, run at a terminal, creates it (mode 600, in a mode 700 directory) as `owner/key` under the canonical `owner_config_dir` recorded in `project.json` (`~/.config/tower-crane/owner/key` by default) and prints its path, never the key. Every spawn creates that directory and hides it from claude's and codex's sandboxes, so no sandboxed agent reads the key. The CLI removes `TOWER_CRANE_OWNER_KEY` from its environment after the check, so nothing it starts (agents, gates, git) inherits it. An unsandboxed process running as the same user can read the user's files, the key included; the key keeps owner identity out of reach of `--agent owner` alone, not of a process that deliberately reads the owner's secrets.
+
+The credential location for an initialized project comes only from `project.json`, never from the command's `TOWER_CRANE_CONFIG`, `HOME` or `USERPROFILE`. Changing those variables does not redirect authentication or the sandbox denial. An absent, invalid or missing recorded credential refuses headless owner access. For a project without `owner_config_dir`, only an explicit owner at a terminal can record it with `owner-key`; an existing binding is never replaced.
 
 Guarded settings and commands are operational or owner-required, per the one table in [state.md: Authority](state.md#authority). The orchestrator or the owner makes operational changes; the orchestrator's owner-required change opens a decision for the owner (exit 1, naming the decision) and changes nothing. The owner is the resolved name `owner`, supplied explicitly by `--agent owner` or `TOWER_CRANE_AGENT=owner`; the terminal fallback never grants authority. Workers and reviewers ask the orchestrator for operational changes with `tower-crane msg --to orchestrator` or a task note. Any agent may release a spawned claim verified exited under the lock.
 
@@ -35,7 +37,7 @@ Lock attempts use private staging directories named with the process pid and a f
 | | |
 | `browser-kit show` | show the user's browser kit MCP server list, default `["playwright"]`, and its config file |
 | | |
-| `init --name N --goal G [--repo O/R] [--base B] [settings]` | create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid |
+| `init --name N --goal G [--repo O/R] [--base B] [settings]` | create the state directory and `project.json` with the default harness and ladder (from the user file, else built in), and record its canonical `owner_config_dir`; takes the `project set` settings too. Refused if the user file is invalid or the project already exists |
 | | |
 | `ladder harness HARNESS` | set the default harness; every rung without its own moves to it. Operational: the orchestrator or the owner; moving a worker, reviewer or small rung off claude and codex is owner-required (`ladder.reach`). Refused, naming the rungs, if one of them cannot run there (a codex profile on pi, a missing model) |
 | | |
@@ -191,7 +193,7 @@ Codex copies only named non-credential provider and MCP fields from the user's `
 | | |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner |
 | | |
-| `owner-key` | the owner, explicitly and at a terminal or with the current key, creates the owner key when none exists and prints `created PATH` or `exists PATH`; never prints the key. `TOWER_CRANE_OWNER_KEY` with its contents stands in for a terminal ([Agent identity](state.md#agent-identity)) |
+| `owner-key` | the owner, explicitly and at a terminal or with the current key, creates the key under the project's recorded `owner_config_dir` and prints `created PATH` or `exists PATH`; never prints the key. An unbound project requires a terminal owner to record the directory first. `TOWER_CRANE_OWNER_KEY` with its contents stands in for a terminal ([Agent identity](state.md#agent-identity)) |
 | | |
 | `ready [--all]` | ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment` |
 | | |

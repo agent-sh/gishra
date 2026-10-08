@@ -150,7 +150,7 @@ const COMMANDS = [
 
   { section: 'Run', name: 'hook', pos: ['ACTION'], usage: 'ACTION --binding FILE [--payload JSON|-]', summary: 'deliver harness messages and record activity under the home identity', flags: { binding: str('FILE', 'protected hook binding in the agent home'), payload: str('JSON|-', 'harness event data (- reads stdin)') }, required: ['binding'], run: run('../lib/harness-hooks', 'hook') },
 
-  { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], description: "create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid", run: P.init },
+  { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], description: "create the state directory and `project.json` with the default harness and ladder (from the user file, else built in), and record its canonical `owner_config_dir`; takes the `project set` settings too. Refused if the user file is invalid or the project already exists", run: P.init },
 
   { section: 'Plan', name: 'ladder harness', pos: ['HARNESS'], usage: 'HARNESS', summary: 'set the default harness every rung without its own runs on', description: "set the default harness; every rung without its own moves to it. Operational: the orchestrator or the owner; moving a worker, reviewer or small rung off claude and codex is owner-required (`ladder.reach`). Refused, naming the rungs, if one of them cannot run there (a codex profile on pi, a missing model)", run: P.ladderHarness },
 
@@ -166,7 +166,7 @@ const COMMANDS = [
 
   { section: 'Run', name: 'owner-done', pos: ['ID'], usage: 'ID [--note T]', summary: 'the owner did what needs_owner asked; clears it', flags: { note: str('T', 'what was done') }, description: "the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner", run: T.ownerDone },
 
-  { section: 'Run', name: 'owner-key', summary: 'owner only: create the owner key that stands in for a terminal; prints its path, never the key', description: "the owner, explicitly and at a terminal or with the current key, creates the owner key when none exists and prints `created PATH` or `exists PATH`; never prints the key. `TOWER_CRANE_OWNER_KEY` with its contents stands in for a terminal ([Agent identity](state.md#agent-identity))", run: run('../lib/authority', 'ownerKey') },
+  { section: 'Run', name: 'owner-key', summary: 'owner only: create the owner key that stands in for a terminal; prints its path, never the key', description: "the owner, explicitly and at a terminal or with the current key, creates the key under the project's recorded `owner_config_dir` and prints `created PATH` or `exists PATH`; never prints the key. An unbound project requires a terminal owner to record the directory first. `TOWER_CRANE_OWNER_KEY` with its contents stands in for a terminal ([Agent identity](state.md#agent-identity))", run: run('../lib/authority', 'ownerKey') },
 
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', description: "add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `needs`, `size`, `tier`, `depends_on`, `needs_owner`, `locks`, `environment`; `needs_owner` is trimmed and blank values store null. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file", run: T.planImport },
 
@@ -421,10 +421,15 @@ async function main(argv) {
     }
     if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     const identity = agent.trim();
-    if (identity === 'owner') require('../lib/authority').checkOwner(process.env, !!(process.stdin.isTTY && process.stdout.isTTY));
+    let stateDir;
+    const locate = () => stateDir ??= S.locateStateDir(globals.state, process.env, process.cwd());
+    const ownerTerminal = !!(process.stdin.isTTY && process.stdout.isTTY);
+    const authority = require('../lib/authority');
+    const ownerConfigDir = identity === 'owner'
+      ? authority.checkOwner(process.env, ownerTerminal, () => authority.ownerProject(locate()), cmd.name === 'init')
+      : undefined;
     // The key proves this process only; nothing it starts inherits it.
     delete process.env.TOWER_CRANE_OWNER_KEY;
-    const locate = () => S.locateStateDir(globals.state, process.env, process.cwd());
     // Check the resolved identity before forwarding; the broker separately
     // verifies requests against the identity it spawned.
     if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {
@@ -441,6 +446,8 @@ async function main(argv) {
       env: process.env,
       agent: identity,
       agentExplicit,
+      ownerTerminal,
+      ownerConfigDir,
       json: !!globals.json,
       flags: own,
       pos: parsed.pos,

@@ -483,6 +483,26 @@ test('claude\'s own Read, Grep and Glob tools are denied every path its sandbox 
   }
 });
 
+test('sandbox owner-key denials use the project binding after the caller changes config', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const ownerDir = path.join(h.readState('project.json').owner_config_dir, 'owner');
+  const callerConfig = path.join(h.base, 'caller-config', 'config.json');
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'small', harness);
+    spawn(h, u, 'small', { TOWER_CRANE_AGENT: 'orchestrator', TOWER_CRANE_CONFIG: callerConfig });
+    const seen = u.report();
+    if (harness === 'claude') {
+      assert.ok(seen.settings.sandbox.filesystem.denyRead.includes(ownerDir));
+      const posix = ownerDir.replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`).split(path.sep).join('/');
+      for (const tool of ['Read', 'Grep', 'Glob']) {
+        assert.ok(seen.settings.permissions.deny.includes(`${tool}(/${posix}/**)`));
+      }
+    } else {
+      assert.equal(seen.config.permissions['tower-crane'].filesystem[ownerDir], 'none');
+    }
+  }
+});
+
 test('a spawned codex agent is pointed at the user\'s global rules, loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   isolated(h, 'small', 'codex');
@@ -608,7 +628,7 @@ test('browser tasks attach the user kit on every rung with approved tools and no
 
 test('browser spawns use the original user kit through a nested isolated home and refuse missing servers', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
-  // The owner key sits beside the user file this test moves; spawning needs no owner.
+  // An operational spawn follows the user's browser settings across homes.
   const orchestrator = { TOWER_CRANE_AGENT: 'orchestrator' };
   const userFile = path.join(u.home, '.config', 'tower-crane', 'config.json');
   fs.mkdirSync(path.dirname(userFile), { recursive: true });

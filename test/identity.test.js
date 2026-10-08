@@ -278,7 +278,6 @@ test('owner without a terminal needs the owner key', (t) => {
   const cases = [
     [{ TOWER_CRANE_OWNER_KEY: undefined }, /stdin and stdout are not a terminal and TOWER_CRANE_OWNER_KEY is unset/],
     [{ TOWER_CRANE_OWNER_KEY: 'guessed' }, /TOWER_CRANE_OWNER_KEY does not match the key in /],
-    [{ TOWER_CRANE_CONFIG: path.join(h.base, 'elsewhere', 'config.json') }, /TOWER_CRANE_OWNER_KEY is set but .* does not exist; create it with tower-crane owner-key/],
   ];
   for (const [env, refusal] of cases) {
     for (const agent of [['--agent', 'owner'], []]) {
@@ -292,6 +291,80 @@ test('owner without a terminal needs the owner key', (t) => {
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, 'approve access');
   h.ok(['owner-done', 'T1']);
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
+});
+
+test('caller config and home cannot redirect an initialized project owner credential', (t) => {
+  const h = setup(t);
+  const callerHome = path.join(h.base, 'caller-home');
+  const callerConfig = path.join(callerHome, '.config', 'tower-crane');
+  fs.mkdirSync(path.join(callerConfig, 'owner'), { recursive: true });
+  fs.writeFileSync(path.join(callerConfig, 'owner', 'key'), 'caller-created-key\n');
+  const project = h.readState('project.json');
+  const before = events(h);
+  for (const redirect of [
+    { TOWER_CRANE_CONFIG: path.join(callerConfig, 'config.json') },
+    { TOWER_CRANE_CONFIG: undefined, HOME: callerHome, USERPROFILE: callerHome },
+  ]) {
+    const forged = { ...redirect, TOWER_CRANE_AGENT: undefined, TOWER_CRANE_TASK: undefined, TOWER_CRANE_OWNER_KEY: 'caller-created-key' };
+    for (const args of [
+      ['project', 'set', '--merge-admin', 'true', '--agent', 'owner'],
+      ['owner-key', '--agent', 'owner'],
+      ['init', '--name', 'replacement', '--goal', 'replace binding', '--agent', 'owner'],
+    ]) {
+      const denied = h.run(args, { env: forged });
+      assert.equal(denied.code, 1, denied.stderr);
+      assert.match(denied.stderr, /TOWER_CRANE_OWNER_KEY does not match/);
+    }
+    assert.deepEqual(h.readState('project.json'), project);
+    assert.equal(events(h), before);
+    h.ok(['project', 'show', '--agent', 'owner'], { env: redirect });
+  }
+});
+
+test('a missing recorded owner key cannot be replaced by a caller-selected key', (t) => {
+  const h = setup(t);
+  fs.rmSync(path.join(path.dirname(h.userConfig), 'owner', 'key'));
+  const callerConfig = path.join(h.base, 'caller-config');
+  fs.mkdirSync(path.join(callerConfig, 'owner'), { recursive: true });
+  fs.writeFileSync(path.join(callerConfig, 'owner', 'key'), 'caller-created-key\n');
+  const before = events(h);
+  const denied = h.run(['project', 'set', '--merge-admin', 'true'], {
+    env: { TOWER_CRANE_CONFIG: path.join(callerConfig, 'config.json'), TOWER_CRANE_OWNER_KEY: 'caller-created-key' },
+  });
+  assert.equal(denied.code, 1, denied.stderr);
+  assert.match(denied.stderr, /TOWER_CRANE_OWNER_KEY is set but .* does not exist; create it with tower-crane owner-key/);
+  assert.equal(events(h), before);
+});
+
+test('only a terminal owner can bind an unbound project, and later config changes cannot rebind it', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = setup(t);
+  const project = h.readState('project.json');
+  delete project.owner_config_dir;
+  h.writeState('project.json', project);
+  const before = events(h);
+  for (const args of [
+    ['project', 'set', '--merge-admin', 'true'],
+    ['owner-key'],
+    ['init', '--name', 'replacement', '--goal', 'replace binding'],
+  ]) {
+    const denied = h.run(args);
+    assert.equal(denied.code, 1, denied.stderr);
+    assert.match(denied.stderr, /project.json has no valid owner_config_dir/);
+  }
+  assert.deepEqual(h.readState('project.json'), project);
+  assert.equal(events(h), before);
+  const config = { TOWER_CRANE_CONFIG: h.userConfig };
+  const bound = terminal(h, ['owner-key', '--agent', 'owner'], config);
+  assert.equal(bound.code, 0, bound.stdout + bound.stderr);
+  const dir = fs.realpathSync.native(path.dirname(h.userConfig));
+  assert.equal(h.readState('project.json').owner_config_dir, dir);
+  const redirected = terminal(h, ['owner-key', '--agent', 'owner'], {
+    TOWER_CRANE_CONFIG: path.join(h.base, 'redirected', 'config.json'),
+  });
+  assert.equal(redirected.code, 0, redirected.stdout + redirected.stderr);
+  assert.ok(redirected.stdout.includes(path.join(dir, 'owner', 'key')));
+  assert.equal(h.readState('project.json').owner_config_dir, dir);
+  h.ok(['owner-done', 'T1']);
 });
 
 test('a terminal is refused owner when TOWER_CRANE_AGENT names another identity', { skip: !PTY_AVAILABLE }, (t) => {
