@@ -423,10 +423,16 @@ test('supervisor reactions pin unconfigured gates and bypass the real restrictiv
   startupContexts(h, false);
 });
 
-test('review dispatch hands revuto findings to the reviewer and an ok that ignores a P1 is refused', async (t) => {
+test('large review dispatch hands revuto findings to the reviewer and an ok that ignores a P1 is refused', async (t) => {
   const h = setup(t);
+  fs.writeFileSync(path.join(h.repo, 'large.md'), 'A focused review reads this diff. '.repeat(1000) + '\n');
+  h.git(['add', 'large.md']);
+  h.git(['commit', '-qm', 'large review diff']);
+  h.sha = h.git(['rev-parse', 'HEAD']);
   configureHarness(h);
   const state = h.github();
+  state.prs['7'].headRefOid = h.sha;
+  state.ci[h.sha] = 'success';
   const comment = (id, body, extra = {}) => ({ id, in_reply_to_id: null, path: 'src.js', line: 3, original_line: 3, body,
     user: 'revuto-review[bot]', original_commit_id: h.sha, html_url: `https://github.com/acme/demo/pull/7#discussion_r${id}`, ...extra });
   state.comments = [
@@ -452,6 +458,14 @@ test('review dispatch hands revuto findings to the reviewer and an ok that ignor
   assert.match(brief, /### \[P2\] src\.js:3 \(comment 102, answered in 103\)/);
   assert.match(brief, /### src\.js:3 \(comment 104\)/);
   assert.doesNotMatch(brief, /Outdated finding|Not from revuto/);
+  const contextFile = path.join(h.env.AUTOMATION_CONTEXT_DIR, `${review.detail.agent}.json`);
+  assert.ok(fs.existsSync(contextFile), fs.readFileSync(review.detail.log, 'utf8'));
+  const { prompt } = JSON.parse(fs.readFileSync(contextFile, 'utf8'));
+  assert.match(prompt, /Read .*reviews.* for the diff at/);
+  assert.match(prompt, /## Revuto findings/);
+  assert.match(prompt, /### \[P1\] src\.js:3 \(comment 101\)\n\n\[P1\] The loop never terminates on empty input\./);
+  assert.match(prompt, /## Gate results/);
+  assert.doesNotMatch(prompt, /diff --git a\/large.md/);
   const task = h.readState('tasks.json').tasks[0];
   assert.equal(task.evidence.some((e) => e.type === 'review'), false, 'the reviewer ok was refused');
   assert.equal(task.status, 'submitted');
