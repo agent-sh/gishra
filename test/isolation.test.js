@@ -82,17 +82,19 @@ const args = process.argv.slice(2);
 const env = { ...process.env, PATH: ${JSON.stringify(parentPath)} };
 if (args[0] === 'push') {
   const target = args.find((a, i) => i > 0 && !a.startsWith('-')) || 'origin';
-  const remote = cp.spawnSync('git', ['remote', 'get-url', '--push', target], { env, encoding: 'utf8', timeout: 10000 });
+  const remote = cp.spawnSync('git', ['remote', 'get-url', '--push', target], { env, encoding: 'utf8' });
   if (/^(?:https?|ssh|git):|^[^/]*@/.test(target) || /^(?:https?|ssh|git):|^[^/]*@/.test((remote.stdout || '').trim())) {
     process.stderr.write('fixture remote unavailable\\n');
     process.exit(1);
   }
 }
-const result = cp.spawnSync('git', args, { env, stdio: 'inherit', timeout: 10000 });
+const result = cp.spawnSync('git', args, { env, stdio: 'inherit' });
 process.exit(result.status ?? 1);
 `, { mode: 0o755 });
   const out = path.join(h.base, 'stub.json');
   const runEnv = { ...h.env, HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_OUT: out };
+  // Nested harness cache settings must not redirect the fake user's caches.
+  runEnv.XDG_CACHE_HOME = path.join(home, '.cache');
   // The developer's own harness homes and gh tokens must not leak in: the
   // fixture's gh login lives in its stub keyring. The tokens are emptied, not
   // deleted, since the caller's own env would fill a missing key back in.
@@ -144,6 +146,39 @@ function spawn(h, u, role, env = {}, opts = {}) {
   }
   const r = h.run(['spawn', '--role', role, '--task', 'T1', '--wait', '--json'], { ...opts, env: { ...u.env, ...env } });
   assert.equal(r.code, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+
+// The shim's decision for each command under each job's policy, as the spawn
+// writes it to policy.json, in one node process: 126 for a refusal, ALLOW for
+// a push or gh call the shim would hand on, and otherwise the exit code of
+// the git command, which runs so later decisions see the config it changes.
+const ALLOW = 'allow';
+const DECIDE = `
+const cp = require('node:child_process');
+const { gitDenied, ghDenied, findReal } = require(process.argv[1]);
+const { policies, cases } = JSON.parse(process.argv[2]);
+const ALLOW = ${JSON.stringify(ALLOW)};
+// The git the shim hands calls to, past any parent agent's shim.
+const git = findReal('git', '');
+const out = cases.map(([tool, ...args]) => {
+  const push = tool === 'git' && args.includes('push');
+  const seen = policies.map((policy) => {
+    const pushArgs = [];
+    const why = tool === 'git' ? gitDenied(args, policy, git, pushArgs) : ghDenied(args, policy);
+    return { why, pushArgs };
+  });
+  let code = null;
+  if (!push && tool === 'git' && seen.some((s) => !s.why)) code = cp.spawnSync(git, args, { stdio: 'ignore' }).status;
+  return seen.map(({ why, pushArgs }) => ({ argv: [tool, ...args], code: why ? 126 : code ?? ALLOW, why, pushArgs }));
+});
+process.stdout.write(JSON.stringify(out));
+`;
+function decide(h, cwd, jobs, branch, cases) {
+  const policies = jobs.map((job) => ({ ...A.policy(A.load(job)), branch, repo: 'acme/app' }));
+  const r = cp.spawnSync(process.execPath, ['-e', DECIDE, path.join(ROOT, 'lib', 'shim.js'), JSON.stringify({ policies, cases })],
+    { cwd, env: h.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
   return JSON.parse(r.stdout);
 }
 
@@ -252,6 +287,59 @@ test('codex config allowlists also filter inline tables on Windows', () => {
   assert.ok(!TOML.stringify(filtered.doc).includes(SECRET));
   const arrays = Object.fromEntries(require('../lib/ladder').CODEX_KEYS.map(key => [key, [{ apikey: SECRET, key: SECRET, bearer: SECRET }]]));
   assert.deepEqual(A.codexConfig(TOML.parse(TOML.stringify({ ...arrays, profiles: { malformed: arrays } })), []).doc, { profiles: { malformed: {} } });
+});
+
+// The built-in Bedrock provider takes only its aws table; credentials are
+// planted beside the region. An Azure-style provider carries query parameters
+// with keys, a SAS signature, a Functions code and an auth value planted
+// among them.
+const PROVIDERS = {
+  'amazon-bedrock': {
+    aws: {
+      region: 'us-east-1', profile: 'work',
+      bearer_token: `${SECRET}-BEARER`, secret_access_key: `${SECRET}-SECRET`, session_token: `${SECRET}-TOKEN`, password: `${SECRET}-PASSWORD`,
+      credential_export: { command: `echo ${SECRET}-EXPORT` }, auth_refresh: { command: `echo ${SECRET}-REFRESH` },
+    },
+  },
+  azure: {
+    name: 'Azure', base_url: 'https://azure.example/openai', env_key: 'AZURE_KEY', wire_api: 'responses',
+    query_params: { 'api-version': '2025-04-01-preview', key: `${SECRET}-QUERY`, apikey: `${SECRET}-QUERY`, sig: `${SECRET}-SIG`, code: `${SECRET}-CODE`, auth: `${SECRET}-AUTH`, nested: { value: SECRET } },
+  },
+};
+const PROVIDERS_KEPT = {
+  'amazon-bedrock': { aws: { region: 'us-east-1', profile: 'work' } },
+  azure: { ...PROVIDERS.azure, query_params: { 'api-version': '2025-04-01-preview' } },
+};
+const BEDROCK_CONFIG = { model: 'openai.gpt-oss-120b', model_provider: 'amazon-bedrock', model_providers: PROVIDERS };
+
+test('codex provider sub-tables keep their named non-credential fields', () => {
+  const filtered = A.codexConfig(TOML.parse(TOML.stringify(BEDROCK_CONFIG)), []).doc;
+  assert.deepEqual(JSON.parse(JSON.stringify(filtered.model_providers)), PROVIDERS_KEPT);
+  assert.ok(!TOML.stringify(filtered).includes(SECRET));
+});
+
+test('a codex spawn on Bedrock starts with the region from the user config', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  for (const file of ['config.toml', 'sol.config.toml']) {
+    fs.writeFileSync(path.join(u.home, '.codex', file), TOML.stringify(BEDROCK_CONFIG));
+  }
+  isolated(h, 'medium', 'codex');
+  // The region comes only from the config, as on a machine whose shell sets
+  // none; the stub refuses to start without it, as codex does.
+  const started = spawn(h, u, 'medium', { AWS_REGION: '', AWS_DEFAULT_REGION: '' });
+  noSecretsCopied(h);
+  const home = path.join(h.state, 'homes', started.agent);
+  const { args: spawned, config } = u.report();
+  assert.deepEqual(config.model_providers, PROVIDERS_KEPT);
+  const profile = TOML.parse(fs.readFileSync(path.join(home, 'sol.config.toml'), 'utf8'));
+  assert.deepEqual(JSON.parse(JSON.stringify(profile.model_providers)), PROVIDERS_KEPT);
+  // An installed codex also loads the generated home with the spawn's -c
+  // overrides, so a field it refuses fails here instead of at dispatch.
+  const version = cp.spawnSync('codex', ['--version'], { encoding: 'utf8' });
+  if (version.status !== 0) return t.diagnostic('codex is not installed; the stub alone checked startup');
+  const overrides = spawned.flatMap((a, i) => (spawned[i - 1] === '-c' ? ['-c', a] : []));
+  const r = cp.spawnSync('codex', [...overrides, 'features', 'list'], { encoding: 'utf8', env: { ...process.env, CODEX_HOME: home }, timeout: 60000 });
+  assert.equal(r.status, 0, `codex refused the generated config: ${r.stderr}`);
 });
 
 test('research Claude gets native or explicit web MCP tools with worker file and git confinement', { skip: NO_STUBS }, (t) => {
@@ -396,7 +484,7 @@ test('a spawned codex agent is pointed at the user\'s global rules, loads none o
   assert.equal(seen.config.model_provider, 'p', 'the provider is kept');
   assert.deepEqual(seen.config.model_providers, { p: { name: 'P', env_key: 'P_KEY' }, q: { name: 'Q', env_key: 'Q_KEY', wire_api: 'responses' } }, 'providers in any layout, without credentials');
   for (const k of ['approval_policy', 'model_instructions_file']) assert.equal(seen.config[k], undefined, `${k} is the user's, not the role's`);
-  assert.ok(seen.config.notify.includes(path.join(ROOT, 'lib', 'hook-bridge.js')));
+  assert.ok(seen.config.notify.includes(path.join(started.tool.path, 'lib', 'hook-bridge.js')));
   assert.ok(!seen.config.notify.includes('planted-notify'));
   assert.deepEqual(Object.keys(seen.config.hooks).sort(), ['PostToolUse', 'Stop', 'UserPromptSubmit']);
   const home = path.join(h.state, 'homes', started.agent);
@@ -626,9 +714,149 @@ test('the next spawn removes an exited agent\'s cache even when it holds read-on
   assert.ok(!fs.existsSync(cache), `${cache} is removed`);
 });
 
+test('a live spawn keeps its git, gh, hooks and policy on its recorded tool after a checkout upgrade', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolated(h, 'medium', 'codex');
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  const checkout = path.join(h.base, 'tool-checkout');
+  for (const name of ['bin', 'lib', 'agents', 'skills', 'standards', 'package.json']) {
+    fs.cpSync(path.join(ROOT, name), path.join(checkout, name), { recursive: true });
+  }
+  h.git(['init', '-q', checkout]);
+  h.git(['add', '.'], checkout);
+  h.git(['commit', '-qm', 'stub tool version'], checkout);
+  const toolSha = h.git(['rev-parse', 'HEAD'], checkout);
+  const pushed = path.join(h.base, 'pushed.json');
+  fs.writeFileSync(path.join(h.base, 'bin', 'git'), `#!${process.execPath}
+const fs = require('node:fs');
+const cp = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === 'push') {
+  fs.writeFileSync(${JSON.stringify(pushed)}, JSON.stringify(args));
+  process.exit(0);
+}
+const r = cp.spawnSync('git', args, { env: { ...process.env, PATH: ${JSON.stringify(process.env.PATH)} }, stdio: 'inherit' });
+process.exit(r.status ?? 1);
+`, { mode: 0o755 });
+  const upgrade = `
+const fs = require('node:fs');
+const cp = require('node:child_process');
+for (const file of ['lib/shim.js', 'lib/hook-bridge.js', 'bin/tower-crane.js']) {
+  fs.writeFileSync(${JSON.stringify(checkout)} + '/' + file, 'throw new Error("upgraded tool cannot read the old policy");\\n');
+}
+for (const args of [['add', '.'], ['commit', '-qm', 'upgraded stub tool']]) {
+  const r = cp.spawnSync('git', ['-C', ${JSON.stringify(checkout)}, ...args], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(r.stderr);
+}
+`;
+  const hooks = `
+const fs = require('node:fs');
+const path = require('node:path');
+const cp = require('node:child_process');
+const toml = require(${JSON.stringify(path.join(ROOT, 'lib', 'toml.js'))});
+const config = toml.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8'));
+const calls = [
+  [config.notify[0], [...config.notify.slice(1), JSON.stringify({ 'last-assistant-message': 'survived the upgrade' })], {}],
+  [config.hooks.PostToolUse[0].hooks[0].command, [], { shell: true, input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash' }) }],
+];
+for (const [command, args, opts] of calls) {
+  const r = cp.spawnSync(command, args, { encoding: 'utf8', ...opts });
+  if (r.status !== 0) throw new Error(r.stderr);
+}
+`;
+  const branch = h.git(['branch', '--show-current'], wt);
+  const result = cp.spawnSync(process.execPath, [
+    path.join(checkout, 'bin', 'tower-crane.js'), 'spawn', '--task', 'T1', '--wait', '--json',
+  ], {
+    cwd: h.repo, encoding: 'utf8', timeout: 60000,
+    env: { ...u.env, STUB_RUN: JSON.stringify([
+      [process.execPath, '-e', upgrade],
+      ['git', 'push', '-u', 'origin', `HEAD:refs/heads/${branch}`],
+      ['gh', 'pr', 'create'],
+      [process.execPath, '-e', hooks],
+    ]) },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(u.report().ran.map((r) => [r.code, r.stderr]), [[0, ''], [0, ''], [0, ''], [0, '']]);
+  const started = JSON.parse(result.stdout);
+  assert.equal(started.tool.sha, toolSha);
+  assert.notEqual(h.git(['rev-parse', 'HEAD'], checkout), toolSha);
+  const home = path.join(h.state, 'homes', started.agent);
+  assert.equal(started.tool.path, path.join(home, 'tool'));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'tool.json'), 'utf8')), started.tool);
+  assert.deepEqual(JSON.parse(fs.readFileSync(pushed, 'utf8')), [
+    'push', '--no-follow-tags', '--recurse-submodules=no', '-u', 'origin', `HEAD:refs/heads/${branch}`,
+  ]);
+  const policy = JSON.parse(fs.readFileSync(path.join(home, 'policy.json'), 'utf8'));
+  assert.equal(policy.branch, branch);
+  assert.equal(policy.repo, 'acme/app');
+  const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(events.find((e) => e.cmd === 'spawn').detail.tool.sha, toolSha);
+  for (const cmd of ['hook git-push', 'hook pr-created', 'hook report', 'hook progress']) {
+    assert.ok(events.some((e) => e.cmd === cmd && e.agent === started.agent), cmd);
+  }
+});
+
+test('the shim migrates a pre-T112 policy using recorded state and refuses unbound migrations', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolated(h, 'medium', 'codex');
+  spawn(h, u, 'medium');
+  h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
+  const home = path.join(h.state, 'homes', 'worker-T1-1');
+  // Generated by policy() and worker frontmatter at e034a4325677ada9d0752a1acee60483acfd8849, the parent of T112.
+  const historical = fs.readFileSync(path.join(__dirname, 'fixtures', 'policy-pre-T112.json'), 'utf8').replace('@HOME@/hook.json', path.join(home, 'hook.json').replaceAll('\\', '\\\\'));
+  const policyFile = path.join(home, 'policy.json');
+  fs.writeFileSync(policyFile, historical);
+  const branch = h.git(['branch', '--show-current'], wt);
+  const env = {
+    ...u.env, PATH: `${path.join(home, 'bin')}${path.delimiter}${u.env.PATH}`,
+    TOWER_CRANE_STATE: h.state, TOWER_CRANE_TASK: 'T1', TOWER_CRANE_AGENT: 'worker-T1-1',
+  };
+  const run = (args, extra = {}) => cp.spawnSync('git', args, { cwd: wt, env: { ...env, ...extra }, encoding: 'utf8', timeout: 10000 });
+  const allowed = run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]);
+  assert.equal(allowed.status, 1, allowed.stderr);
+  assert.match(allowed.stderr, /fixture remote unavailable/);
+  assert.equal(run(['push', 'origin', 'HEAD:refs/heads/main']).status, 126);
+  assert.equal(run(['push', 'origin', `HEAD:refs/heads/${branch}`, '--force']).status, 126);
+  assert.equal(run(['push', 'origin', `HEAD:refs/heads/${branch}`], { TOWER_CRANE_AGENT: 'another-worker' }).status, 126);
+  assert.equal(fs.readFileSync(policyFile, 'utf8'), historical, 'migration does not write the protected policy');
+  const tasks = h.readState('tasks.json');
+  const recordedBranch = tasks.tasks[0].branch;
+  tasks.tasks[0].branch = null;
+  h.writeState('tasks.json', tasks);
+  const missing = run(['push', 'origin', `HEAD:refs/heads/${branch}`]);
+  assert.equal(missing.status, 126);
+  assert.match(missing.stderr, /git push without a task branch/);
+  tasks.tasks[0].branch = recordedBranch;
+  h.writeState('tasks.json', tasks);
+  // init without a GitHub origin or --repo records repo null: only remote pushes lose their binding.
+  const project = h.readState('project.json');
+  project.repo = null;
+  h.writeState('project.json', project);
+  const local = path.join(h.base, 'local-T116.git');
+  h.git(['init', '-q', '--bare', local]);
+  const status = run(['status']);
+  assert.equal(status.status, 0, status.stderr);
+  const commit = run(['commit', '--allow-empty', '-q', '-m', 'probe']);
+  assert.equal(commit.status, 0, commit.stderr);
+  const localPush = run(['push', local, 'HEAD:refs/heads/fixture']);
+  assert.equal(localPush.status, 0, localPush.stderr);
+  const remote = run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]);
+  assert.equal(remote.status, 126);
+  assert.match(remote.stderr, /git push outside the recorded origin repository/);
+  const read = cp.spawnSync('gh', ['pr', 'view'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 });
+  assert.notEqual(read.status, 126, read.stderr);
+  assert.doesNotMatch(read.stderr, /tower-crane:/);
+  fs.writeFileSync(policyFile, '{}\n');
+  assert.equal(run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]).status, 126, 'missing permissions default to deny');
+  const gh = cp.spawnSync('gh', ['pr', 'create'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 });
+  assert.equal(gh.status, 126, gh.stderr);
+});
+
 test('git and gh allow git commands, local pushes and the role\'s own writes, and refuse everything else', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
-  const own = `HEAD:refs/heads/${h.git(['branch', '--show-current'], wt)}`;
+  const branch = h.git(['branch', '--show-current'], wt);
+  const own = `HEAD:refs/heads/${branch}`;
   const local = path.join(h.base, 'local.git');
   h.git(['init', '-q', '--bare', local]);
   // A remote on another machine; nothing listens there, so a push the shim
@@ -639,9 +867,9 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['git', 'status'], 0, 0],
     [['git', '-C', wt, 'log', '-1'], 0, 0],
     [['git', 'commit', '--allow-empty', '-q', '-m', 'probe'], 0, 0],
-    [['git', 'push', local, '+HEAD:refs/heads/fixture'], 0, 0],
+    [['git', 'push', local, '+HEAD:refs/heads/fixture'], ALLOW, ALLOW],
     [['git', 'push', '--force', local, 'HEAD:refs/heads/fixture'], 126, 126],
-    [['git', 'push', local, ':refs/heads/fixture'], 0, 0],
+    [['git', 'push', local, ':refs/heads/fixture'], ALLOW, ALLOW],
     [['git', 'push', 'origin', ':refs/heads/gone'], 126, 126],
     [['git', 'push', 'origin', '--delete', 'gone'], 126, 126],
     [['git', 'push', '-d', 'origin', 'gone'], 126, 126],
@@ -651,22 +879,22 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     ...['--del', '--pru', '--forc', '--mir', '--all', '--tags', '--no-verify'].map((o) => [['git', 'push', o, 'origin', 'HEAD:refs/heads/x'], 126, 126]),
     [['git', 'push', '-o', 'x', 'origin', 'HEAD:refs/heads/x'], 126, 126],
     [['git', 'push', 'origin', '--del', 'x'], 126, 126],
-    [['git', 'push', '-u', 'origin', own], 'net', 126],
-    [['git', 'push', '--set-upstream', '-q', 'origin', own], 'net', 126],
+    [['git', 'push', '-u', 'origin', own], ALLOW, 126],
+    [['git', 'push', '--set-upstream', '-q', 'origin', own], ALLOW, 126],
     // Configuration that turns a plain push into a mirror.
     ...['true', 'yes', 'on', '1'].flatMap((v) => [
       [['git', 'config', 'remote.origin.mirror', v], 0, 0],
       [['git', 'push', 'origin', own], 126, 126],
       [['git', 'config', '--unset', 'remote.origin.mirror'], 0, 0],
     ]),
-    [['git', 'push', 'origin', own], NET, 126],
+    [['git', 'push', 'origin', own], ALLOW, 126],
     [['git', 'push', 'origin', 'HEAD:refs/heads/forced', '--force'], 126, 126],
     [['git', '-C', wt, 'push', '--force-with-lease', 'origin', 'HEAD:refs/heads/forced'], 126, 126],
     [['git', 'push', 'origin', '+HEAD:refs/heads/forced'], 126, 126],
     [['git', '-c', 'alias.p=push', 'p', 'origin', 'HEAD:refs/heads/alias'], 126, 126],
     [['git', 'p'], 126, 126],
-    [['gh', 'pr', 'view', '1'], 0, 0],
-    [['gh', 'pr', 'create', '--fill'], 0, 126],
+    [['gh', 'pr', 'view', '1'], ALLOW, ALLOW],
+    [['gh', 'pr', 'create', '--fill'], ALLOW, 126],
     [['gh', '--repo', 'o/r', 'pr', 'merge', '1'], 126, 126],
     [['gh', 'pr', '-R', 'o/r', 'merge', '1'], 126, 126],
     [['gh', 'pr', 'lock', '1'], 126, 126],
@@ -674,28 +902,43 @@ test('git and gh allow git commands, local pushes and the role\'s own writes, an
     [['gh', 'cache', 'delete', 'x'], 126, 126],
     [['gh', 'co', '1'], 126, 126],
   ];
-  for (const harness of ['claude', 'codex']) {
-    for (const [rung, column] of [['hard', 1], ['small', 2]]) {
-      isolated(h, rung, harness);
-      spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
-      const ran = u.report().ran;
-      const codes = ran.map((r, i) => (cases[i][column] === NET && r.code !== 126 && r.code !== 0 ? NET : r.code));
-      assert.deepEqual(codes, cases.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
-    }
+  const decided = decide(h, wt, ['worker', 'small'], branch, cases.map((c) => c[0]));
+  for (const [column, job] of [[1, 'worker'], [2, 'small']]) {
+    const ran = decided.map((r) => r[column - 1]);
+    assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[column]), `${job}: ${JSON.stringify(ran.map((r) => [r.argv, r.why]))}`);
   }
   // A mirror key with no value, which git reads as true.
   const config = path.join(h.repo, '.git', 'config');
   const before = fs.readFileSync(config, 'utf8');
   fs.appendFileSync(config, '[remote "origin"]\n\tmirror\n');
-  isolated(h, 'hard', 'codex');
-  spawn(h, u, 'hard', { STUB_RUN: JSON.stringify([['git', 'push', 'origin', 'HEAD:refs/heads/ok']]) });
-  assert.deepEqual(u.report().ran.map((r) => r.code), [126], 'a valueless mirror key');
+  assert.deepEqual(decide(h, wt, ['worker'], branch, [['git', 'push', 'origin', 'HEAD:refs/heads/ok']])[0].map((r) => r.code), [126], 'a valueless mirror key');
   fs.writeFileSync(config, before);
+  // Each harness and rung reaches git and gh through the shim with its job's
+  // policy, and an allowed call runs the real program.
+  const probes = [
+    [['git', 'status'], 0, 0],
+    [['git', 'push', local, '+HEAD:refs/heads/fixture'], 0, 0],
+    [['git', 'push', '--force', local, 'HEAD:refs/heads/fixture'], 126, 126],
+    [['git', 'push', '-u', 'origin', own], NET, 126],
+    [['gh', 'pr', 'view', '1'], 0, 0],
+    [['gh', 'pr', 'create', '--fill'], 0, 126],
+  ];
+  for (const harness of ['claude', 'codex']) {
+    for (const [rung, column] of [['hard', 1], ['small', 2]]) {
+      isolated(h, rung, harness);
+      spawn(h, u, rung, { STUB_RUN: JSON.stringify(probes.map((c) => c[0])) });
+      const ran = u.report().ran;
+      const codes = ran.map((r, i) => (probes[i][column] === NET && r.code !== 126 && r.code !== 0 ? NET : r.code));
+      assert.deepEqual(codes, probes.map((c) => c[column]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
+    }
+  }
 });
 
-test('remote pushes publish only the task branch, including configured and implicit destinations', { skip: NO_STUBS }, (t) => {
-  const { h, u, wt } = setup(t);
-  const branch = h.git(['branch', '--show-current'], wt);
+test('remote pushes publish only the task branch, including configured and implicit destinations', (t) => {
+  const h = makeRepo(t);
+  h.init(['--repo', 'acme/app']);
+  h.ok(['task', 'add', '--title', 'Publish', '--acceptance', 'only this branch']);
+  const { path: wt, branch } = h.json(['worktree', 'T1']);
   const own = `refs/heads/${branch}`;
   h.git(['remote', 'add', 'origin', 'https://github.com/acme/app.git']);
   h.git(['remote', 'add', 'elsewhere', 'https://github.com/acme/app.git']);
@@ -711,7 +954,7 @@ test('remote pushes publish only the task branch, including configured and impli
   push(['origin', `HEAD:${own}`], 126);
   unset('remote.origin.pushurl');
   config('remote.origin.pushurl', 'https://github.com/acme/app.git');
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   cases.push([['git', 'config', '--add', 'remote.origin.pushurl', 'https://github.com/acme/another.git'], 0]);
   push(['origin', `HEAD:${own}`], 126);
   unset('remote.origin.pushurl');
@@ -720,14 +963,14 @@ test('remote pushes publish only the task branch, including configured and impli
   config('remote.origin.url', 'https://github.com.evil.invalid/acme/app.git');
   push(['origin', `HEAD:${own}`], 126);
   config('remote.origin.url', 'git@github.com:acme/app.git');
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   config('remote.origin.url', 'https://github.com/acme/app.git');
   config('remote.pushDefault', 'elsewhere');
   push([], 126);
   unset('remote.pushDefault');
   config(`branch.${branch}.pushRemote`, 'elsewhere');
   push([], 126);
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   unset(`branch.${branch}.pushRemote`);
   config('url.https://github.com/acme/another.git.pushInsteadOf', 'https://github.com/acme/app.git');
   push(['origin', `HEAD:${own}`], 126);
@@ -743,18 +986,18 @@ test('remote pushes publish only the task branch, including configured and impli
   push(['origin', 'v9.9.9'], 126);
   push(['origin', ':'], 126);
   for (const ref of ['HEAD', branch, own, `HEAD:${branch}`, `HEAD:${own}`, `main:${own}`]) {
-    push(['-u', 'origin', ref], 1);
+    push(['-u', 'origin', ref], ALLOW);
   }
-  push(['origin', `HEAD:${own}`, `${branch}:${own}`], 1);
-  push(['origin'], 1);
-  push([], 1);
+  push(['origin', `HEAD:${own}`, `${branch}:${own}`], ALLOW);
+  push(['origin'], ALLOW);
+  push([], ALLOW);
   config('remote.origin.push', 'HEAD:main');
   push(['origin'], 126);
   push([], 126);
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   unset('remote.origin.push');
   config('remote.origin.push', `HEAD:${own}`);
-  push(['origin'], 1);
+  push(['origin'], ALLOW);
   cases.push([['git', 'config', '--add', 'remote.origin.push', 'HEAD:refs/tags/v9.9.9'], 0]);
   push(['origin'], 126);
   unset('remote.origin.push');
@@ -769,22 +1012,22 @@ test('remote pushes publish only the task branch, including configured and impli
   config('push.default', 'upstream');
   push(['origin'], 126);
   config('push.default', 'current');
-  push(['origin'], 1);
+  push(['origin'], ALLOW);
   config('push.default', 'matching');
   push(['origin'], 126);
   unset('push.default');
   config(`branch.${branch}.merge`, own);
   cases.push([['git', 'checkout', '-q', '-B', 'another-task'], 0]);
   push(['origin', 'HEAD'], 126);
-  push(['origin', `HEAD:${own}`], 1);
+  push(['origin', `HEAD:${own}`], ALLOW);
   cases.push([['git', 'checkout', '-q', branch], 0]);
-  for (const harness of ['claude', 'codex']) {
-    isolated(h, 'hard', harness);
-    // The full push matrix starts several guarded Git processes per case.
-    spawn(h, u, 'hard', { STUB_RUN: JSON.stringify(cases.map(([args]) => args)) }, { timeout: 120000 });
-    const ran = u.report().ran;
-    assert.deepEqual(ran.map((r) => r.code), cases.map(([, code]) => code),
-      `${harness}: ${JSON.stringify(ran.map((r) => ({ args: r.argv, code: r.code, stderr: r.stderr })))}`);
+  const ran = decide(h, wt, ['worker'], branch, cases.map(([args]) => args)).map(([r]) => r);
+  assert.deepEqual(ran.map((r) => r.code), cases.map(([, code]) => code),
+    JSON.stringify(ran.map((r) => ({ args: r.argv, code: r.code, why: r.why }))));
+  // What the shim hands on names only the task branch as a destination.
+  for (const r of ran.filter((x) => x.code === ALLOW)) {
+    const words = r.pushArgs.slice(r.pushArgs.indexOf('push') + 1).filter((a) => !a.startsWith('-'));
+    assert.ok(words.length > 1 && words.slice(1).every((ref) => ref.endsWith(`:${own}`)), JSON.stringify(r));
   }
 });
 
@@ -815,7 +1058,7 @@ results.push({ why: gitDenied(['push', 'origin', 'HEAD'], policy, 'git') });
 process.stdout.write(JSON.stringify(results));
 `;
   const result = cp.spawnSync(process.execPath, ['-e', script, path.join(ROOT, 'lib', 'shim.js'), branch],
-    { cwd: wt, env: h.env, encoding: 'utf8', timeout: 15000 });
+    { cwd: wt, env: h.env, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const probes = JSON.parse(result.stdout);
   for (const index of [0, 1, 5, 6, 7, 8, 9, 10]) assert.ok(probes[index].why, `probe ${index} must be refused`);
@@ -1038,8 +1281,8 @@ test('a gh token in the spawning environment passes through, and the keyring is 
   }
 });
 
-test('a push counts as local only when every URL git would use is local, so rewriting cannot reach another machine', { skip: NO_STUBS }, (t) => {
-  const { h, u } = setup(t);
+test('a push counts as local only when every URL git would use is local, so rewriting cannot reach another machine', (t) => {
+  const h = makeRepo(t);
   const local = path.join(h.base, 'local.git');
   h.git(['init', '-q', '--bare', local]);
   const away = 'https://127.0.0.1:9/away.git';
@@ -1055,32 +1298,25 @@ test('a push counts as local only when every URL git would use is local, so rewr
   h.git(['-C', fx, 'remote', 'add', 'up', away]);
   const rewritten = path.join(h.base, 'rewritten.git');
   const cases = [
-    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/plain'], 0, 0],
-    [['git', '-C', fx, 'push', 'loc', 'HEAD:refs/heads/named'], 0, 0],
+    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/plain'], ALLOW],
+    [['git', '-C', fx, 'push', 'loc', 'HEAD:refs/heads/named'], ALLOW],
     // An abbreviated option takes the next argument as its value; any option
     // voids the local exception, so `loc` cannot vouch for `up`.
-    [['git', '-C', fx, 'push', '--push-opt', 'loc', 'up', 'HEAD:refs/heads/x', '--force'], 126, 126],
-    [['git', '-C', fx, '-c', `url.${away}.insteadOf=${rewritten}`, 'push', rewritten, 'HEAD:refs/heads/x'], 126, 126],
-    [['git', '-C', fx, '-c', 'remote.two.pushurl=' + away, 'push', 'two', 'HEAD'], 126, 126],
-    [['git', '-C', fx, 'config', `url.${away}.insteadOf`, rewritten], 0, 0],
-    [['git', '-C', fx, 'push', rewritten, '+HEAD:refs/heads/x'], 126, 126],
-    [['git', '-C', fx, 'push', 'two', '+HEAD:refs/heads/x'], 126, 126],
-    [['git', '-C', fx, 'config', '--unset', `url.${away}.insteadOf`], 0, 0],
-    [['git', '-C', fx, 'config', `url.${away}.pushInsteadOf`, local], 0, 0],
-    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/x'], 126, 126],
+    [['git', '-C', fx, 'push', '--push-opt', 'loc', 'up', 'HEAD:refs/heads/x', '--force'], 126],
+    [['git', '-C', fx, '-c', `url.${away}.insteadOf=${rewritten}`, 'push', rewritten, 'HEAD:refs/heads/x'], 126],
+    [['git', '-C', fx, '-c', 'remote.two.pushurl=' + away, 'push', 'two', 'HEAD'], 126],
+    [['git', '-C', fx, 'config', `url.${away}.insteadOf`, rewritten], 0],
+    [['git', '-C', fx, 'push', rewritten, '+HEAD:refs/heads/x'], 126],
+    [['git', '-C', fx, 'push', 'two', '+HEAD:refs/heads/x'], 126],
+    [['git', '-C', fx, 'config', '--unset', `url.${away}.insteadOf`], 0],
+    [['git', '-C', fx, 'config', `url.${away}.pushInsteadOf`, local], 0],
+    [['git', '-C', fx, 'push', local, '+HEAD:refs/heads/x'], 126],
   ];
-  for (const harness of ['claude', 'codex']) {
-    for (const rung of ['hard', 'small']) {
-      try {
-        h.git(['-C', fx, 'config', '--unset-all', `url.${away}.pushInsteadOf`]);
-      } catch {
-        // Not set yet.
-      }
-      isolated(h, rung, harness);
-      spawn(h, u, rung, { STUB_RUN: JSON.stringify(cases.map((c) => c[0])) });
-      const ran = u.report().ran;
-      assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[rung === 'hard' ? 1 : 2]), `${harness} ${rung}: ${JSON.stringify(ran.map((r) => r.stderr))}`);
-    }
+  // Both a job that may push its branch and one that may not.
+  const decided = decide(h, h.base, ['worker', 'small'], 'tower-crane/T1-probe', cases.map((c) => c[0]));
+  for (const [n, job] of ['worker', 'small'].entries()) {
+    const ran = decided.map((r) => r[n]);
+    assert.deepEqual(ran.map((r) => r.code), cases.map((c) => c[1]), `${job}: ${JSON.stringify(ran.map((r) => [r.argv, r.why]))}`);
   }
 });
 
