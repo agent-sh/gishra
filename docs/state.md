@@ -72,6 +72,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `task.downgrade` | owner-required | `task update --kind` from `code` to `docs`, `research`, `design` or `ops`, which drops the tests and clean gates, at any status |
 | `task.kind.submitted` | refused | `task update --kind` on a submitted or accepted task, whoever asks; `rework` the task first |
 | `task.tier` | operational | `task update --tier` when the value changes |
+| `task.interrupt` | operational | `interrupt ID`, and `task update --interrupt` on a live claim whose requirements change |
 | `task.needs_owner` | operational | `owner-done`; `task update --needs-owner` clearing or replacing an existing reason |
 | `task.cancel_needs_owner` | owner-required | `task update --status cancelled` on a task with an owner ask (`needs_owner`) |
 | `waive.review` | operational | `accept --waive review` when the reviewer is capped or down at the submitted head: a `check ci` there recorded a capped review run (`ci.capped_review`, kept as `capped_review` on the evidence), or a review spawn there exited without a verdict |
@@ -163,7 +164,7 @@ A marker's holder and modification time are read through one opened file descrip
 }
 ```
 
-`tower-crane init` writes the default harness and ladder (see below), `limits` as shown, and `budget` values of `null` (no budget) until `tower-crane project set` gives them. `limits.workers` caps worker slots held by live leases and unclaimed worker spawns; `lease_minutes` is the default lease. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
+`tower-crane init` writes the default harness and ladder (see below), `limits` as shown, and `budget` values of `null` (no budget) until `tower-crane project set` gives them. `limits.workers` caps worker slots held by live leases, unclaimed worker spawns and interrupted supervisors still stopping; `lease_minutes` is the default lease. `repo` defaults to the GitHub slug of the `origin` remote, `base` to the branch checked out in the main checkout.
 
 Worker dispatch, claim and expired-lease renewal use the same slot count under the state lock. A successful worker `spawn` event without a claim of its own records `reserved: true` and reserves one slot until that task's generated agent claims, a matching exit receipt is recorded, the monitor records the attempt with `active: false`, or `lease_minutes` pass with no claim since the attempt's latest `spawn`, `spawn retry`, `spawn fallback` or `spawn phase` event, counted from the scheduled relaunch when a `retrying` phase records `backoff_ms`. `spawn session` receipts replay an earlier attempt's detail and neither move the reservation's pid nor extend it. A lapsed reservation stays lapsed: later monitor records do not revive it, because another holder may have taken the slot. The claim consumes its own reservation and then holds the slot by lease, without counting twice. Reservations persist through supervised retries, route fallbacks and backoff. Launch failure commits no spawn event and holds no reservation. A full limit refuses dispatch before launching a process, writing a home or recording spend, and names the task and agent holding each slot. Reviewer and other non-worker jobs do not reserve worker slots.
 
@@ -385,6 +386,14 @@ Task ids are never reused. A new task takes the larger of `next` and one past th
 
 Resource lock holders are derived from the same pure event-log, lease and clock view as worker slot holders. A task holds all its locks while its lease is live or its unclaimed worker dispatch reservation holds a slot. Claim, worker spawn and expired-lease renewal refuse conflicting locks under the state lock, naming the resource, task and agent holding it; the same task and agent can consume their own reservation. `ready`, blocked views and task descriptions include conflicts with other tasks. Submission, release and lease expiry free leased locks. Unclaimed reservations free their locks on the matching exit, inactive monitor record or reservation horizon, and retain them through supervised retry and fallback backoff. No process probe can free a lock for one observer alone. Reviewer and other non-worker dispatches acquire no resource locks. Lock and environment changes do not bump the task revision.
 
+Changing acceptance, dependencies, capabilities (`needs`), kind or a local CI override while a claim's lease is live requires `task update --interrupt`. Only the explicit owner, `orchestrator`, or a generated agent with a recorded orchestrator role can authorize the stop. Validation, the requirements edit and the interruption event share one lock, so a refused edit stops nothing. Acceptance, dependency and capability edits retain their revision bump. Adding or clearing capabilities changes what the next spawn receives; repeating an unchanged capability set keeps the claim and revision. Unchanged requirements and metadata changes do not interrupt.
+
+`interrupt ID` clears the claim and restores its `from` status without changing revision, branch, PR, head, evidence or worktree files. Its event records `{ holder, claim, status, revision, reason, phase, active }` and the matched supervisor's run identity when present. A live supervisor starts in `stopping`; a claim without a live supervisor records `stopped`. The supervisor consumes this request through its existing shutdown path, cancels retries, waits for process-group cleanup and output closure, then records `spawn phase` with `phase: "stopped", active: false` and the usual exit and spend receipts. An interrupted task with a live stopping supervisor still reserves one worker slot; claim and redispatch refuse until cleanup finishes. A manual claim has no active supervisor and releases immediately. Interrupted runs do not produce an exited-without-submit recovery wakeup.
+
+Dispatch recognizes the interruption of the latest worker attempt independently of `submitted_by`. The usual matching-route Codex and command-adapter session policy applies; native Claude starts fresh. Resume restores the interrupted claim's original `since` and `from`, checks blockers and worker limits, and supplies the current requirements with an interruption note. A changed route, missing session or fallback starts fresh in the retained worktree. No session is resumed while the interrupted supervisor is still stopping.
+
+Recorded `active: false` takes precedence over a monitor process that remains alive for usage collection. Interrupting such a claim records `stopped` directly. Final exit handling checks for a matching active interruption under the state lock after waiting for hooks, so a stop request committed during that wait also receives its `stopped` phase and exit receipt. A later `submit` or `rework` event for the task ends the preceding interruption's eligibility for both session selection and prompt construction. Rework resumes from the submission's claim and supplies current review feedback.
+
 Software evidence also has `source` (`check tests`, `check clean`, `check sources`, `check ci` or `merge`) and `commands`, an array of `{ "command", "args", "cwd", "status", "signal" }` receipts. `command` is the executable name or shell command line, `args` holds its arguments, `cwd` is its working directory, and `status` and `signal` report how it ended (null when unavailable). All commands the gate ran are recorded, including failed commands and GitHub queries. A gate refused before running a process records an empty array; an ok entry needs at least one command to count. In tests mode `none`, the receipt is the Git command resolving the submitted sha; it does not claim that a suite ran. Tests evidence and event detail also carry `tests_mode`, the mode resolved from the project and task kind when checking started, or null for invalid policy. Gate evidence and its event carry the same receipts and revision.
 
 When a test command fails, tests evidence and its audit event also carry `test_failure: { "names": [], "output_tail": "" }`. `names` collects node:test spec (`✖`) or TAP (`not ok`) failure lines. `output_tail` contains at most the last 40 lines and 8192 characters. Before storage or printing, the full output is redacted and only then cut to the tail, so a token across the cut is never left as a fragment. Names and tail are redacted against environment values that look like secrets: a value with a token shape, or the value of a credential-named variable (token, secret, password, passwd, credential, API key, access key, private key or cookie) that is 20 or more characters of letters and digits with no spaces. This covers the gate process environment and project, resolved rung and environment-file values. Token shapes are GitHub, API, AWS and Slack keys and `Authorization` header values. Paths, file names and commit SHAs are never redacted, and neither are numbers, booleans or short words such as `NODE_ENV=test` or `MAX_THINKING_TOKENS=1`. Environment-file contents are read during the gate and never stored. The check summary prints the same redacted names and bounded tail.
@@ -588,8 +597,15 @@ already holds it. Stack head checks ignore `automation`,
 `automation queued` and `automation reconcile` events, which change no
 task state.
 An accepted PR already merged remotely goes through the merge gate's
-confirmation path. It records the matching accepted head without merging
-again, including after an executor dies before writing its receipt.
+confirmation path. It records the matching accepted head and the PR's merge
+commit without merging again, including after an executor dies before
+writing its receipt. A non-stacked PR GitHub reports merged at the accepted
+head needs no current gate evidence or CI receipt base, so tasks accepted
+before merge evidence existed are confirmed rather than refused.
+The confirmation lookup validates merge text and method before calling
+GitHub. Failed current gates permit this read-only lookup; an open PR still
+requires passing gates. Confirmation evidence records the lookup that
+proved the accepted head merged, without querying and merging it again.
 Waiters retain automatic events even when their actor matches the waiter.
 Reactions run before event output filters, and active PRs catch up at
 watcher startup except a default zero-timeout cursor snapshot.
@@ -606,9 +622,21 @@ or fallback tick without holding the wait timeout.
 executor `pid`, `host` and Linux `start_ticks`, `requested` from a reaction
 that found a live executor, then `done`, or `error` with `error`. `done` and
 `error` also record `blocked`: `null` when the line drained, or
-`{task, reason}` naming the head that stopped it. A `requested` after the
+`{task, reason}` naming the first head of the pass that did not merge, and
+`skipped`: the `{task, reason}` heads passed over in the pass. A head
+waiting on GitHub's mergeability stops the line. A head refused for any
+other reason (a closed or unreadable PR, a moved or differently merged head, failing
+gates, a refused merge or head check) is passed over for the rest of the
+pass and the next entry takes the line; each later pass tries it again.
+PR lookup refusals and unreadable GitHub responses use this skip path;
+unexpected execution errors still abort the queue.
+`queue skipped` records `{sha, revision, reason}` on that task once per
+sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain
-again. The line holds one entry per accepted, unmerged PR task with no
+again with a fresh skipped set. A successful CI completion during the
+previous pass can therefore advance a skipped head before the executor
+releases the queue, without another notification. The line holds one entry
+per accepted, unmerged PR task with no
 unmerged task below it, extended up its stack by the accepted, linked tasks
 directly above it; entries are ordered by their bottom task's latest
 `accept` event at the current sha and revision.
@@ -700,6 +728,6 @@ Review findings use the latest eligible review at the current head and revision,
 
 `inbox --ack ITEM` emits `inbox ack` with `{item}` for a handled message, stall, decision answer or owner comment. It cannot dismiss task or GitHub findings. `wait --inbox` refreshes at startup and once per minute, bounding GitHub requests independently of local hook traffic. It emits `inbox item` for new or changed findings and `inbox snapshot` with item fingerprints to deduplicate concurrent followers. A finding that clears and later returns wakes again. Snapshot and acknowledgement receipts are quiet bookkeeping. T98's plugin watch and orchestrator Stop hooks enable this refresh and direct the session to `inbox`.
 
-Inbox reads, acknowledgements, observation and batch actions require a verified orchestrator or owner role; a verified worker identity alone grants no access. Batch actions preserve the authority table and existing checks. `spawn --ready` selects ready todo and rework tasks without live workers and dispatches serially within the worker limit, rechecking under the spawn lock. `release --dead` rechecks each claim under the release lock and never releases an unknown process. The worker broker rejects this unscoped batch before executing it; a worker can still release its own named task with `release ID --reason R`. `rework --from-review ID` uses the latest failed review under the rework lock; a newer pass or stale revision refuses. `merge --accepted` holds the existing queue executor and runs current-base checks and pinned stack merges; refused entries remain for the next invocation while independent mergeable entries proceed. Linked members still require every lower head to pass.
+Inbox reads, acknowledgements, observation and batch actions require a verified orchestrator or owner role; a verified worker identity alone grants no access. Batch actions preserve the authority table and existing checks. `spawn --ready` selects ready todo and rework tasks without live workers and dispatches serially within the worker limit, rechecking under the spawn lock. `release --dead` rechecks each claim under the release lock and never releases an unknown process. The worker broker rejects this unscoped batch before executing it; a worker can still release its own named task with `release ID --reason R`. `rework --from-review ID` uses the latest failed review under the rework lock; a newer pass or stale revision refuses. `merge --accepted` holds the existing queue executor and runs current-base checks and pinned stack merges; refused and pending entries remain for the next invocation while independent mergeable entries proceed. Automatic queue reactions still wait for unknown GitHub mergeability. Already merged PRs at the accepted head are confirmed without current gate evidence. Linked members still require every lower head to pass.
 
 `mcp` serves newline-delimited JSON-RPC on stdio with `inbox`, `spawn_ready`, `merge_accepted`, `rework_from_review` and `release_dead` tools. Initialization, ping and tool discovery do not read or require project state, including outside a Git repository. Each tool call resolves the bound project location and verifies the caller role; missing-project and authorization errors return MCP tool errors without closing the connection. It validates tool arguments and offers no shell, identity or state overrides. Spawned Claude and Codex orchestrators receive this server in their generated homes; workers do not. The plugin ships the server registration and five matching command documents. No new authority class or owner grant is introduced.

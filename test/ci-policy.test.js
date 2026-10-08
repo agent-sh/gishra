@@ -42,7 +42,7 @@ test('setting required jobs invalidates a hosted pass until CI is checked again'
   assert.deepEqual(latest(h).ci_policy, { ...EMPTY, required: ['fixture'] });
 });
 
-test('a changed required policy blocks the merge recheck before any GitHub merge query', (t) => {
+test('a changed required policy permits a confirmation lookup but blocks an open PR merge', (t) => {
   const h = fixture(t);
   gateEvidence(h, 'ci', 'checker');
   h.ok(['accept', 'T1']);
@@ -53,7 +53,8 @@ test('a changed required policy blocks the merge recheck before any GitHub merge
   assert.equal(refused.code, 1, refused.stdout);
   assert.match(refused.stderr, /hosted CI.*policy.*(changed|matches)/);
   assert.match(refused.stderr, /tower-crane check ci T1/);
-  assert.equal(fs.existsSync(log), false, 'stale policy refuses before talking to GitHub');
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls.map((args) => args.slice(0, 2)), [['pr', 'view']], 'stale policy allows only the confirmation lookup');
   gateEvidence(h, 'ci', 'checker');
   assert.equal(ciGate(h).ok, true);
 });

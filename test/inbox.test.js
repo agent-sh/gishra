@@ -240,11 +240,38 @@ test('accepted batch skips unknown PRs and merges independent ready PRs with the
   assert.match(JSON.parse(result.stdout).remaining[0].reason, /UNKNOWN/);
   assert.equal(h.github().prs[7].state, 'OPEN');
   assert.equal(h.github().prs[8].state, 'MERGED');
+  const skipped = h.logs().findLast((e) => e.cmd === 'queue skipped' && e.task === 'T1');
+  assert.equal(skipped.detail.sha, h.sha);
+  assert.match(skipped.detail.reason, /UNKNOWN/);
   const ready = h.github();
   ready.prs[7].mergeable = 'MERGEABLE';
   h.save(ready);
   h.ok(['merge', '--accepted', '--agent', 'orchestrator']);
   assert.equal(h.github().prs[7].state, 'MERGED');
+});
+
+test('accepted batch confirms a landed head with stale gates before merging the next PR', (t) => {
+  const h = setup(t);
+  for (const pr of [7, 8]) {
+    const id = h.add(`PR ${pr}`);
+    h.submit(id, pr);
+    h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
+    h.ok(['check', 'ci', id]);
+    h.ok(['accept', id]);
+  }
+  h.ok(['project', 'set', '--ci-required', '["test"]']);
+  h.ok(['check', 'ci', 'T2']);
+  assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
+  const github = h.github();
+  github.prs[7].state = 'MERGED';
+  github.prs[7].mergeCommit = { oid: 'c'.repeat(40) };
+  h.save(github);
+  h.ok(['merge', '--accepted', '--agent', 'orchestrator']);
+  const first = h.json(['task', 'show', 'T1']).evidence.findLast((e) => e.type === 'merge');
+  assert.equal(first.ok, true);
+  assert.equal(first.ref, 'c'.repeat(40));
+  assert.equal(h.github().prs[8].state, 'MERGED');
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8']);
 });
 
 test('accepted batch routes linked members through pinned stack merges', (t) => {
