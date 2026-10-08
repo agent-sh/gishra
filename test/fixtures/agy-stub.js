@@ -12,6 +12,9 @@ const read = f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
 const json = f => JSON.parse(read(f) || '{}');
 const md = dir => fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith('.md')).map(f => read(path.join(dir, f))) : [];
 const args = process.argv.slice(2);
+const prompt = args[args.indexOf('-p') + 1] || '';
+const requestedContext = [...prompt.matchAll(/^- (.+) \((?:global|project|import), read it\)$/gm)]
+  .map(match => read(match[1]));
 const name = args[args.indexOf('--agent') + 1];
 const agentFile = path.join(config, 'agents', `${name}.md`);
 const agent = read(agentFile);
@@ -30,7 +33,8 @@ const ran = JSON.parse(process.env.STUB_RUN || '[]').map(argv => {
   return { argv, code: result.status, stderr: result.stderr };
 });
 fs.writeFileSync(process.env.STUB_OUT, JSON.stringify({
-  home, agentFile, agent, args, memory, settings, mcp, rules, tools, skills, contextBytes, ran,
+  home, agentFile, agent, args, prompt, requestedContext, memory, settings, mcp, rules, tools, skills, contextBytes, ran,
   sandboxMarker: process.env.TOWER_CRANE_SANDBOX,
+  brokered: Boolean(process.env.TOWER_CRANE_BROKER),
 }));
 if (process.env.STUB_HOLD) setTimeout(() => {}, Number(process.env.STUB_HOLD));

@@ -47,6 +47,7 @@ test('agy private HOME does not authorize unverified sandbox authority or nested
   assert.match(refused.stderr, /ladder\.reach/);
   h.json(['spawn', '--task', 'T1', '--wait'], { env: { ...env, TOWER_CRANE_SANDBOX: '1' } });
   assert.equal(report().sandboxMarker, '0');
+  assert.equal(report().brokered, false);
 });
 
 test('a later non-agy spawn refreshes the live agy home before its broker appears', { skip: noStub }, async t => {
@@ -109,7 +110,7 @@ function setup(t) {
   return { h, home, env, out, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
 }
 
-test('agy isolates planted user context and reports only house rules requested by path', { skip: noStub }, t => {
+test('agy excludes planted user context from startup, requested rules and file grants', { skip: noStub }, t => {
   const { h, home, env, report } = setup(t);
   const before = [];
   for (let n = 0; n < 3; n++) {
@@ -131,6 +132,11 @@ test('agy isolates planted user context and reports only house rules requested b
   const seen = report();
   assert.equal(seen.home, path.join(h.state, 'homes', spawned.agent, 'home'));
   assert.deepEqual(seen.memory, []);
+  assert.ok(!seen.requestedContext.join('').includes('PLANTED-MEMORY'));
+  assert.ok(!seen.requestedContext.join('').includes('PLANTED-RULE'));
+  assert.ok(!seen.prompt.includes(path.join(home, '.gemini')));
+  assert.ok(!seen.agent.includes(path.join(home, '.gemini')));
+  assert.ok(!seen.rules.allow.some(rule => rule.includes(path.join(home, '.gemini').replace(/\\/g, '/').replace(/^[A-Za-z]:/, ''))));
   assert.deepEqual(seen.mcp, {});
   assert.ok(!seen.rules.allow.includes('command(planted-rule)'));
   assert.ok(seen.rules.deny.includes('unsandboxed(*)'));
@@ -148,10 +154,9 @@ test('agy isolates planted user context and reports only house rules requested b
   assert.ok(events.some(e => e.cmd === 'task note' && e.agent === spawned.agent && !e.via));
   const startup = events.find(e => e.cmd === 'startup').detail;
   assert.equal(startup.instructions_file, seen.agentFile);
-  const global = startup.rules.find(r => r.path === path.join(home, '.gemini', 'GEMINI.md'));
-  assert.equal(global.loaded, 'read');
+  assert.ok(!startup.rules.some(r => r.path.startsWith(path.join(home, '.gemini'))));
+  assert.ok(startup.rules.every(r => r.scope !== 'global'));
   assert.ok(startup.rules.every(r => r.loaded === 'read'));
-  assert.ok(startup.rules.some(r => r.path === path.join(home, '.gemini', 'config', 'rules', 'user.md') && r.loaded === 'read'));
   const after = [];
   for (let n = 0; n < 3; n++) {
     const r = cp.spawnSync(process.execPath, [stub, '--agent', 'gishra-worker'], {
