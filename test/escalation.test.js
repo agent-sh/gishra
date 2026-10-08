@@ -128,6 +128,9 @@ if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
   };
   t.after(async () => {
     try {
+      if (t.signal.aborted) {
+        t.diagnostic(JSON.stringify({ task: h.task(), attempts: h.readAttempts?.(), events: events(h).slice(-12) }));
+      }
       // Stop background usage and gate retries before removing fixture state.
       for (const child of h.detached()) {
         if (child.kind !== 'monitor' || !detachedAlive(child)) continue;
@@ -378,7 +381,10 @@ for (const { route, required } of [
       repo.ok(['project', 'set', '--repo', 'acme/demo', '--tests-mode', 'run-only',
         '--tests-cmd', `node -e "${exit}"`]);
       if (route === 'local-ci') repo.ok(['project', 'set', '--ci-local', JSON.stringify({
-        command: [process.execPath, '-e', exit], timeout: 5,
+        command: process.platform === 'win32'
+          ? [process.env.ComSpec || 'cmd.exe', '/d', '/c', 'if "%FIXTURE_GATE_OK%"=="0" (exit /b 1) else (exit /b 0)']
+          : ['/bin/sh', '-c', 'test "$FIXTURE_GATE_OK" != 0'],
+        timeout: 5,
       })]);
       if (required) repo.ok(['project', 'set', '--ci-required', '["required-build"]']);
       if (required === 'pending') {
@@ -401,8 +407,9 @@ if (args.some((arg) => arg.includes('/check-runs'))) {
     h.ok(['spawn', '--task', 'T1']);
     await h.until(() => settled('worker-T1-1'));
     for (const rung of ['medium', null]) {
-      const result = h.run(['check', type, 'T1'], { env: { FIXTURE_GATE_OK: '0' } });
+      const result = h.run(['check', type, 'T1', '--json'], { env: { FIXTURE_GATE_OK: '0' } });
       assert.equal(result.code, 1, result.stderr);
+      assert.equal(JSON.parse(result.stdout).confirmed_failure, true, result.stdout);
       if (rung) {
         await h.until(() => h.readAttempts().length === 2 && h.task().status === 'submitted');
         assert.equal(h.json(['task', 'show', 'T1']).tier, rung);
