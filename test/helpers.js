@@ -147,7 +147,16 @@ function cachedFixture(t, key, build) {
   const fix = (p) => {
     const text = fs.readFileSync(p, 'utf8');
     const next = rewrite(text);
-    if (next !== text) fs.writeFileSync(p, next);
+    if (next === text) return;
+    // In place, not writeFileSync: Windows refuses to recreate a hidden file,
+    // and git hides a linked worktree's .git file.
+    const fd = fs.openSync(p, 'r+');
+    try {
+      fs.ftruncateSync(fd, 0);
+      fs.writeSync(fd, next, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
   };
   // Of a git directory, bare or not, only its config names paths, such as a local remote.
   const walk = (dir) => {
