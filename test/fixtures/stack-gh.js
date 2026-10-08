@@ -44,6 +44,14 @@ cp.spawnSync = function stackGh(command, args, opts) {
     if (r.status !== 0) throw new Error(String(r.stderr));
     return String(r.stdout).trim();
   };
+  // A fast-forward when main has not moved, otherwise a squash commit on it.
+  const landBranch = (branch) => {
+    const head = git(['rev-parse', `refs/heads/${branch}`]);
+    const main = git(['ls-remote', 'origin', 'refs/heads/main']).split(/\s/)[0];
+    if (git(['merge-base', head, main]) === main) return git(['push', 'origin', `${head}:refs/heads/main`]);
+    const tree = git(['merge-tree', '--write-tree', main, head]).split('\n')[0];
+    git(['push', 'origin', `${git(['commit-tree', tree, '-p', main, '-m', `squash ${branch}`])}:refs/heads/main`]);
+  };
   const asyncPath = args[0] === 'api' ? /pulls\/(\d+)\/merge-async(?:\/(.+))?$/.exec(args[1]) : null;
   const posted = asyncPath && !asyncPath[2] && args[args.indexOf('--method') + 1] === 'POST';
   const mergeOf = args[0] === 'pr' && args[1] === 'merge' ? Number(args[2]) : posted ? Number(asyncPath[1]) : null;
@@ -143,7 +151,18 @@ cp.spawnSync = function stackGh(command, args, opts) {
     data.order = args.slice(2, args.indexOf('--base')).map(Number);
     return finish();
   }
-  if (args[1] === 'checkout') return finish(opts.cwd);
+  if (args[1] === 'checkout') {
+    if (data.inspectWorktrees) {
+      const adminRoot = path.join(data.repo, '.git', 'worktrees');
+      for (const name of fs.readdirSync(adminRoot)) {
+        if (!fs.existsSync(path.join(adminRoot, name, 'gitdir'))) {
+          return finish('Sync aborted; no changes were made', 1, `listing worktrees: reading worktree administration directory "${name}"`);
+        }
+      }
+    }
+    if (data.checkoutError) return finish('', 1, data.checkoutError);
+    return finish(opts.cwd);
+  }
   if (args[1] === 'unstack') { data.linked = false; return finish(); }
   if (args[1] === 'merge') {
     if (data.queued) return finish('queued');
@@ -153,7 +172,7 @@ cp.spawnSync = function stackGh(command, args, opts) {
       data.prs[n].state = 'MERGED';
       data.prs[n].mergeCommit = { oid: data.prs[n].headRefOid };
     }
-    git(['push', 'origin', `${data.prs[args[2]].headRefName}:main`]);
+    landBranch(data.prs[args[2]].headRefName);
     return finish();
   }
   if (args[1] === 'sync') {
@@ -165,7 +184,7 @@ cp.spawnSync = function stackGh(command, args, opts) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       }
     }
-    if (data.conflict) return finish('', 1, 'Conflict detected; all branches restored');
+    if (data.conflict) return finish('\x1b[31mConflict detected rebasing upper onto main\x1b[0m\nAll branches restored', 1, 'Sync aborted; no changes were made');
     if (data.syncCommit) {
       const r = original('git', ['-C', opts.cwd, 'commit', '--allow-empty', '-qm', 'sync refresh'], opts);
       if (r.status !== 0) throw new Error(String(r.stderr));
@@ -174,6 +193,7 @@ cp.spawnSync = function stackGh(command, args, opts) {
       pr.headRefOid = head;
       git(['push', 'origin', pr.headRefName]);
     }
+    if (data.syncError) return finish(data.syncOutput || '', 1, data.syncError);
     return finish();
   }
   throw new Error(`unexpected gh stack: ${args}`);
