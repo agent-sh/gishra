@@ -32,7 +32,7 @@ if (data.fail || data.failEndpoint && args[1]?.includes(data.failEndpoint)) {
     most_recent_instance: { ref: `refs/pull/${number}/head`, ...a.most_recent_instance },
   })).filter((a) => a.most_recent_instance.ref === ref);
 } else {
-  result = [{ name: 'test', suite: 1, id: 1, runs: 1, app: 'fixture', status: 'completed', conclusion: 'success' }];
+  result = [{ name: 'test', suite: 1, id: 1, runs: 1, app: 'fixture', status: 'completed', conclusion: data.ci || 'success' }];
   if (args[1].includes('/check-runs') && data.revuto) result.push(data.revuto);
 }
 fs.writeFileSync(`${file}.${process.pid}`, JSON.stringify(data));

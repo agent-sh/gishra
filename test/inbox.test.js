@@ -7,6 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { makeRepo } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
+const { shellQuote } = require('../lib/gates/common');
 
 function setup(t) {
   const h = makeRepo(t);
@@ -22,8 +23,8 @@ function setup(t) {
     state: 'OPEN', headRefOid: h.sha, headRefName: 'fixture-change', baseRefName: 'main',
     mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', url: `https://github.com/acme/demo/pull/${n}`,
   }])) });
-  h.add = (title) => {
-    const task = h.json(['task', 'add', '--title', title, '--kind', 'docs', '--acceptance', 'works']);
+  h.add = (title, kind = 'docs') => {
+    const task = h.json(['task', 'add', '--title', title, '--kind', kind, '--acceptance', 'works']);
     h.ok(['brief', 'set', task.id, '-'], { input: `${title}\n` });
     return task.id;
   };
@@ -426,4 +427,84 @@ test('MCP discovery works before project initialization and tool errors remain J
     assert.match(replies[2].result.content[0].text, /init|repository/);
     assert.deepEqual(replies[3].result, {});
   }
+});
+
+test('current failed software gates expose diagnostics and commands that clear their items', (t) => {
+  const h = setup(t);
+  for (const key of Object.keys(h.env)) if (key.startsWith('NODE_TEST_')) delete h.env[key];
+  const id = h.add('Software gate failures', 'code');
+  const script = path.join(h.base, 'failing.test.js');
+  fs.writeFileSync(script, "require('node:test')('rejects invalid gate inputs', () => require('node:assert/strict').equal(process.env.INBOX_TEST_OK, '1'));\n");
+  h.ok(['project', 'set', '--tests-mode', 'run-only', '--tests-cmd',
+    [process.execPath, '--test', script].map(shellQuote).join(' ')]);
+  h.submit(id, 7);
+  assert.equal(h.run(['check', 'tests', id], { env: { INBOX_TEST_OK: '0' } }).code, 1);
+  assert.equal(h.run(['check', 'clean', id], { env: { FIXTURE_GATE_OK: '0' } }).code, 1);
+  assert.equal(h.run(['check', 'sources', id]).code, 1, 'missing research manifest fails without a network request');
+  const github = h.github();
+  github.ci = 'failure';
+  h.save(github);
+  assert.equal(h.run(['check', 'ci', id]).code, 1);
+  const failures = () => h.inbox().items.filter((i) => i.kind === 'gate_failed');
+  const items = failures();
+  assert.deepEqual(items.map((i) => i.gate).sort(), ['ci', 'clean', 'sources', 'tests']);
+  const evidence = h.json(['task', 'show', id]).evidence;
+  for (const i of items) {
+    assert.equal(i.sha, h.sha);
+    assert.equal(i.revision, 1);
+    assert.equal(i.summary, evidence.findLast((e) => e.type === i.gate).summary);
+    if (i.gate !== 'tests') assert.deepEqual(i.action.argv, ['check', i.gate, id]);
+  }
+  const failedTests = items.find((i) => i.gate === 'tests');
+  assert.ok(failedTests.test_failure.names.some((name) => name.includes('rejects invalid gate inputs')));
+  assert.deepEqual(failedTests.action.argv.slice(0, 3), ['rework', id, '--reason']);
+  assert.match(failedTests.action.argv[3], /rejects invalid gate inputs/);
+  assert.match(h.ok(['inbox', '--agent', 'orchestrator']), /rejects invalid gate inputs/);
+  assert.equal(h.run(['inbox', '--ack', failedTests.id, '--agent', 'orchestrator']).code, 2);
+  h.ok([...items.find((i) => i.gate === 'clean').action.argv, '--agent', 'orchestrator']);
+  assert.ok(!failures().some((i) => i.gate === 'clean'), 'the latest pass replaces the earlier failure');
+  github.ci = 'success';
+  h.save(github);
+  h.ok([...items.find((i) => i.gate === 'ci').action.argv, '--agent', 'orchestrator']);
+  assert.ok(!failures().some((i) => i.gate === 'ci'));
+  h.ok([...failedTests.action.argv, '--agent', 'orchestrator']);
+  assert.match(fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8'), /rejects invalid gate inputs/);
+  assert.deepEqual(failures(), []);
+  h.ok(['task', 'update', id, '--acceptance', 'updated acceptance']);
+  h.submit(id, 7);
+  assert.deepEqual(failures(), [], 'old revision failures are not current findings');
+  assert.equal(h.run(['check', 'tests', id], { env: { INBOX_TEST_OK: '0' } }).code, 1);
+  assert.equal(failures()[0].revision, 2);
+  h.ok(['check', 'tests', id], { env: { INBOX_TEST_OK: '1' } });
+  assert.deepEqual(failures(), []);
+});
+
+test('an accepted PR with stale gate policy resolves through gate reruns before merge', (t) => {
+  const h = setup(t);
+  delete h.env.TOWER_CRANE_CLEAN_CMD;
+  const id = h.add('Accepted policy changes', 'code');
+  h.submit(id, 7);
+  for (const type of ['tests', 'clean', 'ci']) h.ok(['check', type, id]);
+  h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
+  h.ok(['accept', id, '--agent', 'orchestrator']);
+  const clean = path.join(h.base, 'new-clean.js');
+  fs.writeFileSync(clean, 'console.log(JSON.stringify({items: []}));\n');
+  for (const [gate, flag, value] of [
+    ['ci', '--ci-required', '["test"]'],
+    ['tests', '--tests-mode', 'run-only'],
+    ['clean', '--clean-cmd', [process.execPath, clean].map(shellQuote).join(' ')],
+  ]) {
+    h.ok(['project', 'set', flag, value]);
+    const blocked = h.inbox().items.find((i) => i.kind === 'accepted_unmerged');
+    assert.ok(blocked.reason.includes(`${gate}:`), blocked.reason);
+    assert.deepEqual(blocked.action.argv, ['check', gate, id]);
+    const rerun = h.run([...blocked.action.argv, '--agent', 'orchestrator']);
+    assert.equal(rerun.code, 0, rerun.stdout + rerun.stderr);
+    const ready = h.inbox().items.find((i) => i.kind === 'accepted_unmerged');
+    assert.deepEqual(ready.action.argv, ['merge', '--accepted']);
+  }
+  const ready = h.inbox().items.find((i) => i.kind === 'accepted_unmerged');
+  h.ok([...ready.action.argv, '--agent', 'orchestrator']);
+  assert.equal(h.github().prs[7].state, 'MERGED');
+  assert.ok(!h.inbox().items.some((i) => i.kind === 'accepted_unmerged' || i.kind === 'gate_failed'));
 });
