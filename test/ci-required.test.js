@@ -187,6 +187,30 @@ test('ignored apps and capped failures cannot satisfy required checks', (t) => {
   assert.match(capped.summary, /required check runs not successful.*Revuto/);
 });
 
+for (const status of ['missing', 'pending']) {
+  test(`completed uncapped CI failures stay confirmed when a required check is ${status}`, (t) => {
+    const h = fixture(t);
+    const required = status === 'pending' ? [run('required-build', null, 'in_progress')] : [];
+    for (const [other, confirmed] of [
+      [run('outside-test', 'failure'), true],
+      [run('outside-test'), false],
+      [run('outside-test', null, 'in_progress'), false],
+      [run('outside-test', 'cancelled'), false],
+      [CAPPED, false],
+      [run('ignored-test', 'failure', 'completed', 'ignored-app', 3), false],
+    ]) {
+      const result = h.check({
+        ci: { required: ['required-build'], ignore_apps: ['ignored-app'] },
+        runs: [...required, other],
+      });
+      assert.equal(result.code, 1, result.summary);
+      assert.equal(result.confirmed_failure, confirmed ? true : undefined);
+      assert.match(result.summary, status === 'missing' ? /missing required check runs/ : /required check runs not successful/);
+      if (confirmed) assert.match(result.summary, /failing: outside-test \(failure\)/);
+    }
+  });
+}
+
 test('malformed required lists fail closed, while empty or absent lists preserve hosted defaults', (t) => {
   const h = fixture(t);
   for (const required of ['test (', {}, [null], [1], [''], [' \t']]) {
