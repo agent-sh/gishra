@@ -441,6 +441,13 @@ if (fs.existsSync(${JSON.stringify(path.join(h.base, 'move-main-once'))})) {
   const git = (a) => require('node:child_process').execFileSync('git', ['-C', ${JSON.stringify(h.repo)}, ...a], { encoding: 'utf8' }).trim();
   git(['update-ref', 'refs/heads/main', git(['commit-tree', 'main^{tree}', '-p', 'main', '-m', 'lands during the check'])]);
 }
+// Another CLI acting while the suite runs.
+const during = ${JSON.stringify(path.join(h.base, 'during-check.js'))};
+if (fs.existsSync(during)) {
+  const script = during + '.ran';
+  fs.renameSync(during, script);
+  require(script);
+}
 for (const f of fs.readdirSync('test')) if (f.endsWith('.test.js')) require(path.resolve('test', f));
 `);
   h.ok(['project', 'set', '--tests-cmd', `${shellQuote(process.execPath)} ${shellQuote(suite)}`]);
@@ -549,4 +556,64 @@ test('a base that moves during the head check gets a new check before the merge'
   assert.notEqual(checks[0].detail.base_sha, checks[1].detail.base_sha);
   assert.equal(checks[1].detail.base_sha, h.git(['rev-parse', 'main']));
   assert.equal(h.github().prs['7'].state, 'MERGED');
+});
+
+test('a head replaced during its check is checked again at the new sha before the merge', (t) => {
+  const h = queueFixture(t);
+  h.git(['switch', '-q', 'fixture-change']);
+  fs.writeFileSync(path.join(h.repo, 'NOTES.md'), 'Replacement head.\n');
+  h.git(['add', 'NOTES.md']);
+  h.git(['commit', '-qm', 'replacement head']);
+  const replacement = h.git(['rev-parse', 'HEAD']);
+  h.git(['switch', '-q', 'main']);
+  h.moveMain();
+  // Rework, resubmit and reaccept T1 at a new head while its suite runs.
+  fs.writeFileSync(path.join(h.base, 'during-check.js'), `const cp = require('node:child_process'), fs = require('node:fs');
+const env = ${JSON.stringify(h.env)};
+const cli = (...a) => cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, ...a], { cwd: ${JSON.stringify(h.repo)}, env, encoding: 'utf8' });
+const file = env.AUTOMATION_GITHUB;
+cli('rework', 'T1', '--reason', 'replace the head', '--agent', 'orchestrator');
+const gh = JSON.parse(fs.readFileSync(file, 'utf8'));
+gh.prs['7'].headRefOid = ${JSON.stringify(replacement)};
+gh.ci[${JSON.stringify(replacement)}] = 'success';
+fs.writeFileSync(file, JSON.stringify(gh));
+cli('claim', 'T1', '--agent', 'worker');
+cli('submit', 'T1', '--sha', ${JSON.stringify(replacement)}, '--pr', '7', '--agent', 'worker');
+for (const gate of ['tests', 'clean', 'ci']) cli('check', gate, 'T1', '--agent', 'orchestrator');
+cli('evidence', 'T1', '--type', 'review', '--sha', ${JSON.stringify(replacement)}, '--ok', '--agent', 'reviewer');
+cli('accept', 'T1', '--agent', 'orchestrator');
+`);
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.consume();
+  assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the replacement ran during the check');
+  assert.deepEqual(headChecks(h).map((e) => [e.detail.sha, e.detail.ok]), [[h.sha, true], [replacement, true]],
+    'the check of the old head does not authorize merging the new one');
+  const merges = h.github().calls.filter((a) => a[1] === 'merge');
+  assert.equal(merges.length, 1);
+  assert.equal(merges[0][merges[0].indexOf('--match-head-commit') + 1], replacement);
+  const order = h.logs().filter((e) => e.cmd === 'head check' || e.cmd === 'merge').map((e) => e.cmd);
+  assert.deepEqual(order, ['head check', 'head check', 'merge']);
+});
+
+test('a head that stops the line and then goes to rework lets the PR behind it merge', (t) => {
+  const h = queueFixture(t);
+  acceptBoth(h);
+  const blocked = h.github();
+  blocked.prs['7'].mergeable = blocked.prs['7'].mergeStateStatus = 'UNKNOWN';
+  h.saveGithub(blocked);
+  h.consume();
+  assert.equal(h.logs().findLast((e) => e.cmd === 'merge queue' && e.detail.phase === 'done').detail.blocked.task, 'T1');
+  assert.equal(h.github().prs['8'].state, 'OPEN');
+
+  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 3;\n');
+  h.moveMain('value.js', '');
+  const conflicting = h.github();
+  conflicting.prs['7'].mergeable = 'CONFLICTING';
+  conflicting.prs['7'].mergeStateStatus = 'DIRTY';
+  h.saveGithub(conflicting);
+  h.ok(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'orchestrator']);
+  const [t1, t2] = h.readState('tasks.json').tasks;
+  assert.equal(t1.status, 'rework');
+  assert.equal(t2.evidence.at(-1).type, 'merge');
+  assert.equal(h.github().prs['8'].state, 'MERGED');
 });

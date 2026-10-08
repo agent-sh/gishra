@@ -196,8 +196,13 @@ earlier `head check` covered the same head, revision, base tip and command.
 Entries without a tests gate, or with tests mode `none`, skip it. A failing
 check sends the top task to rework with the output tail, and the tasks
 below it take the line again on their own. The rest of the line runs no
-gate and no suite. After the check the executor fetches the base again and
-checks again if it moved; `gh pr merge --match-head-commit` pins the head,
+gate and no suite. The merge is bound to what the check covered: if the
+entry's heads, revisions, statuses, PRs or stack metadata, or the project
+settings, changed while the suite ran, the merge gate does not run and the
+line starts over on the current state. A head that a reaction sends to
+rework for a conflict drains the line in the same reaction, so the PRs
+behind a blocked head move on. After the check the executor fetches the base
+again and checks again if it moved; `gh pr merge --match-head-commit` pins the head,
 but nothing pins the base, so a push to the base in the seconds between
 that fetch and the merge call is not checked. A branch protection rule that
 requires up-to-date branches closes that window. Hosted CI evidence comes

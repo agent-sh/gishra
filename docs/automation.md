@@ -79,4 +79,5 @@ The rest of the line waits without running anything.
 A stack is one entry ordered by its lowest task, and its check runs on the
 whole chain merged with current main. The executor fetches main again after
 the check; only the seconds between that fetch and the merge call remain
-unguarded.
+unguarded. A head that is replaced, or an entry or setting that changes,
+while the suite runs gets a new check before any merge.
