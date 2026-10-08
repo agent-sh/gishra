@@ -226,15 +226,16 @@ test('serve carries owner messages to the orchestrator and its replies back with
   const exited = new Promise((resolve) => server.on('exit', resolve));
   const controller = new AbortController();
   try {
-    const url = await new Promise((resolve, reject) => {
+    // Only the page loaded from the one-time link carries the write token.
+    const { url, open } = await new Promise((resolve, reject) => {
       let out = '';
       server.stdout.on('data', (d) => {
         out += d;
-        if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]).url);
+        if (out.includes('\n')) resolve(JSON.parse(out.split('\n')[0]));
       });
       server.on('exit', (code) => reject(new Error(`serve exited ${code}`)));
     });
-    const page = await (await fetch(url)).text();
+    const page = await (await fetch(open)).text();
     const token = /<meta name="tower-crane-token" content="([0-9a-f]{48})">/.exec(page)[1];
     const stream = await fetch(`${url}events`, { signal: controller.signal });
     const reader = stream.body.getReader();
