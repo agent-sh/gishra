@@ -14,7 +14,10 @@ test('the npm package ships the plugin and loads pi skills through its CLI', (t)
     process.env.npm_execpath ? [process.env.npm_execpath, ...args] : args,
     { cwd: ROOT, env: h.env, encoding: 'utf8', timeout: 60000, shell: !process.env.npm_execpath && process.platform === 'win32' });
   assert.equal(packed.status, 0, packed.stderr);
-  const artifact = JSON.parse(packed.stdout)[0];
+  // npm 12 keys pack results by package name; earlier versions return an array.
+  const artifacts = Object.values(JSON.parse(packed.stdout));
+  assert.equal(artifacts.length, 1, packed.stdout);
+  const [artifact] = artifacts;
   assert.equal(artifact.name, '@agentsys/tower-crane');
   const metadata = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   assert.deepEqual(metadata.bin, { 'tower-crane': 'bin/tower-crane.js' });
