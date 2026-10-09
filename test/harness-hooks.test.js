@@ -57,6 +57,12 @@ for (const route of ['claude', 'codex', 'codex-notify', 'pi', 'opencode', 'agy',
     if (route === 'codex-notify') h.env.MESSAGE_NOTIFY_ONLY = '1';
     const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json']);
     await until(ready);
+    if (harness === 'claude') {
+      const settings = JSON.parse(fs.readFileSync(path.join(h.state, 'homes', 'worker-T1-1', 'settings.json')));
+      for (const event of ['UserPromptSubmit', 'PostToolUse', 'Stop']) {
+        assert.ok(settings.hooks[event][0].hooks[0].timeout >= 135, 'generated timeout covers both bridge calls');
+      }
+    }
     h.ok(['msg', '--to', 'worker-T1-1', '--task', 'T1', 'mid-run coordination', '--agent', 'orchestrator']);
     fs.writeFileSync(ready + '.go', '');
     const live = ['claude', 'codex', 'pi', 'opencode'].includes(harness) && route !== 'codex-notify';
