@@ -133,7 +133,8 @@ while (!fs.existsSync(${JSON.stringify(addRelease)})) {
   }
 });
 
-test('a sandboxed git push clears an empty read-only lock placeholder that would block its upstream config', (t) => {
+// Removal needs /proc to show that no process holds the lock; without it the placeholder is kept.
+test('a sandboxed git push clears an empty read-only lock placeholder that would block its upstream config', { skip: !fs.existsSync('/proc/self/fd') && 'needs /proc to see which process holds the lock' }, (t) => {
   const h = makeRepo(t);
   h.init();
   h.git(['checkout', '-q', '-b', 'task-T1']);
