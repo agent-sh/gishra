@@ -141,6 +141,69 @@ test('unknown decision statuses block only the tasks that need to interpret them
   assert.equal(h.readState('decisions.json').decisions[0].status, 'future-pending');
 });
 
+test('unknown task statuses retain unexpired claims in lock and capacity checks', (t) => {
+  const h = fixture(t);
+  const worker = heldWorker(h);
+  h.ok(['project', 'set', '--workers', '1']);
+  for (const id of ['T1', 'T2']) h.ok(['task', 'update', id, '--lock', 'shared-edit']);
+  h.ok(['claim', 'T1', '--agent', 'first-worker']);
+  const tasks = h.readState('tasks.json');
+  tasks.tasks[0].status = 'future-paused';
+  h.writeState('tasks.json', tasks);
+  const first = tasks.tasks[0];
+  const ready = h.json(['ready', '--all']);
+  const blocked = ready.blocked.find((task) => task.id === 'T2');
+  assert.ok(blocked, 'an unfamiliar status must not free the claimed resource');
+  assert.match(blocked.reasons.join('; '), /shared-edit.*T1.*first-worker/);
+  for (const args of [['claim', 'T2', '--agent', 'second-worker'], ['spawn', '--task', 'T2']]) {
+    const result = h.run(args);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /shared-edit.*T1.*first-worker/);
+  }
+  h.ok(['task', 'update', 'T2', '--lock', '']);
+  for (const args of [['claim', 'T2', '--agent', 'second-worker'], ['spawn', '--task', 'T2']]) {
+    const result = h.run(args);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /1 worker slots held, limit 1.*T1.*first-worker/);
+  }
+  assert.deepEqual(h.readState('tasks.json').tasks[0], first);
+  assert.equal(fs.existsSync(worker.ready), false);
+  const expired = h.readState('tasks.json');
+  expired.tasks[0].claim.until = '2000-01-01T00:00:00.000Z';
+  h.writeState('tasks.json', expired);
+  h.ok(['claim', 'T2', '--agent', 'second-worker']);
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'future-paused');
+});
+
+for (const tier of ['expert', 'easy']) {
+test(`recovery and rework preserve unfamiliar routing with current tier ${tier}`, (t) => {
+  const h = fixture(t);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha]);
+  h.reviewer('T1', 'reviewer');
+  const tasks = h.readState('tasks.json');
+  Object.assign(tasks.tasks[0], { tier, tier_range: { min: 'easy', max: 'super-expert' } });
+  h.writeState('tasks.json', tasks);
+  const brief = fs.readFileSync(path.join(h.state, 'briefs', 'T1.md'), 'utf8');
+  h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer', '--summary', 'fix the result']);
+  const task = h.readState('tasks.json').tasks[0];
+  assert.equal(task.tier, tier);
+  assert.equal(task.status, 'submitted');
+  assert.deepEqual(task.tier_range, tasks.tasks[0].tier_range);
+  assert.equal(task.escalations, undefined);
+  assert.equal(task.evidence.at(-1).ok, false, 'the review verdict remains recorded');
+  const before = ['tasks.json', 'events.jsonl'].map((file) => fs.readFileSync(path.join(h.state, file), 'utf8'));
+  const recovery = h.json(['recover', 'T1']);
+  assert.match(recovery.waiting, /unsupported tier.*upgrade/);
+  const rework = h.run(['rework', 'T1', '--reason', 'fix the result']);
+  assert.equal(rework.code, 1);
+  assert.match(rework.stderr, /unsupported tier.*upgrade/);
+  assert.deepEqual(['tasks.json', 'events.jsonl'].map((file) => fs.readFileSync(path.join(h.state, file), 'utf8')), before);
+  assert.equal(fs.readFileSync(path.join(h.state, 'briefs', 'T1.md'), 'utf8'), brief);
+});
+}
+
 test('newer schemas refuse dispatch and writes before any side effects', (t) => {
   const h = fixture(t);
   assert.equal(h.readState('project.json').schema_version, 1);
