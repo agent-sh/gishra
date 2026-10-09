@@ -278,6 +278,63 @@ for (const finalRead of [false, true]) {
   });
 }
 
+test('retrying a wrong-base stack merge after sync fails keeps it failed and preserves the worktree', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => {
+    d.moveOnMerge = { pr: 12, base: f.lower.branch, onPr: 12 };
+    d.syncError = 'temporary transport failure';
+  });
+  const command = ['merge', 'T2', '--agent', 'orchestrator', '--json'];
+  const first = f.h.run(command);
+  assert.equal(first.code, 1, first.stdout);
+  assert.equal(f.read().prs[12].state, 'MERGED');
+  assert.equal(f.read().prs[12].baseRefName, f.lower.branch);
+  const main = f.h.git(['ls-remote', 'origin', 'refs/heads/main']).split(/\s/)[0];
+  assert.notEqual(f.h.git(['merge-base', f.upper.sha, main]), f.upper.sha);
+  assert.ok(fs.existsSync(f.upper.wt.path));
+  for (let retry = 0; retry < 2; retry++) {
+    const r = f.h.run(command);
+    assert.equal(r.code, 1, r.stdout);
+    const report = JSON.parse(r.stdout);
+    assert.equal(report.ok, false);
+    assert.ok(report.summary.includes(f.lower.branch), report.summary);
+    assert.match(report.summary, /expected main/);
+    assert.equal(f.h.git(['ls-remote', 'origin', 'refs/heads/main']).split(/\s/)[0], main);
+    assert.ok(fs.existsSync(f.upper.wt.path));
+    const upper = f.h.json(['task', 'show', 'T2', '--agent', 'orchestrator']);
+    assert.equal(upper.evidence.some((e) => e.type === 'merge' && e.ok), false);
+  }
+  const lower = f.h.json(['task', 'show', 'T1', '--agent', 'orchestrator']);
+  assert.equal(lower.evidence.findLast((e) => e.type === 'merge').ok, true);
+});
+
+test('a member retry uses async receipts recorded under a higher stack task', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.add('Top', 'T2');
+  const top = f.h.json(['worktree', 'T3']);
+  f.submit('T3', 13, top);
+  f.h.ok(['stack', 'link', 'T3']);
+  f.accept('T3');
+  f.write((d) => {
+    d.moveOnMerge = { pr: 12, base: f.lower.branch, onPr: 12 };
+    d.syncError = 'temporary transport failure';
+  });
+  const first = f.h.run(['merge', 'T3', '--agent', 'orchestrator', '--json']);
+  assert.equal(first.code, 1, first.stdout);
+  const upper = f.h.json(['task', 'show', 'T2', '--agent', 'orchestrator']);
+  assert.equal(upper.evidence.some((e) => e.type === 'merge'), false);
+  const retry = f.h.run(['merge', 'T2', '--agent', 'orchestrator', '--json']);
+  assert.equal(retry.code, 1, retry.stdout);
+  assert.match(JSON.parse(retry.stdout).summary, /expected main/);
+  assert.ok(fs.existsSync(f.upper.wt.path));
+  assert.equal(f.h.json(['task', 'show', 'T2', '--agent', 'orchestrator']).evidence.some((e) => e.type === 'merge' && e.ok), false);
+  assert.equal(f.read().prs[13].state, 'OPEN');
+});
+
 test('a partially merged stack retries on the project base and refuses an unrelated base', (t) => {
   const f = stacked(t);
   f.accept('T1');
