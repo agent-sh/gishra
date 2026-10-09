@@ -11,13 +11,33 @@ const { ROOT, makeRepo, makeProjectRepo, makeTaskRepo, cachedFixture, fixtureLad
 // Harness file names are not model selections.
 const harnessNames = new Set(['claude-plugin', 'claude-config', 'claude-error', 'claude-global',
   'claude-only', 'claude-provider', 'claude-provider.js', 'claude-provider.test.js', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
-const selections = /\b(?:claude-[\w.-]+|gpt-[\w.-]+|opus|sonnet|haiku|sol|luna|astra)\b/gi;
+const aliasWords = Object.keys(require('../lib/ladder').BUILTIN.claude_aliases || {})
+  .map(alias => alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+const selections = new RegExp(String.raw`\b(?:claude-[\w.-]+|gpt-[\w.-]+|opus|sonnet|haiku|sol|luna|astra${aliasWords ? '|' + aliasWords : ''})\b`, 'gi');
 // These records quote sources or historical probe output, rather than configure runtime models.
 const researchDocuments = new Set(['research/T38.json', 'research/T101-probes/results/identity.json',
   'research/T101-probes/results/secrets.json']);
 const importSpace = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*`;
-// The literal first argument determines the file regardless of trailing syntax.
-const importCall = new RegExp(String.raw`\brequire${importSpace}(?:\.${importSpace}resolve${importSpace})?\(${importSpace}(['"])([^'"]+)\1`, 'g');
+const requestLiteral = "(['\"`])([^'\"`]+)\\1";
+// Only literal requests are resolved; module bodies are never executed.
+const importCall = new RegExp(String.raw`\b(?:require${importSpace}(?:\.${importSpace}resolve${importSpace})?|import${importSpace})\(${importSpace}` + requestLiteral, 'g');
+const staticImport = new RegExp(String.raw`\b(?:from|import)${importSpace}` + requestLiteral, 'g');
+
+function documentaryJSON(file, text) {
+  if (!researchDocuments.has(file)) return false;
+  let data;
+  try { data = JSON.parse(text); }
+  catch { return false; }
+  const strings = (row, keys) => row && typeof row === 'object' && !Array.isArray(row)
+    && Object.keys(row).every(key => keys.includes(key))
+    && keys.every(key => typeof row[key] === 'string');
+  if (file === 'research/T38.json') {
+    return data && Object.keys(data).every(key => ['sources', 'claims'].includes(key))
+      && Array.isArray(data.sources) && data.sources.every(row => strings(row, ['id', 'url']))
+      && Array.isArray(data.claims) && data.claims.every(row => strings(row, ['claim', 'quote', 'source']));
+  }
+  return Array.isArray(data) && data.every(row => strings(row, ['id', 'surface', 'command', 'expected', 'observed', 'verdict']));
+}
 
 test('cached fixtures pin their ladder and keep copies independent', (t) => {
   const tasks = [{ args: ['--title', 'Cached task', '--acceptance', 'pinned model'], brief: 'cached brief\n' }];
@@ -51,6 +71,10 @@ cp.spawnSync = function (command, args, options) {
   const check = original.call(this, process.execPath, [path.join(options.cwd, 'scripts', 'check-shared-files.js')],
     { cwd: options.cwd, env: options.env, encoding: 'utf8' });
   if (check.status !== 0) throw new Error('probe shared-files check failed: ' + check.stderr);
+  const lint = original.call(this, process.execPath,
+    ['--test', '--test-name-pattern=every shipped|model selections live', path.join(options.cwd, 'test', 'model-config.test.js')],
+    { cwd: options.cwd, env: options.env, encoding: 'utf8' });
+  if (lint.status !== 0) throw new Error('probe model lint failed: ' + lint.stdout + lint.stderr);
   fs.writeSync(options.stdio[1], 'not ok 1 - BUILTIN matches the documented defaults and init fallback\\n# tests 1\\n# fail 1\\n');
   const log = path.join(options.env.TOWER_CRANE_TEST_TMP, 'model-swap-probe.tap');
   fs.renameSync(log, log + '.replaced');
@@ -73,7 +97,7 @@ function modelSelections(root, env = process.env) {
     if (!/\.(?:cjs|mjs|js)$/.test(file)) continue;
     const text = fs.readFileSync(path.join(root, file), 'utf8');
     const resolve = createRequire(path.resolve(root, file)).resolve;
-    for (const match of text.matchAll(importCall)) {
+    for (const match of [...text.matchAll(importCall), ...text.matchAll(staticImport)]) {
       try {
         const imported = resolve(match[2]);
         if (path.extname(imported) === '.json') importedJSON.add(path.relative(root, imported).split(path.sep).join('/'));
@@ -84,10 +108,10 @@ function modelSelections(root, env = process.env) {
   }
   const violations = [];
   for (const file of new Set(files)) {
-    if (researchDocuments.has(file) && !importedJSON.has(file)) continue;
     if ((file.startsWith('docs/') && file !== 'docs/cli.md') || file === 'README.md' || file === 'CHANGELOG.md'
       || file.startsWith('changelog.d/') || file === 'test/fixtures/usage/README.md') continue;
     let text = fs.readFileSync(path.join(root, file), 'utf8');
+    if (!importedJSON.has(file) && documentaryJSON(file, text)) continue;
     if (file === 'docs/cli.md') {
       // API JSON examples use fixture selections; configuration prose keeps real IDs.
       let json = false;
@@ -121,6 +145,49 @@ test('model lint allows harness module paths and rejects model selections', (t) 
     fs.writeFileSync(file, `require('../lib/claude-provider.js');\nconst selection = '${id}';\n`);
     assert.deepEqual(modelSelections(h.repo, h.env), [`selection.js:2: ${id}`]);
   }
+});
+
+test('model lint rejects every shipped Claude alias in runtime selections', (t) => {
+  const h = makeRepo(t);
+  const file = path.join(h.repo, 'selection.js');
+  for (const alias of Object.keys(require('../lib/ladder').BUILTIN.claude_aliases)) {
+    fs.writeFileSync(file, 'module.exports = ' + JSON.stringify({ harness: 'claude', model: alias }) + ';\n');
+    assert.deepEqual(modelSelections(h.repo, h.env), [`selection.js:1: ${alias}`]);
+  }
+});
+
+test('documentary JSON exemptions cannot hide runtime configuration', (t) => {
+  const h = makeRepo(t);
+  fs.mkdirSync(path.join(h.repo, 'research'));
+  const id = ['gpt', 'fixture-2099'].join('-');
+  const record = 'research/T38.json';
+  fs.writeFileSync(path.join(h.repo, record), JSON.stringify({ model: id }));
+  assert.deepEqual(modelSelections(h.repo, h.env), [`${record}:1: ${id}`]);
+});
+
+test('model lint scans template CommonJS and static ESM documentary JSON imports', (t) => {
+  const h = makeRepo(t);
+  fs.mkdirSync(path.join(h.repo, 'research'));
+  fs.mkdirSync(path.join(h.repo, 'lib'));
+  const id = ['gpt', 'fixture-2099'].join('-');
+  const record = 'research/T38.json';
+  fs.writeFileSync(path.join(h.repo, record), JSON.stringify({
+    sources: [{ id: 'stub', url: 'https://example.invalid' }],
+    claims: [{ claim: 'A historical model measurement', quote: id, source: 'stub' }],
+  }));
+  const request = '../' + record;
+  const cjs = path.join(h.repo, 'lib', 'selection.cjs');
+  fs.writeFileSync(cjs, 'module.exports = require(`' + request + '`);\n');
+  const loaded = cp.execFileSync(process.execPath,
+    ['-e', 'process.stdout.write(require(process.argv[1]).claims[0].quote)', cjs], { env: h.env, encoding: 'utf8' });
+  assert.equal(loaded, id);
+  assert.deepEqual(modelSelections(h.repo, h.env), [`${record}:1: ${id}`]);
+  fs.rmSync(cjs);
+  const esm = path.join(h.repo, 'lib', 'selection.mjs');
+  fs.writeFileSync(esm, 'import data from ' + JSON.stringify(request) +
+    ' with { type: "json" };\nprocess.stdout.write(data.claims[0].quote);\n');
+  assert.equal(cp.execFileSync(process.execPath, [esm], { env: h.env, encoding: 'utf8' }), id);
+  assert.deepEqual(modelSelections(h.repo, h.env), [`${record}:1: ${id}`]);
 });
 
 test('model lint scans research JSON and imported documentary records', (t) => {
@@ -168,7 +235,10 @@ test('model lint follows JavaScript precedence over extensionless documentary JS
   const h = makeRepo(t);
   fs.mkdirSync(path.join(h.repo, 'research'));
   const id = ['gpt', 'fixture-2099'].join('-');
-  fs.writeFileSync(path.join(h.repo, 'research', 'T38.json'), JSON.stringify({ quote: id }));
+  fs.writeFileSync(path.join(h.repo, 'research', 'T38.json'), JSON.stringify({
+    sources: [{ id: 'stub', url: 'https://example.invalid' }],
+    claims: [{ claim: 'A historical model measurement', quote: id, source: 'stub' }],
+  }));
   fs.writeFileSync(path.join(h.repo, 'research', 'T38.js'), 'module.exports = "javascript";\n');
   const module = path.join(h.repo, 'selection.js');
   fs.writeFileSync(module, 'module.exports = require(' + JSON.stringify('./research/T38') + ');\n');
@@ -182,13 +252,16 @@ test('model lint scans documentary JSON loaded through a directory index', (t) =
   const h = makeRepo(t);
   fs.mkdirSync(path.join(h.repo, 'research', 'entry'), { recursive: true });
   const id = ['gpt', 'fixture-2099'].join('-');
-  fs.writeFileSync(path.join(h.repo, 'research', 'T38.json'), JSON.stringify({ quote: id }));
+  fs.writeFileSync(path.join(h.repo, 'research', 'T38.json'), JSON.stringify({
+    sources: [{ id: 'stub', url: 'https://example.invalid' }],
+    claims: [{ claim: 'A historical model measurement', quote: id, source: 'stub' }],
+  }));
   fs.writeFileSync(path.join(h.repo, 'research', 'entry', 'index.js'),
     'module.exports = require(' + JSON.stringify('../T38') + ');\n');
   const module = path.join(h.repo, 'selection.js');
   fs.writeFileSync(module, 'module.exports = require(' + JSON.stringify('./research/entry') + ');\n');
   const loaded = cp.execFileSync(process.execPath,
-    ['-e', 'process.stdout.write(require(process.argv[1]).quote)', module], { env: h.env, encoding: 'utf8' });
+    ['-e', 'process.stdout.write(require(process.argv[1]).claims[0].quote)', module], { env: h.env, encoding: 'utf8' });
   assert.equal(loaded, id);
   assert.deepEqual(modelSelections(h.repo, h.env), [`research/T38.json:1: ${id}`]);
 });

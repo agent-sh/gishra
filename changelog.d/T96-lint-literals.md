@@ -1,0 +1,1 @@
+- Model selection lint covers every shipped Claude alias and literal template or ESM JSON imports. Only schema-valid documentary records retain their exception, so runtime configuration at a documentary path is scanned even without a recognized import.

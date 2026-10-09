@@ -29,7 +29,7 @@ try {
     harness: 'pi',
     ladder: Object.fromEntries(['orchestrator', 'easy', 'medium', 'hard', 'research', 'review', 'small']
       .map(name => [name, { harness: 'pi', model: `fake-model-${name}-2099`, effort: 'high' }])),
-    claude_aliases: { fakealias: 'fake-release-2099' },
+    claude_aliases: { [['fake', 'alias'].join('')]: 'fake-release-2099' },
   };
   fs.writeFileSync(file, text.replace(/const BUILTIN = \{[\s\S]*?\n\};/,
     `const BUILTIN = ${JSON.stringify(builtin, null, 2)};`));
