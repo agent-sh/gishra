@@ -6,5 +6,11 @@
   "homepage": "https://github.com/agent-sh/tower-crane",
   "repository": "https://github.com/agent-sh/tower-crane",
   "license": "MIT",
-  "keywords": ["orchestration", "delegation", "review", "ci", "agents"]
+  "keywords": ["orchestration", "delegation", "review", "ci", "agents"],
+  "mcpServers": {
+    "tower-crane": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/tower-crane.js", "mcp", "--agent", "orchestrator"]
+    }
+  }
 }
