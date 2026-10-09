@@ -65,7 +65,9 @@ test('a missing browser reports its spawn error and cleans up its profile', (t) 
   assert.deepEqual(fs.readdirSync(h.base).filter((f) => f.startsWith('tower-crane-chrome-')), []);
 });
 
-test('a temp root too deep for Chrome\'s socket still starts Chrome, from a shallow profile directory', (t) => {
+test('a temp root too deep for Chrome\'s socket still starts Chrome, from a shallow profile directory', {
+  skip: process.platform === 'win32' && 'browser fixture uses a shebang; Unix socket path limits do not apply on Windows',
+}, (t) => {
   const h = makeRepo(t);
   // A gate's TMPDIR sits under TOWER_CRANE_TMP, which can be deeper than the socket path allows.
   const deep = path.join(h.base, ...Array.from({ length: 4 }, (_, i) => `${i}-${'d'.repeat(30)}`));
