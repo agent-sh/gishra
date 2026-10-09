@@ -57,6 +57,37 @@ test('the broker rejects an identity that differs from its spawn', () => {
   }
 });
 
+test('a worker broker refuses unscoped dead-claim recovery and preserves peer claims', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  for (const id of ['T1', 'T2']) {
+    h.ok(['task', 'add', '--title', id, '--acceptance', 'claim is scoped']);
+    h.ok(['claim', id, '--agent', `worker-${id}-1`]);
+  }
+  const file = path.join(h.state, 'events.jsonl');
+  fs.appendFileSync(file, JSON.stringify({ id: 'dead-peer', at: new Date().toISOString(), cmd: 'spawn',
+    agent: 'orchestrator', task: 'T2', detail: { agent: 'worker-T2-1', role: 'worker', pid: 2147483647 } }) + '\n');
+  const job = { state: h.state, task: 'T1', agent: 'worker-T1-1', role: 'worker', harness: 'codex',
+    cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T1-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const before = h.readState('tasks.json');
+  const events = fs.readFileSync(file, 'utf8');
+  const result = await h.runAsync(['release', '--dead'], {
+    env: { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task },
+  });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /release --dead.*orchestrator|unscoped/i);
+  assert.deepEqual(h.readState('tasks.json'), before);
+  assert.equal(fs.readFileSync(file, 'utf8'), events);
+  assert.throws(() => B.authorize(job, ['release', '--dead']), /release --dead.*orchestrator|unscoped/i);
+  const own = await h.runAsync(['release', 'T1', '--reason', 'handoff'], {
+    env: { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task },
+  });
+  assert.equal(own.code, 0, own.stderr);
+  assert.equal(h.readState('tasks.json').tasks[1].claim.agent, 'worker-T2-1');
+});
+
 test('the broker answers no request without its token and acts on its own task only', async (t) => {
   const { job } = scratch(t);
   for (const argv of [['task', 'note', 'T2', 'x'], ['claim', 'T2'], ['ask', '--question', 'q', '--option', 'a', '--option', 'b', '--blocks', 'T2']]) {
