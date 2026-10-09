@@ -204,6 +204,8 @@ test('dispatch rechecks slots under the lock after worktree preparation', async 
 });
 
 test('a retrying worker keeps its slot through backoff and expired-lease renewal', async (t) => {
+  // Windows starts the harness before its claim lands, so the slot may still be a reservation there.
+  const HOLD_KIND = process.platform === 'win32' ? 'lease|reservation' : 'lease';
   const h = setup(t, 1);
   h.ok(['claim', 'T3', '--agent', 'expired']);
   const doc = h.readState('tasks.json');
@@ -215,10 +217,10 @@ test('a retrying worker keeps its slot through backoff and expired-lease renewal
   await until(() => events(h).some((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying'), 'worker did not enter backoff');
   const renew = h.run(['renew', 'T3', '--agent', 'expired']);
   assert.equal(renew.code, 1, renew.stderr);
-  assert.match(renew.stderr, /T1.*worker-T1-1.*lease/);
+  assert.match(renew.stderr, new RegExp(`T1.*worker-T1-1.*(${HOLD_KIND})`));
   const refused = h.run(['spawn', '--task', 'T2']);
   assert.equal(refused.code, 1, refused.stderr);
-  assert.match(refused.stderr, /T1.*worker-T1-1.*lease/);
+  assert.match(refused.stderr, new RegExp(`T1.*worker-T1-1.*(${HOLD_KIND})`));
   await until(() => events(h).some((e) => e.cmd === 'spawn retry'), 'worker did not retry');
   h.ok(['claim', 'T1', '--agent', spawned.agent]);
   assert.equal(h.run(['claim', 'T2', '--agent', 'manual']).code, 1);
