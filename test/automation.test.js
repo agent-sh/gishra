@@ -229,6 +229,31 @@ test('mixed conflicts keep a prepared merge with generated files staged and only
   assert.match(task.notes.at(-1).text, /generated files are pre-resolved: docs\/cli\.md, generated\.txt/);
 });
 
+test('mixed binary outputs preserve the branch bytes when generation must wait for source resolution', (t) => {
+  const h = generatedSetup(t);
+  for (const [branch, bytes] of [['main', [0, 254, 67]], ['fixture-change', [0, 255, 66]]]) {
+    h.git(['switch', branch]);
+    fs.writeFileSync(path.join(h.repo, 'generated.txt'), Buffer.from(bytes));
+    if (branch === 'main') {
+      fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 3;\n');
+      fs.writeFileSync(path.join(h.repo, 'generate.js'), 'process.exit(1);\n');
+    }
+    h.git(['add', '.']);
+    h.git(['commit', '-qm', `binary output on ${branch}`]);
+    h.git(['push', 'origin', branch]);
+  }
+  h.sha = h.git(['rev-parse', 'HEAD']);
+  const github = h.github();
+  github.prs['7'].headRefOid = h.sha;
+  h.saveGithub(github);
+  h.submit();
+  h.consume();
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'rework');
+  assert.equal(h.git(['diff', '--name-only', '--diff-filter=U']), 'value.js');
+  assert.equal(h.git(['rev-parse', ':generated.txt']), h.git(['rev-parse', `${h.sha}:generated.txt`]));
+  assert.deepEqual(fs.readFileSync(path.join(h.repo, 'generated.txt')), Buffer.from([0, 255, 66]));
+});
+
 test('a hand-written conflict within a generated document still needs rework', (t) => {
   const h = generatedSetup(t);
   for (const [branch, intro] of [['main', 'Main intro.'], ['fixture-change', 'Branch intro.']]) {
