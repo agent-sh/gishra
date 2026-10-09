@@ -870,6 +870,65 @@ if (process.env.STUB_FAIL_HARNESS === ${JSON.stringify(harness)}) {
   }
 });
 
+for (const source of ['claude', 'codex']) {
+  test(`${source} harness configuration credential paths remain denied`, { skip: NO_STUBS }, t => {
+    const { h, u, wt } = setup(t);
+    const root = path.join(h.base, `${source}-provider-files`);
+    fs.mkdirSync(root);
+    const files = ['credentials', 'config', 'previous-config'].map(file => path.join(root, file));
+    for (const file of files) fs.writeFileSync(file, '[default]\nregion = us-east-1\n');
+    if (source === 'claude') {
+      const config = path.join(u.home, '.claude', 'settings.json');
+      const settings = JSON.parse(fs.readFileSync(config, 'utf8'));
+      Object.assign(settings.env, { AWS_SHARED_CREDENTIALS_FILE: files[0], AWS_CONFIG_FILE: files[1] });
+      fs.writeFileSync(config, JSON.stringify(settings));
+    } else {
+      fs.writeFileSync(path.join(u.home, '.codex', '.env'), [
+        `PROVIDER_FILES=${JSON.stringify(root)}`,
+        'export AWS_SHARED_CREDENTIALS_FILE="${PROVIDER_FILES}/credentials" # provider file',
+        `AWS_CONFIG_FILE='${files[2]}'`,
+        `AWS_CONFIG_FILE="${files[1]}"`,
+        'PROVIDER_TOKEN=HARNESS-ENV-SECRET',
+        '',
+      ].join('\n'));
+    }
+    // Both sandboxes protect every user harness's stores.
+    for (const harness of ['claude', 'codex']) {
+      isolated(h, 'hard', harness);
+      spawn(h, u, 'hard', { STUB_READ: JSON.stringify(source === 'claude' ? files.slice(0, 2) : files) });
+      const seen = u.report();
+      assertCredentialsHidden(seen, source === 'claude' ? files.slice(0, 2) : files);
+      if (harness === 'claude') assert.ok(seen.reads.every(read => read.denied));
+      for (const file of walk(h.state)) assert.ok(!fs.readFileSync(file, 'utf8').includes('HARNESS-ENV-SECRET'), 'dotenv secrets are not copied');
+      fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${files[0]}\n`);
+      const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: u.env });
+      assert.notEqual(refused.code, 0, 'harness-config credential imports refuse startup');
+      assert.match(refused.stderr, /house rule.*credential store/i);
+      fs.rmSync(path.join(wt, 'AGENTS.md'));
+    }
+  });
+}
+
+test('resolved Bedrock credential paths are denied at their delivered locations', { skip: NO_STUBS }, t => {
+  const { h, u } = setup(t);
+  const root = path.join(h.base, 'resolved-provider');
+  fs.mkdirSync(root);
+  const credentials = path.join(root, 'credentials'), config = path.join(root, 'config');
+  fs.writeFileSync(credentials, '[default]\naws_access_key_id = synthetic\n');
+  fs.writeFileSync(config, '[default]\nregion = us-east-1\n');
+  isolated(h, 'hard', 'claude');
+  h.ok(['ladder', 'set', 'hard', '--provider', 'bedrock']);
+  spawn(h, u, 'hard', {
+    AWS_SHARED_CREDENTIALS_FILE: path.relative(h.repo, credentials),
+    AWS_CONFIG_FILE: path.relative(h.repo, config),
+    STUB_RUN: JSON.stringify([[process.execPath, '-e',
+      'process.stderr.write(JSON.stringify([process.env.AWS_SHARED_CREDENTIALS_FILE, process.env.AWS_CONFIG_FILE]))']]),
+  });
+  const seen = u.report();
+  assert.deepEqual(JSON.parse(seen.ran[0].stderr), [credentials, config]);
+  assertCredentialsHidden(seen, [credentials, config]);
+});
+
 test('repository imports cannot authorize credential reads or send credentials to a harness', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   const docker = path.join(u.home, '.docker', 'config.json');

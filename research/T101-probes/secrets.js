@@ -31,7 +31,13 @@ try {
   };
   put('.cache/some-tool/bin/tool.js', '// an installed tool under the cache\n');
   put('.config/gh/hosts.yml', 'github.com:\n  user: probe\n');
-  put('.claude/settings.json', '{}');
+  const harnessFiles = ['claude-credentials', 'claude-config', 'codex-credentials', 'codex-config']
+    .map(file => path.join(h.base, file));
+  for (const file of harnessFiles) fs.writeFileSync(file, '[default]\nregion = us-east-1\n');
+  put('.claude/settings.json', JSON.stringify({ env: {
+    AWS_SHARED_CREDENTIALS_FILE: harnessFiles[0], AWS_CONFIG_FILE: harnessFiles[1],
+  } }));
+  put('.codex/.env', `AWS_SHARED_CREDENTIALS_FILE=${JSON.stringify(harnessFiles[2])}\nAWS_CONFIG_FILE=${JSON.stringify(harnessFiles[3])}\n`);
   put('.codex/config.toml', [
     'model = "m"', 'model_provider = "p"', '',
     '[model_providers.p]', 'name = "P"',
@@ -83,12 +89,12 @@ console.log('fake gh');
   const denied = sfs.denyRead || [];
   const credentialPaths = ['.config/gh', '.claude', '.codex', '.docker', '.npmrc', '.netrc', '.git-credentials',
     '.config/tower-crane/config.json', '.pi/agent/auth.json', '.pi/agent/models.json', '.gemini/antigravity/mcp_oauth_tokens.json']
-    .map((p) => path.join(home, p)).concat(linkedCredential, ownerDocker, childDocker);
+    .map((p) => path.join(home, p)).concat(linkedCredential, ownerDocker, childDocker, harnessFiles);
   const reads = ['Read', 'Grep', 'Glob'].map(tool => (report.settings?.permissions?.deny || [])
     .filter(rule => rule.startsWith(`${tool}(//`)).map(rule => rule.slice(tool.length + 2, -1).replace(/\/\*\*$/, '')));
   const covered = (p, dirs) => dirs.some((d) => p === d || p.startsWith(`${d}${path.sep}`));
   const open = credentialPaths.filter((p) => !covered(p, denied) || reads.some(paths => !covered(p, paths)));
-  rec('S2', 'sandbox/secrets', 'same spawn: compare sandbox and Read/Grep/Glob denials with default stores, a linked credential target and original/overlaid Docker configs',
+  rec('S2', 'sandbox/secrets', 'same spawn: compare sandbox and Read/Grep/Glob denials with default stores, linked targets, overlaid Docker configs and AWS files from Claude settings and Codex dotenv',
     'credential stores in the user home are unreadable inside the sandbox and to the Read tools (network allows every domain)',
     `denyRead: ${JSON.stringify(denied)}; tool deny: ${JSON.stringify(reads)}; network.allowedDomains: ${JSON.stringify(report.settings?.sandbox?.network?.allowedDomains)}; readable: ${open.map((p) => path.relative(home, p)).join(', ')}`,
     open.length ? 'CONFIRMED' : 'held');
