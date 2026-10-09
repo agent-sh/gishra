@@ -153,6 +153,7 @@ test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents 
   f.write((d) => { Object.assign(d.prs[11], { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
   const ci = f.h.run(['check', 'ci', 'T1']);
   assert.equal(ci.code, 0, ci.stdout + ci.stderr);
+  f.h.reviewer('T1', 'independent-reviewer', f.sha);
   f.h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', f.sha, '--agent', 'independent-reviewer', '--summary', 'checked']);
   const lower = f.h.json(['task', 'show', 'T1']);
   assert.equal(lower.status, 'submitted');
