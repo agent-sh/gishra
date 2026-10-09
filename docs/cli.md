@@ -206,7 +206,7 @@ Every spawn refreshes sibling-path entries in the requested agy settings. These 
 | | |
 | `release ID --reason R` | give it back; status returns to its prior `todo` or `rework`. The claimant or the owner (owner-required: the orchestrator's attempt opens a decision); any agent may recover a spawned claim verified exited by the shared detector under the lock. Preserves only pid, log path, exit code and log size in a note and the release event |
 | | |
-| `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease takes its resource locks and worker slot again, so its renewal is refused when a lock is held or the workers limit is reached |
+| `renew ID [--lease MIN]` | extend the lease from now; only the claimant. An expired lease must pass the claim checks again (unmet dependency, owner blocker, open decision, resource lock, workers limit), so a refused renewal leaves it expired |
 | | |
 | `rework ID --reason R` | send a submitted or accepted task back and bump `revision`, invalidating earlier evidence even at the same sha; the reason is appended under `## Rework notes` in its brief and as a task note |
 | | |
