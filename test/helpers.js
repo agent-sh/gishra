@@ -291,6 +291,9 @@ function context(t, base, options = {}) {
       ].map((e) => `${JSON.stringify(e)}\n`).join(''));
     },
     git: (args, cwd = repo) => git(args, cwd, env),
+    // Git prints Windows worktree paths with forward slashes, so compare resolved paths.
+    registers: (dir) => ctx.git(['worktree', 'list', '--porcelain']).split(/\r?\n/)
+      .some((line) => line.startsWith('worktree ') && path.resolve(line.slice('worktree '.length)) === path.resolve(dir)),
     init: (extra = []) => ctx.ok(['init', '--name', 'demo', '--goal', 'prove the engine', ...(ctx.gateSettings || []), ...extra]),
   };
   if (t) t.after(ctx.cleanup);
