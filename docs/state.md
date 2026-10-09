@@ -6,13 +6,15 @@ Tasks may carry `stack: { parent, base, parent_sha, repo, linked, synced_base }`
 
 A successful `stack link` clears fallback markers for its linked members and restores the stack merge gate, including its refusal of admin merges.
 
+When claim or worker spawn readiness depends on an existing stack PR, Tower Crane queries `gh api repos/OWNER/REPO/stacks` outside the state lock and applies linked-state changes only if the affected task snapshot is unchanged. A confirmed remote chain clears stale disabled markers; a missing remote link is recorded as unlinked for that member's own chain only. An outage marks only members that have a stack record and a PR, so a dependent without a stack record carries no flag; one left by an earlier outage is cleared once its submitted dependency's chain is confirmed. Transient GitHub errors refuse the readiness check without disabling stacks.
+
 For an unlinked dependent whose lower members all have merge evidence, linking retargets its PR to the project base, removes `stack` and `stack_disabled`, and emits `stack complete` with the former parent, new base and PR number. Its sha is unchanged. Rework notes append only to an existing brief; a brief removed during the append is treated as absent.
 
 `github_stack` holds the unmodified `pull_request.stack` object (or the payload's top-level `stack`) from a trusted payload passed to `stack webhook`, or null when the payload has no stack. The repository and PR number must match a known task. Task show and board sheets expose this metadata separately from Tower Crane's local dependency chain. Webhook metadata does not satisfy a gate, change a submitted head, accept a task or prove a merge.
 
-Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, bottom-up asynchronous merge requests (`gh api repos/{owner}/{repo}/pulls/{n}/merge-async --method POST` with `merge_method=merge` and `expected_head_sha`) and their status polls, upper PR retargeting and the confirmations. Merge commits keep every accepted head as an ancestor of the project base; the submitted shas remain unchanged. A refused or queued member stops later merges; confirmed accepted lower members retain successful evidence even when the target fails. Terminal POST or job failures retain their reason across status and PR read errors. Unless the PR is confirmed merged at its accepted head, the failure is reported when the PR is read open or when the confirmation deadline expires. Branches are retained while merging a linked chain. Sync emits `stack sync` events for the affected tasks with `ok`, `head`, the parsed abort `reason`, and `failure` (`conflict`, `tool`, or null on success). A moved branch or an explicit conflict report emits rework and appends its reason to the task's brief. A tooling or transport failure preserves unchanged submissions, claims, briefs, gate evidence and stack metadata; the next refresh retries it. A branch moved before a failed push still requires rework. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack unavailable` and `stack link failed` events.
+Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, bottom-up asynchronous merge requests (`gh api repos/{owner}/{repo}/pulls/{n}/merge-async --method POST` with `merge_method=merge` and `expected_head_sha`) and their status polls, upper PR retargeting and the confirmations. Merge commits keep every accepted head as an ancestor of the project base; the submitted shas remain unchanged. A refused or queued member stops later merges; confirmed accepted lower members retain successful evidence even when the target fails. Terminal POST or job failures retain their reason across status and PR read errors. Unless the PR is confirmed merged at its accepted head, the failure is reported when the PR is read open or when the confirmation deadline expires. Branches are retained while merging a linked chain. Sync emits `stack sync` events for the affected tasks with `ok`, `head`, the parsed abort `reason`, and `failure` (`conflict`, `tool`, or null on success). A moved branch or an explicit conflict report emits rework and appends its reason to the task's brief. A tooling or transport failure preserves unchanged submissions, claims, briefs, gate evidence and stack metadata; the next refresh retries it. A branch moved before a failed push still requires rework. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack readiness`, `stack unavailable` and `stack link failed` events. An open PR whose head GitHub moved after a lower stack merge, the requested task or a dependent above it, records a `stack head` event with its old and new sha and returns to submitted.
 
-Sync holds the state lock only for its initial read and final compare-and-apply. Its gh commands and branch reads, fetches and pushes run unlocked. Application compares project configuration, stack membership, complete member task records and member events against the snapshot. A difference refuses application without writing sync events, briefs or task records. Writes to unrelated tasks are preserved by applying to freshly read state.
+Sync holds the state lock only for its initial read and final compare-and-apply. Its gh commands and branch reads, fetches and pushes run unlocked. Application compares project configuration, stack membership, complete member task records and member events against the snapshot, leaving out hook, startup and spawn session receipts, automation reservation receipts and the orchestrator notice a hook stop writes. A difference refuses application without writing sync events, briefs or task records. Writes to unrelated tasks are preserved by applying to freshly read state.
 
 Linking, completed-chain retirement and unstacking use the same snapshot, unlocked commands and compare-and-apply rule. Automatic linking runs after exit collection commits, outside that mutation. A stale link or unstack result cannot clear a new claim or replace member metadata. Remote PR changes may already have completed when application is refused; inspect them before retrying.
 
@@ -136,6 +138,20 @@ A brief without role headings is shared by worker dispatch and role-filtered bri
 
 All JSON files carry `"version": 1`. Writes go to a temp file in the same directory and are renamed into place. A refused state mutation writes nothing. `accept` can record software gate results before refusing acceptance.
 
+### Schema compatibility
+
+`project.json.schema_version` is the project-wide compatibility version, currently `1`. `init` records it; an absent field in an older project means `1`. File `version` fields describe the individual envelopes. A malformed known field still fails validation.
+
+Additive fields, decision and task enum members, evidence types, and event commands do not require a schema bump. Readers retain unknown fields and non-empty enum strings when writing unrelated records. Unknown evidence types remain opaque and cannot satisfy known gates. Readiness, dispatch and gate acceptance refuse task values that this tool cannot interpret, including unknown kinds, tiers, sizes, statuses and capabilities. They also refuse an unknown decision status when that decision lists the task in `blocks`; unrelated tasks remain usable. Command arguments still accept only supported values. A new status whose semantics cannot be handled by these rules needs a breaking bump.
+
+Live-spend readers also retain future non-empty state and error-class strings. They still require a positive integer sampling interval. An incompatible supervisor skips its final live sample after worker closure, leaving reconciliation to a compatible collector.
+
+An unfamiliar task status retains its unexpired claim in both resource-lock and worker-capacity accounting. The recorded lease deadline still applies; a status change alone never frees a live lease. Automatic recovery keeps failed review evidence but reports `waiting` for an upgrade when task routing values are unsupported. It leaves the tier, range, status, claim and escalation history unchanged. Manual rework refuses before changing state or the brief.
+
+A breaking change raises `schema_version` before publishing incompatible payloads. The migration writer must hold the state lock and atomically publish the project marker before changing other files; readers check it before validation and again before returning a snapshot or reporting a payload error. A tool refuses reads, mutations and new spawns when the version exceeds its supported schema, with an upgrade message. There is no automatic downgrade or generic migration command.
+
+A running supervisor that encounters the marker, or an unsupported value affecting its own task, stops lease renewal, state writes, retries and automation. This includes an unfamiliar decision status that lists the task in `blocks`. It reports the incompatibility and keeps output capture and the broker alive until the current worker exits, without signaling that worker. The broker refuses incompatible state commands. The supervisor then exits `1`; an upgraded tool must recover the lease and collect usage. Supervision stays stopped even if the marker is subsequently reverted. Tools pinned before this compatibility contract cannot gain it at runtime; drain those supervisors before the first breaking migration.
+
 ### Lock
 
 Every command that writes in the state directory holds the lock while it reads and writes, `render` included. Reads take no lock.
@@ -151,6 +167,7 @@ A marker's holder and modification time are read through one opened file descrip
 ```json
 {
   "version": 1,
+  "schema_version": 1,
   "name": "billing-retry",
   "goal": "Retries on payment webhooks are idempotent and observable",
   "repo": "acme/billing",
@@ -646,9 +663,13 @@ task state.
 An accepted PR already merged remotely goes through the merge gate's
 confirmation path. It records the matching accepted head and the PR's merge
 commit without merging again, including after an executor dies before
-writing its receipt. A non-stacked PR GitHub reports merged at the accepted
-head needs no current gate evidence or CI receipt base, so tasks accepted
-before merge evidence existed are confirmed rather than refused.
+writing its receipt. A PR GitHub reports merged at the accepted head needs
+no current gate evidence or CI receipt base, so tasks accepted before merge
+evidence existed are confirmed rather than refused. Stack members follow the
+same path: confirmation reads only the member's own PR, runs no merge, retarget
+or stack sync, writes no receipts for other tasks, and an open lower PR does
+not block it. A lower member's failing review or stale CI receipt does not
+block it either.
 The confirmation lookup validates merge text and method before calling
 GitHub. Failed current gates permit this read-only lookup; an open PR still
 requires passing gates. Confirmation evidence records the lookup that
@@ -677,6 +698,18 @@ gates, a refused merge or head check) is passed over for the rest of the
 pass and the next entry takes the line; each later pass tries it again.
 PR lookup refusals and unreadable GitHub responses use this skip path;
 unexpected execution errors still abort the queue.
+An explicit `merge --accepted` requests a busy queue once and waits for
+its observable executor to release the reservation before taking its own
+pass. The wait uses `gates.tests_timeout_min` (20 minutes by default);
+an unobservable executor or an expired wait refuses with a queue reason.
+Its entries use the same task reservation and merge gate as `merge ID`,
+after the head checks above. Passing CI evidence under `ci.capped_review`
+permits a `MERGEABLE` PR whose merge state is `UNSTABLE`.
+The command reports each task's merge, confirmation or refusal from the
+queue and its recorded evidence, without fetching inbox findings. JSON
+contains `results: [{task, ok, summary}]` and `remaining: [{task, reason}]`.
+A skipped stack entry's refusal reason is reported for every unmerged
+member, including the lower task whose PR or gates blocked the entry.
 `queue skipped` records `{sha, revision, reason}` on that task once per
 sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain

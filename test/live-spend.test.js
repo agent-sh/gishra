@@ -213,7 +213,9 @@ for (const [harness, scope, logOnly] of [['claude', 'project'], ['claude', 'task
 
     // Further spawns wait for the owner to raise the budget.
     if (scope === 'project') {
-      const again = h.run(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1' }) });
+      h.ok(['task', 'add', '--title', 'Next worker', '--tier', 'easy', '--acceptance', 'project budget holds']);
+      h.ok(['brief', 'set', 'T2', '-'], { input: 'Work on T2.\n' });
+      const again = h.run(['spawn', '--task', 'T2'], { env: h.liveEnv({ LIVE_STEPS: '1' }) });
       assert.notEqual(again.code, 0);
       assert.match(again.stderr, /project tokens budget crossed.*only the owner raises a budget/);
     } else {
