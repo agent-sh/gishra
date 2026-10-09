@@ -340,13 +340,14 @@ test('the accepted merge queue keeps wrong-base stack retries failed', (t) => {
   f.accept('T1');
   f.accept('T2');
   f.write((d) => {
+    for (const pr of Object.values(d.prs)) Object.assign(pr, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
     d.moveOnMerge = { pr: 12, base: f.lower.branch, onPr: 12 };
     d.syncError = 'temporary transport failure';
   });
   const command = ['merge', '--accepted', '--agent', 'orchestrator', '--json'];
   const first = f.h.run(command);
   assert.equal(first.code, 1, first.stdout + first.stderr);
-  assert.equal(f.read().prs[12].state, 'MERGED');
+  assert.equal(f.read().prs[12].state, 'MERGED', first.stdout + first.stderr);
   for (let retry = 0; retry < 2; retry++) {
     const r = f.h.run(command);
     assert.equal(r.code, 1, r.stdout + r.stderr);
