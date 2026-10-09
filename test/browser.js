@@ -59,8 +59,20 @@ async function closeBrowser() {
   if (started) await (await started).close();
 }
 
+// Chrome keeps its singleton socket in the profile directory, and a Unix socket address holds 107
+// bytes. A temp root deep enough to overflow that (a gate's TMPDIR under TOWER_CRANE_TMP) moves the
+// profile to the first directory whose path fits, on disk, and the browser's teardown removes it.
+function profileBase() {
+  const bases = [process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), os.tmpdir(), path.join(os.homedir(), '.cache'), '/var/tmp'];
+  const fits = (base) => Buffer.byteLength(path.join(base, 'tower-crane-chrome-000000', 'SingletonSocket')) <= 107;
+  const base = bases.find(fits);
+  if (!base) throw new Error('no directory short enough for the Chrome profile socket; set TOWER_CRANE_TEST_TMP to a shorter path');
+  fs.mkdirSync(base, { recursive: true });
+  return base;
+}
+
 async function launch() {
-  const profile = fs.mkdtempSync(path.join(process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), 'tower-crane-chrome-'));
+  const profile = fs.mkdtempSync(path.join(profileBase(), 'tower-crane-chrome-'));
   const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
   const sandboxed = process.env.TOWER_CRANE_SANDBOX === '1';
   // Chrome's user/SUID sandbox cannot nest in the harness's outer sandbox.
