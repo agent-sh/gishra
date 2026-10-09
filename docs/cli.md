@@ -289,6 +289,10 @@ declared output of those scripts, commits and pushes normally. A generated-only
 merge keeps the task submitted, preserves its submitter and revision, and
 runs gates again at the new sha. An accepted task returns to submitted for
 fresh gates and review. There is no rework or worker dispatch for that repair.
+If a queue head check or post-merge sweep finds generated conflicts before
+GitHub confirms them at the submitted head, the task keeps its status, sha
+and checkout. The queue waits and later reactions retry. Mixed conflicts also
+wait, so their generated resolutions can be prepared before worker rework.
 Dirty or moved branches and live workers defer it. Generator failures abort
 generated-only merges and restore the clean checkout, including removing new
 untracked files from that attempt; push failures retain a prepared merge for

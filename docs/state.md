@@ -595,6 +595,11 @@ the merge and regeneration contract. A matching GitHub conflict authorizes
 the trusted automation executor to merge into an idle, clean task checkout
 outside worker sandboxes and push without force. Other executors, live
 workers, dirty checkouts and moved local or remote heads defer repair.
+Trial conflicts involving generated outputs also defer when GitHub has not
+confirmed a conflict at the matching submitted head, including stale clean
+or unknown mergeability. Queue head checks wait without a merge gate or head
+suite; post-merge sweeps leave the task unchanged. Subsequent reactions retry,
+and mixed conflicts receive generated pre-resolution only after confirmation.
 
 `generated merge` records `phase: prepared` before a generated-only push,
 with `{previous_sha, sha, revision, base_sha, branch, path, generated, commands}`.

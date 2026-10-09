@@ -268,6 +268,86 @@ test('an accepted generated-only conflict returns to submitted with old review k
   assert.equal(h.logs().some((e) => e.cmd === 'rework'), false);
 });
 
+test('the queue defers real generated conflicts while GitHub still reports the accepted head clean', (t) => {
+  const h = generatedSetup(t);
+  const github = h.github();
+  Object.assign(github.prs['7'], { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
+  github.ci[h.sha] = 'success';
+  h.saveGithub(github);
+  h.submit();
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'orchestrator');
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  h.consume();
+  const deferred = h.readState('tasks.json').tasks[0];
+  assert.equal(deferred.status, 'accepted');
+  assert.equal(deferred.sha, h.sha);
+  assert.equal(h.git(['rev-parse', 'HEAD']), h.sha);
+  assert.equal(h.git(['status', '--porcelain']), '');
+  assert.equal(h.logs().some((e) => e.cmd === 'rework' || e.cmd === 'generated merge' || e.cmd === 'head check'), false);
+  assert.equal(h.github().calls.some((args) => args[0] === 'pr' && args[1] === 'merge'), false);
+  const confirmed = h.github();
+  Object.assign(confirmed.prs['7'], { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' });
+  h.saveGithub(confirmed);
+  h.consume();
+  const repaired = h.readState('tasks.json').tasks[0];
+  assert.equal(repaired.status, 'submitted');
+  assert.notEqual(repaired.sha, h.sha);
+  assert.equal(h.git(['--git-dir', h.remote, 'rev-parse', 'fixture-change']), repaired.sha);
+  assert.equal(h.logs().some((e) => e.cmd === 'rework'), false);
+});
+
+for (const mergeable of ['MERGEABLE', 'UNKNOWN']) {
+  test(`a post-merge sweep defers mixed generated conflicts with ${mergeable} mergeability until GitHub confirms them`, (t) => {
+    const h = generatedSetup(t);
+    h.git(['switch', 'main']);
+    fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 3;\n');
+    h.git(['add', '.']);
+    h.git(['commit', '-qm', 'main changes hand-written source']);
+    h.git(['push', 'origin', 'main']);
+    h.git(['switch', '-qc', 'independent-change']);
+    fs.writeFileSync(path.join(h.repo, 'other.txt'), 'Independent change.\n');
+    h.git(['add', '.']);
+    h.git(['commit', '-qm', 'independent submitted change']);
+    h.git(['push', 'origin', 'independent-change']);
+    const other = h.git(['rev-parse', 'HEAD']);
+    const github = h.github();
+    Object.assign(github.prs['7'], { mergeable, mergeStateStatus: mergeable === 'UNKNOWN' ? 'UNKNOWN' : 'CLEAN' });
+    github.prs['8'] = { ...github.prs['7'], headRefOid: other, headRefName: 'independent-change',
+      mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', url: 'https://github.com/acme/demo/pull/8' };
+    github.ci[other] = 'success';
+    github.advanceBase = true;
+    h.saveGithub(github);
+    h.submit();
+    h.ok(['task', 'add', '--title', 'Independent', '--acceptance', 'works', '--kind', 'docs']);
+    h.ok(['claim', 'T2', '--agent', 'other-worker']);
+    h.ok(['submit', 'T2', '--sha', other, '--branch', 'independent-change', '--pr', '8', '--agent', 'other-worker']);
+    for (const type of ['clean', 'ci']) h.ok(['check', type, 'T2', '--agent', 'orchestrator']);
+    h.reviewer('T2', 'other-reviewer');
+    h.ok(['evidence', 'T2', '--type', 'review', '--sha', other, '--ok', '--agent', 'other-reviewer']);
+    h.ok(['accept', 'T2', '--agent', 'orchestrator']);
+    h.consume();
+    assert.equal(h.github().prs['8'].state, 'MERGED', 'the confirmed merge triggers the sweep');
+    const deferred = h.readState('tasks.json').tasks[0];
+    assert.equal(deferred.status, 'submitted');
+    assert.equal(deferred.sha, h.sha);
+    assert.equal(h.git(['rev-parse', 'fixture-change']), h.sha);
+    assert.equal(h.git(['status', '--porcelain']), '');
+    assert.equal(h.logs().some((e) => e.task === 'T1' && ['rework', 'generated merge'].includes(e.cmd)), false);
+    const confirmed = h.github();
+    Object.assign(confirmed.prs['7'], { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' });
+    h.saveGithub(confirmed);
+    h.consume();
+    assert.equal(h.readState('tasks.json').tasks[0].status, 'rework');
+    const receipt = h.logs().find((e) => e.task === 'T1' && e.cmd === 'generated merge' && e.detail.phase === 'mixed');
+    assert.ok(receipt, 'confirmation prepares the mixed merge');
+    assert.deepEqual(receipt.detail.remaining, ['value.js']);
+    assert.equal(h.git(['diff', '--name-only', '--diff-filter=U'], receipt.detail.path), 'value.js');
+    assert.equal(fs.readFileSync(path.join(receipt.detail.path, 'generated.txt'), 'utf8'), 'branch / main\n');
+  });
+}
+
 test('mixed conflicts keep a prepared merge with generated files staged and only hand-written files unresolved', (t) => {
   const h = generatedSetup(t);
   h.git(['switch', 'main']);
