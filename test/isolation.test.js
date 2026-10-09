@@ -686,6 +686,10 @@ test('repository imports cannot authorize credential reads or send credentials t
     isolated(h, 'hard', harness);
     for (const file of [auth, docker, alias]) {
       fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${file}\n`);
+      if (file === alias) {
+        const global = path.join(u.home, harness === 'claude' ? '.claude/CLAUDE.md' : '.codex/AGENTS.md');
+        fs.appendFileSync(global, `@${path.join(wt, 'AGENTS.md')}\n`);
+      }
       for (const mode of ['--dry-run', '--wait']) {
         const r = h.run(['spawn', '--task', 'T1', '--role', 'hard', mode], { env: u.env });
         assert.notEqual(r.code, 0, `${harness}: ${file} must not become an authorized rule`);
