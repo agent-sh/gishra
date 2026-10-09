@@ -13,6 +13,8 @@ const SHA = 'c'.repeat(40);
 const OTHER = 'd'.repeat(40);
 const MERGED = 'e'.repeat(40);
 const REPO = 'acme/app';
+const isMerge = (args) => (args[0] === 'pr' && args[1] === 'merge')
+  || (args[0] === 'api' && args.includes('POST') && /\/merge-async$/.test(args[1]));
 
 // A PR on a fake GitHub: `merge` decides what gh pr merge does to it.
 function github({ state = 'OPEN', head = SHA, merge = 'ok', base = 'main', crossRepository = false, landedBase = base } = {}) {
@@ -160,6 +162,7 @@ test('M1: the CLI refuses an accepted PR retargeted from main to release', (t) =
   h.ok(['claim', 'T1', '--agent', 'worker-T1']);
   h.ok(['submit', 'T1', '--sha', sha, '--pr', '42', '--agent', 'worker-T1']);
   for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'checker');
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
   h.ok(['accept', 'T1']);
   h.env.FIXTURE_PR_BASE = 'release';
@@ -200,7 +203,7 @@ test('a stack PR must target its dependency branch rather than the project base'
   const r = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(r.code, 1, r.stdout);
   assert.match(r.stdout, /base is main, expected/);
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.equal(f.read().calls.some((c) => isMerge(c.args)), false);
 });
 
 test('a stack merge refuses members already merged into another base', (t) => {
@@ -216,7 +219,7 @@ test('a stack merge refuses members already merged into another base', (t) => {
   const mixed = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(mixed.code, 1, mixed.stdout);
   assert.match(mixed.stdout, /T1: PR base is release, expected main/);
-  assert.equal(f.read().calls.some((c) => ['edit', 'merge'].includes(c.args[1])), false);
+  assert.equal(f.read().calls.some((c) => c.args[1] === 'edit' || isMerge(c.args)), false);
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id, '--agent', 'orchestrator']).status, 'accepted');
 });
 
@@ -227,6 +230,22 @@ test('a confirmed stack merge names the base it landed on', (t) => {
   const merged = f.h.json(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(merged.ok, true, merged.summary);
   assert.match(merged.summary, /into main/);
+});
+
+test('an asynchronous stack merge into another base stops before the upper PR is merged', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => {
+    d.asyncResponses = { 11: { views: [{ body: { ...d.prs[11], state: 'MERGED', baseRefName: 'release' } }] } };
+  });
+  const r = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stdout, /merged into release.*expected main/);
+  assert.equal(f.read().prs[12].state, 'OPEN');
+  const merges = f.read().calls.filter((c) => isMerge(c.args));
+  assert.equal(merges.length, 1);
+  assert.match(merges[0].args[1], /pulls\/11\/merge-async$/);
 });
 
 test('a partially merged stack retries on the project base and refuses an unrelated base', (t) => {
@@ -242,15 +261,15 @@ test('a partially merged stack retries on the project base and refuses an unrela
   const refused = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(refused.code, 1, refused.stdout);
   assert.match(refused.stdout, /base.*release/);
-  assert.equal(f.read().calls.some((c) => ['edit', 'merge'].includes(c.args[1])), false);
+  assert.equal(f.read().calls.some((c) => c.args[1] === 'edit' || isMerge(c.args)), false);
   f.write((d) => { d.prs[12].baseRefName = 'main'; });
   const merged = f.h.json(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(merged.ok, true, merged.summary);
-  const merges = f.read().calls.filter((c) => c.args[1] === 'merge');
+  const merges = f.read().calls.filter((c) => isMerge(c.args));
   assert.equal(merges.length, 1);
-  assert.equal(merges[0].args[2], '12');
-  assert.ok(merges[0].args.includes('--merge'));
-  assert.equal(merges[0].args[merges[0].args.indexOf('--match-head-commit') + 1], f.upper.sha);
+  assert.match(merges[0].args[1], /pulls\/12\/merge-async$/);
+  assert.ok(merges[0].args.includes('merge_method=merge'));
+  assert.ok(merges[0].args.includes(`expected_head_sha=${f.upper.sha}`));
 });
 
 test('unstacked fallback retargets only the recorded dependency base after lower tasks land', (t) => {
@@ -263,7 +282,7 @@ test('unstacked fallback retargets only the recorded dependency base after lower
   const refused = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(refused.code, 1, refused.stdout);
   assert.match(refused.stdout, /base.*release.*main/);
-  assert.equal(f.read().calls.some((c) => ['edit', 'merge'].includes(c.args[1])), false);
+  assert.equal(f.read().calls.some((c) => c.args[1] === 'edit' || isMerge(c.args)), false);
   f.write((d) => { d.prs[12].baseRefName = f.lower.branch; });
   const merged = f.h.json(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(merged.ok, true, merged.summary);

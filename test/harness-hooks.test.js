@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, BIN } = require('./helpers');
+const { cachedFixture, BIN } = require('./helpers');
 
 const STUB = path.join(__dirname, 'fixtures', 'message-harness.js');
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -18,32 +18,35 @@ async function until(file) {
   }
 }
 
+// Built once per process for each harness and copied for each test.
 function setup(t, harness) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Hook messages', '--acceptance', 'message arrives', '--tier', 'easy']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'exercise hooks\n' });
-  const ready = path.join(h.base, 'ready');
-  const out = path.join(h.base, 'report.json');
-  const bin = path.join(h.base, 'bin');
-  fs.mkdirSync(bin);
-  const program = path.join(bin, harness + (process.platform === 'win32' ? '.exe' : ''));
-  fs.writeFileSync(program, `#!${process.execPath}\nrequire(${JSON.stringify(STUB)});\n`, { mode: 0o755 });
-  const preload = path.join(h.base, 'native.js');
-  fs.writeFileSync(preload, `const cp = require('node:child_process');\nconst spawn = cp.spawn;\ncp.spawn = function(cmd, args, opts) { return cmd === ${JSON.stringify(harness)} ? spawn.call(this, process.execPath, [${JSON.stringify(program)}, ...args], opts) : spawn.call(this, cmd, args, opts); };\n`);
-  const pathKey = Object.keys(h.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
-  Object.assign(h.env, {
-    MESSAGE_HARNESS: harness, MESSAGE_READY: ready, MESSAGE_OUT: out,
-    [pathKey]: bin + path.delimiter + (h.env[pathKey] || ''),
-    CODEX_HOME: path.join(h.base, 'codex'), CLAUDE_CONFIG_DIR: path.join(h.base, 'claude'),
-    ...(process.platform === 'win32' ? { NODE_OPTIONS: `--require "${preload.replace(/\\/g, '/')}"` } : {}),
+  const h = cachedFixture(t, harness, (h) => {
+    h.init();
+    h.ok(['task', 'add', '--title', 'Hook messages', '--acceptance', 'message arrives', '--tier', 'easy']);
+    h.ok(['brief', 'set', 'T1', '-'], { input: 'exercise hooks\n' });
+    const ready = path.join(h.base, 'ready');
+    const out = path.join(h.base, 'report.json');
+    const bin = path.join(h.base, 'bin');
+    fs.mkdirSync(bin);
+    const program = path.join(bin, harness + (process.platform === 'win32' ? '.exe' : ''));
+    fs.writeFileSync(program, `#!${process.execPath}\nrequire(${JSON.stringify(STUB)});\n`, { mode: 0o755 });
+    const preload = path.join(h.base, 'native.js');
+    fs.writeFileSync(preload, `const cp = require('node:child_process');\nconst spawn = cp.spawn;\ncp.spawn = function(cmd, args, opts) { return cmd === ${JSON.stringify(harness)} ? spawn.call(this, process.execPath, [${JSON.stringify(program)}, ...args], opts) : spawn.call(this, cmd, args, opts); };\n`);
+    const pathKey = Object.keys(h.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
+    Object.assign(h.env, {
+      MESSAGE_HARNESS: harness, MESSAGE_READY: ready, MESSAGE_OUT: out,
+      [pathKey]: bin + path.delimiter + (h.env[pathKey] || ''),
+      CODEX_HOME: path.join(h.base, 'codex'), CLAUDE_CONFIG_DIR: path.join(h.base, 'claude'),
+      ...(process.platform === 'win32' ? { NODE_OPTIONS: `--require "${preload.replace(/\\/g, '/')}"` } : {}),
+    });
+    const flags = ['ladder', 'set', 'easy', '--harness', harness, '--clear', 'profile', '--clear', 'effort'];
+    if (harness !== 'command') flags.push('--model', 'stub-model');
+    else flags.push('--clear', 'model');
+    if (harness === 'command') flags.push('--command', JSON.stringify([process.execPath, STUB, '{session}', '{prompt}']));
+    h.ok(flags);
+    return { ready, out, bin };
   });
-  const flags = ['ladder', 'set', 'easy', '--harness', harness, '--clear', 'profile', '--clear', 'effort'];
-  if (harness !== 'command') flags.push('--model', 'stub-model');
-  else flags.push('--clear', 'model');
-  if (harness === 'command') flags.push('--command', JSON.stringify([process.execPath, STUB, '{session}', '{prompt}']));
-  h.ok(flags);
-  return { h, ready, out, bin };
+  return { h, ready: h.ready, out: h.out, bin: h.bin };
 }
 
 for (const route of ['claude', 'codex', 'codex-notify', 'pi', 'opencode', 'agy', 'command']) {
@@ -53,6 +56,12 @@ for (const route of ['claude', 'codex', 'codex-notify', 'pi', 'opencode', 'agy',
     if (route === 'codex-notify') h.env.MESSAGE_NOTIFY_ONLY = '1';
     const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json']);
     await until(ready);
+    if (harness === 'claude') {
+      const settings = JSON.parse(fs.readFileSync(path.join(h.state, 'homes', 'worker-T1-1', 'settings.json')));
+      for (const event of ['UserPromptSubmit', 'PostToolUse', 'Stop']) {
+        assert.ok(settings.hooks[event][0].hooks[0].timeout >= 135, 'generated timeout covers both bridge calls');
+      }
+    }
     h.ok(['msg', '--to', 'worker-T1-1', '--task', 'T1', 'mid-run coordination', '--agent', 'orchestrator']);
     fs.writeFileSync(ready + '.go', '');
     const live = ['claude', 'codex', 'pi', 'opencode'].includes(harness) && route !== 'codex-notify';
