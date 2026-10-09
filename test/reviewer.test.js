@@ -261,7 +261,7 @@ console.log(JSON.stringify({type:'result', result:'cache probe', usage: {
   fs.writeFileSync(path.join(caller, '.claude', 'CLAUDE.md'), 'STUB_GLOBAL_RULE\n');
   fs.writeFileSync(path.join(caller, '.codex', 'AGENTS.md'), 'STUB_GLOBAL_RULE\n');
   const env = { HOME: caller, CLAUDE_CONFIG_DIR: path.join(caller, '.claude'), CODEX_HOME: path.join(caller, '.codex'),
-    XDG_CACHE_HOME: path.join(caller, 'cache'),
+    XDG_CACHE_HOME: path.join(caller, '.cache'),
     PATH: bin + path.delimiter + (h.env.PATH || ''), FORCE_PROMPT_CACHING_5M: '0' };
   for (const harness of ['claude', 'codex']) {
     h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'fixture', '--clear', 'profile']);
@@ -284,7 +284,7 @@ console.log(JSON.stringify({type:'result', result:'cache probe', usage: {
       assert.equal(row.repo, 'acme/demo', 'reviewer shims retain the recorded repository');
       assert.match(row.system, /Role instructions: tower-crane-review/);
       assert.ok(!row.system.includes('## Task'));
-      assert.ok(row.cache.startsWith(path.join(caller, 'cache') + path.sep));
+      assert.ok(row.cache.startsWith(path.join(caller, '.cache') + path.sep));
       assert.deepEqual(row.tool_caches, ['go-build', 'go-mod', 'npm'].map((dir) => path.join(row.cache, dir)));
       assert.ok(!row.system.includes(row.cache), 'per-agent filesystem paths stay out of the shared prefix');
       if (harness === 'claude') {

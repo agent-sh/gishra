@@ -479,11 +479,13 @@ test('current failed software gates expose diagnostics and commands that clear t
   h.ok([...failedTests.action.argv, '--agent', 'orchestrator']);
   assert.match(fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8'), /rejects invalid gate inputs/);
   assert.deepEqual(failures(), []);
+  const reworkedRevision = Number(h.revision(id));
+  assert.equal(reworkedRevision, 2);
   h.ok(['task', 'update', id, '--acceptance', 'updated acceptance']);
   h.submit(id, 7);
   assert.deepEqual(failures(), [], 'old revision failures are not current findings');
   assert.equal(h.run(['check', 'tests', id], { env: { INBOX_TEST_OK: '0' } }).code, 1);
-  assert.equal(failures()[0].revision, 2);
+  assert.equal(failures()[0].revision, reworkedRevision + 1);
   h.ok(['check', 'tests', id], { env: { INBOX_TEST_OK: '1' } });
   assert.deepEqual(failures(), []);
 });
