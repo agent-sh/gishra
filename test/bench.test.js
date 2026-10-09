@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo } = require('./helpers');
+const { score, ciChecks } = require('../lib/bench-gates');
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
@@ -24,6 +25,55 @@ function recordedHistory(h, records) {
   doc.tasks[0].evidence = evidence;
   h.writeState('tasks.json', doc);
 }
+
+test('bench deduplicates SHA spellings without merging distinct commits or tasks', () => {
+  const collision = A.slice(0, 7) + 'd'.repeat(33);
+  for (const { shas, tp } of [
+    { shas: [A.slice(0, 7), A], tp: 1 },
+    { shas: [A, A.slice(0, 7)], tp: 1 },
+    { shas: [A.slice(0, 7).toUpperCase(), A.slice(0, 20), A], tp: 1 },
+    { shas: [A.slice(0, 6), A], tp: 2 },
+    { shas: [A, collision], tp: 2 },
+    { shas: [A.slice(0, 7), A, collision], tp: 3 },
+  ]) {
+    const rows = shas.map((sha) => ({ task: 'T1', gate: 'ci', sha, ok: false, label: 'tp', reason: 'checks', checks: ['lint'] }));
+    rows.push({ task: 'T1', gate: 'ci', sha: B, ok: false, label: 'fp', reason: 'checks', checks: ['lint'] });
+    const gate = score(rows, 'ci');
+    assert.deepEqual([gate.tp, gate.fp, gate.precision], [tp, 1, tp / (tp + 1)], JSON.stringify(shas));
+    assert.deepEqual(ciChecks(rows), [{ check: 'lint', fails: tp + 1, tp, fp: 1, open: 0, precision: tp / (tp + 1) }]);
+  }
+  const rows = [
+    { task: 'T1', sha: A.slice(0, 7) },
+    { task: 'T1', sha: A.slice(0, 20) },
+    { task: 'T2', sha: collision },
+  ].map((r) => ({ ...r, gate: 'ci', ok: false, label: 'tp', reason: 'checks', checks: ['lint'] }));
+  assert.equal(score(rows, 'ci').tp, 2);
+  assert.equal(ciChecks(rows)[0].tp, 2);
+});
+
+test('bench CLI counts mixed-length gate and CI failures once per commit', (t) => {
+  const h = makeRepo(t);
+  t.after(h.cleanup);
+  const records = [];
+  for (const sha of [A.slice(0, 7), A]) {
+    records.push(['check tests', { type: 'tests', ok: false, sha }],
+      ['check ci', { type: 'ci', ok: false, sha }, 'failing: lint (failure)']);
+  }
+  records.push(['submit', { sha: B }],
+    ['check tests', { type: 'tests', ok: false, sha: B }],
+    ['check ci', { type: 'ci', ok: false, sha: B.slice(0, 7) }, 'failing: lint (failure)'],
+    ['check tests', { type: 'tests', ok: true, sha: B.slice(0, 7) }],
+    ['check ci', { type: 'ci', ok: true, sha: B }],
+    ['evidence', { type: 'review', ok: true, sha: B }]);
+  recordedHistory(h, records);
+  const result = h.json(['bench', 'gates']);
+  for (const name of ['tests', 'ci']) {
+    const gate = result.gates.find((g) => g.gate === name);
+    assert.deepEqual([gate.runs, gate.results, gate.tp, gate.fp, gate.precision], [4, 3, 1, 1, 0.5]);
+  }
+  assert.deepEqual(result.ci_checks, [{ check: 'lint', fails: 2, tp: 1, fp: 1, open: 0, precision: 0.5 }]);
+  assert.equal(result.labels.length, 8, 'raw run labels retain the recorded SHA spellings');
+});
 
 test('bench includes sources passes contradicted by review and overturned sources failures', (t) => {
   const h = makeRepo(t);

@@ -31,6 +31,7 @@ Rules that keep the labels honest:
 - A failure that the same kind of check later reversed at that sha (a CI rerun, a second review) contradicts nothing.
 - A pass contradicted by both a review blocker and a failed CI check run counts once as a false negative and once under each source, so `recall(ci)` does not depend on which came first.
 - Gates often rerun on one sha. The score counts one result per gate, sha and outcome, labeled by its earliest run, which has the most later evidence. A noncode CI fail and a CI fail that names check runs are different outcomes, so a pending run cannot hide a later real failure at the same sha. `runs` shows the raw count, and `--json` lists every labeled run with the event that decided it.
+- Both tables share commit identities: case is ignored, and an unambiguous SHA prefix of at least seven characters expands to the longest spelling recorded for that task. Distinct full SHAs stay distinct even when they share a prefix; ambiguous prefixes remain as recorded. Raw labels retain the original SHA. For example, a failed run recorded with seven characters and repeated with forty counts once. With one other overturned failure, precision is 50%.
 - Per CI check run, a failure is a false positive when CI later passes the same sha. Check names are collected from every poll and deduplicated by task, sha and check name using that check's earliest failure; a name first reported in a later poll still counts.
 
 ### Deslop checks
@@ -45,7 +46,7 @@ The cleanup gate runs the deslop detector. Its own eval files label its checks t
 
 Snapshot: the gate figures use this project's state frozen in memory at 2026-10-08 23:17:21 (Jerusalem), 35,889 events and 130 tasks. The state is live, so later runs give other counts as tasks add evidence. Deslop inputs: the 2026-10-06 slop research set (3,367 hand-labeled hits from deslop 1.3.0, 106 reviewer-found defects across agent-sh and darklanes PRs), the eval run of the rewritten detector on the same PRs, and its one agent-confirmed report.
 
-The gate bench reads recorded data and is deterministic: three runs on the same frozen snapshot gave byte-identical output (text and `--json`), so each figure is the value of every run. The deslop eval run is a detector run over git history and is deterministic as well.
+The gate bench reads recorded data and is deterministic: three runs on the same frozen snapshot gave byte-identical output (text and `--json`), so each figure is the value of every run. The deslop eval run is a detector run over git history and is deterministic as well. Three runs after the SHA identity correction reproduced the same text and JSON; the published figures below are unchanged.
 
 ### Gates
 
