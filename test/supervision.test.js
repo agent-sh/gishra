@@ -77,9 +77,9 @@ const finish = () => {
   } else process.exit(0);
 };
 ${waitForFinish ? `if (attempts.length <= ${failures}) finish();
-else { const timer = setInterval(() => {
-  if (fs.existsSync(file + '.finish')) { clearInterval(timer); finish(); }
-}, 25); }` : `setTimeout(finish, ${hold});`}
+else { const watcher = fs.watch(require('node:path').dirname(file), () => {
+  if (fs.existsSync(file + '.finish')) { watcher.close(); finish(); }
+}); if (fs.existsSync(file + '.finish')) { watcher.close(); finish(); } }` : `setTimeout(finish, ${hold});`}
 `;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{prompt}']),
     '--clear', 'profile', '--clear', 'effort', '--supervision',
