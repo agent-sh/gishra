@@ -71,7 +71,7 @@ setInterval(() => {
 `;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command',
     '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}']),
-    '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 0, stall_ms: 60000 })]);
+    '--clear', 'profile', '--clear', 'model', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 0, stall_ms: 60000 })]);
   return { ready, finish, edited };
 }
 
