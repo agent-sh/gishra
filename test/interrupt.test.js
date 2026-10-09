@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, BIN, detachedAlive } = require('./helpers');
 
-const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+// Pollers can read while a writer is appending the final record.
+const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').split('\n').slice(0, -1).filter(Boolean).map(JSON.parse);
 
 async function until(fn, message) {
   const deadline = Date.now() + 15000;

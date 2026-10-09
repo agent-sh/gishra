@@ -5,6 +5,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const original = cp.spawnSync;
 const BIN = path.join(__dirname, '..', '..', 'bin', 'tower-crane.js');
+const { ownerKeyFile, ownerProject } = require('../../lib/authority');
 
 // Holds a gh call open until the test releases it, so another command can run meanwhile.
 function pause(ready, release) {
@@ -27,9 +28,13 @@ cp.spawnSync = function stackGh(command, args, opts) {
     return { status, stdout: typeof value === 'string' ? value : JSON.stringify(value), stderr };
   };
   // data.during runs tower-crane commands once while this gh call is in flight.
+  // The CLI drops TOWER_CRANE_OWNER_KEY before it runs gh, so these commands
+  // present the owner's key from its file, as the owner would.
   const key = args.slice(0, 2).join(' ');
   for (const cli of data.during?.[key] || []) {
-    const r = original(process.execPath, [BIN, ...cli], { cwd: data.repo, env: process.env, encoding: 'utf8' });
+    const project = ownerProject(path.join(data.repo, '.tower-crane'));
+    const env = { ...process.env, TOWER_CRANE_OWNER_KEY: fs.readFileSync(ownerKeyFile(project), 'utf8').trim() };
+    const r = original(process.execPath, [BIN, ...cli], { cwd: data.repo, env, encoding: 'utf8' });
     if (r.status !== 0) throw new Error(`tower-crane ${cli.join(' ')} failed: ${r.stderr}`);
   }
   if (data.during) delete data.during[key];

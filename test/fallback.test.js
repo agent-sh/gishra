@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo, makeProjectRepo, makeTaskRepo } = require('./helpers');
+const A = require('../lib/agents');
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -49,7 +50,7 @@ function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = '
     TOWER_CRANE_TEST_FALLBACK_FILE: h.file, TOWER_CRANE_TEST_FALLBACK_REASON: reason,
     ...(chain ? { TOWER_CRANE_TEST_FALLBACK_CHAIN: '1' } : {}),
   };
-  h.spawn = () => h.run(['spawn', '--task', 'T1', '--wait'], { env: h.spawnEnv, timeout: 20000 });
+  h.spawn = () => h.run(['spawn', '--task', 'T1', '--wait'], { env: h.spawnEnv });
   h.attempts = () => JSON.parse(fs.readFileSync(h.file, 'utf8'));
   return h;
 }
@@ -171,12 +172,24 @@ for (const [primaryHarness, reason, chain, routes] of [['claude', 'refusal', tru
     const h = setup(t, { reason, primaryHarness, chain });
     h.spawnEnv.TOWER_CRANE_TEST_FALLBACK_NOTE = '1';
     assert.equal(h.spawn().code, 0);
-    const sandboxed = (text) => !text.startsWith('agy');
-    assert.deepEqual(h.attempts().map((a) => a.broker), routes.map(sandboxed), 'claude and codex routes get the broker; agy is not sandboxed');
+    const sandboxed = (text) => A.CAPABILITIES[text.split(' ')[0]].osSandbox;
+    assert.deepEqual(h.attempts().map((a) => a.broker), routes.map(sandboxed), 'routes with an OS sandbox get the broker');
     const notes = events(h).filter((e) => e.cmd === 'task note').map((e) => [e.detail.text, e.agent, e.via ?? null]);
     assert.deepEqual(notes, routes.map((text) => [text, 'worker-T1-1', sandboxed(text) ? 'broker' : null]));
   });
 }
+
+test('a verified agy adapter brokers every retry and its Codex fallback', t => {
+  const h = setup(t, { primaryHarness: 'agy' });
+  h.spawnEnv.TOWER_CRANE_TEST_VERIFIED_AGY = '1';
+  h.spawnEnv.TOWER_CRANE_TEST_FALLBACK_NOTE = '1';
+  assert.equal(h.spawn().code, 0);
+  assert.deepEqual(h.attempts().map(a => a.harness), ['agy', 'agy', 'agy', 'codex']);
+  assert.deepEqual(h.attempts().map(a => a.broker), [true, true, true, true]);
+  const notes = events(h).filter(e => e.cmd === 'task note');
+  assert.equal(notes.length, 4);
+  assert.ok(notes.every(e => e.via === 'broker' && e.agent === 'worker-T1-1'));
+});
 
 for (const primaryHarness of ['agy', 'claude']) {
   test(`fresh ${primaryHarness} outage retries record each invocation without counting usage twice`, (t) => {
@@ -385,7 +398,10 @@ for (const harness of ['claude', 'codex']) {
       h.env.USERPROFILE = userHome;
       if (config === 'default') {
         delete h.env.TOWER_CRANE_CONFIG;
+        const ownerDir = path.join(path.dirname(h.userConfig), 'owner');
         h.userConfig = path.join(userHome, '.config', 'tower-crane', 'config.json');
+        // The owner key sits beside the user file, so it moves with it.
+        fs.cpSync(ownerDir, path.join(path.dirname(h.userConfig), 'owner'), { recursive: true });
       } else {
         h.env.TOWER_CRANE_CONFIG = path.relative(h.repo, h.userConfig);
       }
