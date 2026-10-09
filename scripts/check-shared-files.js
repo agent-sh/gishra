@@ -8,7 +8,8 @@ const { fragments } = require('./changelog');
 const { normalizeText, readText } = require('./text');
 
 // Non-blocking stdin fails a bare read with EAGAIN; readStdin in lib/util.js retries it.
-const BARE_STDIN = /readFileSync\(\s*(0|['"]\/dev\/stdin['"])\s*[,)]/;
+// Matched across the whole file, so a call split over several lines is still found.
+const BARE_STDIN = /readFileSync\(\s*(0|['"]\/dev\/stdin['"])\s*[,)]/g;
 
 function checkStdinReads(root) {
   const found = [];
@@ -16,9 +17,11 @@ function checkStdinReads(root) {
     for (const name of fs.readdirSync(path.join(root, dir), { recursive: true })) {
       const file = `${dir}/${name.replace(/\\/g, '/')}`;
       if (!file.endsWith('.js') || file === 'lib/util.js') continue;
-      readText(path.join(root, file)).split('\n').forEach((line, i) => {
-        if (BARE_STDIN.test(line)) found.push(`${file}:${i + 1} reads stdin with readFileSync(0); use readStdin() from lib/util.js`);
-      });
+      const text = readText(path.join(root, file));
+      for (const match of text.matchAll(BARE_STDIN)) {
+        const line = text.slice(0, match.index).split('\n').length;
+        found.push(`${file}:${line} reads stdin with readFileSync(0); use readStdin() from lib/util.js`);
+      }
     }
   }
   if (found.length) throw new Error(found.join('\n'));

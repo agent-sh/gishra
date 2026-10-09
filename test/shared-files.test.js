@@ -187,6 +187,17 @@ test('the shared file check rejects bare stdin reads in lib and bin, and points 
   assert.match(device.stderr, /bin\/probe\.js:1 reads stdin/);
   f.write('bin/probe.js', "require('../lib/util').readStdin();\n");
   assert.equal(f.check().status, 0);
+  f.write('lib/probe.js', "const fs = require('node:fs');\nmodule.exports = fs.readFileSync(\n  0,\n  'utf8'\n);\n");
+  const wrapped = f.check();
+  assert.equal(wrapped.status, 1, 'a call split across lines is still a bare read');
+  assert.match(wrapped.stderr, /lib\/probe\.js:2 reads stdin with readFileSync\(0\); use readStdin\(\) from lib\/util\.js/);
+  f.write('lib/probe.js', "require('./util').readStdin();\n");
+  f.write('bin/probe.js', "require('node:fs').readFileSync(\n  '/dev/stdin',\n  'utf8'\n);\n");
+  const wrappedDevice = f.check();
+  assert.equal(wrappedDevice.status, 1, 'a /dev/stdin call split across lines is still a bare read');
+  assert.match(wrappedDevice.stderr, /bin\/probe\.js:1 reads stdin/);
+  f.write('bin/probe.js', "require('../lib/util').readStdin();\n");
+  assert.equal(f.check().status, 0);
   f.write('lib/util.js', f.read('lib/util.js') + "\nconst raw = require('node:fs').readFileSync(0, 'utf8');\n");
   assert.equal(f.check().status, 0, 'lib/util.js is where readStdin reads fd 0');
 });
