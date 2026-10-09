@@ -4,7 +4,34 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { cachedFixture } = require('./helpers');
+const cp = require('node:child_process');
+const { cachedFixture, BIN } = require('./helpers');
+
+function auditCli(run, timings, now) {
+  return (args, options = {}) => {
+    const spawn = cp.spawnSync;
+    let launches = 0;
+    let timeout;
+    // Observe the options the helper actually passes to Node, including bootstrap.
+    cp.spawnSync = function parentCli(file, argv, spawnOptions) {
+      if (file === process.execPath && argv.includes(BIN)) {
+        launches++;
+        timeout = spawnOptions.timeout;
+        assert.equal(timeout, 0, 'parent provider CLI has no per-call deadline');
+      }
+      return spawn.call(this, file, argv, spawnOptions);
+    };
+    const start = now();
+    try {
+      const result = run(args, { ...options, timeout: 0 });
+      assert.equal(launches, 1, 'audit observes the real parent CLI launch');
+      return result;
+    } finally {
+      cp.spawnSync = spawn;
+      timings.push({ command: args.slice(0, 2).join(' '), ms: Math.round(now() - start), timeout });
+    }
+  };
+}
 
 function setup(t) {
   const now = () => Number(process.hrtime.bigint()) / 1e6;
@@ -13,12 +40,7 @@ function setup(t) {
   const h = cachedFixture(null, 'claude-provider', (base) => {
     base.env.TOWER_CRANE_TEST_CLAUDE_PROVIDER = '1';
     base.env.NODE_OPTIONS = `--require "${path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/')}"`;
-    const run = base.run;
-    base.run = (args, options = {}) => {
-      const start = now();
-      try { return run(args, { ...options, timeout: 0 }); }
-      finally { bootstrap.push({ command: args.slice(0, 2).join(' '), ms: Math.round(now() - start) }); }
-    };
+    base.run = auditCli(base.run, bootstrap, now);
     base.init();
     base.ok(['task', 'add', '--title', 'Claude provider switch', '--tier', 'hard', '--acceptance', 'fresh provider session']);
     base.ok(['brief', 'set', 'T1', '-'], { input: 'Build with the original brief.\n' });
@@ -36,6 +58,8 @@ function setup(t) {
       const profiles = h.profiles();
       const delays = profiles.filter((profile) => profile.process === 'spawn-monitor.js').flatMap((profile) => profile.delays);
       const timeouts = [...new Set(profiles.flatMap((profile) => profile.children.map((child) => child.timeout)))];
+      const parentTimeouts = [...new Set([...bootstrap, ...commands].map((command) => command.timeout))];
+      assert.deepEqual(parentTimeouts, [0], 'parent provider commands have no deadline');
       assert.ok(delays.every((ms) => ms === 0), 'provider fixtures schedule no timed wait');
       assert.ok(timeouts.every((ms) => ms === 0), 'provider subprocesses have no deadline');
       assert.ok(profiles.every((profile) => profile.children.every((child) =>
@@ -51,16 +75,11 @@ function setup(t) {
         }
       }
       const rounded = (items) => [...items.values()].map((item) => ({ ...item, ms: Math.round(item.ms) }));
-      t.diagnostic(JSON.stringify({ repo_ms: Math.round(repoMs), bootstrap, commands, processes: rounded(processes), children: rounded(children), delays, timeouts }));
+      t.diagnostic(JSON.stringify({ repo_ms: Math.round(repoMs), bootstrap, commands, processes: rounded(processes), children: rounded(children), delays, timeouts, parent_timeouts: parentTimeouts }));
     } finally { await h.cleanup(); }
   });
   // Completion and attempt records decide success; CI owns the suite deadline.
-  const run = h.run;
-  h.run = (args, options = {}) => {
-    const start = now();
-    try { return run(args, { ...options, timeout: 0 }); }
-    finally { commands.push({ command: args.slice(0, 2).join(' '), ms: Math.round(now() - start) }); }
-  };
+  h.run = auditCli(h.run, commands, now);
   const home = path.join(h.base, 'user-home');
   const claude = path.join(home, '.claude');
   const aws = path.join(home, '.aws');
