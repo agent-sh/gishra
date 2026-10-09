@@ -19,6 +19,26 @@ const audits = (h) => events(h).filter((e) => e.cmd === 'setting');
 const as = (agent) => ({ env: { TOWER_CRANE_AGENT: agent } });
 const decisions = (h) => h.readState('decisions.json').decisions;
 
+test('owner change matching accepts additional fields while keeping targets and replacement values exact', () => {
+  const cases = [
+    [{ 'merge-admin': 'true' }, { 'merge-admin': 'true', 'budget-hours': 10 }, true],
+    [{ 'merge-admin': 'true' }, { 'merge-admin': 'false', 'budget-hours': 10 }, false],
+    [{ decision: 'D1', answerers: ['a'] }, { decision: 'D2', answerers: ['a'], technical: true }, false],
+    [{ decision: 'D1', answerers: ['a'] }, { decision: 'D1', answerers: ['a', 'b'] }, false],
+    [{ ladder: { easy: { env: { A: '1', B: '2' } } } }, { ladder: { easy: { env: { B: '2', A: '1' }, scope: {} }, hard: { scope: {} } } }, true],
+    [{ ladder: { easy: { env: { A: '1' } } } }, { ladder: { easy: { env: { A: '1', B: '2' } } } }, false],
+    [{ ladder: { easy: { env: {} } } }, { ladder: { easy: { env: { A: '1' } } } }, false],
+    [{ user_file: 'a', rung: 'easy', fallbacks: [{ env: { A: '1' } }] }, { user_file: 'b', rung: 'easy', fallbacks: [{ env: { A: '1' } }] }, false],
+    [{ fallbacks: [{ model: 'a' }] }, { fallbacks: [{ model: 'a' }, { model: 'b' }] }, false],
+    [{ fallbacks: [{ model: 'a' }, { model: 'b' }] }, { fallbacks: [{ model: 'b' }, { model: 'a' }] }, false],
+    [{ fallbacks: null }, { fallbacks: [] }, false],
+    [{ 'budget-hours': 10 }, null, false],
+  ];
+  for (const [requested, written, expected] of cases) {
+    assert.equal(Authority.matchesOwnerChange(requested, written), expected, JSON.stringify({ requested, written }));
+  }
+});
+
 async function withServe(h, fn) {
   const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json', '--agent', 'owner'], { cwd: h.repo, env: h.env });
   const exited = new Promise((resolve) => server.on('exit', resolve));
@@ -280,6 +300,61 @@ test('an owner operational budget edit keeps retirement for the other requested 
   h.ok(['project', 'set', '--merge-admin', 'false']);
   assert.match(h.run(args, as('orchestrator')).stderr, /opened D2 /);
   assert.equal(h.readState('project.json').merge.admin, false);
+});
+
+test('a combined owner write retires each satisfied request without consuming unrelated ones', (t) => {
+  const h = cachedFixture(t, 'budget-requests', h => h.init(['--budget-hours', '5', '--budget-tokens', '5']));
+  const admin = ['project', 'set', '--merge-admin', 'true'];
+  assert.match(h.run(admin, as('orchestrator')).stderr, /opened D1 /);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  assert.match(h.run(['project', 'set', '--budget-hours', '10'], as('orchestrator')).stderr, /opened D2 /);
+  assert.match(h.run(['project', 'set', '--budget-tokens', '20'], as('orchestrator')).stderr, /opened D3 /);
+  const combined = [...admin, '--budget-hours', '10'];
+  assert.match(h.run(combined, as('orchestrator')).stderr, /opened D4 /, 'an orchestrator still needs approval for the broader request');
+  assert.equal(decisions(h)[0].applied, undefined);
+  assert.equal(h.readState('project.json').merge?.admin ?? false, false);
+  const before = decisions(h);
+  assert.notEqual(h.run([...combined, '--workers', '0']).code, 0);
+  assert.deepEqual(decisions(h), before, 'failed writes retire nothing');
+  const count = audits(h).length;
+  h.ok(combined);
+  assert.deepEqual(decisions(h).map(d => d.applied?.by), ['owner', 'owner', undefined, 'owner']);
+  assert.equal(decisions(h)[1].status, 'answered', 'a satisfied open request closes too');
+  assert.equal(decisions(h)[2].status, 'open');
+  assert.equal(audits(h).length, count + 1, 'one setting audit for the combined write');
+  h.ok(['project', 'set', '--merge-admin', 'false']);
+  assert.match(h.run(admin, as('orchestrator')).stderr, /opened D5 /);
+  assert.equal(h.readState('project.json').merge.admin, false);
+});
+
+test('owner ladder writes satisfy requested fields within a rung and preserve replacement values', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const args = ['ladder', 'set', 'easy', '--env', '{"ROUTE":"private"}'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1 /);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  h.ok(['ladder', 'set', 'hard', '--env', '{"ROUTE":"private"}', '--scope', '{}']);
+  assert.equal(decisions(h)[0].applied, undefined, 'another rung does not satisfy the request');
+  h.ok(['ladder', 'set', 'easy', '--env', '{"ROUTE":"different"}', '--scope', '{}']);
+  assert.equal(decisions(h)[0].applied, undefined, 'a different field value does not satisfy the request');
+  h.ok([...args, '--scope', '{}']);
+  assert.equal(decisions(h)[0].applied?.by, 'owner');
+  h.ok(['ladder', 'set', 'easy', '--clear', 'env']);
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D2 /);
+  assert.equal(h.readState('project.json').ladder.easy.env, undefined);
+});
+
+test('project owner writes compare JSON field values independently of their serialization', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const args = ['project', 'set', '--env', '{"A":"one","B":"two"}'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1 /);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  h.ok(['project', 'set', '--env', '{ "B": "two", "A": "one" }', '--scope', '{}']);
+  assert.equal(decisions(h)[0].applied?.by, 'owner');
+  h.ok(['project', 'set', '--env', 'null']);
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D2 /);
+  assert.equal(h.readState('project.json').env, undefined);
 });
 
 test('the board audits removing a tier range at its current rung just like the CLI', async (t) => {

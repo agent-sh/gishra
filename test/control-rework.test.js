@@ -140,6 +140,33 @@ test('fallback CLI edits preserve primary and unrelated user settings, including
   assert.equal(decisions(h).length, 0);
 });
 
+for (const state of ['approved', 'open', 'unchanged']) {
+  test(`an owner fallback replacement retires its ${state} request independently of the changed fields`, t => {
+    const h = setup(t);
+    const routes = [{ harness: 'codex', model: 'backup', env: { ROUTE: 'private' } }];
+    const args = ['ladder', 'set', 'easy', '--fallbacks', JSON.stringify(routes)];
+    assert.match(h.run(args, as('orchestrator')).stderr, /opened D1 /);
+    if (state !== 'open') h.ok(['answer', 'D1', '--choice', 'approve']);
+    h.ok(['ladder', 'set', 'hard', '--fallbacks', JSON.stringify(routes)]);
+    assert.equal(decisions(h)[0].applied, undefined, 'another rung does not retire the request');
+    h.ok(['ladder', 'set', 'easy', '--fallbacks', JSON.stringify([{ ...routes[0], model: 'intermediate' }])]);
+    assert.equal(decisions(h)[0].applied, undefined, 'a different list does not retire the request');
+    if (state === 'unchanged') {
+      h.ok(args, as('orchestrator'));
+      assert.equal(decisions(h)[0].applied, undefined, 'operational orchestrator tuning leaves the approval pending');
+    }
+    const count = audits(h).length;
+    h.ok(args);
+    assert.equal(decisions(h)[0].applied?.by, 'owner');
+    assert.equal(decisions(h)[0].status, 'answered');
+    assert.equal(audits(h).length, count + 1);
+    assert.ok(Object.values(audits(h).at(-1).detail.settings).every(c => c === 'operational'));
+    h.ok(['ladder', 'set', 'easy', '--clear', 'fallbacks']);
+    assert.match(h.run(args, as('orchestrator')).stderr, /opened D2 /);
+    assert.equal(user(h).ladder.easy?.fallbacks, undefined, 'the removed grant stays removed');
+  });
+}
+
 test('fallback reach and environment grants require one-use approvals', t => {
   const h = setup(t);
   const routes = [{ harness: 'command', command: [process.execPath, '-e', '0'], env: { ROUTE: 'private' } }];
