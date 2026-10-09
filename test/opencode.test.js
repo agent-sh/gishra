@@ -113,6 +113,17 @@ test('opencode dry-run preserves Git lookup with an inherited mixed-case Path', 
   assert.ok(preview.argv.includes('gishra-small'));
 });
 
+test('opencode launch replaces the caller PWD with its task worktree', { skip: NO_STUBS }, (t) => {
+  const f = setup(t);
+  f.env.PWD = f.h.repo;
+  const preview = dry(f);
+  assert.notEqual(preview.cwd, f.h.repo);
+  assert.equal(preview.env.PWD, preview.cwd);
+  spawn(f);
+  assert.equal(f.report().pwd, f.report().cwd);
+  assert.equal(f.report().cwd, preview.cwd);
+});
+
 test('opencode isolates config, memory, skills, MCP, approved rules and credentials; measures startup', { skip: NO_STUBS }, (t) => {
   const f = setup(t);
   const before = [];
@@ -366,7 +377,7 @@ test('opencode worker headless Bash allows task commands, shim paths, tests and 
 
 test('native opencode headless worker runs claim, git and tests and denies an unlisted command', {
   skip: !process.env.TOWER_CRANE_NATIVE_OPENCODE && 'set TOWER_CRANE_NATIVE_OPENCODE to the installed executable',
-  timeout: 120000,
+  timeout: 240000,
 }, async (t) => {
   const f = setup(t);
   const native = process.env.TOWER_CRANE_NATIVE_OPENCODE;
@@ -378,6 +389,8 @@ test('native opencode headless worker runs claim, git and tests and denies an un
   f.h.git(['commit', '-qm', 'headless test runner']);
   const commands = [
     'tower-crane claim T1 --agent worker-T1-1',
+    'pwd',
+    'git rev-parse --show-toplevel',
     'git status --short',
     'node --test test/headless.test.js',
     'npm test',
@@ -389,6 +402,9 @@ test('native opencode headless worker runs claim, git and tests and denies an un
     for await (const chunk of req) body += chunk;
     const request = JSON.parse(body);
     const command = request.tools?.some((tool) => tool.function?.name === 'bash') ? commands[turn++] : undefined;
+    if (command === commands[0]) {
+      f.h.ok(['msg', '--to', 'worker-T1-1', '--task', 'T1', 'NATIVE-INBOX-CANARY', '--agent', 'orchestrator']);
+    }
     const calls = command ? [{ index: 0, id: `probe-${turn}`, type: 'function',
       function: { name: 'bash', arguments: JSON.stringify({ command, description: 'headless native probe', timeout: 10000 }) } }] : undefined;
     const message = calls ? { role: 'assistant', tool_calls: calls } : { role: 'assistant', content: 'probe done' };
@@ -414,8 +430,7 @@ test('native opencode headless worker runs claim, git and tests and denies an un
   const bin = path.join(f.h.base, 'bin');
   fs.writeFileSync(path.join(bin, 'opencode'), `#!${process.execPath}
 const cp = require('node:child_process');
-const env = { ...process.env, PWD: process.cwd(), OPENCODE_PURE: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1' };
-const result = cp.spawnSync(${JSON.stringify(native)}, process.argv.slice(2), { env, stdio: 'inherit', timeout: 90000 });
+const result = cp.spawnSync(${JSON.stringify(native)}, process.argv.slice(2), { stdio: 'inherit', timeout: 180000 });
 process.exit(result.status ?? 1);
 `, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'tower-crane'), `#!${process.execPath}
@@ -426,7 +441,7 @@ process.exit(result.status ?? 1);
 `, { mode: 0o755 });
   f.h.ok(['ladder', 'set', 'medium', '--model', 'fixture/mock']);
   const result = await f.h.runAsync(['spawn', '--task', 'T1', '--wait'], {
-    env: { ...f.env, OPENCODE_CONFIG_CONTENT: '{}', OPENCODE_DISABLE_MODELS_FETCH: '1' },
+    env: { ...f.env, PWD: f.h.repo, OPENCODE_CONFIG_CONTENT: '{}', OPENCODE_DISABLE_MODELS_FETCH: '1' },
   });
   let logs = '';
   if (result.code !== 0) {
@@ -447,8 +462,16 @@ process.exit(result.status ?? 1);
     assert.equal(tools[index].metadata.exit, 0, JSON.stringify(tools[index]));
   }
   assert.equal(tools.at(-1).status, 'error', JSON.stringify(tools.at(-1)));
-  assert.match(tools[2].output, /headless workspace/);
-  assert.match(tools[3].output, /headless workspace/);
+  const audit = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const worktree = fs.realpathSync(audit.findLast((event) => event.cmd === 'spawn').detail.cwd);
+  assert.notEqual(worktree, fs.realpathSync(f.h.repo));
+  assert.equal(tools[1].output.trim(), worktree);
+  assert.equal(tools[2].output.trim(), worktree);
+  assert.match(tools[4].output, /headless workspace/);
+  assert.match(tools[5].output, /headless workspace/);
+  assert.ok(audit.some((event) => event.cmd === 'hook inbox'), 'production plugin acknowledges the queued inbox');
+  assert.ok(audit.some((event) => event.cmd === 'hook progress'), 'production tool hook runs');
+  assert.ok(tools.some((tool) => tool.output?.includes('NATIVE-INBOX-CANARY')), 'production plugin delivers the queued inbox');
   assert.equal(f.h.readState('tasks.json').tasks[0].claim.agent, 'worker-T1-1');
 });
 

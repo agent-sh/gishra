@@ -88,7 +88,7 @@ async function main() {
   const skillDescriptions = visibleSkills.map((file) => read(file).match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || '');
   const context = [prompt, body, ...memory.filter(Boolean), ...skillDescriptions, ...descriptions].join('');
   const report = {
-    home, global, data, dirs, config, agent, name, permission, memory: memory.filter(Boolean),
+    home, global, data, dirs, cwd: process.cwd(), pwd: process.env.PWD, config, agent, name, permission, memory: memory.filter(Boolean),
     skills: visibleSkills.map((file) => path.basename(path.dirname(file))), mcp,
     authPath, authSource: path.join(data, 'auth-source.json'), remoteContacts,
     authKinds: Object.fromEntries(Object.entries(auth).map(([name, value]) => [name, value.type])),
