@@ -184,7 +184,7 @@ const COMMANDS = [
 
   { section: 'Views', name: 'render', summary: 'write sketch.md and sketch.html (self-contained, no network)', description: "write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock", run: R.render },
 
-  { section: 'Run', name: 'renew', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'extend your lease; an expired one only while the workers limit has room', flags: { lease: int('MIN', 'new lease length from now') }, description: "extend the lease from now; only the claimant. An expired lease takes its resource locks and worker slot again, so its renewal is refused when a lock is held or the workers limit is reached", run: T.renew },
+  { section: 'Run', name: 'renew', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'extend your lease; an expired one only while the workers limit has room', flags: { lease: int('MIN', 'new lease length from now') }, description: "extend the lease from now; only the claimant. An expired lease must pass the claim checks again (unmet dependency, owner blocker, open decision, resource lock, workers limit), so a refused renewal leaves it expired", run: T.renew },
 
   { section: 'Run', name: 'rework', pos: ['ID'], usage: 'ID --reason R', summary: "send back; the reason goes into the brief's rework notes", flags: { reason: str('R', 'what to fix') }, required: ['reason'], description: "send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note", run: T.rework },
 
