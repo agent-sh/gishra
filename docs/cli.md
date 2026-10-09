@@ -161,8 +161,9 @@ If every lower task merges before an unlinked dependent submits its PR, `stack l
 
 After a lower merge, or when a later `worktree` or `spawn` observes main or a dependency moving, Tower Crane refreshes upper worktrees through `gh stack sync`. A dependent prepared before its PR is linked is revalidated at each `worktree` and `spawn`: when its dependency was resubmitted, a branch with no work of its own moves onto the new dependency head, and a branch with its own commits is refused until it contains that head (merge it in, or remove the worktree and branch). Every worktree in that stack must be idle and clean; otherwise refresh is deferred and an event names the blocker. Unknown remote PRs must be recorded before sync. Sync snapshots the project, stack members and their events under a short state lock, runs gh and Git unlocked, then re-takes the lock to compare and apply. Changes to the project or affected tasks refuse application and preserve current claims; unrelated task writes are retained. Git may already have moved branches when application is refused, so inspect their heads before retrying. The allowed gh-stack extension owns its rebases and atomic lease-protected pushes under the dispatcher's policy. An explicit conflict report sends outstanding tasks to rework with the failure in their briefs. A changed branch also goes to rework and needs a new submission and gates, even if sync then fails to push; evidence for the old head remains historical. Tooling and transport errors, including failures listing worktrees or an unavailable extension, record the parsed abort reason and preserve unchanged submissions and gates. The next refresh retries the linked stack. A failed sync exits 1 and reports whether work needs rework or a later retry.
 
-Before automatic synchronization after a confirmed merge, submitted or
-accepted upper heads are checked against the fetched project base. Stacks
+Before every automatic synchronization, including after a confirmed merge
+and from `worktree` or `spawn`, submitted or accepted upper heads are checked
+against the fetched project base. Stacks
 with declared generated conflicts defer synchronization. When all lower
 dependencies have merged, the completed dependency is retired with the normal PR head, branch,
 repository and base checks. Its PR is retargeted to main and the generated

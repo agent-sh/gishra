@@ -10,7 +10,8 @@ When claim or worker spawn readiness depends on an existing stack PR, Tower Cran
 
 For an unlinked dependent whose lower members all have merge evidence, linking retargets its PR to the project base, removes `stack` and `stack_disabled`, and emits `stack complete` with the former parent, new base and PR number. Its sha is unchanged. Rework notes append only to an existing brief; a brief removed during the append is treated as absent.
 
-The post-merge generated-conflict preflight can also retire a linked dependent
+The shared generated-conflict preflight runs before automatic refresh from
+merge, worktree preparation and spawn. It can also retire a linked dependent
 whose lower members all have confirmed merge evidence. It uses the same
 snapshot and PR validation as ordinary completed-chain retirement, emitting
 `stack complete` before generated repair. This prevents synchronization from

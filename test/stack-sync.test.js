@@ -6,8 +6,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { setup, stacked } = require('./stack-fixture');
 
-for (const mode of ['generated', 'mixed', 'unknown', 'unmerged-parent']) {
-  test(`a lower stack merge handles upper ${mode} conflicts before synchronization`, (t) => {
+for (const mode of ['generated', 'mixed', 'unknown', 'unmerged-parent', 'worktree', 'spawn']) {
+  const automaticEntry = ['worktree', 'spawn'].includes(mode);
+  test(automaticEntry ? `automatic ${mode} refresh defers generated conflicts before synchronization`
+    : `a lower stack merge handles upper ${mode} conflicts before synchronization`, (t) => {
     const f = stacked(t);
     const h = f.h;
     fs.mkdirSync(path.join(h.repo, 'docs'));
@@ -73,6 +75,24 @@ fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(/(<!-- commands:Run:s
       d.generatedProbe = { lower: 11, upper: pr, unmergedParent: mode === 'unmerged-parent',
         mergeable: ['unknown', 'unmerged-parent'].includes(mode) ? 'UNKNOWN' : 'CONFLICTING' };
     });
+    if (automaticEntry) {
+      if (mode === 'worktree') h.ok(['worktree', id]);
+      else {
+        h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--clear', 'model', '--clear', 'profile', '--clear', 'effort',
+          '--command', JSON.stringify([process.execPath, '-e', 'process.exit(0)', '{prompt}'])]);
+        const result = h.run(['spawn', '--task', id, '--wait']);
+        assert.equal(result.code, 1, 'a submitted task cannot start another worker');
+        assert.match(result.stderr, /submitted|claim|ready/i);
+      }
+      const current = h.json(['task', 'show', id]);
+      assert.equal(current.status, 'submitted');
+      assert.equal(current.sha, upper);
+      assert.equal(h.git(['status', '--porcelain'], wt.path), '');
+      assert.equal(f.read().calls.some((c) => c.args[0] === 'stack' && c.args[1] === 'sync'), false);
+      const events = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(events.some((e) => e.task === id && e.cmd === 'spawn' && e.detail.role === 'worker'), false);
+      return;
+    }
     f.accept('T1');
     h.ok(['merge', 'T1']);
     const task = h.json(['task', 'show', id]);
