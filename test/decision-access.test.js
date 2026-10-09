@@ -84,16 +84,28 @@ test('the orchestrator answers only owner-marked technical decisions when projec
   );
 });
 
-test('an explicit owner outside a task is the owner whatever TOWER_CRANE_AGENT names; a task process cannot use it', (t) => {
+test('owner commands reject another process identity with or without a task binding', (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres']);
 
-  // An owner shell started under another agent's name still acts as the owner when it says so.
   const shell = { env: { TOWER_CRANE_AGENT: 'worker-T1-1' } };
-  h.ok(['project', 'set', '--merge-admin', 'true', '--agent', 'owner'], shell);
+  const originalProject = h.readState('project.json');
+  const originalEvents = events(h);
+  for (const args of [
+    ['project', 'set', '--merge-admin', 'true', '--agent', 'owner'],
+    ['answer', 'D1', '--choice', 'redis', '--agent', 'owner'],
+  ]) {
+    const refused = h.run(args, shell);
+    assert.equal(refused.code, 1, refused.stderr);
+    assert.match(refused.stderr, /TOWER_CRANE_AGENT names worker-T1-1/);
+  }
+  assert.deepEqual(h.readState('project.json'), originalProject);
+  assert.equal(h.readState('decisions.json').decisions[0].status, 'open');
+  assert.deepEqual(events(h), originalEvents);
+  h.ok(['project', 'set', '--merge-admin', 'true', '--agent', 'owner']);
   assert.equal(h.readState('project.json').merge.admin, true);
-  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'owner'], shell);
+  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'owner']);
   const decision = h.readState('decisions.json').decisions[0];
   assert.deepEqual([decision.answered_by, decision.answer_rule], ['owner', 'owner']);
 
@@ -102,7 +114,7 @@ test('an explicit owner outside a task is the owner whatever TOWER_CRANE_AGENT n
   const task = { env: { TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_TASK: 'T1' } };
   const refused = h.run(['answer', 'D2', '--choice', 'memory', '--agent', 'owner'], task);
   assert.equal(refused.code, 1, refused.stderr);
-  assert.match(refused.stderr, /task processes cannot use owner identity/);
+  assert.match(refused.stderr, /a task process never acts as owner/);
   assert.equal(h.readState('decisions.json').decisions[1].status, 'open');
   assert.deepEqual(events(h), before, 'a task process refused as owner writes no event');
 });
@@ -137,7 +149,7 @@ test('a worker cannot delegate by passing the owner identity', (t) => {
     { env: { TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_TASK: 'T1' } },
   );
   assert.equal(forged.code, 1, forged.stderr);
-  assert.match(forged.stderr, /task processes cannot use owner identity/);
+  assert.match(forged.stderr, /a task process never acts as owner/);
   assert.deepEqual(h.readState('decisions.json').decisions[0].answerers, []);
   assert.deepEqual(events(h), before, 'a worker cannot name itself as an answerer');
 });
