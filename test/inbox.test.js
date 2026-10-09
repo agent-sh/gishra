@@ -643,10 +643,10 @@ test('failed review inbox and rework preserve every finding from the latest comm
   assert.ok(brief.includes(ref));
   assert.doesNotMatch(brief, /Older finding/);
   h.submit(id, 7);
-  h.ok(['evidence', id, '--revision', h.revision(id), '--type', 'review', '--ok', '--sha', h.sha,
+  h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha,
     '--revision', '1', '--agent', 'owner']);
   assert.equal(h.json(['task', 'show', id]).gates.gates.find((gate) => gate.type === 'review').ok, false);
-  h.ok(['evidence', id, '--revision', h.revision(id), '--type', 'review', '--ok', '--sha', h.sha,
+  h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha,
     '--revision', '2', '--agent', 'owner']);
   assert.equal(h.json(['task', 'show', id]).gates.gates.find((gate) => gate.type === 'review').ok, true);
 });

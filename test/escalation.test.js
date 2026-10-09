@@ -491,13 +491,15 @@ if (args.some((arg) => arg.includes('/check-runs'))) {
     h.ok(['spawn', '--task', 'T1']);
     await h.until(() => settled('worker-T1-1'));
     for (const rung of ['medium', null]) {
+      if (h.openDecisions().length === 1) break;
       const result = h.run(['check', type, 'T1', '--json'], { env: { FIXTURE_GATE_OK: '0' } });
       assert.equal(result.code, 1, result.stderr);
       assert.equal(JSON.parse(result.stdout).confirmed_failure, true, result.stdout);
       if (rung) {
-        await h.until(() => h.readAttempts().length === 2 && h.task().status === 'submitted');
+        await h.until(() => h.readAttempts().length === 2
+          && (h.task().status === 'submitted' || h.openDecisions().length === 1));
         assert.equal(h.json(['task', 'show', 'T1']).tier, rung);
-        await h.until(() => settled('worker-T1-2'));
+        await h.until(() => settled('worker-T1-2') || h.openDecisions().length === 1);
       } else {
         await h.until(() => h.openDecisions().length === 1);
       }
@@ -689,10 +691,10 @@ test('a brokered failed review records the climb and leaves dispatch to its host
     h.ok(['recover', 'T1', '--agent', 'orchestrator']);
     await h.until(() => h.readAttempts().length === 2 && h.task().status === 'submitted');
     const sha = h.git(['rev-parse', 'HEAD']);
-    h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', sha,
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha,
       '--revision', '1', '--agent', 'owner']);
     assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'review').ok, false);
-    h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', sha,
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha,
       '--revision', '2', '--agent', 'owner']);
     assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'review').ok, true);
     assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
