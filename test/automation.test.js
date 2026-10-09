@@ -268,6 +268,24 @@ test('a matching UNKNOWN head runs submission gates during the same wait', async
   assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false);
 });
 
+test('a submitted PR that GitHub reports UNKNOWN, then CONFLICTING, goes to rework before any suite runs', (t) => {
+  const h = setup(t);
+  h.git(['switch', 'main']);
+  fs.writeFileSync(path.join(h.repo, 'value.js'), 'module.exports = 3;\n');
+  h.git(['add', 'value.js']);
+  h.git(['commit', '-qm', 'main moves value']);
+  h.submit();
+  const github = h.github();
+  Object.assign(github.prs['7'], { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', unknownViews: 1 });
+  h.saveGithub(github);
+  h.consume();
+  const task = h.readState('tasks.json').tasks[0];
+  assert.equal(task.status, 'rework');
+  assert.match(task.notes.at(-1).text, /conflicts with main: value\.js/);
+  assert.equal(h.logs().filter((e) => ['check tests', 'check clean'].includes(e.cmd)).length, 0, 'no suite or clean runs');
+  assert.equal(h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'view').length, 2, 'the UNKNOWN read is retried once');
+});
+
 test('startup retains gate evidence when main moves and the submitted head stays mergeable', (t) => {
   const h = setup(t);
   h.submit();
