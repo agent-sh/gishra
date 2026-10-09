@@ -5,15 +5,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { makeRepo, real, BIN, PTY_AVAILABLE } = require('./helpers');
+const { cachedFixture, real, BIN, PTY_AVAILABLE } = require('./helpers');
 const A = require('../lib/agents');
 
 function setup(t) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Idempotency key on retries', '--acceptance', 'processed once', '--acceptance', 'test proves it']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: '- start from the webhook handler\n' });
-  return h;
+  return cachedFixture(t, 'task', (h) => {
+    h.init();
+    h.ok(['task', 'add', '--title', 'Idempotency key on retries', '--acceptance', 'processed once', '--acceptance', 'test proves it']);
+    h.ok(['brief', 'set', 'T1', '-'], { input: '- start from the webhook handler\n' });
+  });
 }
 
 const dry = (h, rung, env) => h.json(['spawn', ...(rung ? ['--role', rung] : []), '--task', 'T1', '--dry-run'], { env });
@@ -132,6 +132,11 @@ test('spawn --dry-run builds each harness command', (t) => {
     '-c', 'default_permissions="tower-crane"', '-c', 'approval_policy="never"', '-c', 'bypass_hook_trust=true', '-c', 'web_search="disabled"',
     ...small.codexDisable.flatMap((f) => ['--disable', f]),
   ];
+  const piOwn = (state) => [
+    '--no-approve', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files',
+    '--tools', 'bash,read,grep,find', '--append-system-prompt', path.join(state, 'homes', 'small-T1-1', 'AGENTS.md'),
+    '--extension', path.join(state, 'homes', 'small-T1-1', 'hook.mjs'),
+  ];
   const cases = [
     [['--harness', 'claude', '--model', 'claude-opus-5-5'], (p, s) => ['claude', '-p', p, '--model', 'claude-opus-5-5', '--output-format', 'json', ...claudeOwn(s)]],
     [['--harness', 'claude', '--model', 'opus', '--effort', 'high'], (p, s) => ['claude', '-p', p, '--model', 'opus', '--effort', 'high', '--output-format', 'json', ...claudeOwn(s)]],
@@ -139,10 +144,10 @@ test('spawn --dry-run builds each harness command', (t) => {
     [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p, s) => ['codex', 'exec', '--json', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', ...codexOwn(s), p, '--skip-git-repo-check']],
     [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', p]],
     [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', p]],
-    [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro']],
-    [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--output-format","json"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--output-format', 'json']],
-    [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--extension', path.join(s, 'homes', 'small-T1-1', 'hook.mjs')]],
-    [['--harness', 'pi', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--thinking', 'xhigh', '--extension', path.join(s, 'homes', 'small-T1-1', 'hook.mjs'), '--no-session']],
+    [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--agent', 'gishra-small', '--disable-slash-commands', '--sandbox']],
+    [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--print-timeout","60s"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--agent', 'gishra-small', '--disable-slash-commands', '--sandbox', '--print-timeout', '60s']],
+    [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', ...piOwn(s)]],
+    [['--harness', 'pi', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--thinking', 'xhigh', ...piOwn(s), '--no-session']],
   ];
   const empty = path.join(h.base, 'no-plugin');
   fs.mkdirSync(empty);
