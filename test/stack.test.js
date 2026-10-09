@@ -23,7 +23,8 @@ test('detached spawn links the PR after its worker submits and exits', async (t)
   const f = setup(t);
   worker(f);
   f.h.ok(['spawn', '--task', 'T2']);
-  const until = Date.now() + 15000;
+  // The worker runs git, the CLI and its submit checks; on Windows that takes about 20 seconds.
+  const until = Date.now() + 60000;
   let task;
   do {
     task = f.h.json(['task', 'show', 'T2']);
