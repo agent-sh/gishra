@@ -14,6 +14,15 @@ const cp = require('node:child_process');
 const { EventEmitter } = require('node:events');
 
 const env = process.env;
+// The probe child observes the environment passed to Git, then runs real Git.
+if (env.HOOK_GIT_ENV_REPORT && path.basename(process.argv[1] || '') === 'tower-crane.js') {
+  const exec = cp.execFileSync;
+  cp.execFileSync = function gitEnvironment(command, args, options) {
+    if (command !== 'git') return exec.call(this, command, args, options);
+    return exec.call(this, process.execPath, [path.join(__dirname, 'git-env-probe.js'), ...args], options);
+  };
+}
+
 // Keep a known missing PID absent when a test waits long enough for OS reuse.
 if (env.HOOK_DEAD_PID) {
   const kill = process.kill;

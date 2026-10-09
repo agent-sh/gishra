@@ -379,6 +379,9 @@ function checkPositionals(cmd, pos) {
 }
 
 async function main(argv) {
+  // State discovery can start Git before authentication; children get no key.
+  const ownerCredential = process.env.TOWER_CRANE_OWNER_KEY;
+  delete process.env.TOWER_CRANE_OWNER_KEY;
   const out = (s) => process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
   let resolved;
   let jsonOut = argv.includes('--json');
@@ -433,10 +436,8 @@ async function main(argv) {
     const ownerTerminal = !!(process.stdin.isTTY && process.stdout.isTTY);
     const authority = require('../lib/authority');
     const ownerConfigDir = identity === 'owner'
-      ? authority.checkOwner(process.env, ownerTerminal, () => authority.ownerProject(locate()), cmd.name === 'init')
+      ? authority.checkOwner(process.env, ownerCredential, ownerTerminal, () => authority.ownerProject(locate()), cmd.name === 'init')
       : undefined;
-    // The key proves this process only; nothing it starts inherits it.
-    delete process.env.TOWER_CRANE_OWNER_KEY;
     // Check the resolved identity before forwarding; the broker separately
     // verifies requests against the identity it spawned.
     if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {

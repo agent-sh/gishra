@@ -293,6 +293,21 @@ test('owner without a terminal needs the owner key', (t) => {
   assert.equal(h.readState('tasks.json').tasks[0].needs_owner, null);
 });
 
+test('automatic state discovery never passes the owner key to a Git child', (t) => {
+  const h = setup(t);
+  const report = path.join(h.base, 'git-environment.jsonl');
+  assert.ok(h.env.TOWER_CRANE_OWNER_KEY);
+  const result = h.run(['project', 'set', '--merge-admin', 'true'], {
+    env: { TOWER_CRANE_STATE: undefined },
+    hooks: { HOOK_GIT_ENV_REPORT: report },
+  });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(h.readState('project.json').merge.admin, true);
+  const calls = fs.readFileSync(report, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls[0].args, ['rev-parse', '--git-common-dir']);
+  assert.ok(calls.every((call) => !call.ownerKeyPresent), 'discovery and later Git children receive no owner key');
+});
+
 test('caller config and home cannot redirect an initialized project owner credential', (t) => {
   const h = setup(t);
   const callerHome = path.join(h.base, 'caller-home');
