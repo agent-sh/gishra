@@ -685,6 +685,18 @@ gates, a refused merge or head check) is passed over for the rest of the
 pass and the next entry takes the line; each later pass tries it again.
 PR lookup refusals and unreadable GitHub responses use this skip path;
 unexpected execution errors still abort the queue.
+An explicit `merge --accepted` requests a busy queue once and waits for
+its observable executor to release the reservation before taking its own
+pass. The wait uses `gates.tests_timeout_min` (20 minutes by default);
+an unobservable executor or an expired wait refuses with a queue reason.
+Its entries use the same task reservation and merge gate as `merge ID`,
+after the head checks above. Passing CI evidence under `ci.capped_review`
+permits a `MERGEABLE` PR whose merge state is `UNSTABLE`.
+The command reports each task's merge, confirmation or refusal from the
+queue and its recorded evidence, without fetching inbox findings. JSON
+contains `results: [{task, ok, summary}]` and `remaining: [{task, reason}]`.
+A skipped stack entry's refusal reason is reported for every unmerged
+member, including the lower task whose PR or gates blocked the entry.
 `queue skipped` records `{sha, revision, reason}` on that task once per
 sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain
