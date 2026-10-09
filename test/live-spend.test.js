@@ -5,8 +5,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, BIN } = require('./helpers');
-const { CHROME, openBrowser } = require('./browser');
+const { cachedFixture, BIN } = require('./helpers');
+const { CHROME, openBrowser, closeBrowser } = require('./browser');
+
+test.after(closeBrowser);
 
 const STUB = path.join(__dirname, 'fixtures', 'live-usage-harness.js').replace(/\\/g, '/');
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -20,15 +22,19 @@ async function until(fn, message, timeout = 20000) {
 }
 
 function setup(t, harness, supervision = {}) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Spend live', '--tier', 'easy', '--acceptance', 'budget holds']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Work on T1.\n' });
+  const h = cachedFixture(t, `live-spend:${harness}`, (fixture) => {
+    fixture.init();
+    fixture.ok(['task', 'add', '--title', 'Spend live', '--tier', 'easy', '--acceptance', 'budget holds']);
+    fixture.ok(['brief', 'set', 'T1', '-'], { input: 'Work on T1.\n' });
+    const bin = path.join(fixture.base, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
+    fixture.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'dispatch-model', '--clear', 'profile', '--clear', 'effort',
+      '--supervision', '{"usage_ms":500,"stall_ms":60000}']);
+  });
+  if (Object.keys(supervision).length) h.ok(['ladder', 'set', 'easy', '--supervision',
+    JSON.stringify({ usage_ms: 500, stall_ms: 60000, ...supervision })]);
   const bin = path.join(h.base, 'bin');
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, harness + (process.platform === 'win32' ? '.exe' : '')), '', { mode: 0o755 });
-  h.ok(['ladder', 'set', 'easy', '--harness', harness, '--model', 'dispatch-model', '--clear', 'profile', '--clear', 'effort',
-    '--supervision', JSON.stringify({ usage_ms: 500, stall_ms: 60000, ...supervision })]);
   h.done = path.join(h.base, 'done');
   h.liveEnv = (extra = {}) => ({
     PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
@@ -69,14 +75,16 @@ test('sub-second usage requests obey the sampling floor and unchanged readings w
   const reads = path.join(h.base, 'reads');
   h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_READS: reads, LIVE_NO_CLAIM: '1' }) });
   await until(() => h.readState('tasks.json').tasks[0].spend.tokens === 1000, 'initial usage was not recorded');
-  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const readTimes = () => fs.readFileSync(reads, 'utf8').trim().split('\n').map(Number);
+  await until(() => readTimes().length >= 3, 'the supervisor did not keep sampling');
   const samples = events(h).filter((e) => e.cmd === 'spend live' && e.detail.tokens === 1000);
   assert.equal(samples.length, 1, 'watcher wakes and unchanged snapshots do not write more usage');
   assert.equal(samples[0].detail.live.interval_ms, 1000);
   h.ok(['task', 'note', 'T1', 'wake the sampler']);
-  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const count = readTimes().length;
+  await until(() => readTimes().length >= count + 2, 'the supervisor stopped sampling after a state change');
   assert.equal(events(h).filter((e) => e.cmd === 'spend live' && e.detail.tokens === 1000).length, 1);
-  const times = fs.readFileSync(reads, 'utf8').trim().split('\n').map(Number);
+  const times = readTimes();
   assert.ok(times.length >= 2, 'the supervisor still samples an unchanged file');
   for (let i = 1; i < times.length; i++) assert.ok(times[i] - times[i - 1] >= 950, `reads were ${times[i] - times[i - 1]}ms apart`);
 });
