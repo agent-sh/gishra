@@ -54,7 +54,16 @@ cp.spawnSync=(cmd,args,opts)=>{
   h.ok(['brief', 'set', 'T1', '-'], { input: '# Change\n\nImplement the acceptance.\n' });
   h.submit = (id = 'T1', sha = h.sha, pr = '7') => {
     h.ok(['claim', id, '--agent', 'worker']);
+    // A worker's submit refuses pending or failing CI (T149), so the head is submitted while its
+    // CI reads green. The CI the test set returns before any reaction runs.
+    const before = h.github();
+    const ciAtSubmit = before.ci[sha];
+    before.ci[sha] = 'success';
+    h.saveGithub(before);
     h.ok(['submit', id, '--sha', sha, '--pr', pr, '--agent', 'worker']);
+    const after = h.github();
+    after.ci[sha] = ciAtSubmit;
+    h.saveGithub(after);
   };
   h.consume = () => h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
   h.logs = () => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -282,6 +291,8 @@ test('a submitted PR that GitHub reports UNKNOWN, then CONFLICTING, goes to rewo
   h.git(['add', 'value.js']);
   h.git(['commit', '-qm', 'main moves value']);
   h.submit();
+  // Submit reads the PR's mergeability before this test turns it UNKNOWN; count only the reaction's reads.
+  const submitViews = h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'view').length;
   const github = h.github();
   Object.assign(github.prs['7'], { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', unknownViews: 1 });
   h.saveGithub(github);
@@ -290,7 +301,7 @@ test('a submitted PR that GitHub reports UNKNOWN, then CONFLICTING, goes to rewo
   assert.equal(task.status, 'rework');
   assert.match(task.notes.at(-1).text, /conflicts with main: value\.js/);
   assert.equal(h.logs().filter((e) => ['check tests', 'check clean'].includes(e.cmd)).length, 0, 'no suite or clean runs');
-  assert.equal(h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'view').length, 2, 'the UNKNOWN read is retried once');
+  assert.equal(h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'view').length - submitViews, 2, 'the UNKNOWN read is retried once');
 });
 
 test('startup retains gate evidence when main moves and the submitted head stays mergeable', (t) => {
