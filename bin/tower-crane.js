@@ -21,6 +21,7 @@ for (const stream of [process.stdout, process.stderr]) {
 }
 
 const { TowerCraneError, usage, refuse, readStdin } = require('../lib/util');
+const { isatty } = require('node:tty');
 const S = require('../lib/state');
 const P = require('../lib/project');
 const T = require('../lib/tasks');
@@ -153,7 +154,7 @@ const COMMANDS = [
 
   { section: 'Run', name: 'hook', pos: ['ACTION'], usage: 'ACTION --binding FILE [--payload JSON|-]', summary: 'deliver harness messages and record activity under the home identity', flags: { binding: str('FILE', 'protected hook binding in the agent home'), payload: str('JSON|-', 'harness event data (- reads stdin)') }, required: ['binding'], run: run('../lib/harness-hooks', 'hook') },
 
-  { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], description: "create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid", run: P.init },
+  { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], description: "create the state directory and `project.json` with the default harness and ladder (from the user file, else built in), and record its canonical `owner_config_dir`; takes the `project set` settings too. Refused if the user file is invalid or the project already exists", run: P.init },
 
   { section: 'Run', name: 'interrupt', pos: ['ID'], usage: 'ID', summary: 'owner or orchestrator: stop the supervisor and release the claim, keeping the revision and dirty worktree for resume', description: "owner or orchestrator only: stop the live agent through its supervisor and release the claim to its prior `todo` or `rework`. The revision, branch, evidence and dirty worktree stay, so the next dispatch resumes the work (Codex warm resume, or a fresh Claude worker in the same worktree). Distinct from `rework`, which sends a submitted task back with a reason, and from a requirements edit, which bumps the revision", run: T.interrupt },
 
@@ -170,6 +171,8 @@ const COMMANDS = [
   { section: 'Run', name: 'msg', pos: ['TEXT...'], usage: '--to NAME [--task ID] [--steer] TEXT', summary: 'send a worker message through the event log', flags: { to: str('NAME', 'recipient, usually orchestrator'), task: str('ID', 'task (default TOWER_CRANE_TASK)'), steer: bool('deliver into the running turn where the harness can, not after it') }, required: ['to'], run: run('../lib/events', 'message') },
 
   { section: 'Run', name: 'owner-done', pos: ['ID'], usage: 'ID [--note T]', summary: 'the owner did what needs_owner asked; clears it', flags: { note: str('T', 'what was done') }, description: "the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner", run: T.ownerDone },
+
+  { section: 'Run', name: 'owner-key', summary: 'owner only: create the owner key that stands in for a terminal; prints its path, never the key', description: "the owner, explicitly and at a terminal or with the current key, creates the key under the project's recorded `owner_config_dir` and prints `created PATH` or `exists PATH`; never prints the key. An unbound project requires a terminal owner to record the directory first. `TOWER_CRANE_OWNER_KEY` with its contents stands in for a terminal ([Agent identity](state.md#agent-identity))", run: run('../lib/authority', 'ownerKey') },
 
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', description: "add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `needs`, `size`, `tier`, `depends_on`, `needs_owner`, `locks`, `environment`; `needs_owner` is trimmed and blank values store null. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file", run: T.planImport },
 
@@ -377,6 +380,9 @@ function checkPositionals(cmd, pos) {
 }
 
 async function main(argv) {
+  // State discovery can start Git before authentication; children get no key.
+  const ownerCredential = process.env.TOWER_CRANE_OWNER_KEY;
+  delete process.env.TOWER_CRANE_OWNER_KEY;
   const out = (s) => process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
   let resolved;
   let jsonOut = argv.includes('--json');
@@ -418,18 +424,22 @@ async function main(argv) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: tower-crane ${cmd.name} ${cmd.usage}`);
     }
     let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
+    // Inspect descriptors without initializing stdin and changing pipe flags.
+    const ownerTerminal = isatty(0) && isatty(1);
     // Terminal fallback identifies ordinary actions; owner powers need a named identity.
     const agentExplicit = agent !== undefined;
     if (agent === undefined) {
-      if (process.stdin.isTTY && process.stdout.isTTY && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
+      if (ownerTerminal && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
       else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     }
     if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     const identity = agent.trim();
-    if (identity === 'owner' && process.env.TOWER_CRANE_TASK !== undefined) {
-      throw refuse('owner acts from an interactive terminal; task processes cannot use owner identity');
-    }
-    const locate = () => S.locateStateDir(globals.state, process.env, process.cwd());
+    let stateDir;
+    const locate = () => stateDir ??= S.locateStateDir(globals.state, process.env, process.cwd());
+    const authority = require('../lib/authority');
+    const ownerConfigDir = identity === 'owner'
+      ? authority.checkOwner(process.env, ownerCredential, ownerTerminal, () => authority.ownerProject(locate()), cmd.name === 'init')
+      : undefined;
     // Check the resolved identity before forwarding; the broker separately
     // verifies requests against the identity it spawned.
     if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {
@@ -446,6 +456,8 @@ async function main(argv) {
       env: process.env,
       agent: identity,
       agentExplicit,
+      ownerTerminal,
+      ownerConfigDir,
       json: !!globals.json,
       flags: own,
       pos: parsed.pos,
