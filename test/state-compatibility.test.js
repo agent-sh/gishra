@@ -123,6 +123,24 @@ test('a supervised worker survives additive state from a newer tool', async (t) 
   assert.doesNotMatch(result.stderr, /supervisor failed/);
 });
 
+test('unknown decision statuses block only the tasks that need to interpret them', (t) => {
+  const h = fixture(t);
+  h.ok(['ask', '--question', 'Future blocker?', '--blocks', 'T1']);
+  const decisions = h.readState('decisions.json');
+  decisions.decisions[0].status = 'future-pending';
+  h.writeState('decisions.json', decisions);
+  const ready = h.json(['ready']);
+  assert.equal(ready.ready.some((task) => task.id === 'T1'), false);
+  assert.equal(ready.ready.some((task) => task.id === 'T2'), true);
+  for (const args of [['claim', 'T1', '--agent', 'worker'], ['spawn', '--task', 'T1', '--dry-run']]) {
+    const result = h.run(args);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /decision D1 has unsupported status "future-pending".*upgrade/);
+  }
+  h.ok(['claim', 'T2', '--agent', 'other-worker']);
+  assert.equal(h.readState('decisions.json').decisions[0].status, 'future-pending');
+});
+
 test('newer schemas refuse dispatch and writes before any side effects', (t) => {
   const h = fixture(t);
   assert.equal(h.readState('project.json').schema_version, 1);
@@ -166,8 +184,8 @@ fs.readFileSync = function(file, ...args) {
   assert.doesNotMatch(result.stderr, /tasks.json is invalid/);
 });
 
-for (const change of ['schema bump', 'unknown current task status']) {
-test(`a ${change} drains the supervisor without killing an edit`, async (t) => {
+for (const change of ['schema bump', 'unknown current task status', 'unknown blocking decision status']) {
+test(`${change} drains the supervisor without killing an edit`, async (t) => {
   const h = fixture(t);
   const worker = heldWorker(h);
   let output = '';
@@ -184,9 +202,15 @@ test(`a ${change} drains the supervisor without killing an edit`, async (t) => {
       project.schema_version = 2;
       h.writeState('project.json', project);
     } else {
-      const tasks = h.readState('tasks.json');
-      tasks.tasks[0].status = 'future-paused';
-      h.writeState('tasks.json', tasks);
+      if (change === 'unknown current task status') {
+        const tasks = h.readState('tasks.json');
+        tasks.tasks[0].status = 'future-paused';
+        h.writeState('tasks.json', tasks);
+      } else {
+        h.writeState('decisions.json', { version: 1, next: 2, decisions: [{
+          id: 'D1', question: 'Future blocker?', status: 'future-pending', blocks: ['T1'],
+        }] });
+      }
       fs.appendFileSync(path.join(h.state, 'events.jsonl'), JSON.stringify({
         at: new Date().toISOString(), cmd: 'future pause', task: 'T1', detail: {},
       }) + '\n');
