@@ -269,6 +269,19 @@ test('operational budget edits remain outside an orchestrator approval for anoth
   });
 });
 
+test('an owner operational budget edit keeps retirement for the other requested owner setting', (t) => {
+  const h = cachedFixture(t, 'budget-requests', h => h.init(['--budget-hours', '5', '--budget-tokens', '5']));
+  const args = ['project', 'set', '--merge-admin', 'true', '--budget-hours', '3'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1 /);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  h.ok(args);
+  assert.equal(decisions(h)[0].applied?.by, 'owner');
+  assert.deepEqual(audits(h).at(-1).detail.settings, { 'merge.admin': 'owner-required', 'budget.lower': 'operational' });
+  h.ok(['project', 'set', '--merge-admin', 'false']);
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D2 /);
+  assert.equal(h.readState('project.json').merge.admin, false);
+});
+
 test('the board audits removing a tier range at its current rung just like the CLI', async (t) => {
   const h = makeRepo(t);
   h.init();
