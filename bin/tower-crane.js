@@ -248,7 +248,7 @@ function generalHelp() {
     for (const c of COMMANDS.filter((x) => x.section === section)) lines.push(`  ${c.name.padEnd(16)} ${c.summary}`);
   }
   lines.push('', 'global options:', ...Object.entries(GLOBAL).map(([n, s]) => flagLine(n, s)));
-  lines.push('', 'exit status: 0 done, 1 refused (reason on stderr), 2 usage error, 3 lock not acquired within 10 s');
+  lines.push('', `exit status: 0 done, 1 refused (reason on stderr), 2 usage error, 3 lock not acquired within ${S.LOCK_WAIT_MS / 1000} s`);
   lines.push('run tower-crane <command> --help for its options; docs/cli.md and docs/state.md hold the contract');
   return lines.join('\n');
 }
