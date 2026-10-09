@@ -144,6 +144,7 @@ test('an approved waiver lets the orchestrator accept, and only that approval ma
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works']);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'w-1']);
+  h.reviewer('T1', 'r-1');
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
   const waive = ['accept', 'T1', '--waive', 'tests', '--reason', 'no harness yet'];
 
@@ -194,6 +195,7 @@ test('a spawned orchestrator applies an approved waiver under its recorded role'
   assert.match(agent, /^orchestrator-T1-\d+$/);
   h.ok(['claim', 'T1', '--agent', 'w-1']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'w-1']);
+  h.reviewer('T1', 'r-1');
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
   const waive = ['accept', 'T1', '--waive', 'tests', '--reason', 'no harness yet'];
   assert.match(h.run(waive, as(agent)).stderr, /opened D1/);
