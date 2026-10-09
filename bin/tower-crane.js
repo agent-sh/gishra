@@ -21,6 +21,7 @@ for (const stream of [process.stdout, process.stderr]) {
 }
 
 const { TowerCraneError, usage, refuse } = require('../lib/util');
+const { isatty } = require('node:tty');
 const S = require('../lib/state');
 const P = require('../lib/project');
 const T = require('../lib/tasks');
@@ -67,7 +68,8 @@ const SETTINGS = {
   'tests-keep': str('JSON', 'operational (orchestrator or owner): extra build file globs to keep at submitted sha; [] or null restores defaults'),
   'tests-mode': str('MODE', 'operational (orchestrator or owner): prove, run-only or none; null restores prove'),
   'tests-by-kind': str('JSON', 'operational (orchestrator or owner): task kind to tests mode overrides; null clears overrides'),
-  'tests-expensive': str('JSON', 'operational (orchestrator or owner): true runs the full suite once with scoped proof; false or null restores normal proof'),
+  'tests-map': str('JSON', 'operational (orchestrator or owner): source path or glob to test file arrays; null clears the map'),
+  'tests-expensive': str('JSON', 'operational (orchestrator or owner): true selects the head suites with scoped proof; false or null restores normal proof'),
   'ci-ignore-apps': str('JSON', 'array of GitHub app slugs to skip; [] or null clears the list'),
   'ci-required': str('JSON', 'array of required check-run names or prefixes; [] or null clears the list'),
   'ci-capped-review': str('JSON', 'array of {app, pattern}: a matching check run of that app is a nonblocking capped review; [] or null clears the list'),
@@ -132,7 +134,7 @@ const COMMANDS = [
 
   { section: 'Gates', name: 'check sources', pos: ['ID'], usage: 'ID', summary: 'fetch distinct cited pages and verify every quoted claim in research/ID.json at submitted sha; records sources', description: "fetch the distinct cited pages from committed `research/ID.json` and verify every quote; records sources evidence; required for research kind on every tier", run: gate('sources') },
 
-  { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID [--cmd CMD] [--proof-cmd CMD]', summary: 'check tests under the project and task kind mode; records tests', flags: { cmd: str('CMD', 'must match pinned gates.tests_cmd; omit to use it'), 'proof-cmd': str('CMD', 'must match pinned gates.tests_proof_cmd for changed test paths') }, description: "use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs CMD once and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests`, resolved `tests_mode`, and failed test names plus a bounded output tail when its command fails; timeouts record infrastructure failure and interrupted files instead", run: gate('tests') },
+  { section: 'Gates', name: 'check tests', pos: ['ID'], usage: 'ID [--cmd CMD] [--proof-cmd CMD]', summary: 'check tests under the project and task kind mode; records tests', flags: { cmd: str('CMD', 'must match pinned gates.tests_cmd; omit to use it'), 'proof-cmd': str('CMD', 'must match pinned gates.tests_proof_cmd for changed test paths') }, description: "use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs mapped head suites when `tests.map` and full-suite `ci.required` are pinned, falls back to CMD for unmapped sources, and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests`, resolved `tests_mode`, and failed test names plus a bounded output tail when its command fails; timeouts record infrastructure failure and interrupted files instead", run: gate('tests') },
 
   { section: 'Run', name: 'ci completed', pos: ['ID'], usage: 'ID --sha SHA', summary: 'handle a CI completion notification; query CI again and advance green tasks', flags: { sha: str('SHA', 'completed submitted commit; stale heads are refused') }, required: ['sha'], description: "orchestrator or owner: deliver a CI completion hint for an active submitted head, rerun the CI gate and advance passing tasks", run: run('../lib/automation', 'ciCompleted') },
 
@@ -152,7 +154,7 @@ const COMMANDS = [
 
   { section: 'Run', name: 'hook', pos: ['ACTION'], usage: 'ACTION --binding FILE [--payload JSON|-]', summary: 'deliver harness messages and record activity under the home identity', flags: { binding: str('FILE', 'protected hook binding in the agent home'), payload: str('JSON|-', 'harness event data (- reads stdin)') }, required: ['binding'], run: run('../lib/harness-hooks', 'hook') },
 
-  { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], description: "create the state directory and `project.json` with the default harness and ladder (from the user file, else built in); takes the `project set` settings too. Refused if the user file is invalid", run: P.init },
+  { section: 'Plan', name: 'init', usage: '--name N --goal G [--repo O/R] [--base B] [settings]', summary: 'create the state directory and project.json with the default ladder', flags: SETTINGS, required: ['name', 'goal'], description: "create the state directory and `project.json` with the default harness and ladder (from the user file, else built in), and record its canonical `owner_config_dir`; takes the `project set` settings too. Refused if the user file is invalid or the project already exists", run: P.init },
 
   { section: 'Run', name: 'interrupt', pos: ['ID'], usage: 'ID', summary: 'owner or orchestrator: stop the supervisor and release the claim, keeping the revision and dirty worktree for resume', description: "owner or orchestrator only: stop the live agent through its supervisor and release the claim to its prior `todo` or `rework`. The revision, branch, evidence and dirty worktree stay, so the next dispatch resumes the work (Codex warm resume, or a fresh Claude worker in the same worktree). Distinct from `rework`, which sends a submitted task back with a reason, and from a requirements edit, which bumps the revision", run: T.interrupt },
 
@@ -170,11 +172,13 @@ const COMMANDS = [
 
   { section: 'Run', name: 'owner-done', pos: ['ID'], usage: 'ID [--note T]', summary: 'the owner did what needs_owner asked; clears it', flags: { note: str('T', 'what was done') }, description: "the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner", run: T.ownerDone },
 
+  { section: 'Run', name: 'owner-key', summary: 'owner only: create the owner key that stands in for a terminal; prints its path, never the key', description: "the owner, explicitly and at a terminal or with the current key, creates the key under the project's recorded `owner_config_dir` and prints `created PATH` or `exists PATH`; never prints the key. An unbound project requires a terminal owner to record the directory first. `TOWER_CRANE_OWNER_KEY` with its contents stands in for a terminal ([Agent identity](state.md#agent-identity))", run: run('../lib/authority', 'ownerKey') },
+
   { section: 'Plan', name: 'plan import', pos: ['FILE'], usage: 'FILE', summary: 'add tasks from a JSON array (ids may be local names, resolved in order; - reads stdin)', description: "add tasks from a JSON array of task objects (ids may be local names, resolved in order; `-` reads stdin). Fields: `id`, `title`, `acceptance`, `kind`, `needs`, `size`, `tier`, `depends_on`, `needs_owner`, `locks`, `environment`; `needs_owner` is trimmed and blank values store null. A dependency names an earlier entry or an existing task. Any bad entry refuses the whole file", run: T.planImport },
 
-  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-cmd CMD] [--clean-cmd CMD] [--tests-proof-cmd CMD] [--executors N] [--tests-timeout-min MIN] [--clean-timeout-min MIN] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-capped-review JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--research-min-sources N] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, description: "change settings, limits and budget", run: P.projectSet },
+  { section: 'Plan', name: 'project set', usage: '[--name N] [--goal G] [--repo O/R] [--base B] [--workers N] [--lease-minutes MIN] [--budget-hours H] [--budget-tokens N] [--standards S] [--tests-cmd CMD] [--clean-cmd CMD] [--tests-proof-cmd CMD] [--executors N] [--tests-timeout-min MIN] [--clean-timeout-min MIN] [--tests-paths JSON] [--tests-keep JSON] [--tests-mode MODE] [--tests-by-kind JSON] [--tests-expensive JSON] [--tests-map JSON] [--ci-ignore-apps JSON] [--ci-required JSON] [--ci-capped-review JSON] [--ci-local JSON] [--merge-keep-branch JSON] [--merge-admin JSON] [--review-policy JSON] [--research-min-sources N] [--sandbox JSON] [--env JSON] [--env_file FILE] [--scope JSON]', summary: 'change project settings, limits and budget', flags: SETTINGS, description: "change settings, limits and budget", run: P.projectSet },
 
-  { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', description: "print settings, including `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd`, `gates.executors`, `gates.tests_timeout_min`, `gates.clean_timeout_min`, `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch`, `merge.admin` and `decision_delegation.orchestrator_technical`, and the resolved ladder", run: P.projectShow },
+  { section: 'Plan', name: 'project show', summary: 'print project settings and the ladder', description: "print settings, including `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd`, `gates.executors`, `gates.tests_timeout_min`, `gates.clean_timeout_min`, `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `tests.map`, `ci.ignore_apps`, `ci.required`, `ci.local`, `merge.keep_branch`, `merge.admin` and `decision_delegation.orchestrator_technical`, and the resolved ladder", run: P.projectShow },
 
   { section: 'Run', name: 'ready', usage: '[--all]', summary: 'ready tasks, those that unblock the most first; --all adds blocked ones with the reason', flags: { all: bool('also list blocked tasks and why') }, description: "ready tasks in priority order (the ones that unblock the most work first), excluding tasks whose locks another task holds, plus claims whose spawned process exited without submit and their log tails; `--all` lists blocked ones with the reason. Ready JSON includes `locks` and `environment`", run: T.ready },
 
@@ -184,7 +188,7 @@ const COMMANDS = [
 
   { section: 'Views', name: 'render', summary: 'write sketch.md and sketch.html (self-contained, no network)', description: "write `sketch.md` (Mermaid graph plus tables) and `sketch.html`, the board as a read-only snapshot, from the state as it stands under the lock", run: R.render },
 
-  { section: 'Run', name: 'renew', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'extend your lease; an expired one only while the workers limit has room', flags: { lease: int('MIN', 'new lease length from now') }, description: "extend the lease from now; only the claimant. An expired lease takes its resource locks and worker slot again, so its renewal is refused when a lock is held or the workers limit is reached", run: T.renew },
+  { section: 'Run', name: 'renew', pos: ['ID'], usage: 'ID [--lease MIN]', summary: 'extend your lease; an expired one only while the workers limit has room', flags: { lease: int('MIN', 'new lease length from now') }, description: "extend the lease from now; only the claimant. An expired lease must pass the claim checks again (unmet dependency, owner blocker, open decision, resource lock, workers limit), so a refused renewal leaves it expired", run: T.renew },
 
   { section: 'Run', name: 'rework', pos: ['ID'], usage: 'ID --reason R', summary: "send back; the reason goes into the brief's rework notes", flags: { reason: str('R', 'what to fix') }, required: ['reason'], description: "send a submitted or accepted task back; the reason is appended under `## Rework notes` in its brief and as a task note", run: T.rework },
 
@@ -376,6 +380,9 @@ function checkPositionals(cmd, pos) {
 }
 
 async function main(argv) {
+  // State discovery can start Git before authentication; children get no key.
+  const ownerCredential = process.env.TOWER_CRANE_OWNER_KEY;
+  delete process.env.TOWER_CRANE_OWNER_KEY;
   const out = (s) => process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
   let resolved;
   let jsonOut = argv.includes('--json');
@@ -417,18 +424,22 @@ async function main(argv) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: tower-crane ${cmd.name} ${cmd.usage}`);
     }
     let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
+    // Inspect descriptors without initializing stdin and changing pipe flags.
+    const ownerTerminal = isatty(0) && isatty(1);
     // Terminal fallback identifies ordinary actions; owner powers need a named identity.
     const agentExplicit = agent !== undefined;
     if (agent === undefined) {
-      if (process.stdin.isTTY && process.stdout.isTTY && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
+      if (ownerTerminal && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
       else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     }
     if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     const identity = agent.trim();
-    if (identity === 'owner' && process.env.TOWER_CRANE_TASK !== undefined) {
-      throw refuse('owner acts from an interactive terminal; task processes cannot use owner identity');
-    }
-    const locate = () => S.locateStateDir(globals.state, process.env, process.cwd());
+    let stateDir;
+    const locate = () => stateDir ??= S.locateStateDir(globals.state, process.env, process.cwd());
+    const authority = require('../lib/authority');
+    const ownerConfigDir = identity === 'owner'
+      ? authority.checkOwner(process.env, ownerCredential, ownerTerminal, () => authority.ownerProject(locate()), cmd.name === 'init')
+      : undefined;
     // Check the resolved identity before forwarding; the broker separately
     // verifies requests against the identity it spawned.
     if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {
@@ -445,6 +456,8 @@ async function main(argv) {
       env: process.env,
       agent: identity,
       agentExplicit,
+      ownerTerminal,
+      ownerConfigDir,
       json: !!globals.json,
       flags: own,
       pos: parsed.pos,
