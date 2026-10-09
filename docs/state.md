@@ -56,7 +56,7 @@ The owner hands the run to an orchestrator and is asked only when the owner is r
 - **owner-required**: the owner only. When the orchestrator tries one, the command writes nothing it asked for, opens a decision for the owner and refuses with its id. The decision and its `ask` event carry `escalation: { settings, change }` naming the settings and the requested values. The same open request reuses that decision. The owner makes the change and answers it; only the owner answers an escalation.
 - **refused**: no identity makes the change while the task stands as it is. The command writes nothing and names the step that comes first (`rework`); no decision opens.
 
-Workers, reviewers and every other identity are refused both. For an operational change they ask the orchestrator (`tower-crane msg --to orchestrator` or a task note), not the owner; owner-required changes they request with `tower-crane ask`.
+Workers, reviewers and every other identity are refused both. For an operational change they ask the orchestrator (`tower-crane msg --to orchestrator` or a task note), not the owner. An owner-required change they request with `tower-crane ask --setting KEY`, which keeps the decision with the owner. A worker's or reviewer's `ask` that names no owner-required setting opens a technical decision the orchestrator can answer (see `decisions.json`).
 
 | Setting | Class | Changed by |
 | --- | --- | --- |
@@ -196,7 +196,7 @@ If an expired pre-claim already belongs to the generated worker, dispatch renews
 
 Set these fields through `project set --merge-keep-branch true --merge-admin true`, or the same flags on `init`. They accept JSON true, false or null. Null clears that field, preserving other merge settings and removing an empty merge object. Changes to `merge.admin`, including clearing or setting an unchanged value, are owner-required; `keep_branch` is operational ([Authority](#authority)). Refused changes write no settings. `project show` prints both resolved defaults.
 
-`decision_delegation` is an optional owner-required policy. Its `orchestrator_technical` boolean defaults to false. Set it with `project set --decision-delegation '{"orchestrator_technical":true}'` or the same flag on `init`; `null` clears it. Setting, repeating or clearing it requires explicit owner identity. When true, the orchestrator may answer a decision only after the owner marks that decision technical with `decision delegate DID --technical true`.
+`decision_delegation` is an optional owner-required policy. Its `orchestrator_technical` boolean defaults to false. Set it with `project set --decision-delegation '{"orchestrator_technical":true}'` or the same flag on `init`; `null` clears it. Setting, repeating or clearing it requires explicit owner identity. When true, the orchestrator may answer a decision that is technical: a worker's or reviewer's `ask` starts technical unless it names an owner-required setting, and the owner marks any other decision with `decision delegate DID --technical true`.
 
 For technical delegation, `lib/authority.js` must resolve the explicit caller as the orchestrator. A generated name such as `orchestrator-T1-1` is recognized through its recorded spawn role; an unsandboxed worker cannot claim the literal `orchestrator` identity by passing `--agent orchestrator`. Answers keep the caller's identity in `answered_by` and the event's actor fields.
 
@@ -562,9 +562,9 @@ The standards profile may add gates. `--waive TYPE --reason TEXT` records an own
 }
 ```
 
-A decision the engine opened for an orchestrator's owner-required change also has `escalation: { "settings": [...], "change": {...} }` ([Authority](#authority)).
+A decision the engine opened for an orchestrator's owner-required change also has `escalation: { "settings": [...], "change": {...} }` ([Authority](#authority)). An `ask --setting KEY` that names an owner-required setting records the same field with `change: null`; the decision is not technical.
 
-A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. An explicit owner identity can answer every decision. `answerers` lists agents the owner named with `decision delegate DID --answerers JSON`; the owner can replace the list or clear it with `[]`. `technical` is set by the owner through the same command. The orchestrator can answer only when `technical` is true and `project.json` enables `decision_delegation.orchestrator_technical`. An answer stores `answered_by` and `answer_rule`; older decisions default to no named answerers, not technical, and no answer rule.
+A decision blocks only the tasks it lists. Everything else keeps running. `status` is `open` or `answered`. When options are listed, the answer must be one of them. An explicit owner identity can answer every decision. `answerers` lists agents the owner named with `decision delegate DID --answerers JSON`; the owner can replace the list or clear it with `[]`. `technical` starts true for a worker's or reviewer's `ask` that names no owner-required setting, and false for the owner's, the orchestrator's and an escalation; the owner sets it through the same command. The orchestrator can answer only when `technical` is true and `project.json` enables `decision_delegation.orchestrator_technical`. An answer stores `answered_by` and `answer_rule`; older decisions default to no named answerers, not technical, and no answer rule.
 
 Answer rules are `owner`, `owner-named-agent` and `owner-technical-delegation`. The `answer` event records the caller in `agent` and `detail.answered_by`, and the rule in `detail.answer_rule`. Refused answers write no event. Answering adds a note with the answer to every task the decision blocked. Optional `notes` contains `{ "at", "agent", "text" }` comments added with `decision note`, including serve's owner form.
 
