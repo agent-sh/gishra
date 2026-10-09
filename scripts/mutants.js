@@ -62,6 +62,12 @@ const MUTANTS = [
     from: 'if (holders.length >= st.project.limits.workers) {', to: 'if (holders.length > st.project.limits.workers) {', tests: ['test/claim.test.js', 'test/worker-slots.test.js'] },
   { id: 'expired-renewal-skips-readiness', area: 'spawn/supervisor', file: 'lib/tasks.js',
     from: 'if (leaseExpired(t, now)) checkReady(', to: 'if (leaseExpired(t, now)) checkWorkers(', tests: ['test/claim.test.js'] },
+  { id: 'worker-starts-before-lease', area: 'spawn/supervisor', file: 'lib/spawn-monitor.js',
+    from: "const gated = initial && spawn.role === 'worker';", to: 'const gated = false;', tests: ['test/supervision.test.js'] },
+  { id: 'spawn-ignores-live-reservation', area: 'spawn/supervisor', file: 'lib/spawn.js',
+    from: 'if (held.length) throw refuse(', to: 'if (false) throw refuse(', tests: ['test/worker-slots.test.js'] },
+  { id: 'supervisor-stop-trusts-exit-code', area: 'spawn/supervisor', file: 'lib/spawn-monitor.js',
+    from: 'const stopped = !!stopReason || harnessRefusal || exit.code !== 0;', to: 'const stopped = harnessRefusal || exit.code !== 0;', tests: ['test/supervision.test.js'] },
   // state lock
   { id: 'lock-breaks-live-holder', area: 'state lock', file: 'lib/state.js',
     from: '    if (!lockIsStale(marker)) {', to: '    if (false) {', tests: ['test/lock.test.js'] },
