@@ -256,3 +256,103 @@ test('bench gates scores deslop checks from hand verdicts, a reviewer eval and a
   assert.equal(refused.code, 1);
   assert.match(refused.stderr, /--deslop-runs needs --deslop-findings/);
 });
+
+test('bench tokens reports accepted-task tokens and cost by rung and escalation path', (t) => {
+  const h = makeRepo(t);
+  t.after(h.cleanup);
+  h.init();
+  for (const title of ['climbed', 'direct', 'open']) h.ok(['task', 'add', '--title', title, '--acceptance', 'done']);
+  const spend = (task, rung, model, tokens, cached) => h.ok(['spend', task, '--tokens', String(tokens), '--input', String(tokens - 10),
+    '--cached', String(cached), '--output', '10', '--rung', rung, '--model', model, '--harness', 'codex', '--agent', `${rung}-${task}`]);
+  const spawn = (task, rung) => JSON.stringify({ at: '2026-10-07T00:00:00Z', agent: 'orchestrator', cmd: 'spawn', task, detail: { role: 'worker', rung, agent: `${rung}-${task}` } });
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), [spawn('T1', 'easy'), spawn('T1', 'easy'), spawn('T1', 'medium'), spawn('T2', 'medium')].join('\n') + '\n');
+  spend('T1', 'easy', 'openai.gpt-6-luna', 1000010, 0);
+  spend('T1', 'medium', 'openai.gpt-6.1-sol', 3000010, 2000000);
+  spend('T1', 'review', 'openai.gpt-6.1-sol', 500010, 0);
+  spend('T2', 'medium', 'openai.gpt-6.1-sol', 2000010, 0);
+  spend('T2', 'review', 'global.anthropic.claude-opus-5-5[1m]', 100010, 0);
+  spend('T3', 'easy', 'openai.gpt-6-luna', 7000010, 0);
+  // Minute-only manual records are not missing telemetry.
+  h.ok(['spend', 'T2', '--minutes', '5']);
+  const doc = h.readState('tasks.json');
+  doc.tasks[0].status = 'accepted';
+  doc.tasks[1].status = 'accepted';
+  h.writeState('tasks.json', doc);
+  const prices = path.join(h.base, 'prices.json');
+  fs.writeFileSync(prices, JSON.stringify({ luna: { input: 0.1, cache_write: 0.1, cache_read: 0.01, output: 0.5 }, sol: { input: 2, cache_write: 2, cache_read: 0.1, output: 10 } }));
+  const r = h.json(['bench', 'tokens', '--prices', prices]);
+  assert.deepEqual([r.accepted, r.complete], [2, 2]);
+  assert.equal(r.all_tasks_tokens, 13600060, 'spend on unaccepted tasks counts toward the cost of accepted ones');
+  assert.equal(r.tokens_per_accepted, 6800030);
+  assert.deepEqual(r.unpriced_models, { 'global.anthropic.claude-opus-5-5[1m]': 1 }, 'the 1M-context id needs its own price row');
+  assert.equal(r.by_path.medium.priced_tasks, 0);
+  assert.deepEqual(Object.keys(r.by_path), ['easy>medium', 'medium']);
+  assert.equal(r.by_path['easy>medium'].median_tokens, 4500030);
+  assert.equal(r.by_rung.medium.median_tokens, 2500010);
+  assert.equal(r.by_rung.medium.tasks, 2);
+  const t1 = r.tasks.find((x) => x.id === 'T1');
+  assert.deepEqual([t1.fresh, t1.cached, t1.output], [2500000, 2000000, 30]);
+  // easy 1M fresh luna, medium 1M fresh + 2M cached sol, review 0.5M fresh sol, plus output.
+  const usd = 1 * 0.1 + 10e-6 * 0.5 + (1 * 2 + 2 * 0.1 + 10e-6 * 10) + (0.5 * 2 + 10e-6 * 10);
+  assert.ok(Math.abs(r.by_path['easy>medium'].median_usd - usd) < 1e-9);
+  const text = h.ok(['bench', 'tokens']);
+  assert.match(text, /accepted tasks: 2, with complete token records: 2/);
+  assert.match(text, /easy>medium\s+1\s+4\.50M/);
+  assert.match(text, /unpriced entries by model: global\.anthropic\.claude-opus-5-5\[1m\] 1/);
+});
+
+test('bench excludes accepted tasks missing worker, reviewer or resumed-session usage from medians', (t) => {
+  const h = makeRepo(t);
+  t.after(h.cleanup);
+  h.init();
+  for (const title of ['missing review', 'missing worker', 'complete', 'missing resumed usage']) {
+    h.ok(['task', 'add', '--title', title, '--acceptance', 'done']);
+  }
+  const events = [];
+  for (const task of ['T1', 'T2', 'T3', 'T4']) {
+    for (const role of ['worker', 'reviewer']) {
+      events.push({ at: '2026-10-07T00:00:00Z', cmd: 'spawn', task, detail: { agent: `${role}-${task}`, role, rung: role === 'worker' ? 'easy' : 'review' } });
+    }
+  }
+  events.push({ at: '2026-10-07T00:01:00Z', cmd: 'spawn', task: 'T4',
+    detail: { agent: 'worker-T4', role: 'worker', rung: 'easy', resumed: true, attempt: 2 } });
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const doc = h.readState('tasks.json');
+  for (const task of doc.tasks) {
+    task.status = 'accepted';
+    task.spend.entries = ['worker', 'reviewer'].filter((role) => !(task.id === 'T1' && role === 'reviewer') && !(task.id === 'T2' && role === 'worker'))
+      .map((role) => ({ at: '2026-10-07T00:00:30Z', minutes: 0, agent: `${role}-${task.id}`, source: `spawn:${role}-${task.id}`, tokens: 100, input: 90, cached: 0,
+        output: 10, cost_usd: 1, harness: null, model: null, profile: null, rung: role === 'worker' ? 'easy' : 'review' }));
+  }
+  h.writeState('tasks.json', doc);
+  h.ok(['spend', 'T1', '--minutes', '2', '--agent', 'reviewer-T1']);
+  let result = h.json(['bench', 'tokens']);
+  assert.deepEqual([result.accepted, result.complete, result.overall.priced_tasks], [4, 1, 1]);
+  assert.equal(result.by_rung.easy.tasks, 1);
+  assert.equal(result.by_path.easy.tasks, 1);
+  assert.equal(result.all_tasks_tokens, 600, 'partial recorded spend still contributes to total cost');
+  assert.deepEqual(result.tasks.map((row) => row.missing_spawns), [
+    ['spawn:reviewer-T1'], ['spawn:worker-T2'], [], ['spawn:worker-T4:attempt:2'],
+  ]);
+  // A matching native token report completes the reviewer; minute-only spend did not.
+  h.ok(['spend', 'T1', '--tokens', '0', '--agent', 'reviewer-T1']);
+  result = h.json(['bench', 'tokens']);
+  assert.equal(result.complete, 2);
+  const routes = [
+    ['spawn fallback', { route_index: 1 }],
+    ['spawn retry', { route_index: 1, retry: 1, fresh: true }],
+    ['spawn retry', { route_index: 1, retry: 2, fresh: false }],
+  ].map(([cmd, detail]) => ({ cmd, task: 'T3', at: '2026-10-07T00:00:20Z', detail: { agent: 'worker-T3', ...detail } }));
+  fs.appendFileSync(path.join(h.state, 'events.jsonl'), routes.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  result = h.json(['bench', 'tokens']);
+  const missing = result.tasks.find((row) => row.id === 'T3').missing_spawns;
+  assert.deepEqual(missing, ['spawn:worker-T3:route:1', 'spawn:worker-T3:route:1:retry:1']);
+  assert.equal(result.complete, 1, 'resumable retries share usage; fresh routes need their own records');
+  const updated = h.readState('tasks.json');
+  for (const source of missing) updated.tasks[2].spend.entries.push({
+    ...updated.tasks[2].spend.entries[0], source, tokens: 0, input: 0, cached: 0, output: 0, cost_usd: 0,
+  });
+  h.writeState('tasks.json', updated);
+  result = h.json(['bench', 'tokens']);
+  assert.equal(result.complete, 2);
+});
