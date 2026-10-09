@@ -88,7 +88,7 @@ fs.writeFileSync(path.join(profile, 'DevToolsActivePort'), '1\\n');
 setInterval(() => {}, 1000);
 `, { mode: 0o755 });
   const result = attempt(h, chrome, '1', deep);
-  assert.doesNotMatch(result.error ?? '', /exit code|Socket path/);
+  assert.doesNotMatch(result.error ?? '', /exit code|Socket path|no directory short enough/);
   const { profile } = JSON.parse(fs.readFileSync(path.join(h.base, 'chrome.json'), 'utf8'));
   assert.equal(profile.startsWith(deep + path.sep), false, profile);
   assert.equal(fs.existsSync(profile), false, 'the shallow profile is removed with the browser');

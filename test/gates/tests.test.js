@@ -510,3 +510,24 @@ fs.mkdtempSync(path.join(os.tmpdir(), 'tower-crane-leftover-'));
     else process.env.TMPDIR = saved;
   }
 });
+
+test('a gate whose scratch directory cannot be made removes the temp parent it already created', async () => {
+  const sha = task({ 'lib/add.js': FIX, 'test/add.test.js': ADD_TEST });
+  // Fails the scratch directory inside the gate's parent, as a full disk would, after the parent exists.
+  const mkdirSync = fs.mkdirSync;
+  fs.mkdirSync = function (dir, ...rest) {
+    if (path.basename(dir) === 'tmp' && path.basename(path.dirname(dir)).startsWith('tower-crane-')) {
+      throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    }
+    return mkdirSync.call(this, dir, ...rest);
+  };
+  let r;
+  try {
+    r = await gate.run(ctx(sha));
+  } finally {
+    fs.mkdirSync = mkdirSync;
+  }
+  assert.equal(r.ok, false);
+  assert.match(r.summary, /cannot create a temporary directory/);
+  assertCleanedUp();
+});
