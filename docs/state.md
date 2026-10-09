@@ -578,11 +578,38 @@ Trusted watchers and dispatch supervisors consume lifecycle events as
 software reactions. They run submission gates, dispatch review after the
 tracked worker exits, accept independent passing review, merge accepted
 PRs with green gates, and detect conflicting outstanding PRs after merges.
-Conflict rework names the files and preserves the worker branch. Native
+Conflict rework names the hand-written files. Generated-file repair can
+advance the worker branch or leave a mixed merge prepared. Native
 workers without an exit record need explicit review dispatch.
 Tests, cleanup and source verification run when the submitted PR head
 matches, even with unknown mergeability. CI, review dispatch and merging
 retain their mergeability guards.
+
+Generated outputs are declared by the fetched base's `package.json`
+`tower-crane.generated` mapping, from exact relative file paths to npm script
+names or `{script, blocks}`. Blocks use paired HTML `NAME:start` and
+`NAME:end` comments; only their bodies are generated. See docs/cli.md for
+the merge and regeneration contract. A matching GitHub conflict authorizes
+the trusted automation executor to merge into an idle, clean task checkout
+outside worker sandboxes and push without force. Other executors, live
+workers, dirty checkouts and moved local or remote heads defer repair.
+
+`generated merge` records `phase: prepared` before a generated-only push,
+with `{previous_sha, sha, revision, base_sha, branch, path, generated, commands}`.
+`commands` records generation command strings, exit statuses and summaries.
+A prepared receipt retries the same commit after a failed push, or confirms
+it after a push whose executor stopped before updating state.
+The following automatic `submit` changes the sha and returns an accepted
+task to `submitted`, preserving `submitted_by`, revision and historical
+evidence. Its event adds `generated` and `base_sha`; gates and review at the
+old sha no longer count. `generated merge` then records `phase: pushed`.
+Mixed conflicts produce rework and a `phase: mixed` receipt with
+`{sha, revision, base_sha, branch, path, generated, remaining, regenerated, commands}`.
+The checkout retains `MERGE_HEAD`, generated resolutions are staged and
+`remaining` names the hand-written conflicts. `regenerated: false` means
+source conflicts prevented generation; the worker must rerun the scripts
+after resolving them. A generator failure in a generated-only merge aborts
+the merge and retains the submitted head.
 
 `ci completed` records a `ci-completed` hint with `sha` and `revision`.
 The host delivers completion hints directly or through `ci webhook`

@@ -253,17 +253,59 @@ or existing fallback tick retries it within the wait's timeout.
 Filters apply to the returned event, not to the software reactions.
 
 After a confirmed merge, outstanding submitted or accepted PRs are checked
-against their fetched base in temporary detached worktrees. Conflicts send
-the task to rework with Git's filenames in its note and brief. Trial merges
-do not resolve conflicts or update worker branches. Unknown PR heads,
+against their fetched base in temporary detached worktrees. Hand-written
+conflicts send the task to rework with Git's filenames in its note and brief.
+Generated conflicts follow the repair path below. Unknown PR heads,
 unknown mergeability and failed GitHub transport cannot authorize merging.
+
+Repositories declare generated outputs in `package.json`:
+
+```json
+{
+  "scripts": { "docs:generate": "node scripts/cli-docs.js" },
+  "tower-crane": {
+    "generated": {
+      "generated.txt": "docs:generate",
+      "docs/cli.md": { "script": "docs:generate", "blocks": ["commands:Run"] }
+    }
+  }
+}
+```
+
+The mapping uses exact repository-relative file paths and existing npm script
+names. A string declares an entire generated file. `blocks` declares only the
+bodies between `<!-- NAME:start -->` and `<!-- NAME:end -->`; text outside
+those markers remains hand-written. Every declared marker must occur exactly
+once in all three merge versions. Tower Crane's own mapping lists every
+command-table block in `docs/cli.md`. Deletions, renames, symlinks and missing
+markers remain worker conflicts.
+
+Only the fetched base's mapping authorizes repair. When GitHub reports an
+open PR `CONFLICTING` or `DIRTY` at the submitted head, automation merges the
+fetched base into its idle, clean task worktree outside the worker sandbox.
+It pre-resolves declared outputs, runs their npm scripts, stages every
+declared output of those scripts, commits and pushes normally. A generated-only
+merge keeps the task submitted, preserves its submitter and revision, and
+runs gates again at the new sha. An accepted task returns to submitted for
+fresh gates and review. There is no rework or worker dispatch for that repair.
+Dirty or moved branches and live workers defer it. Generator failures abort
+generated-only merges; push failures retain a prepared merge for retry.
+
+For mixed conflicts, the task goes to rework with its merge already prepared.
+Generated files are staged; only hand-written conflicts remain unresolved,
+including text outside generated blocks in the same file. The note and brief
+name the worktree, remaining files and scripts to rerun before committing.
+If a generator cannot run until source conflicts are resolved, the merge
+keeps the branch's generated bodies staged and the worker reruns the scripts
+after resolving the hand-written files.
 
 Accepted PRs merge through a merge queue in the order of their `accept`
 events. A stack is one entry, ordered by its lowest unmerged task: it holds
 that task and the accepted, linked tasks directly above it, and an upper
 task whose lower task is not accepted waits outside the line. Only the head
 of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
-goes to rework with its files and leaves the line. Unknown mergeability
+uses generated-file repair or goes to rework with its hand-written files
+and leaves the line. Unknown mergeability
 stops the line until a later reaction. A head the queue cannot advance (a
 closed or unreadable PR, a moved or differently merged head, failing gates, a refused
 merge or head check) is reported once in a `queue skipped` event and passed
@@ -299,8 +341,9 @@ again and checks again if it moved; `gh pr merge --match-head-commit` pins the h
 but nothing pins the base, so a push to the base in the seconds between
 that fetch and the merge call is not checked. A branch protection rule that
 requires up-to-date branches closes that window. Hosted CI evidence comes
-from GitHub's `pull_request` run, which already tests the merge ref; never
-merge the base into a PR to refresh evidence or pick up a workflow change.
+from GitHub's `pull_request` run, which already tests the merge ref. Merge
+the base into a PR only for conflict repair, never to refresh evidence or
+pick up a workflow change.
 One executor drains the queue; a reaction that finds it busy records a
 request, and the executor makes another pass before releasing. Manual
 `merge ID` bypasses the queue and its head check: it keeps only the merge

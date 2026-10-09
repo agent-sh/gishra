@@ -43,6 +43,15 @@ if (args[0] === 'pr') {
       process.exit(0);
     }
   } else {
+    if (state.remote) {
+      const head = cp.execFileSync('git', ['--git-dir', state.remote, 'rev-parse', `refs/heads/${pr.headRefName}`], { encoding: 'utf8' }).trim();
+      if (head !== pr.headRefOid) {
+        pr.headRefOid = head;
+        pr.mergeable = 'MERGEABLE';
+        pr.mergeStateStatus = 'CLEAN';
+        state.ci[head] = 'pending';
+      }
+    }
     // unknownViews answers UNKNOWN for that many reads, as GitHub does while it computes mergeability.
     const unknown = pr.unknownViews > 0;
     if (unknown) pr.unknownViews -= 1;
