@@ -26,6 +26,10 @@ In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), co
 
 Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing, except a refused brokered `msg`, which appends a `msg refused` event.
 
+State readers preserve additive fields and enum values from newer tools. Commands still reject unsupported input values; dispatch refuses a task whose routing fields it cannot interpret. `init` records `project.json.schema_version: 1`, with absent values in older projects treated as `1`. A higher schema refuses reads, writes and new spawns with exit `1` and an upgrade message. An active supervisor stops state activity and retries but lets its worker finish, then exits `1`; recover the lease and usage with an upgraded tool. See [state.md: Schema compatibility](state.md#schema-compatibility) for the migration ordering and rollout rule.
+
+An unfamiliar task status keeps an unexpired claim counted for locks and worker capacity. `recover` reports `waiting` when routing values require an upgrade, preserving failed review evidence without selecting a tier or sending the task back. `rework` refuses those values before changing state or the brief.
+
 Lock attempts use private staging directories named with the process pid and a fresh random nonce. Every CLI, hook and broker write retries with jittered exponential backoff for up to 60 s per acquisition, measured with a monotonic clock. Linux markers record process start ticks and the kernel boot id. A holder verified by matching start ticks is never reclaimed by age; a missing process, zombie, mismatched start ticks or a different boot id on the same host permits immediate reclaim, including at the deadline. Older markers and platforms without a readable process identity retain the 60 s age fallback, so a reused live PID cannot keep an unverifiable marker locked forever. Successful stale-marker and empty-lock cleanup retries use that same deadline and backoff, with at most one final acquisition attempt after cleanup at the deadline. Concurrent staging cleanup retries within that bound; it does not expose a staging `ENOENT` as a command or supervisor failure. Persistent live contention or unremovable stale locks and cleanup races exit 3. The hook bridge and supervisor event writers allow 65 s per CLI call, and generated hooks allow 135 s for two calls, so transient contention within the bound does not block a prompt with a hook error. See [state.md: Lock](state.md#lock).
 
 ## Plan
@@ -279,6 +283,15 @@ completion requests that pass while the executor is still running. Its
 `done` event names the first head that did not merge and lists the skipped
 ones. An accepted PR already merged on GitHub at its accepted head is
 confirmed through the merge gate without current gate evidence.
+`merge --accepted` waits for an observable queue executor to release its
+reservation, up to `gates.tests_timeout_min` (20 minutes by default), then
+drains the queue through the same reserved merge path as `merge ID`.
+An unobservable executor refuses with its PID and host. Each task reports
+its merge or confirmation summary, refusal or pending reason. JSON returns
+`results` with `{task, ok, summary}` and `remaining` with `{task, reason}`.
+A skipped stack entry reports its refusal reason for every unmerged member.
+`MERGEABLE` PRs with an `UNSTABLE` merge state use the same passing CI
+evidence and `ci.capped_review` policy as a single merge.
 Merge text and method are validated before any GitHub call. Current gates do
 not bind that read-only PR lookup: it confirms a completed merge even when the
 task's gates fail, or a lower stack member's review fails or its CI receipt
