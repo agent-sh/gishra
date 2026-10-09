@@ -138,7 +138,8 @@ function noSecretsCopied(h) {
 
 // An exited worker keeps its lease until the orchestrator releases it, so each dispatch releases the last one.
 function releaseExited(h) {
-  const claim = h.json(['task', 'show', 'T1']).claim;
+  // Read the state directly: an unbound project refuses `task show` from the owner's identity.
+  const claim = h.readState('tasks.json').tasks[0].claim;
   if (claim) h.ok(['release', 'T1', '--agent', claim.agent, '--reason', 'worker exited']);
 }
 
@@ -532,6 +533,7 @@ test('unbound projects spawn workers and reviewers with owner-key denials but st
     for (const role of ['hard', 'review']) {
       if (role === 'review') {
         const opts = { env: { TOWER_CRANE_AGENT: 'builder' } };
+        releaseExited(h);
         h.ok(['claim', 'T1', '--agent', 'builder'], opts);
         h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder'], opts);
       }
