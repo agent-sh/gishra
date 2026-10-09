@@ -295,7 +295,7 @@ for (const [name, before, change] of [
     if (before.length) h.ok(['project', 'set', ...before]);
     h.ok(['check', 'tests', 'T1']);
     h.ok(['check', 'clean', 'T1']);
-    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', h.revision('T1'), '--agent', 'reviewer']);
     h.ok(['accept', 'T1']);
     h.ok(['project', 'set', ...change]);
     assert.equal(shown(h, 'tests').ok, false);
