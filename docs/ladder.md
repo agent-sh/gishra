@@ -22,6 +22,8 @@ This keeps that rung's harness and effort. `ladder show` confirms the resolved m
 
 `node scripts/check-model-config.js` checks string literals in `lib/`, `bin/` and JSON outside documentation. It has no exemptions based on syntax or reference context. Exceptions appear in [tools/model-literals.json](../tools/model-literals.json), each with an exact file path, whole literal and reason. The BUILTIN table is the only code block excluded. Reconstructing identifiers assembled at runtime is outside the lint's scope.
 
+CI runs the complete model swap probe once on Linux with Node 26. Its temporary repositories live in the runner's cache outside the checkout, so parent project rules, state and agent cache identity cannot affect the fixtures.
+
 | Rung | Does | Good fit |
 |---|---|---|
 | `orchestrator` | plans, writes briefs, dispatches, runs gates, merges | the strongest model you have, in the harness you talk to |
