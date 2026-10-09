@@ -656,6 +656,105 @@ test('claude and codex sandboxes hide the user\'s credential stores and keep the
   }
 });
 
+function assertCredentialsHidden(seen, files) {
+  const under = (file, directory) => file === directory || file.startsWith(directory + path.sep);
+  const hidden = file => {
+    if (seen.harness === 'claude') {
+      const box = seen.settings.sandbox.filesystem;
+      return box.denyRead.some(dir => under(file, dir)
+        && seen.settings.permissions.deny.includes(`Read(/${dir})`)
+        && seen.settings.permissions.deny.includes(`Read(/${dir}/**)`))
+        && !box.allowRead.some(dir => under(file, dir));
+    }
+    const rules = seen.config.permissions['tower-crane'].filesystem;
+    return Object.keys(rules).some(dir => rules[dir] === 'none' && under(file, dir)
+      && !Object.keys(rules).some(write => rules[write] === 'write' && under(write, dir) && under(file, write)));
+  };
+  assert.deepEqual(files.map(file => fs.realpathSync(file)).filter(file => !hidden(file)), [],
+    `${seen.harness}: credential paths must be denied by the sandbox and file tools`);
+}
+
+test('repository imports cannot authorize credential reads or send credentials to a harness', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const docker = path.join(u.home, '.docker', 'config.json');
+  fs.mkdirSync(path.dirname(docker), { recursive: true });
+  fs.writeFileSync(docker, '{"auths":{"example":{"auth":"IMPORT-SECRET"}}}\n');
+  const auth = path.join(u.home, '.codex', 'auth.json');
+  const alias = path.join(wt, 'credential-import.md');
+  fs.symlinkSync(auth, alias);
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    for (const file of [auth, docker, alias]) {
+      fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${file}\n`);
+      for (const mode of ['--dry-run', '--wait']) {
+        const r = h.run(['spawn', '--task', 'T1', '--role', 'hard', mode], { env: u.env });
+        assert.notEqual(r.code, 0, `${harness}: ${file} must not become an authorized rule`);
+        assert.match(r.stderr, /house rule.*credential store/i);
+        assert.doesNotMatch(r.stdout + r.stderr, /IMPORT-SECRET|PLANTED-SECRET/);
+        assert.ok(!fs.existsSync(u.out), 'refuse before starting the harness');
+      }
+    }
+  }
+});
+
+test('credential location overrides are denied in both harnesses', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const root = path.join(h.base, 'selected-credentials');
+  const env = {
+    DOCKER_CONFIG: path.join(root, 'docker'),
+    CARGO_HOME: path.join(root, 'cargo'),
+    KUBECONFIG: [path.join(root, 'kube-one'), '', path.relative(wt, path.join(root, 'kube-two'))].join(path.delimiter),
+    CLOUDSDK_CONFIG: path.join(root, 'gcloud'),
+    AZURE_CONFIG_DIR: path.join(root, 'azure'),
+    NPM_CONFIG_USERCONFIG: path.join(root, 'npmrc'),
+    npm_config_userconfig: path.join(root, 'npmrc-lower'),
+    PIP_CONFIG_FILE: path.join(root, 'pip.conf'),
+    AWS_SHARED_CREDENTIALS_FILE: path.join(root, 'aws-credentials'),
+    AWS_CONFIG_FILE: path.join(root, 'aws-config'),
+  };
+  const files = ['docker/config.json', 'cargo/credentials', 'cargo/credentials.toml', 'kube-one', 'kube-two',
+    'gcloud/credentials.db', 'azure/msal_token_cache.json', 'npmrc', 'npmrc-lower', 'pip.conf', 'aws-credentials', 'aws-config']
+    .map(file => path.join(root, file));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'OVERRIDE-SECRET\n');
+  }
+  // A selected directory may be a symlink; deny its real target too.
+  env.DOCKER_CONFIG = path.join(root, 'docker-link');
+  fs.symlinkSync(path.join(root, 'docker'), env.DOCKER_CONFIG);
+  const envFile = path.join(h.base, 'credential-paths.env');
+  fs.writeFileSync(envFile, Object.entries(env).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n'));
+  for (const source of ['inherited', 'literal', 'file']) {
+    if (source === 'literal') h.ok(['project', 'set', '--env', JSON.stringify(env)]);
+    if (source === 'file') h.ok(['project', 'set', '--env', '{}', '--env_file', envFile]);
+    for (const harness of ['claude', 'codex']) {
+      isolated(h, 'hard', harness);
+      spawn(h, u, 'hard', source === 'inherited' ? env : {});
+      assertCredentialsHidden(u.report(), files);
+    }
+  }
+});
+
+test('Tower Crane, Pi and Agy credential stores and selected locations are denied', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  const selected = path.join(h.base, 'selected-harness-config');
+  const env = { TOWER_CRANE_CONFIG: path.join(selected, 'tower-crane.json'), PI_CODING_AGENT_DIR: path.join(selected, 'pi') };
+  const files = [path.join(u.home, '.config', 'tower-crane', 'config.json'),
+    path.join(u.home, '.pi', 'agent', 'auth.json'), path.join(u.home, '.pi', 'agent', 'models.json'),
+    env.TOWER_CRANE_CONFIG, path.join(env.PI_CODING_AGENT_DIR, 'auth.json'), path.join(env.PI_CODING_AGENT_DIR, 'models.json'),
+    path.join(selected, 'gemini', 'antigravity', 'mcp_oauth_tokens.json')];
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{}\n');
+  }
+  fs.symlinkSync(path.join(selected, 'gemini'), path.join(u.home, '.gemini'));
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    spawn(h, u, 'hard', env);
+    assertCredentialsHidden(u.report(), [...files, path.join(u.home, '.gemini', 'antigravity', 'mcp_oauth_tokens.json')]);
+  }
+});
+
 test('a codex agent writes only where its agent file says; a worker writes its git metadata, reviewer and small checks cannot write the worktree', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   // A worker fetches, adds, commits and pushes: it writes the repository's
