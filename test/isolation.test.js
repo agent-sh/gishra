@@ -72,9 +72,11 @@ function plant(h) {
     'echo fake gh', '',
   ].join('\n'), { mode: 0o755 });
   // A test nested inside an agent must not cycle through the parent and
-  // child git shims. Delegate local work through the parent's guarded PATH;
-  // network pushes return a fixture error without contacting a remote.
-  const parentPath = process.env.PATH;
+  // child git shims, and the parent's guard refuses the options a shim adds to
+  // a push, so the fixture delegates past every agent shim to the real git.
+  // Network pushes return a fixture error without contacting a remote.
+  const parentPath = String(process.env.PATH || '').split(path.delimiter)
+    .filter((dir) => !fs.existsSync(path.join(dir, '..', '.tower-crane-origin.json'))).join(path.delimiter);
   fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}
 const cp = require('node:child_process');
 const args = process.argv.slice(2);
@@ -690,6 +692,22 @@ test('worker and reviewer sandboxes write a cache of their own, never the user c
     }
   }
   assert.deepEqual([...covered].sort(), ['claude hard', 'claude review', 'codex hard', 'codex review']);
+});
+
+test('a spawn from a supervisor running in another agent\'s env gets a cache of its own under the user cache root, never nested in the inherited one', { skip: NO_STUBS }, (t) => {
+  const { h, u } = setup(t);
+  isolated(h, 'hard', 'claude');
+  // The supervisor's XDG_CACHE_HOME is the cache of a worker, as an automation started from that worker's env has it.
+  const root = path.join(u.home, '.cache');
+  const inherited = path.join(root, 'tower-crane', 'agents', '22cd04e4ddaf', 'worker-T93-6');
+  const started = spawn(h, u, 'hard', { XDG_CACHE_HOME: inherited });
+  const real = fs.realpathSync(root);
+  const own = u.report().settings.sandbox.filesystem.allowWrite.filter((w) => w === real || w.startsWith(real + path.sep));
+  assert.equal(own.length, 1, `one directory under the cache root: ${JSON.stringify(own)}`);
+  // <cache root>/tower-crane/agents/<state hash>/<agent>, whatever the inherited cache was.
+  assert.equal(path.dirname(path.dirname(own[0])), path.join(real, 'tower-crane', 'agents'), own[0]);
+  assert.equal(path.basename(own[0]), started.agent);
+  assert.ok(fs.statSync(own[0]).isDirectory(), 'the granted cache exists');
 });
 
 test('the next spawn removes an exited agent\'s cache even when it holds read-only module trees', { skip: NO_STUBS }, (t) => {
