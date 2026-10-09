@@ -560,7 +560,7 @@ test('large review dispatch hands revuto findings to the reviewer and an ok that
   state.comments = [
     comment(101, '[P1] The loop never terminates on empty input.'),
     comment(102, '[P2] Missing null check.'),
-    { ...comment(103, 'Fixed by the guard above.'), in_reply_to_id: 102, user: 'worker' },
+    { ...comment(103, '[resolved]\nFixed by the guard above.'), in_reply_to_id: 102, user: 'worker' },
     comment(104, 'Nit: rename this.'),
     comment(105, '[P1] Outdated finding.', { line: null }),
     comment(106, '[P1] Not from revuto.', { user: 'someone' }),
@@ -577,7 +577,7 @@ test('large review dispatch hands revuto findings to the reviewer and an ok that
   const brief = fs.readFileSync(path.join(h.state, 'reviews', `T1-${h.sha}.md`), 'utf8');
   assert.match(brief, /## Revuto findings/);
   assert.match(brief, /### \[P1\] src\.js:3 \(comment 101\)\n\n\[P1\] The loop never terminates on empty input\./);
-  assert.match(brief, /### \[P2\] src\.js:3 \(comment 102, answered in 103\)/);
+  assert.match(brief, /### \[P2\] src\.js:3 \(comment 102, resolved in reply 103\)/);
   assert.match(brief, /### src\.js:3 \(comment 104\)/);
   assert.doesNotMatch(brief, /Outdated finding|Not from revuto/);
   const contextFile = path.join(h.env.AUTOMATION_CONTEXT_DIR, `${review.detail.agent}.json`);
@@ -623,6 +623,51 @@ test('brokered review evidence clears a revuto finding whose file changed since 
   assert.equal(refused.code, 1, refused.stdout + refused.stderr);
   assert.match(refused.stderr, /review ok refused; revuto \[P1\] comment 202 at value\.js:1 has no code change/);
   assert.doesNotMatch(refused.stderr, /comment 201/);
+});
+
+test('revuto replies require an explicit resolution and later discussion reopens the finding', async (t) => {
+  const h = setup(t);
+  configureHarness(h);
+  const state = h.github();
+  const before = h.git(['rev-parse', `${h.sha}^`]);
+  const finding = (id, commit = h.sha) => ({ id, in_reply_to_id: null, path: 'value.js', line: 1,
+    body: `[P1] finding ${id}`, user: 'revuto-review[bot]', original_commit_id: commit });
+  const reply = (id, thread, body) => ({ id, in_reply_to_id: thread, user: 'worker', body });
+  state.comments = [
+    finding(301), reply(311, 301, 'I can still reproduce this. This is not fixed.'),
+    finding(302), reply(312, 302, '[resolved]\nFixed by the guard above.'),
+    finding(303, before), reply(313, 303, 'Please explain this change.'),
+    finding(304), reply(314, 304, 'Not fixed yet.'), reply(324, 304, '[RESOLVED]'),
+    finding(305), reply(315, 305, '[resolved]'), reply(325, 305, 'I can still reproduce this.'),
+    finding(306), reply(316, 306, '> [resolved]\nThis is a quote, not a resolution.'),
+  ];
+  h.saveGithub(state);
+  assert.equal((await h.runAsync(['spawn', '--task', 'T1', '--wait', '--agent', 'orchestrator'])).code, 0);
+  const deadline = Date.now() + 60000;
+  while (!h.logs().some((e) => e.cmd === 'spawn exit' && e.detail.role === 'reviewer' && e.detail.active === false)) {
+    if (Date.now() > deadline) throw new Error(JSON.stringify(h.logs().slice(-10)));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const review = h.logs().find((e) => e.cmd === 'spawn' && e.detail.role === 'reviewer');
+  const broker = { env: { ...h.env, TOWER_CRANE_VIA: 'broker' } };
+  const refused = h.run(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok',
+    '--agent', review.detail.agent, '--state', h.state], broker);
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+  for (const id of [301, 305, 306]) assert.match(refused.stderr, new RegExp(`comment ${id} at value\\.js:1`));
+  assert.doesNotMatch(refused.stderr, /comment 30[234]/);
+  assert.deepEqual(review.detail.revuto.map((f) => [f.id, f.reply, f.resolved, f.changed]), [
+    [301, 311, false, false], [302, 312, true, false], [303, 313, false, true],
+    [304, 324, true, false], [305, 325, false, false], [306, 316, false, false],
+  ]);
+  assert.equal(h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'review'), false);
+  assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false);
+
+  const updated = h.github();
+  for (const id of [301, 305, 306]) updated.comments.push(reply(id + 100, id, '[resolved]\nVerified at this head.'));
+  h.saveGithub(updated);
+  const rerun = await h.runAsync(['spawn', '--role', 'review', '--task', 'T1', '--wait', '--agent', 'orchestrator']);
+  assert.equal(rerun.code, 0, rerun.stdout + rerun.stderr);
+  assert.ok(h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'review' && e.ok));
 });
 
 test('a supervised worker submission runs gates and dispatches the offline reviewer after exit', async (t) => {
