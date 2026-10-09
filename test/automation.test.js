@@ -222,6 +222,8 @@ test('a submitted PR that GitHub reports UNKNOWN, then CONFLICTING, goes to rewo
   h.git(['add', 'value.js']);
   h.git(['commit', '-qm', 'main moves value']);
   h.submit();
+  // Submit reads the PR's mergeability before this test turns it UNKNOWN; count only the reaction's reads.
+  const submitViews = h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'view').length;
   const github = h.github();
   Object.assign(github.prs['7'], { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', unknownViews: 1 });
   h.saveGithub(github);
@@ -230,7 +232,7 @@ test('a submitted PR that GitHub reports UNKNOWN, then CONFLICTING, goes to rewo
   assert.equal(task.status, 'rework');
   assert.match(task.notes.at(-1).text, /conflicts with main: value\.js/);
   assert.equal(h.logs().filter((e) => ['check tests', 'check clean'].includes(e.cmd)).length, 0, 'no suite or clean runs');
-  assert.equal(h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'view').length, 2, 'the UNKNOWN read is retried once');
+  assert.equal(h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'view').length - submitViews, 2, 'the UNKNOWN read is retried once');
 });
 
 test('startup retains gate evidence when main moves and the submitted head stays mergeable', (t) => {

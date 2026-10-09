@@ -125,6 +125,19 @@ test('revuto findings print with file, line and body, and answered findings drop
   assert.equal(status(h), 'submitted');
 });
 
+test('a PR that conflicts with its base refuses the submit before any check is awaited', (t) => {
+  const h = fixture(t);
+  const r = submitPr(h, {
+    pr: { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' },
+    runs: [checkRun('test (ubuntu-latest)', { status: 'in_progress', conclusion: null })],
+    suites: [suite(1, { status: 'in_progress', conclusion: null })],
+  });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /PR #7 is CONFLICTING \(DIRTY\): resolve merge conflicts with the base branch/);
+  assert.doesNotMatch(r.stderr, /wait for CI/);
+  assert.equal(status(h), 'in_progress');
+});
+
 test('a shimmed agent whose gh policy refuses gh api submits with a notice that the head was not checked', (t) => {
   const h = fixture(t);
   const r = submitPr(h, { refuseApi: true, runs: [], suites: [] });

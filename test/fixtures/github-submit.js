@@ -17,6 +17,9 @@ cp.spawnSync = function github(file, args, ...rest) {
   if (data.refuseApi && args[0] === 'api') {
     return { status: 126, stdout: '', stderr: `tower-crane: gh ${args.join(' ')} is not allowed by this agent's agent file\n` };
   }
+  if (args[0] === 'pr' && args[1] === 'view') {
+    return { status: 0, stdout: JSON.stringify(data.pr || { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }), stderr: '' };
+  }
   if (args[0] === 'run' && args[1] === 'view') {
     const log = data.logs?.[args[args.indexOf('--job') + 1]];
     return log === undefined ? { status: 1, stdout: '', stderr: 'no log for this job' } : { status: 0, stdout: log, stderr: '' };

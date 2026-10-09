@@ -245,7 +245,7 @@ cp.spawnSync = function (command, args, opts) {
   // The submit also reads the head's green checks, so the stub answers those endpoints too.
   const green = { name: 'test (ubuntu)', status: 'completed', conclusion: 'success', app: 'github-actions', suite: 1, url: null, output: null };
   const suite = { id: 1, app: 'github-actions', status: 'completed', conclusion: 'success', runs: 1 };
-  const out = args[0] === 'pr' ? { state: 'OPEN', headRefName: 'change' }
+  const out = args[0] === 'pr' ? { state: 'OPEN', headRefName: 'change', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
     : args[1].includes('check-runs') ? green : args[1].includes('check-suites') ? suite : null;
   return { status: 0, stdout: out ? JSON.stringify(out) : '', stderr: '' };
 };
@@ -267,9 +267,10 @@ cp.spawnSync = function (command, args, opts) {
   const r = await B.forward(job.broker, ['submit', 'T1', '--sha', 'abcdef2', '--pr', '7'], h.state);
   assert.equal(r.code, 0, r.stderr);
   const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  // The submit reads the PR twice: its state and branch, then its mergeability.
   const views = calls.filter((c) => c.args[0] === 'pr');
-  assert.equal(views.length, 1);
-  assert.deepEqual(views[0].args.slice(0, 5), ['pr', 'view', '7', '-R', 'acme/demo']);
+  assert.equal(views.length, 2);
+  for (const view of views) assert.deepEqual(view.args.slice(0, 5), ['pr', 'view', '7', '-R', 'acme/demo']);
   assert.ok(calls.some((c) => c.args[0] === 'api' && c.args[1].includes('/check-runs')), 'the submit reads the head checks');
   for (const call of calls) {
     assert.equal(call.cwd, h.state);
