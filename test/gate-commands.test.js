@@ -286,6 +286,7 @@ test('a tests.paths change while a gate runs cannot relabel its old receipt', as
 for (const [name, before, change] of [
   ['tests.paths', [], ['--tests-paths', '["elsewhere/**"]']],
   ['tests.keep', ['--tests-keep', '["value.js"]'], ['--tests-keep', 'null']],
+  ['tests.keep from unset to an empty list', [], ['--tests-keep', '[]']],
   ['tests.expensive', [], ['--tests-expensive', 'true']],
 ]) {
   test(`changing ${name} makes a passing tests proof stale at acceptance and merge`, (t) => {
@@ -298,10 +299,10 @@ for (const [name, before, change] of [
     h.ok(['accept', 'T1']);
     h.ok(['project', 'set', ...change]);
     assert.equal(shown(h, 'tests').ok, false);
-    assert.match(shown(h, 'tests').reason, /tests paths, keep or expensive setting/);
+    assert.match(shown(h, 'tests').reason, /tests paths, keep, expensive, map or required CI setting/);
     const merge = h.run(['merge', 'T1']);
     assert.equal(merge.code, 1);
-    assert.match(merge.stderr, /its gates no longer pass.*tests paths, keep or expensive setting/);
+    assert.match(merge.stderr, /its gates no longer pass.*tests paths, keep, expensive, map or required CI setting/);
   });
 }
 
