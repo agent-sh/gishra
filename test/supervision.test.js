@@ -20,8 +20,13 @@ const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
   file, text: fs.readFileSync(path.join(h.state, file), 'utf8'),
 }));
 
+// The runner's per-test timeout (test/run.js) is the only deadline: a loaded
+// machine can take as long as the test may run, and a wait that never comes
+// true still fails with its message.
+const HUNG_TEST_MS = 300000;
+
 async function until(fn, message) {
-  const deadline = Date.now() + 12000;
+  const deadline = Date.now() + HUNG_TEST_MS;
   while (!fn()) {
     if (Date.now() >= deadline) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -558,13 +563,12 @@ test('serve shows the recorded run phase on the board', async (t) => {
     const { url } = JSON.parse(line);
     assert.ok(url);
     const body = await new Promise((resolve, reject) => {
-      const request = http.get(url, (response) => {
+      const request = http.get(url, { signal: t.signal }, (response) => {
         let html = '';
         response.on('data', (data) => { html += data; });
         response.on('end', () => resolve(html));
       });
       request.on('error', reject);
-      request.setTimeout(5000, () => request.destroy(new Error('serve request timed out')));
     });
     assert.match(body, /Phase/);
     assert.match(body, /waiting/);

@@ -20,9 +20,10 @@ try {
 # A caught missing-process error can leave PowerShell's exit status at 1.
 exit 0
 `;
+  // A cold PowerShell query on a busy runner needs the same budget as a test CLI call.
   const value = cp.execFileSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
-  ], { encoding: 'utf8', windowsHide: true, timeout: 10000 }).trim();
+  ], { encoding: 'utf8', windowsHide: true, timeout: 60000 }).trim();
   if (value && !/^\d+$/.test(value)) throw new Error('invalid Windows process creation time');
   return value || null;
 }

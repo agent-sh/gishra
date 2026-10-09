@@ -20,7 +20,7 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
-const { TowerCraneError, usage, refuse } = require('../lib/util');
+const { TowerCraneError, usage, refuse, readStdin } = require('../lib/util');
 const { isatty } = require('node:tty');
 const S = require('../lib/state');
 const P = require('../lib/project');
@@ -119,6 +119,8 @@ const COMMANDS = [
   { section: 'Decisions', name: 'answer', pos: ['DID'], usage: 'DID --choice C [--note T]', summary: 'answer under owner or owner-set delegation', flags: { choice: str('C', 'the chosen option'), note: str('T', 'context') }, required: ['choice'], description: "answer it as the owner with explicit identity, as an agent the owner named on the decision (`decision delegate --answerers`), or as the orchestrator for a technical decision when the project's `decision-delegation` setting allows it. Anyone else exits 1 naming who can answer. A decision that escalates an owner-required setting is answered by the owner only. The answer event records `answered_by` and `answer_rule` (`owner`, `owner-named-agent` or `owner-technical-delegation`). `C` must be one of the options when there are any; an answered decision stays answered", run: D.answer },
 
   { section: 'Decisions', name: 'ask', usage: '--question Q --option A --option B [--recommend A] [--why W] [--blocks ID]... [--setting KEY]...', summary: 'open a decision; prints its id', description: "open a decision; prints its id. A question from a worker or reviewer is technical, so the orchestrator can answer it when the project's decision-delegation setting allows. `--setting KEY` names a setting from lib/authority.js; naming an owner-required one makes the decision an escalation that only the owner answers", flags: { question: str('Q', 'the question'), option: many('A', 'an allowed answer; repeat'), recommend: str('A', 'the recommended option'), why: str('W', 'the reasoning'), blocks: many('ID', 'a task that waits for the answer; repeat'), setting: many('KEY', 'an authority-table setting the question would change; repeat') }, required: ['question'], run: D.ask },
+
+  { section: 'Views', name: 'bench gates', usage: '[--deslop-hits FILE] [--deslop-findings FILE] [--deslop-runs FILE] [--deslop-report FILE]', summary: 'label every software gate result from the event log and report precision and recall per gate, and per deslop check from its eval files', flags: { 'deslop-hits': str('FILE', 'JSONL of detector hits with hand verdicts'), 'deslop-findings': str('FILE', 'JSONL of reviewer-found defects with reviewed_commit and example'), 'deslop-runs': str('FILE', 'JSON of detector output keyed repo#pr@commit; needs --deslop-findings'), 'deslop-report': str('FILE', 'detector report JSON with confirmed findings and dismissed items') }, description: "label every tests, clean, sources, ci and merge gate run in the event log and report per gate: runs, distinct results (one per gate, sha and outcome), true and false positives and negatives, open results, noncode CI fails (no failed hosted check or confirmed local execution; scored as neither), precision, recall and recall against failed CI check runs only (`-` for ci and merge). Failed CI runs are split by reason and by failing check run, deduplicated per task, sha and check name across all polls. Local CI executions use their confirmed failure and exit receipts. The deslop flags add per-check precision and recall from the detector's eval files; `--deslop-runs` needs `--deslop-findings`. Tables normalize unambiguous SHA prefixes of at least seven characters to the longest recorded spelling for that task, ignoring case. JSON output includes every labeled run with its original SHA", run: run('../lib/bench-gates', 'benchGates') },
 
   { section: 'Plan', name: 'brief get', pos: ['ID'], usage: 'ID [--role worker|reviewer]', summary: "print the full or role-filtered task brief", flags: { role: str('ROLE', 'select worker or reviewer text; otherwise infer from the agent name') }, description: "write or read the task's brief; `brief get` filters for the caller's worker or reviewer role, and `brief set` warns about a reviewer section without a worker section", run: T.briefGet },
 
@@ -453,7 +455,7 @@ async function main(argv) {
     // Check the resolved identity before forwarding; the broker separately
     // verifies requests against the identity it spawned.
     if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {
-      const input = argv.includes('-') ? require('node:fs').readFileSync(0, 'utf8') : undefined;
+      const input = argv.includes('-') ? readStdin() : undefined;
       const res = await require('../lib/broker').forward(process.env.TOWER_CRANE_BROKER, argv, locate(), input);
       if (res) {
         process.stdout.write(res.stdout || '');
