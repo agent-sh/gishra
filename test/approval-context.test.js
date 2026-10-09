@@ -21,6 +21,13 @@ function setup(t) {
   });
 }
 
+test('stateful authority checks require an audit emitter or explicit quiet mode', () => {
+  const ctx = { agent: 'orchestrator', agentExplicit: true, env: {} };
+  const st = { events: [] };
+  assert.throws(() => Authority.enforce(ctx, st, ['gates.executors']), /audit emitter/);
+  assert.equal(Authority.enforce(ctx, st, ['gates.executors'], { quiet: true, keep: true }), 'orchestrator');
+});
+
 test('owner primary-tool writes retire approvals before a removed grant can be restored', t => {
   const h = setup(t);
   const args = ['ladder', 'set', 'easy', '--tools', '["computer_use"]'];
