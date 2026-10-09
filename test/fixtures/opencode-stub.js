@@ -45,7 +45,8 @@ async function main() {
     ...(!flag('OPENCODE_DISABLE_PROJECT_CONFIG') ? [path.join(process.cwd(), '.opencode')] : []),
     path.join(home, '.opencode'), ...(process.env.OPENCODE_CONFIG_DIR ? [process.env.OPENCODE_CONFIG_DIR] : [])])];
   const authPath = path.join(data, 'auth.json');
-  const auth = JSON.parse(process.env.OPENCODE_AUTH_CONTENT || read(authPath) || '{}');
+  const loadAuth = () => JSON.parse(process.env.OPENCODE_AUTH_CONTENT || read(authPath) || '{}');
+  const auth = loadAuth();
   const remoteContacts = [];
   const config = {};
   for (const [url, credential] of Object.entries(auth)) {
@@ -96,6 +97,13 @@ async function main() {
     probes: JSON.parse(process.env.STUB_PROBES || '[]').map(([tool, input]) => decision(permission, tool,
       ['read', 'edit'].includes(tool) && path.isAbsolute(input) ? path.relative(process.cwd(), input).replace(/\\/g, '/') : input)),
   };
+  if (process.env.STUB_REFRESH_AUTH) {
+    const replacement = JSON.parse(process.env.STUB_REFRESH_AUTH);
+    fs.writeFileSync(authPath, JSON.stringify(replacement), { mode: 0o600 });
+    const refreshed = loadAuth();
+    report.refreshedKinds = Object.fromEntries(Object.entries(refreshed).map(([name, value]) => [name, value.type]));
+    report.refreshVisible = JSON.stringify(refreshed) === JSON.stringify(replacement);
+  }
   if (process.env.STUB_BASH_CANARY) {
     const script = 'require("node:fs").writeFileSync(process.argv[1], "BASH-CANARY")';
     const input = [process.execPath, '-e', script, '--', process.env.STUB_BASH_CANARY].map((word) => JSON.stringify(word)).join(' ');

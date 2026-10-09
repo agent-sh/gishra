@@ -124,6 +124,68 @@ test('opencode launch replaces the caller PWD with its task worktree', { skip: N
   assert.equal(f.report().cwd, preview.cwd);
 });
 
+test('opencode auth refresh reads the private replacement instead of the launch snapshot', { skip: NO_STUBS }, (t) => {
+  const f = setup(t);
+  const source = path.join(f.home, '.local', 'share', 'opencode', 'auth.json');
+  const original = fs.readFileSync(source, 'utf8');
+  const auth = {
+    fixture: { type: 'api', key: 'INITIAL-API-CANARY' },
+    'http://127.0.0.1:1': { type: 'wellknown', key: 'REMOTE_TOKEN', token: 'REMOTE-AUTH-CANARY' },
+  };
+  const replacement = { fixture: { type: 'oauth', access: 'REFRESHED-ACCESS-CANARY', refresh: 'ROTATED-REFRESH-CANARY', expires: 9999999999999 } };
+  spawn(f, { OPENCODE_AUTH_CONTENT: JSON.stringify(auth), STUB_REFRESH_AUTH: JSON.stringify(replacement) });
+  const report = f.report();
+  assert.deepEqual(report.authKinds, { fixture: 'api' });
+  assert.deepEqual(report.remoteContacts, []);
+  assert.deepEqual(report.refreshedKinds, { fixture: 'oauth' });
+  assert.equal(report.refreshVisible, true);
+  assert.equal(fs.readFileSync(source, 'utf8'), original);
+  assert.equal(dry(f).env.OPENCODE_AUTH_CONTENT, '');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(report.authPath).mode & 0o777, 0o600);
+});
+
+test('native opencode auth lookups observe a rotated OAuth store with the real launch env', {
+  skip: NO_STUBS || !process.env.TOWER_CRANE_NATIVE_OPENCODE,
+  timeout: 120000,
+}, async (t) => {
+  const f = setup(t);
+  const source = path.join(f.home, '.local', 'share', 'opencode', 'auth.json');
+  const original = fs.readFileSync(source, 'utf8');
+  const wrapper = path.join(f.h.base, 'bin', 'opencode');
+  fs.writeFileSync(wrapper, `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
+const lookup = () => {
+  const result = cp.spawnSync(${JSON.stringify(process.env.TOWER_CRANE_NATIVE_OPENCODE)}, ['auth', 'list'], {
+    env: process.env, encoding: 'utf8', timeout: 45000,
+  });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout + result.stderr;
+};
+const before = lookup();
+const authPath = path.join(process.env.XDG_DATA_HOME, 'opencode', 'auth.json');
+fs.writeFileSync(authPath, JSON.stringify({
+  fixture: { type: 'oauth', access: 'NATIVE-REFRESHED-ACCESS', refresh: 'NATIVE-ROTATED-REFRESH', expires: 9999999999999 },
+}), { mode: 0o600 });
+const after = lookup();
+fs.writeFileSync(process.env.STUB_OUT, JSON.stringify({ before, after }));
+`);
+  const auth = {
+    fixture: { type: 'api', key: 'NATIVE-INITIAL-API' },
+    'http://127.0.0.1:1': { type: 'wellknown', key: 'REMOTE_TOKEN', token: 'REMOTE-AUTH-CANARY' },
+  };
+  const result = await f.h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], {
+    env: { ...f.env, OPENCODE_AUTH_CONTENT: JSON.stringify(auth), OPENCODE_DISABLE_MODELS_FETCH: '1' },
+  });
+  assert.equal(result.code, 0, result.stderr);
+  const report = f.report();
+  const clean = (text) => text.replace(/\u001b\[[0-9;]*m/g, '');
+  assert.match(clean(report.before), /fixture\s+api/);
+  assert.match(clean(report.after), /fixture\s+oauth/);
+  assert.doesNotMatch(clean(report.after), /fixture\s+api/);
+  assert.doesNotMatch(report.before + report.after, /wellknown/);
+  assert.equal(fs.readFileSync(source, 'utf8'), original);
+});
+
 test('opencode isolates config, memory, skills, MCP, approved rules and credentials; measures startup', { skip: NO_STUBS }, (t) => {
   const f = setup(t);
   const before = [];
@@ -198,6 +260,9 @@ test('opencode excludes credential-triggered remote instructions, plugins and MC
   assert.equal(requests, 1, 'isolated dispatch must not contact the remote configuration endpoint');
   assert.deepEqual(report.remoteContacts, []);
   assert.deepEqual(report.authKinds, { fixture: 'api', oauth: 'oauth' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(report.authPath, 'utf8')), {
+    fixture: auth.fixture, oauth: auth.oauth,
+  });
   assert.ok(!report.memory.some((text) => text.includes('REMOTE-INSTRUCTION-CANARY')));
   assert.ok(!report.config.plugin.includes('remote-plugin-canary'));
   assert.deepEqual(report.mcp, {});
