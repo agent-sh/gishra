@@ -170,7 +170,7 @@ test('an approved waiver lets the orchestrator accept, and only that approval ma
 
   const asked = h.run(waive, as('orchestrator'));
   assert.equal(asked.code, 1, asked.stderr);
-  assert.deepEqual(decisions(h)[0].escalation, { settings: ['waive.tests'], change: { accept: 'T1', sha, waive: ['tests'], reason: 'no harness yet' } });
+  assert.deepEqual(decisions(h)[0].escalation, { settings: ['waive.tests'], change: { accept: 'T1', sha, revision: 1, waive: ['tests'], reason: 'no harness yet' } });
   h.ok(['answer', 'D1', '--choice', 'approve']);
   // A failed gate keeps the approval for the next try, and failed tries audit nothing.
   const waivers = () => audits(h).filter((e) => e.detail.settings['waive.tests']);

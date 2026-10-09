@@ -24,6 +24,10 @@ For budgets, retirement matches the requested hours and tokens even if writing t
 
 For personal fallbacks, the owner writes the whole replacement list. A write of the requested list retires its approval even if only an operational field differs or the list is unchanged; the audit still describes the actual field changes. A different file, rung or replacement list does not satisfy the request.
 
+Owner primary-ladder writes settle matching reach requests for the tools, harness and arguments they write, including grants already present. Owner task-kind writes likewise settle a pending downgrade request after the kind has changed, including a repeated kind value. This retirement does not change which edits are operational or owner-required.
+
+Waiver approvals are bound to the task, SHA and revision. After an acceptance, dependency or capability change, rerunning the same `accept --waive` command opens a new decision even at the same commit. Old approvals without a revision cannot authorize acceptance or back orchestrator waiver evidence.
+
 In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), commands that only read, and `worktree` for the worktree spawn made, run as usual, and every other command on the spawn's state directory is sent to the [state broker](ladder.md#state-broker), which runs it as the spawned agent if its role allows it on its own task, and prints its output and exits with its code. A refused command exits 1 and writes nothing, except a refused `msg` (below). The broker refuses `check`: it runs outside the sandbox and never runs the agent's code, so a worker runs its tests directly and the orchestrator runs the gates.
 
 Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing, except a refused brokered `msg`, which appends a `msg refused` event.
