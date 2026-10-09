@@ -7,6 +7,8 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { cachedFixture, real, BIN, PTY_AVAILABLE } = require('./helpers');
 const A = require('../lib/agents');
+const S = require('../lib/state');
+const SHORT_WAIT = path.join(__dirname, 'fixtures', 'lock-wait.js');
 
 function setup(t) {
   return cachedFixture(t, 'task', (h) => {
@@ -144,8 +146,8 @@ test('spawn --dry-run builds each harness command', (t) => {
     [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p, s) => ['codex', 'exec', '--json', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', ...codexOwn(s), p, '--skip-git-repo-check']],
     [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', p]],
     [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', p]],
-    [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro']],
-    [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--output-format","json"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--output-format', 'json']],
+    [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--agent', 'gishra-small', '--disable-slash-commands', '--sandbox']],
+    [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--print-timeout","60s"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--agent', 'gishra-small', '--disable-slash-commands', '--sandbox', '--print-timeout', '60s']],
     [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', ...piOwn(s)]],
     [['--harness', 'pi', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--thinking', 'xhigh', ...piOwn(s), '--no-session']],
   ];
@@ -441,6 +443,17 @@ test('spawn --wait runs the command rung in the task worktree with the tower-cra
   assert.equal(events.find((e) => e.cmd === 'spawn exit').detail.code, 7);
 });
 
+test('a spawned agent never inherits the owner key that admitted its spawn', (t) => {
+  const h = setup(t);
+  const out = path.join(h.base, 'agent-env.json');
+  commandRung(h, 'medium', [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify(Object.keys(process.env)))`]);
+  assert.ok(h.env.TOWER_CRANE_OWNER_KEY);
+  h.ok(['spawn', '--task', 'T1', '--wait']);
+  const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.ok(seen.includes('TOWER_CRANE_AGENT'));
+  assert.ok(!seen.includes('TOWER_CRANE_OWNER_KEY'));
+});
+
 test('spawn removes outer Node test runner variables so an agent can run its own test suite', (t) => {
   const h = setup(t);
   const out = path.join(h.base, 'nested-run.json');
@@ -722,23 +735,24 @@ test('a spawn whose program fails to start records nothing and leaves its worktr
   assert.equal(h.readState('tasks.json').tasks[0].branch, 'tower-crane/T1-idempotency-key-on-retries');
 });
 
-test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', async (t) => {
+test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', (t) => {
   const h = setup(t);
   commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks } = footprint(h);
-  const paused = path.join(h.base, 'holder');
-  const holder = h.runAsync(['task', 'note', 'T1', 'holding the lock'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
-  await waitForFile(paused);
+  // The test process keeps the lock until the spawn exhausts its short budget.
+  const lock = S.acquireLock(h.state);
   try {
-    const r = h.run(['spawn', '--role', 'small', '--task', 'T1']);
+    const r = h.run(['spawn', '--role', 'small', '--task', 'T1'], {
+      env: { NODE_OPTIONS: `--require=${JSON.stringify(SHORT_WAIT)}` },
+    });
     assert.equal(r.code, 3, r.stderr);
     assert.match(r.stderr, /state is locked by .*; its worktree stays at .*T1-idempotency-key-on-retries for the next spawn/);
+    assert.ok(fs.existsSync(lock.file), 'the holder keeps its lock through the refusal');
     assert.equal(footprint(h).tasks, tasks);
     assert.ok(fs.existsSync(leftover(h)));
   } finally {
-    fs.writeFileSync(`${paused}.go`, '');
+    S.releaseLock(lock);
   }
-  assert.equal((await holder).code, 0);
   assert.equal(real(h.json(['spawn', '--role', 'small', '--task', 'T1', '--wait']).cwd), real(leftover(h)));
 });
 

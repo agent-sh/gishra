@@ -30,9 +30,9 @@ const MUTANTS = [
   { id: 'sources-loopback-public', area: 'gates', file: 'lib/public-http.js',
     from: "['127.0.0.0', 8],", to: '', tests: ['test/sources.test.js'] },
   { id: 'evidence-without-audit', area: 'gates', file: 'lib/tasks.js',
-    from: "entry.agent !== task.submitted_by : hasGateEvent(task, entry, events)", to: 'entry.agent !== task.submitted_by : true', tests: ['test/evidence.test.js'] },
+    from: "independentReviewer(task, entry, events) : hasGateEvent(task, entry, events)", to: 'independentReviewer(task, entry, events) : true', tests: ['test/evidence.test.js'] },
   { id: 'review-by-submitter', area: 'gates', file: 'lib/tasks.js',
-    from: "entry.type === 'review' ? entry.agent !== task.submitted_by :", to: "entry.type === 'review' ? true :", tests: ['test/accept.test.js'] },
+    from: "entry.type === 'review' ? independentReviewer(task, entry, events) :", to: "entry.type === 'review' ? true :", tests: ['test/accept.test.js'] },
   { id: 'evidence-old-revision', area: 'gates', file: 'lib/tasks.js',
     from: 'e.type === type && e.revision === task.revision\n', to: 'e.type === type\n', tests: ['test/accept.test.js'] },
   // authority
@@ -60,11 +60,13 @@ const MUTANTS = [
     from: 'if (signature !== stamp || ticks !== null && ticks !== cpu) {', to: 'if (signature !== stamp) {', tests: ['test/supervision.test.js'] },
   { id: 'workers-limit-off-by-one', area: 'spawn/supervisor', file: 'lib/tasks.js',
     from: 'if (holders.length >= st.project.limits.workers) {', to: 'if (holders.length > st.project.limits.workers) {', tests: ['test/claim.test.js', 'test/worker-slots.test.js'] },
+  { id: 'expired-renewal-skips-readiness', area: 'spawn/supervisor', file: 'lib/tasks.js',
+    from: 'if (leaseExpired(t, now)) checkReady(', to: 'if (leaseExpired(t, now)) checkWorkers(', tests: ['test/claim.test.js'] },
   // state lock
   { id: 'lock-breaks-live-holder', area: 'state lock', file: 'lib/state.js',
     from: '    if (!lockIsStale(marker)) {', to: '    if (false) {', tests: ['test/lock.test.js'] },
   { id: 'lock-ignores-pid-namespace', area: 'state lock', file: 'lib/state.js',
-    from: "host === os.hostname() && (pidns ?? null) === pidNamespace() && Number.isInteger(pid)", to: 'host === os.hostname() && Number.isInteger(pid)', tests: ['test/lock.test.js'] },
+    from: '(pidns ?? null) === pidNamespace() && Number.isInteger(pid)', to: 'Number.isInteger(pid)', tests: ['test/lock.test.js'] },
   { id: 'lock-never-ages-out', area: 'state lock', file: 'lib/state.js',
     from: 'const LOCK_STALE_MS = 60000;', to: 'const LOCK_STALE_MS = 6000000;', tests: ['test/lock.test.js'] },
   // merge and stacks
