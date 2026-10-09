@@ -109,7 +109,7 @@ setInterval(() => {
 }, 25);
 `;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}']),
-    '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 0, stall_ms: 60000 })]);
+    '--clear', 'model', '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 0, stall_ms: 60000 })]);
   h.ok(['msg', '--to', 'worker-T1-1', '--task', 'T1', 'startup context']);
   const fixture = path.join(__dirname, 'fixtures', 'supervisor-hook-lock.js');
   const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], { env: {
