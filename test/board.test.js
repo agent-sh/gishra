@@ -500,6 +500,52 @@ test('live CLI writes keep Settings and Spend focus and table scroll at 390px', 
   }
 });
 
+test('a delayed initial view frame preserves reader scroll before and after live CLI updates', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
+  const h = populated(t);
+  for (let i = 6; i <= 24; i++) h.ok(['task', 'add', '--title', `Task ${i}`, '--acceptance', 'verified']);
+  for (let i = 1; i <= 24; i++) h.ok(['spend', `T${i}`, '--tokens', String(i * 100), '--rung', 'easy']);
+  await withServers(async (servers) => {
+    const url = await startServe(servers, h, 'viewer');
+    const b = await openBrowser(t);
+    await b.send('Page.enable');
+    await b.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      window.initialFrames = [];
+      window.requestAnimationFrame = (callback) => window.initialFrames.push(callback);
+    ` });
+    const scroll = `[scrollY, document.querySelector('main').scrollTop]`;
+    for (const [view, width] of [['board', 390], ['spend', 390], ['spend', 1280]]) {
+      await b.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: false });
+      for (const phase of ['initial', 'before', 'after']) {
+        await t.test(`${view} at ${width}px, initial frame ${phase}`, async () => {
+          await b.goto('about:blank');
+          await b.goto(`${url}#${view}`);
+          await b.until(`document.querySelector('.conn').dataset.conn === 'live' && window.initialFrames.length > 0`, 'the live stream with its initial frame pending');
+          if (phase === 'initial') {
+            await b.inPage(`window.initialFrames.splice(0).forEach((callback) => callback(performance.now()))`);
+            assert.deepEqual(await b.inPage(scroll), [0, 0], 'an untouched initial view starts at the top');
+            return;
+          }
+          await b.inPage(`window.scrollTo(0, 120); document.querySelector('main').scrollTop = 120`);
+          const before = await b.inPage(scroll);
+          assert.equal(before[width === 390 ? 0 : 1], 120, 'the reader has scrolled before the initial frame runs');
+          if (phase === 'before') {
+            await b.inPage(`window.initialFrames.splice(0).forEach((callback) => callback(performance.now()))`);
+            assert.deepEqual(await b.inPage(scroll), before, 'the delayed initial frame keeps the reader position');
+          }
+          const update = `late frame ${view} ${width} ${phase}`;
+          h.ok(['task', 'note', 'T1', update]);
+          await b.restored(`document.querySelector('#T1 .thread').textContent.includes(${JSON.stringify(update)})`, 'the live CLI update');
+          assert.deepEqual(await b.inPage(scroll), before, 'the live update restores the reader position');
+          if (phase === 'after') {
+            await b.inPage(`window.initialFrames.splice(0).forEach((callback) => callback(performance.now()))`);
+            assert.deepEqual(await b.inPage(scroll), before, 'the delayed initial frame cannot undo live restoration');
+          }
+        });
+      }
+    }
+  });
+});
+
 test('every view keeps disclosures, event identity, focus and scroll through live CLI updates', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
   const h = populated(t);
   for (let i = 6; i <= 24; i++) h.ok(['task', 'add', '--title', `Task ${i}`, '--acceptance', 'verified']);

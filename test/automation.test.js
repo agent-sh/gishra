@@ -99,6 +99,68 @@ test('CI completion refreshes a pending or failed receipt at the exact head and 
   assert.equal(h.run(['ci', 'completed', 'T1', '--sha', h.sha, '--agent', 'worker']).code, 1);
 });
 
+test('a passing gate reruns in the next reaction after its pinned command changes', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.submit();
+  h.ok(['check', 'tests', 'T1']);
+  const runs = () => h.logs().filter((e) => e.cmd === 'check tests').length;
+  const before = runs();
+  h.ok(['project', 'set', '--tests-cmd', 'node -e "process.exit(0)"']);
+  h.consume();
+  assert.equal(runs(), before + 1, 'the reaction reruns tests under the new command');
+  const latest = h.readState('tasks.json').tasks[0].evidence.filter((e) => e.type === 'tests').at(-1);
+  assert.equal(latest.gate_policy.tests_cmd, 'node -e "process.exit(0)"');
+});
+
+test('a passing gate reruns in the next reaction after its tests mode changes', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.ok(['project', 'set', '--tests-cmd', 'node -e "process.exit(0)"', '--tests-mode', 'run-only']);
+  h.submit();
+  h.ok(['check', 'tests', 'T1']);
+  const runs = () => h.logs().filter((e) => e.cmd === 'check tests').length;
+  const before = runs();
+  h.ok(['project', 'set', '--tests-mode', 'none']);
+  h.consume();
+  assert.equal(runs(), before + 1, 'the reaction reruns tests under the new mode');
+  const latest = h.readState('tasks.json').tasks[0].evidence.filter((e) => e.type === 'tests').at(-1);
+  assert.equal(latest.tests_mode, 'none');
+});
+
+test('a failed gate at unchanged inputs waits for gates retry, which reruns it', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  const marker = path.join(h.base, 'infra-failed-once');
+  const script = path.join(h.base, 'flaky-tests.js');
+  fs.writeFileSync(script, `const fs = require('node:fs');\nif (fs.existsSync(${JSON.stringify(marker)})) process.exit(0);\nfs.writeFileSync(${JSON.stringify(marker)}, '');\nprocess.exit(1);\n`);
+  h.ok(['project', 'set', '--tests-cmd', `node ${shellQuote(script)}`, '--tests-mode', 'run-only']);
+  h.submit();
+  const runs = () => h.logs().filter((e) => e.cmd === 'check tests').length;
+  const latest = () => h.readState('tasks.json').tasks[0].evidence.filter((e) => e.type === 'tests').at(-1);
+  h.consume();
+  assert.equal(runs(), 1);
+  assert.equal(latest().ok, false, 'the first run fails as infrastructure would');
+  h.consume();
+  assert.equal(runs(), 1, 'a failure at unchanged inputs is not retried without an explicit retry');
+  assert.equal(h.run(['gates', 'retry', 'T1', '--agent', 'worker']).code, 1);
+  assert.equal(runs(), 1);
+  h.ok(['gates', 'retry', 'T1', '--agent', 'orchestrator']);
+  assert.equal(runs(), 2);
+  assert.equal(latest().ok, true, 'the retry at the same inputs passes');
+});
+
+test('gates retry exits nonzero while a retried gate still fails', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.ok(['project', 'set', '--tests-cmd', 'node -e "process.exit(1)"', '--tests-mode', 'run-only']);
+  h.submit();
+  h.consume();
+  const latest = () => h.readState('tasks.json').tasks[0].evidence.filter((e) => e.type === 'tests').at(-1);
+  assert.equal(latest().ok, false);
+  const retry = h.run(['gates', 'retry', 'T1', '--agent', 'orchestrator']);
+  assert.equal(retry.code, 1, `a retry that still fails must exit nonzero: ${retry.stdout}${retry.stderr}`);
+  assert.match(retry.stdout, /tests/);
+  assert.equal(latest().ok, false, 'the retry ran at the same inputs and still fails');
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
+});
+
 test('an accepted task with green gates merges in the event reaction without an agent turn', (t) => {
   const h = setup(t);
   h.submit();

@@ -11,6 +11,7 @@ const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
 const { errorReader, transient } = require('../lib/spawn-monitor');
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
+const S = require('../lib/state');
 
 const log = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
@@ -23,6 +24,19 @@ async function until(fn, message) {
     if (Date.now() >= deadline) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+}
+
+function controlledBackoff(h) {
+  const file = path.join(h.base, 'backoff-clock');
+  const hook = path.join(__dirname, 'fixtures', 'supervision-backoff-clock.js').replace(/\\/g, '/');
+  fs.writeFileSync(file, '0');
+  return {
+    env: {
+      NODE_OPTIONS: `--require "${HOOKS.replace(/\\/g, '/')}" --require "${hook}"`,
+      TOWER_CRANE_TEST_BACKOFF_CLOCK: file,
+    },
+    advance: (ms) => fs.writeFileSync(file, String(ms)),
+  };
 }
 
 function setup(t, { failures = 1, error = '75', records = null, hold = 0, waitForFinish = false, config = {}, env = {}, busy = false, claimDelay = 0, claim = true, sessionReceipt = false } = {}) {
@@ -59,9 +73,10 @@ const finish = () => {
           : error === 'status-json' ? '{"status_code":502}' : 'API Error: 503 service unavailable')}); process.exit(1);` : `process.exit(${error});`}
   } else process.exit(0);
 };
-${waitForFinish ? `const timer = setInterval(() => {
+${waitForFinish ? `if (attempts.length <= ${failures}) finish();
+else { const timer = setInterval(() => {
   if (fs.existsSync(file + '.finish')) { clearInterval(timer); finish(); }
-}, 25);` : `setTimeout(finish, ${hold});`}
+}, 25); }` : `setTimeout(finish, ${hold});`}
 `;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, h.attempts, '{prompt}']),
     '--clear', 'profile', '--clear', 'effort', '--supervision',
@@ -70,6 +85,53 @@ ${waitForFinish ? `const timer = setInterval(() => {
   h.readAttempts = () => fs.existsSync(h.attempts) ? JSON.parse(fs.readFileSync(h.attempts, 'utf8')) : [];
   return h;
 }
+
+test('supervisor tool hook writers survive a lock held beyond 15 seconds', { timeout: 90000 }, async (t) => {
+  const h = makeTaskRepo(t, [{
+    args: ['--title', 'Supervised tool progress', '--tier', 'easy', '--acceptance', 'tool event survives'],
+    brief: 'Record tool progress.\n',
+  }]);
+  const ready = path.join(h.base, 'harness-ready');
+  const emit = path.join(h.base, 'emit-tool');
+  const finish = path.join(h.base, 'finish');
+  const writerReady = path.join(h.base, 'writer-ready');
+  const script = `
+const fs = require('node:fs');
+require('node:child_process').execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'claim', 'T1', '--lease', '5']);
+fs.writeFileSync(${JSON.stringify(ready)}, '');
+let emitted = false;
+setInterval(() => {
+  if (!emitted && fs.existsSync(${JSON.stringify(emit)})) {
+    emitted = true;
+    console.log(JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: 'supervised tool' } }));
+  }
+  if (fs.existsSync(${JSON.stringify(finish)})) process.exit(0);
+}, 25);
+`;
+  h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}']),
+    '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 0, stall_ms: 60000 })]);
+  h.ok(['msg', '--to', 'worker-T1-1', '--task', 'T1', 'startup context']);
+  const fixture = path.join(__dirname, 'fixtures', 'supervisor-hook-lock.js');
+  const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], { env: {
+    NODE_OPTIONS: `--require=${JSON.stringify(fixture)}`,
+    TOWER_CRANE_TEST_HOOK_LOCK: path.join(h.state, 'lock'), TOWER_CRANE_TEST_HOOK_READY: writerReady,
+  } });
+  let lock;
+  try {
+    await until(() => fs.existsSync(ready) && log(h).some((event) => event.cmd === 'hook inbox'), 'startup hook did not complete');
+    lock = S.acquireLock(h.state);
+    fs.writeFileSync(emit, '');
+    await until(() => fs.existsSync(writerReady), 'tool writer did not encounter the lock');
+    await new Promise((resolve) => setTimeout(resolve, 16000));
+  } finally {
+    if (lock) S.releaseLock(lock);
+    fs.writeFileSync(finish, '');
+  }
+  const result = await completed;
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(log(h).some((event) => event.cmd === 'hook progress' && event.detail.tool === 'command_execution'), result.stderr);
+  assert.doesNotMatch(result.stderr, /harness event failed/);
+});
 
 // What counts as an outage is decided per output line, in process: every
 // recorded and synthetic case here, and one supervised spawn per family below.
@@ -239,11 +301,12 @@ test('repeated transient exits render the blocked phase before foreground spend'
 
 test('detached supervision renews a short lease during backoff and does not allow premature recovery', async (t) => {
   const h = setup(t, { config: { backoff_ms: 1400, max_backoff_ms: 1400 } });
+  const backoff = controlledBackoff(h);
   const clockFile = path.join(h.base, 'clock');
   const now = Date.now();
   fs.writeFileSync(clockFile, String(now));
   const spawned = h.json(['spawn', '--task', 'T1'], {
-    env: { NODE_OPTIONS: `--require "${HOOKS.replace(/\\/g, '/')}"`, HOOK_CLOCK_FILE: clockFile },
+    env: { ...backoff.env, HOOK_CLOCK_FILE: clockFile },
   });
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'retry was not recorded');
   await until(() => sketches(h).every(({ text }) => /retrying 1/.test(text)), 'saved sketches did not render the retry phase');
@@ -253,8 +316,11 @@ test('detached supervision renews a short lease during backoff and does not allo
   const task = h.json(['task', 'show', 'T1']);
   assert.equal(task.claim.agent, spawned.agent);
   assert.ok(Date.parse(task.claim.until) > now + 60000);
+  assert.equal(task.run.phase, 'retrying');
+  assert.equal(h.readAttempts().length, 1);
   assert.deepEqual(h.json(['status']).exited_claims, []);
   assert.equal(h.run(['release', 'T1', '--agent', 'other', '--reason', 'premature']).code, 1);
+  backoff.advance(1400);
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'retry did not finish');
   assert.equal(h.readAttempts().length, 2);
   assert.equal(log(h).filter((e) => e.cmd === 'claim').length, 1);
@@ -291,14 +357,17 @@ if (task === 'T1' && retry === 0) {
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, '-e', script, BIN, '{prompt}']),
     '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 1, backoff_ms: 3500, max_backoff_ms: 3500 })]);
 
-  const started = h.json(['spawn', '--task', 'T1']);
+  const backoff = controlledBackoff(h);
+  const started = h.json(['spawn', '--task', 'T1'], { env: backoff.env });
   const home = path.join(h.state, 'homes', started.agent);
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'first attempt did not enter backoff');
 
   const duringBackoff = h.json(['spawn', '--task', 'T2', '--wait']);
   assert.equal(duringBackoff.code, 0);
   assert.ok(fs.existsSync(path.join(home, 'hook.json')), 'a later spawn keeps the home while the supervisor waits to retry');
+  assert.equal(h.json(['task', 'show', 'T1']).run.phase, 'retrying');
 
+  backoff.advance(3500);
   await until(() => fs.existsSync(retryReady), 'retry attempt did not start');
   assert.ok(log(h).some((e) => e.cmd === 'spawn retry' && e.task === 'T1'), 'retry event was recorded');
   const duringRetry = h.json(['spawn', '--task', 'T3', '--wait']);
@@ -316,27 +385,32 @@ if (task === 'T1' && retry === 0) {
 });
 
 test('a running process keeps its lease without claimant writes', async (t) => {
-  const h = setup(t, { failures: 0, hold: 1800 });
+  const h = setup(t, { failures: 0, waitForFinish: true });
   const clockFile = path.join(h.base, 'clock');
   const now = Date.now();
   fs.writeFileSync(clockFile, String(now));
   const spawned = h.json(['spawn', '--task', 'T1'], {
     env: { NODE_OPTIONS: `--require "${HOOKS.replace(/\\/g, '/')}"`, HOOK_CLOCK_FILE: clockFile },
   });
-  await until(() => h.readAttempts().length === 1, 'worker did not claim');
-  fs.writeFileSync(clockFile, String(now + 40000));
-  await until(() => log(h).some((e) => e.cmd === 'renew'), 'live worker lease was not renewed');
-  const task = h.json(['task', 'show', 'T1']);
-  assert.equal(task.claim.since, h.readAttempts()[0].claim.since);
-  assert.equal(task.claim.agent, spawned.agent);
-  assert.ok(Date.parse(task.claim.until) > now + 60000);
-  assert.equal(task.run.phase, 'running');
+  try {
+    await until(() => h.readAttempts().length === 1, 'worker did not claim');
+    fs.writeFileSync(clockFile, String(now + 40000));
+    await until(() => log(h).some((e) => e.cmd === 'renew'), 'live worker lease was not renewed');
+    const task = h.json(['task', 'show', 'T1']);
+    assert.equal(task.claim.since, h.readAttempts()[0].claim.since);
+    assert.equal(task.claim.agent, spawned.agent);
+    assert.ok(Date.parse(task.claim.until) > now + 60000);
+    assert.equal(task.run.phase, 'running');
+  } finally {
+    fs.writeFileSync(`${h.attempts}.finish`, '');
+  }
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'waiting', 'worker did not finish');
 });
 
 test('release during backoff fences the old supervisor from a replacement claim', async (t) => {
   const h = setup(t, { failures: 9, config: { backoff_ms: 1400, max_backoff_ms: 1400 } });
-  const spawned = h.json(['spawn', '--task', 'T1']);
+  const backoff = controlledBackoff(h);
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: backoff.env });
   await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'retry was not recorded');
   h.ok(['release', 'T1', '--agent', spawned.agent, '--reason', 'replace this run']);
   h.ok(['claim', 'T1', '--agent', 'replacement']);
@@ -801,14 +875,18 @@ fs.writeFileSync(process.argv[2], JSON.stringify({
 });
 
 test('rework cannot resume a session while its transient rerun is still alive', async (t) => {
-  const h = setup(t, { hold: 2500, sessionReceipt: true });
+  const h = setup(t, { waitForFinish: true, sessionReceipt: true });
   const spawned = h.json(['spawn', '--task', 'T1']);
-  await until(() => h.readAttempts().length === 2, 'transient rerun did not start');
-  h.ok(['submit', 'T1', '--agent', spawned.agent, '--sha', 'abcdef1']);
-  h.ok(['rework', 'T1', '--reason', 'review correction']);
-  const result = h.run(['spawn', '--task', 'T1']);
-  assert.equal(result.code, 1, result.stderr);
-  assert.match(result.stderr, /previous worker.*still running/);
+  try {
+    await until(() => h.readAttempts().length === 2, 'transient rerun did not start');
+    h.ok(['submit', 'T1', '--agent', spawned.agent, '--sha', 'abcdef1']);
+    h.ok(['rework', 'T1', '--reason', 'review correction']);
+    const result = h.run(['spawn', '--task', 'T1']);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /previous worker.*still running/);
+  } finally {
+    fs.writeFileSync(`${h.attempts}.finish`, '');
+  }
   await until(() => !detachedAlive({ pid: spawned.monitor_pid }), 'previous supervisor did not finish');
 });
 });
