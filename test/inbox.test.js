@@ -5,24 +5,28 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { makeRepo } = require('./helpers');
+const { makeRepo, cachedFixture } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 const { shellQuote } = require('../lib/gates/common');
 
 function setup(t) {
-  const h = makeRepo(t);
-  h.sha = gateFixture(h);
-  h.init(['--repo', 'acme/demo', '--base', 'main', '--workers', '8']);
-  // gateFixture's Windows adapter also routes this replacement script.
-  fs.writeFileSync(path.join(h.base, 'tools', 'gh'),
-    `#!${process.execPath}\nrequire(${JSON.stringify(path.join(__dirname, 'fixtures', 'inbox-gh.js'))});\n`);
-  h.env.INBOX_GITHUB = path.join(h.base, 'github.json');
+  const h = cachedFixture(t, 'inbox', (seed) => {
+    const sha = gateFixture(seed);
+    seed.init(['--repo', 'acme/demo', '--base', 'main', '--workers', '8']);
+    // gateFixture's Windows adapter also routes this replacement script.
+    fs.writeFileSync(path.join(seed.base, 'tools', 'gh'),
+      `#!${process.execPath}\nrequire(${JSON.stringify(path.join(__dirname, 'fixtures', 'inbox-gh.js'))});\n`);
+    seed.env.INBOX_GITHUB = path.join(seed.base, 'github.json');
+    fs.writeFileSync(seed.env.INBOX_GITHUB, JSON.stringify({
+      calls: [], prs: Object.fromEntries([7, 8, 9].map((n) => [n, {
+        state: 'OPEN', headRefOid: sha, headRefName: 'fixture-change', baseRefName: 'main',
+        mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', url: `https://github.com/acme/demo/pull/${n}`,
+      }])),
+    }));
+    return { sha };
+  });
   h.github = () => JSON.parse(fs.readFileSync(h.env.INBOX_GITHUB, 'utf8'));
   h.save = (data) => fs.writeFileSync(h.env.INBOX_GITHUB, JSON.stringify(data));
-  h.save({ calls: [], prs: Object.fromEntries([7, 8, 9].map((n) => [n, {
-    state: 'OPEN', headRefOid: h.sha, headRefName: 'fixture-change', baseRefName: 'main',
-    mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', url: `https://github.com/acme/demo/pull/${n}`,
-  }])) });
   h.add = (title, kind = 'docs') => {
     const task = h.json(['task', 'add', '--title', title, '--kind', kind, '--acceptance', 'works']);
     h.ok(['brief', 'set', task.id, '-'], { input: `${title}\n` });
@@ -453,7 +457,10 @@ test('current failed software gates expose diagnostics and commands that clear t
     assert.equal(i.sha, h.sha);
     assert.equal(i.revision, 1);
     assert.equal(i.summary, evidence.findLast((e) => e.type === i.gate).summary);
-    if (i.gate !== 'tests') assert.deepEqual(i.action.argv, ['check', i.gate, id]);
+    if (i.confirmed_failure) {
+      assert.deepEqual(i.action.argv.slice(0, 3), ['rework', id, '--reason']);
+      assert.ok(i.action.argv[3].includes(i.summary));
+    } else assert.deepEqual(i.action.argv, ['check', i.gate, id]);
   }
   const failedTests = items.find((i) => i.gate === 'tests');
   assert.ok(failedTests.test_failure.names.some((name) => name.includes('rejects invalid gate inputs')));
@@ -461,11 +468,11 @@ test('current failed software gates expose diagnostics and commands that clear t
   assert.match(failedTests.action.argv[3], /rejects invalid gate inputs/);
   assert.match(h.ok(['inbox', '--agent', 'orchestrator']), /rejects invalid gate inputs/);
   assert.equal(h.run(['inbox', '--ack', failedTests.id, '--agent', 'orchestrator']).code, 2);
-  h.ok([...items.find((i) => i.gate === 'clean').action.argv, '--agent', 'orchestrator']);
+  h.ok(['check', 'clean', id, '--agent', 'orchestrator']);
   assert.ok(!failures().some((i) => i.gate === 'clean'), 'the latest pass replaces the earlier failure');
   github.ci = 'success';
   h.save(github);
-  h.ok([...items.find((i) => i.gate === 'ci').action.argv, '--agent', 'orchestrator']);
+  h.ok(['check', 'ci', id, '--agent', 'orchestrator']);
   assert.ok(!failures().some((i) => i.gate === 'ci'));
   h.ok([...failedTests.action.argv, '--agent', 'orchestrator']);
   assert.match(fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8'), /rejects invalid gate inputs/);
@@ -507,4 +514,67 @@ test('an accepted PR with stale gate policy resolves through gate reruns before 
   h.ok([...ready.action.argv, '--agent', 'orchestrator']);
   assert.equal(h.github().prs[7].state, 'MERGED');
   assert.ok(!h.inbox().items.some((i) => i.kind === 'accepted_unmerged' || i.kind === 'gate_failed'));
+});
+
+test('confirmed CI failures request rework while pending and observation failures request retries', (t) => {
+  const h = setup(t);
+  const id = h.add('Workflow diagnostics');
+  h.submit(id, 7);
+  const finding = () => h.inbox().items.find((i) => i.kind === 'gate_failed' && i.gate === 'ci');
+  for (const state of [{ ci: 'pending' }, { ci: 'success', failEndpoint: '/check-runs' }]) {
+    h.save({ ...h.github(), ...state });
+    assert.equal(h.run(['check', 'ci', id]).code, 1);
+    const entry = h.json(['task', 'show', id]).evidence.at(-1);
+    assert.notEqual(entry.confirmed_failure, true);
+    assert.deepEqual(finding().action.argv, ['check', 'ci', id]);
+    assert.equal(h.json(['task', 'show', id]).status, 'submitted');
+  }
+  const github = h.github();
+  delete github.failEndpoint;
+  github.ci = 'failure';
+  h.save(github);
+  assert.equal(h.run(['check', 'ci', id]).code, 1);
+  const entry = h.json(['task', 'show', id]).evidence.at(-1);
+  assert.equal(entry.confirmed_failure, true);
+  assert.equal(entry.test_failure, undefined);
+  assert.equal(h.logs().findLast((e) => e.cmd === 'check ci').detail.confirmed_failure, true);
+  const failure = finding();
+  assert.deepEqual(failure.action.argv.slice(0, 3), ['rework', id, '--reason']);
+  assert.ok(failure.action.argv[3].includes(entry.summary));
+  h.ok([...failure.action.argv, '--agent', 'orchestrator']);
+  assert.equal(h.json(['task', 'show', id]).status, 'rework');
+  assert.ok(fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8').includes(entry.summary));
+  assert.equal(finding(), undefined);
+});
+
+test('a remotely merged accepted PR remains actionable until its audited merge receipt exists', (t) => {
+  const h = setup(t);
+  const id = h.add('Missing merge confirmation');
+  h.submit(id, 7);
+  h.ok(['check', 'ci', id]);
+  h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
+  h.ok(['accept', id, '--agent', 'orchestrator']);
+  const github = h.github();
+  github.prs[7].state = 'MERGED';
+  github.prs[7].mergeCommit = { oid: 'c'.repeat(40) };
+  h.save(github);
+  assert.equal(h.json(['task', 'show', id]).evidence.some((e) => e.type === 'merge'), false);
+  const items = h.inbox().items.filter((i) => i.task === id);
+  assert.equal(items.length, 1, 'confirmation replaces stale gate actions for the landed head');
+  assert.deepEqual(items[0].action.argv, ['merge', '--accepted']);
+  assert.match(items[0].reason, /confirm|receipt/);
+  assert.deepEqual(h.inbox().items.filter((i) => i.task === id), items, 'reading does not record a merge');
+  github.ci = 'failure';
+  h.save(github);
+  assert.equal(h.run(['check', 'ci', id]).code, 1);
+  assert.deepEqual(h.inbox().items.filter((i) => i.task === id), items, 'later failed gates do not rework a landed head');
+  h.ok([...items[0].action.argv, '--agent', 'orchestrator']);
+  const task = h.json(['task', 'show', id]);
+  const receipt = task.evidence.findLast((e) => e.type === 'merge');
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.sha, h.sha);
+  assert.equal(receipt.ref, 'c'.repeat(40));
+  assert.ok(h.logs().some((e) => e.cmd === 'merge' && e.detail.ok && e.detail.sha === h.sha));
+  assert.ok(!h.inbox().items.some((i) => i.task === id));
+  assert.equal(h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'merge').length, 0);
 });
