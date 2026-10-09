@@ -214,7 +214,7 @@ test('a stack merge refuses members already merged into another base', (t) => {
   f.write((d) => { landed(d, 11); landed(d, 12); });
   const all = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(all.code, 1, all.stdout);
-  assert.match(all.stdout, /T1: PR base is release, expected main/);
+  assert.match(all.stdout, /PR #12 base is release, expected main/);
   f.write((d) => { Object.assign(d.prs[12], { state: 'OPEN', baseRefName: f.lower.branch }); delete d.prs[12].mergeCommit; d.calls = []; });
   const mixed = f.h.run(['merge', 'T2', '--agent', 'orchestrator']);
   assert.equal(mixed.code, 1, mixed.stdout);

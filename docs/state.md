@@ -135,6 +135,18 @@ A brief without role headings is shared by worker dispatch and role-filtered bri
 
 All JSON files carry `"version": 1`. Writes go to a temp file in the same directory and are renamed into place. A refused state mutation writes nothing. `accept` can record software gate results before refusing acceptance.
 
+### Schema compatibility
+
+`project.json.schema_version` is the project-wide compatibility version, currently `1`. `init` records it; an absent field in an older project means `1`. File `version` fields describe the individual envelopes. A malformed known field still fails validation.
+
+Additive fields, decision and task enum members, evidence types, and event commands do not require a schema bump. Readers retain unknown fields and non-empty enum strings when writing unrelated records. Unknown evidence types remain opaque and cannot satisfy known gates. Readiness, dispatch and gate acceptance refuse task values that this tool cannot interpret, including unknown kinds, tiers, sizes, statuses and capabilities. They also refuse an unknown decision status when that decision lists the task in `blocks`; unrelated tasks remain usable. Command arguments still accept only supported values. A new status whose semantics cannot be handled by these rules needs a breaking bump.
+
+An unfamiliar task status retains its unexpired claim in both resource-lock and worker-capacity accounting. The recorded lease deadline still applies; a status change alone never frees a live lease. Automatic recovery keeps failed review evidence but reports `waiting` for an upgrade when task routing values are unsupported. It leaves the tier, range, status, claim and escalation history unchanged. Manual rework refuses before changing state or the brief.
+
+A breaking change raises `schema_version` before publishing incompatible payloads. The migration writer must hold the state lock and atomically publish the project marker before changing other files; readers check it before validation and again before returning a snapshot or reporting a payload error. A tool refuses reads, mutations and new spawns when the version exceeds its supported schema, with an upgrade message. There is no automatic downgrade or generic migration command.
+
+A running supervisor that encounters the marker, or an unsupported value affecting its own task, stops lease renewal, state writes, retries and automation. This includes an unfamiliar decision status that lists the task in `blocks`. It reports the incompatibility and keeps output capture and the broker alive until the current worker exits, without signaling that worker. The broker refuses incompatible state commands. The supervisor then exits `1`; an upgraded tool must recover the lease and collect usage. Supervision stays stopped even if the marker is subsequently reverted. Tools pinned before this compatibility contract cannot gain it at runtime; drain those supervisors before the first breaking migration.
+
 ### Lock
 
 Every command that writes in the state directory holds the lock while it reads and writes, `render` included. Reads take no lock.
@@ -150,6 +162,7 @@ A marker's holder and modification time are read through one opened file descrip
 ```json
 {
   "version": 1,
+  "schema_version": 1,
   "name": "billing-retry",
   "goal": "Retries on payment webhooks are idempotent and observable",
   "repo": "acme/billing",
@@ -641,9 +654,13 @@ task state.
 An accepted PR already merged remotely goes through the merge gate's
 confirmation path. It records the matching accepted head and the PR's merge
 commit without merging again, including after an executor dies before
-writing its receipt. A non-stacked PR GitHub reports merged at the accepted
-head needs no current gate evidence or CI receipt base, so tasks accepted
-before merge evidence existed are confirmed rather than refused.
+writing its receipt. A PR GitHub reports merged at the accepted head needs
+no current gate evidence or CI receipt base, so tasks accepted before merge
+evidence existed are confirmed rather than refused. Stack members follow the
+same path: confirmation reads only the member's own PR, runs no merge, retarget
+or stack sync, writes no receipts for other tasks, and an open lower PR does
+not block it. A lower member's failing review or stale CI receipt does not
+block it either.
 The confirmation lookup validates merge text and method before calling
 GitHub. Failed current gates permit this read-only lookup; an open PR still
 requires passing gates. Confirmation evidence records the lookup that
