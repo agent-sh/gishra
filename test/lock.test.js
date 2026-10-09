@@ -229,6 +229,7 @@ for (const aged of [false, true]) {
         cwd: h.repo,
         env: {
           ...h.env, HOOK_STATE: h.state, HOOK_JITTER_MS: '2',
+          TOWER_CRANE_AGENT: 'worker-lock-stress', TOWER_CRANE_OWNER_KEY: '',
           LOCK_STRESS_BARRIER: barrier, LOCK_STRESS_AGE_STAGING: aged ? '1' : '',
         },
         timeout: 30000,
@@ -262,6 +263,7 @@ for (const aged of [false, true]) {
     }
     const notes = h.readState('tasks.json').tasks[0].notes;
     assert.equal(notes.length, writes, 'every successful CLI write survived');
+    assert.ok(notes.every((note) => note.agent === 'worker-lock-stress'), 'task notes need no owner authority');
     assert.equal(new Set(notes.map((note) => note.text)).size, writes, 'no note was written twice');
     assert.equal(h.run(['validate']).code, 0);
     assert.deepEqual(fs.readdirSync(h.state).filter((name) => name.startsWith('lock')), [], 'no lock or staging directory was left');
