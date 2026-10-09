@@ -66,8 +66,15 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
       agy: { usage: { input_tokens: step * (per - output), output_tokens: step * output } },
     }[harness];
     if (file && !env.LIVE_LOG_ONLY) fs.appendFileSync(file, JSON.stringify(record) + '\n');
-    if (!file || env.LIVE_LOG_ONLY) console.log(JSON.stringify(record));
+    if (!file || env.LIVE_LOG_ONLY || env.LIVE_LOG_PREFIX && step === 1) console.log(JSON.stringify(record));
     if (final) {
+      if (env.LIVE_FINAL_RESULT_TOKENS !== undefined) {
+        const tokens = Number(env.LIVE_FINAL_RESULT_TOKENS);
+        const output = Math.floor(tokens / 10);
+        console.log(JSON.stringify({ type: 'result', usage: {
+          input_tokens: tokens - output, cache_read_input_tokens: 0, output_tokens: output,
+        } }));
+      }
       fs.writeFileSync(env.LIVE_DONE, String(step));
       process.exit(70);
     }

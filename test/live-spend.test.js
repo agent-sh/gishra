@@ -234,22 +234,74 @@ for (const [harness, scope, logOnly] of [['claude', 'project'], ['claude', 'task
   });
 }
 
-test('Claude exit without a result includes usage written after the last live sample', async (t) => {
+for (const partialLog of [false, true]) {
+  test(`Claude exit without a result includes final session usage with ${partialLog ? 'a partial log' : 'no log usage'}`, async (t) => {
+    const h = setup(t, 'claude');
+    const finish = path.join(h.base, 'finish');
+    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+      LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_FINISH: finish, ...(partialLog ? { LIVE_LOG_PREFIX: '1' } : {}),
+    }) });
+    await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'the first usage was not collected');
+    fs.writeFileSync(finish, '');
+    await until(t, h, () => exited(h, spawned.agent), 'the harness did not exit');
+    await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'exit usage was not finalized');
+    const spend = h.json(['task', 'show', 'T1']).spend;
+    assert.equal(fs.readFileSync(h.done, 'utf8'), '2', 'the harness wrote a final session record');
+    assert.equal(spend.tokens, 2000);
+    assert.equal(spend.entries.length, 1);
+    h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+    assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 2000, 'recollection keeps the final total');
+  });
+}
+
+for (const tokens of [1500, 0]) {
+  test(`a Claude invocation result authoritatively reconciles to ${tokens} tokens`, async (t) => {
+    const h = setup(t, 'claude');
+    const finish = path.join(h.base, 'finish');
+    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+      LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_FINISH: finish,
+      LIVE_LOG_PREFIX: '1', LIVE_FINAL_RESULT_TOKENS: String(tokens),
+    }) });
+    await until(t, h, () => liveEntries(h).some((e) => e.tokens === 1000), 'initial usage was not recorded');
+    fs.writeFileSync(finish, '');
+    await until(t, h, () => exited(h, spawned.agent), 'the harness did not exit');
+    await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'result was not finalized');
+    assert.equal(fs.readFileSync(h.done, 'utf8'), '2', 'the session contains 2000 tokens');
+    assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, tokens);
+    h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+    assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, tokens);
+  });
+}
+
+test('default wait ignores live usage changes but delivers a budget stop', async (t) => {
   const h = setup(t, 'claude');
+  h.ok(['task', 'update', 'T1', '--budget-tokens', '2500']);
+  const resume = path.join(h.base, 'continue');
   const finish = path.join(h.base, 'finish');
-  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
-    LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_FINISH: finish,
+  h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+    LIVE_STEPS: '2', LIVE_CONTINUE: resume, LIVE_HOLD: 'until-stop', LIVE_FINISH: finish,
   }) });
-  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'the first usage was not collected');
+  await until(t, h, () => events(h).some((e) => e.cmd === 'spend live' && e.detail.tokens === 1000), 'initial usage was not recorded');
+  const cursor = events(h).at(-1).id;
+  fs.writeFileSync(resume, '');
+  await until(t, h, () => events(h).some((e) => e.cmd === 'spend live' && e.detail.tokens === 2000), 'changed usage was not recorded');
+  const args = ['wait', '--agent', 'orchestrator', '--task', 'T1', '--after', cursor, '--observe', '--timeout', '0'];
+  const quiet = h.run(args);
+  assert.equal(quiet.code, 2, quiet.stderr || quiet.stdout);
+  assert.equal(JSON.parse(quiet.stdout).type, 'timeout');
+  for (const types of ['spend live', 'all']) {
+    const visible = h.run([...args, '--types', types]);
+    assert.equal(visible.code, 0, visible.stderr);
+    const wake = JSON.parse(visible.stdout);
+    assert.equal(wake.type, 'spend live');
+    assert.equal(events(h).find((e) => e.id === wake.id).detail.tokens, 2000);
+  }
+  const after = events(h).at(-1).id;
   fs.writeFileSync(finish, '');
-  await until(t, h, () => exited(h, spawned.agent), 'the harness did not exit');
-  await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'exit usage was not finalized');
-  const spend = h.json(['task', 'show', 'T1']).spend;
-  assert.equal(fs.readFileSync(h.done, 'utf8'), '2', 'the harness wrote a final session record');
-  assert.equal(spend.tokens, 2000);
-  assert.equal(spend.entries.length, 1);
-  h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
-  assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 2000, 'recollection keeps the final total');
+  await until(t, h, () => events(h).some((e) => e.cmd === 'budget stop'), 'budget stop was not recorded');
+  const stopped = h.run(['wait', '--agent', 'orchestrator', '--task', 'T1', '--after', after, '--observe', '--timeout', '0']);
+  assert.equal(stopped.code, 0, stopped.stderr);
+  assert.equal(JSON.parse(stopped.stdout).type, 'budget stop');
 });
 
 test('submission ends lease renewal and retries but live budgets hold until the harness exits', async (t) => {
