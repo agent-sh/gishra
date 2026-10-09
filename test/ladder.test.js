@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo } = require('./helpers');
+const L = require('../lib/ladder');
 
 const BUILTIN = {
   orchestrator: { harness: 'claude', model: 'opus', effort: 'high' },
@@ -76,7 +77,7 @@ test('the user file supplies the defaults a new project copies, and the project 
   assert.equal(p.harness, 'opencode');
   assert.deepEqual(p.ladder.easy, { model: 'a/easy' });
   assert.deepEqual(p.ladder.medium, { model: 'a/medium', effort: 'high' });
-  assert.deepEqual(p.ladder.hard, BUILTIN.hard, 'a rung the user file leaves out comes from the built-in ladder');
+  assert.deepEqual(p.ladder.hard, L.BUILTIN.ladder.hard, 'a rung the user file leaves out comes from the built-in ladder');
 
   writeUser(h, { harness: 'pi', ladder: { easy: { model: 'p/easy' } } });
   const show = h.json(['ladder', 'show']);
@@ -151,13 +152,16 @@ test('research web MCP inheritance remains Claude-only and refuses additional MC
 test('ladder save-user makes the project ladder the default for new projects', (t) => {
   const h = makeRepo(t);
   h.init();
-  h.ok(['ladder', 'set', 'hard', '--model', 'fable']);
+  // Pinned so the hard row and the pi refusal below do not follow the built-in ladder.
+  h.ok(['ladder', 'set', 'medium', '--clear', 'model', '--profile', 'sol', '--effort', 'high']);
+  h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--model', 'fable', '--effort', 'medium']);
+  const project = h.readState('project.json');
   const out = h.json(['ladder', 'save-user']);
   assert.equal(out.file, h.userConfig);
   const saved = JSON.parse(fs.readFileSync(h.userConfig, 'utf8'));
   assert.equal(saved.harness, 'codex');
   assert.deepEqual(saved.ladder.hard, { harness: 'claude', model: 'fable', effort: 'medium' });
-  assert.deepEqual(saved.ladder.easy, BUILTIN.easy);
+  assert.deepEqual(saved.ladder.easy, project.ladder.easy);
   assert.equal(events(h).filter((e) => e.cmd === 'ladder save-user').length, 1);
 
   const other = path.join(h.base, 'second-state');
@@ -186,8 +190,8 @@ test('ladder save-user writes only what the project defines and keeps the rest o
   // Neither the default harness nor easy is in the project, so the user file gets neither: the built-in applies to them.
   assert.equal(saved.harness, undefined);
   assert.equal(saved.ladder.easy, undefined);
-  assert.deepEqual(saved.ladder.hard, BUILTIN.hard);
-  assert.deepEqual(saved.ladder.medium, { ...BUILTIN.medium, fallbacks: [{ harness: 'claude', model: 'fable', effort: 'high' }] });
+  assert.deepEqual(saved.ladder.hard, p.ladder.hard);
+  assert.deepEqual(saved.ladder.medium, { ...p.ladder.medium, fallbacks: [{ harness: 'claude', model: 'fable', effort: 'high' }] });
   assert.equal(saved.note, 'kept');
   assert.deepEqual(saved.browser_kit, ['playwright']);
 });
@@ -235,7 +239,7 @@ test('fallback-only user rungs keep the built-in primary when projects omit them
   const h = makeRepo(t);
   writeUser(h, { ladder: { hard: { fallbacks: [{ harness: 'claude', model: 'fable' }] } } });
   h.init();
-  assert.deepEqual(h.readState('project.json').ladder.hard, BUILTIN.hard);
+  assert.deepEqual(h.readState('project.json').ladder.hard, L.BUILTIN.ladder.hard);
 });
 
 test('ladder harness moves every rung without its own harness, and spawn runs each tier there', (t) => {
@@ -313,7 +317,10 @@ test('Claude providers and pi tool opt-ins validate independently', (t) => {
 test('ladder writes are validated, and a refused one leaves project.json as it was', (t) => {
   const h = makeRepo(t);
   h.init();
+  // Pinned so the pi refusal below comes from this codex rung, not the built-in one.
+  h.ok(['ladder', 'set', 'medium', '--clear', 'model', '--profile', 'sol', '--effort', 'high']);
   const before = projectText(h);
+  const logged = events(h).filter((e) => e.cmd.startsWith('ladder')).length;
   const cases = [
     [['ladder', 'harness', 'pi'], 1, /ladder medium \(pi, the default harness\): profile applies only to codex, needs a model;.*fix those rungs first/],
     [['ladder', 'harness', 'gemini'], 2, /claude, codex, opencode, agy, pi, command/],
@@ -323,7 +330,7 @@ test('ladder writes are validated, and a refused one leaves project.json as it w
     [['ladder', 'set', 'easy', '--provider', 'openai'], 1, /ladder easy \(claude\): claude provider must be anthropic or bedrock/],
     [['ladder', 'set', 'medium', '--provider', 'openai'], 1, /provider applies only to pi and claude/],
     [['ladder', 'set', 'hard', '--clear', 'model'], 1, /ladder hard \(claude\): needs a model/],
-    [['ladder', 'set', 'small', '--harness', 'command', '--clear', 'profile', '--clear', 'effort'], 1, /ladder small \(command\): needs a command array/],
+    [['ladder', 'set', 'small', '--harness', 'command', '--clear', 'model', '--clear', 'profile', '--clear', 'effort'], 1, /ladder small \(command\): needs a command array/],
     [['ladder', 'set', 'small', '--args', '"--x"'], 2, /--args must be a JSON array of strings/],
     [['ladder', 'set', 'small', '--clear', 'colour'], 2, /--clear takes a rung field/],
     [['ladder', 'set', 'small', '--model', 'x', '--clear', 'model'], 2, /model is both set and cleared/],
@@ -336,7 +343,7 @@ test('ladder writes are validated, and a refused one leaves project.json as it w
     assert.match(r.stderr, message, args.join(' '));
     assert.equal(projectText(h), before, `${args.join(' ')} wrote nothing`);
   }
-  assert.equal(events(h).filter((e) => e.cmd.startsWith('ladder')).length, 0, 'refused writes log no event');
+  assert.equal(events(h).filter((e) => e.cmd.startsWith('ladder')).length, logged, 'refused writes log no event');
 
   const p = h.readState('project.json');
   h.writeState('project.json', { ...p, ladder: { ...p.ladder, medium: { harness: 'gemini', model: 'x' } } });
@@ -393,7 +400,8 @@ test('a ladder write is evented and re-renders the sketch with the ladder and ea
   pinned.ladder.research = { harness: 'claude', model: 'opus', effort: 'high' };
   h.writeState('project.json', pinned);
   h.ok(['task', 'add', '--title', 'Small fix', '--acceptance', 'a', '--size', 'S']);
-  h.ok(['ladder', 'set', 'easy', '--model', 'gpt-x', '--clear', 'profile', '--clear', 'harness', '--agent', 'orchestrator']);
+  // Effort is set so the expected easy row does not follow the built-in easy effort.
+  h.ok(['ladder', 'set', 'easy', '--model', 'gpt-x', '--effort', 'high', '--clear', 'profile', '--clear', 'harness', '--agent', 'orchestrator']);
   const ev = events(h).find((e) => e.cmd === 'ladder set');
   assert.deepEqual([ev.agent, ev.detail], ['orchestrator', { rung: 'easy', model: 'gpt-x', effort: 'high', authority: 'orchestrator' }]);
   assert.deepEqual(h.readState('project.json').ladder.easy, { model: 'gpt-x', effort: 'high' });

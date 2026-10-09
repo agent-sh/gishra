@@ -198,7 +198,7 @@ test('a save made against a rung, default harness or tier that changed since the
     const loaded = await loadedOf(s.url);
     // The page loaded easy as the built-in Haiku rung; the form sends every
     // field of the rung, so its stale model would undo a model chosen through the CLI.
-    h.ok(['ladder', 'set', 'easy', '--model', 'chosen-by-cli', '--clear', 'profile']);
+    h.ok(['ladder', 'set', 'easy', '--harness', 'claude', '--model', 'chosen-by-cli', '--effort', 'high', '--clear', 'profile']);
     const project = read(h, 'project.json');
     const edit = { rungs: { easy: { harness: 'claude', model: 'claude-haiku-5-5', profile: '', provider: '', effort: 'high', args: '', command: '' } } };
     const r = await post('ladder', ladderBody(loaded, edit));
