@@ -35,6 +35,9 @@ function baseEnv(home) {
   env.TOWER_CRANE_OWNER_KEY = OWNER_KEY;
   // spawn keeps receipts under the user's cache, which is not the tests' to write.
   env.HOME = path.join(home, 'home');
+  // A gate's worktree and temp directories stay in the fixture, so a gate the test kills
+  // cannot leave them in the shared temporary directory.
+  env.TOWER_CRANE_TMP = path.join(home, 'gate-tmp');
   return env;
 }
 
