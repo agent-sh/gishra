@@ -5,6 +5,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 if (path.resolve(process.argv[1] || '') !== __filename) {
+  if (process.env.TOWER_CRANE_TEST_VERIFIED_AGY === '1') {
+    const agentsFile = path.join(path.dirname(path.dirname(process.argv[1])), 'lib', 'agents.js');
+    if (fs.existsSync(agentsFile)) {
+      const agents = require(agentsFile);
+      agents.CAPABILITIES = { ...agents.CAPABILITIES, agy: { sandbox: true, osSandbox: true } };
+    }
+  }
   const spawn = cp.spawn;
   cp.spawn = function offlineHarness(file, args, options) {
     const harness = /[\\/]scripts[\\/]fallback(?:\.exe)?$/.test(file) ? 'command' : file;
