@@ -99,8 +99,10 @@ function submit(h, extra = []) {
 
 function gates(h, ci = false) {
   for (const type of ['tests', 'clean', 'review', ...(ci ? ['ci'] : [])]) {
-    if (type === 'review') h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, '--ok']);
-    else gateEvidence(h, type, 'reviewer');
+    if (type === 'review') {
+      h.reviewer('T1', 'reviewer', h.sha);
+      h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', type, '--sha', h.sha, '--ok']);
+    } else gateEvidence(h, type, 'reviewer');
   }
 }
 
