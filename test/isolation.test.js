@@ -105,7 +105,8 @@ process.exit(result.status ?? 1);
   // Credential discovery must stay inside the synthetic home unless a test
   // explicitly supplies another location.
   for (const key of ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'PI_CODING_AGENT_DIR', 'DOCKER_CONFIG', 'CARGO_HOME',
-    'KUBECONFIG', 'CLOUDSDK_CONFIG', 'AZURE_CONFIG_DIR', 'NPM_CONFIG_USERCONFIG', 'npm_config_userconfig',
+    'KUBECONFIG', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS', 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',
+    'AZURE_CONFIG_DIR', 'NPM_CONFIG_USERCONFIG', 'npm_config_userconfig',
     'PIP_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE']) runEnv[key] = '';
   // Agent caches belong under the fixture's home, not the runner's cache.
   runEnv.XDG_CACHE_HOME = '';
@@ -927,6 +928,93 @@ test('resolved Bedrock credential paths are denied at their delivered locations'
   const seen = u.report();
   assert.deepEqual(JSON.parse(seen.ran[0].stderr), [credentials, config]);
   assertCredentialsHidden(seen, [credentials, config]);
+});
+
+test('parent-relative credential stores stay hidden on initial and fallback launches', { skip: NO_STUBS }, t => {
+  const { h, u, wt } = setup(t);
+  const caller = path.join(h.repo, 'caller');
+  const reports = path.join(h.base, 'relative-stores.jsonl');
+  fs.mkdirSync(caller);
+  const files = [caller, wt].flatMap(root => ['relative-gh/hosts.yml', 'relative-docker/config.json', 'relative-aws', 'kube-a', 'kube-b']
+    .map(file => path.join(root, file)));
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'SYNTHETIC-PARENT-STORE\n');
+  }
+  fs.writeFileSync(path.join(h.base, 'bin', 'gh'), `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path');
+if (process.argv[2] === 'auth') {
+  if (fs.readFileSync(path.join(process.env.GH_CONFIG_DIR, 'hosts.yml'), 'utf8') !== 'SYNTHETIC-PARENT-STORE\\n') process.exit(1);
+  console.log('stub-gh-token');
+} else if (process.env.GH_TOKEN !== 'stub-gh-token' || process.env.GH_CONFIG_DIR !== path.join(process.env.HOME, '.config', 'gh')) {
+  process.exit(1);
+}
+`);
+  for (const harness of ['claude', 'codex']) fs.writeFileSync(path.join(h.base, 'bin', harness), `#!${process.execPath}
+const fs = require('node:fs');
+require(${JSON.stringify(STUB)})(${JSON.stringify(harness)});
+fs.appendFileSync(${JSON.stringify(reports)}, fs.readFileSync(process.env.STUB_OUT, 'utf8') + '\\n');
+if (process.env.STUB_FAIL_HARNESS === ${JSON.stringify(harness)}) {
+  console.error('HTTP 503 service unavailable'); process.exit(1);
+}
+`);
+  for (const primary of ['claude', 'codex']) {
+    const fallback = primary === 'claude' ? 'codex' : 'claude';
+    isolated(h, 'hard', primary);
+    h.ok(['ladder', 'set', 'hard', '--supervision', '{"retries":0,"backoff_ms":10,"max_backoff_ms":10}']);
+    fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+    fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { hard: { fallbacks: [{ harness: fallback, model: 'second' }] } } }));
+    fs.rmSync(reports, { force: true });
+    spawn(h, u, 'hard', {
+      GH_CONFIG_DIR: 'relative-gh', DOCKER_CONFIG: 'relative-docker', AWS_SHARED_CREDENTIALS_FILE: 'relative-aws',
+      KUBECONFIG: ['kube-a', 'kube-b'].join(path.delimiter), STUB_FAIL_HARNESS: primary,
+      STUB_RUN: JSON.stringify([['gh', 'pr', 'view', '1']]),
+    }, { cwd: caller });
+    const seen = fs.readFileSync(reports, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(seen.map(report => report.harness), [primary, fallback]);
+    for (const report of seen) {
+      assert.equal(report.ghToken, 'stub-gh-token', 'the parent token lookup succeeded');
+      assert.equal(report.ran[0].code, 0, 'the handed token works');
+      assertCredentialsHidden(report, files);
+    }
+  }
+});
+
+test('Google credential file overrides stay hidden across environment sources', { skip: NO_STUBS }, t => {
+  const { h, u, wt } = setup(t);
+  const sources = ['inherited', 'project', 'rung', 'file', 'claude', 'codex'].map(label => {
+    const env = Object.fromEntries(['GOOGLE_APPLICATION_CREDENTIALS', 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE'].map(key => {
+      const file = path.join(h.base, `${label}-${key}.json`);
+      fs.writeFileSync(file, '{"type":"service_account","private_key":"SYNTHETIC-GOOGLE-KEY"}\n');
+      return [key, file];
+    }));
+    return env;
+  });
+  const [inherited, project, rung, file, claude, codex] = sources;
+  const envFile = path.join(h.base, 'google.env');
+  const text = env => Object.entries(env).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n') + '\n';
+  fs.writeFileSync(envFile, text(file));
+  fs.writeFileSync(path.join(u.home, '.codex', '.env'), text(codex));
+  const settingsFile = path.join(u.home, '.claude', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  Object.assign(settings.env, claude);
+  fs.writeFileSync(settingsFile, JSON.stringify(settings));
+  h.ok(['project', 'set', '--env', JSON.stringify(project), '--env_file', envFile]);
+  const files = sources.flatMap(env => Object.values(env));
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    h.ok(['ladder', 'set', 'hard', '--env', JSON.stringify(rung)]);
+    spawn(h, u, 'hard', { ...inherited, STUB_READ: JSON.stringify(files) });
+    assertCredentialsHidden(u.report(), files);
+    if (harness === 'claude') assert.ok(u.report().reads.every(read => read.denied));
+    for (const credential of Object.values(inherited)) {
+      fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${credential}\n`);
+      const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: { ...u.env, ...inherited } });
+      assert.notEqual(refused.code, 0, 'Google credential imports must be refused');
+      assert.match(refused.stderr, /house rule.*credential store/i);
+    }
+    fs.rmSync(path.join(wt, 'AGENTS.md'));
+  }
 });
 
 test('repository imports cannot authorize credential reads or send credentials to a harness', { skip: NO_STUBS }, (t) => {
