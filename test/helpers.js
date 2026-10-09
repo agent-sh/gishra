@@ -304,6 +304,7 @@ $ErrorActionPreference = 'Stop'
 $monitors = @()
 try {
   foreach ($entry in (ConvertFrom-Json '${records}')) {
+    if (!$entry.PSObject.Properties['startTime']) { throw 'Windows monitor creation identity is missing' }
     if ($null -eq $entry.startTime) { continue }
     try {
       $monitor = [System.Diagnostics.Process]::GetProcessById($entry.pid)
