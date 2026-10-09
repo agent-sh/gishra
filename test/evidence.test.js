@@ -16,6 +16,7 @@ function setup(t, gates = []) {
     h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
     h.ok(['claim', 'T1', '--agent', 'worker']);
     h.ok(['submit', 'T1', '--sha', sha, '--pr', '1', '--agent', 'worker']);
+    h.reviewer('T1', 'reviewer', sha);
     h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
     for (const type of gates) gateEvidence(h, type, 'checker');
   });
@@ -178,6 +179,11 @@ test('hand-written waivers require owner identity for review and software gates'
     task.evidence = task.evidence.filter((e) => e.type !== type);
     task.evidence.push({ type, ok: true, waived: true, sha: task.sha, agent: 'worker', revision: task.revision });
     h.writeState('tasks.json', doc);
+    // A review waiver that does not count leaves accept to dispatch a reviewer, so read the gate.
+    if (type === 'review') {
+      assert.match(h.json(['task', 'show', 'T1']).gates.missing.join('; '), /review:/);
+      continue;
+    }
     const r = h.run(['accept', 'T1']);
     assert.equal(r.code, 1, `${type}: ${r.stdout}`);
     assert.ok(r.stderr.includes(`${type}:`), r.stderr);
