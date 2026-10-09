@@ -61,6 +61,11 @@ authorization context. Unknown mergeability and transport errors remain
 retryable at startup. A remote merge completed before its local receipt
 is recovered through the merge gate's accepted-head confirmation.
 
+Software gates run again when their passing evidence no longer matches its
+inputs, such as the pinned command or tests policy. A failed gate waits for `gates retry ID` at
+unchanged inputs; an infrastructure failure a later fix removed is the case
+it serves.
+
 Failures remain visible in gate receipts and task notes. Conflicting PRs
 return to rework with a file list. Unknown mergeability, failed transport,
 pending CI, moved heads and missing review never authorize a merge.
