@@ -38,6 +38,8 @@ function setup(t) {
       const timeouts = [...new Set(profiles.flatMap((profile) => profile.children.map((child) => child.timeout)))];
       assert.ok(delays.every((ms) => ms === 0), 'provider fixtures schedule no timed wait');
       assert.ok(timeouts.every((ms) => ms === 0), 'provider subprocesses have no deadline');
+      assert.ok(profiles.every((profile) => profile.children.every((child) =>
+        !/^gh(?:\.exe|\.cmd|\.bat)?$/i.test(child.process))), 'provider fixtures need no credential helper');
       for (const profile of profiles) {
         for (const [map, entries] of [[processes, [profile]], [children, profile.children]]) {
           for (const entry of entries) {
@@ -70,6 +72,8 @@ function setup(t) {
   }
   Object.assign(h.env, {
     HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: claude,
+    // Provider routing needs no credential-helper process.
+    GH_TOKEN: 'stub-secret-gh-token',
     PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || ''),
     NODE_OPTIONS: `--require "${path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/')}"`,
     TOWER_CRANE_TEST_FALLBACK_FILE: path.join(h.base, 'attempts.json'),
