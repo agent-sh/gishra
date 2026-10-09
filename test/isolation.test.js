@@ -1070,6 +1070,83 @@ test('credential stores equal to required runtime directories refuse dispatch', 
   }
 });
 
+test('AWS profile web identity tokens stay hidden and cannot be imported', { skip: NO_STUBS }, async t => {
+  const { h, u, wt } = setup(t);
+  const files = [];
+  const profileFile = (file, label) => {
+    const token = path.join(h.base, `${label}-profile-token.jwt`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(token, 'SYNTHETIC-PROFILE-TOKEN\n');
+    fs.writeFileSync(file, `[default]\nregion = us-east-1\nrole_arn = arn:aws:iam::123456789012:role/test\nweb_identity_token_file = ${token}\n`);
+    files.push(token);
+    return file;
+  };
+  profileFile(path.join(u.home, '.aws', 'config'), 'default');
+  profileFile(path.join(u.home, '.aws', 'credentials'), 'shared-default');
+  const sources = ['inherited', 'project', 'rung', 'file', 'claude', 'codex'].map(label => ({
+    AWS_CONFIG_FILE: profileFile(path.join(h.base, `${label}-aws-config`), label),
+  }));
+  const [inherited, project, rung, file, claude, codex] = sources;
+  // Named profiles and relative tokens must retain both caller and child paths.
+  const relativeToken = 'relative-profile-token.jwt';
+  for (const dir of [h.repo, wt]) {
+    fs.writeFileSync(path.join(dir, relativeToken), 'SYNTHETIC-PROFILE-TOKEN\n');
+    files.push(path.join(dir, relativeToken));
+  }
+  fs.appendFileSync(inherited.AWS_CONFIG_FILE, `[profile named]\nweb_identity_token_file = ${relativeToken}\n`);
+  const text = env => `AWS_CONFIG_FILE=${JSON.stringify(env.AWS_CONFIG_FILE)}\n`;
+  const envFile = path.join(h.base, 'profile-sources.env');
+  fs.writeFileSync(envFile, text(file));
+  fs.writeFileSync(path.join(u.home, '.codex', '.env'), text(codex));
+  const settingsFile = path.join(u.home, '.claude', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  Object.assign(settings.env, claude);
+  fs.writeFileSync(settingsFile, JSON.stringify(settings));
+  h.ok(['project', 'set', '--env', JSON.stringify(project), '--env_file', envFile]);
+  for (const harness of ['claude', 'codex']) await t.test(harness, () => {
+    isolated(h, 'hard', harness);
+    h.ok(['ladder', 'set', 'hard', '--env', JSON.stringify(rung)]);
+    spawn(h, u, 'hard', { ...inherited, AWS_PROFILE: 'named', STUB_READ: JSON.stringify(files) });
+    assertCredentialsHidden(u.report(), files);
+    if (harness === 'claude') assert.ok(u.report().reads.every(read => read.denied));
+    fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${files[0]}\n`);
+    try {
+      const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: { ...u.env, ...inherited } });
+      assert.notEqual(refused.code, 0, 'profile token imports must be refused');
+      assert.match(refused.stderr, /house rule.*credential store/i);
+    } finally { fs.rmSync(path.join(wt, 'AGENTS.md')); }
+  });
+});
+
+test('nested credential links to required runtime directories refuse dispatch', { skip: NO_STUBS }, async t => {
+  const { h, u, wt } = setup(t);
+  fs.writeFileSync(path.join(wt, 'cached-token.json'), '{"accessToken":"SYNTHETIC-CACHED-TOKEN"}\n');
+  const link = path.join(u.home, '.aws', 'sso', 'cache');
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  const alias = path.join(h.base, 'runtime-alias');
+  fs.symlinkSync(wt, alias, 'dir');
+  for (const rule of ['.claude/CLAUDE.md', '.codex/AGENTS.md']) {
+    const from = path.join(u.home, rule), target = path.join(h.base, path.basename(rule));
+    fs.renameSync(from, target);
+    fs.symlinkSync(target, from);
+  }
+  for (const harness of ['claude', 'codex']) await t.test(harness, () => {
+    isolated(h, 'hard', harness);
+    for (const target of [wt, alias, h.state]) {
+      fs.symlinkSync(path.relative(path.dirname(link), target), link, 'dir');
+      fs.rmSync(u.out, { force: true });
+      try {
+        const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--wait', '--json'], { env: u.env });
+        assert.notEqual(refused.code, 0, `${harness}: nested link to ${target} must refuse dispatch`);
+        assert.match(refused.stderr, /credential store.*required.*path/i);
+        assert.ok(!fs.existsSync(u.out), 'the harness must not start');
+      } finally { fs.rmSync(link); }
+    }
+    spawn(h, u, 'hard');
+    assert.equal(u.report().harness, harness, 'removing the link restores safe dispatch');
+  });
+});
+
 test('repository imports cannot authorize credential reads or send credentials to a harness', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
   const docker = path.join(u.home, '.docker', 'config.json');
