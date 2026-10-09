@@ -12,6 +12,7 @@ const BIN = path.join(ROOT, 'bin', 'tower-crane.js');
 const HOOKS = path.join(__dirname, 'fixtures', 'hooks.js');
 const TMP_ROOT = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
 const SHARED_REPO_SEED = process.env.TC_TEST_REPO_SEED;
+const OWNER_KEY = 'fixture-owner-key';
 delete process.env.TC_TEST_REPO_SEED;
 
 // Tests must not see the developer's git config (hooks, signing), an
@@ -23,11 +24,15 @@ function baseEnv(home) {
   for (const k of Object.keys(env)) {
     if (k.startsWith('TOWER_CRANE_') || k.startsWith('GIT_') || k === 'TC_TEST_REPO_SEED') delete env[k];
   }
-  // Existing fixtures act as the owner, so they must provide that identity.
+  // Existing fixtures act as the owner without a terminal, so they must
+  // provide that identity and the owner key.
   env.TOWER_CRANE_AGENT = 'owner';
   env.GIT_CONFIG_GLOBAL = path.join(home, 'gitconfig');
   env.GIT_CONFIG_NOSYSTEM = '1';
   env.TOWER_CRANE_CONFIG = path.join(home, 'user-config', 'config.json');
+  fs.mkdirSync(path.join(home, 'user-config', 'owner'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'user-config', 'owner', 'key'), `${OWNER_KEY}\n`);
+  env.TOWER_CRANE_OWNER_KEY = OWNER_KEY;
   // spawn keeps receipts under the user's cache, which is not the tests' to write.
   env.HOME = path.join(home, 'home');
   return env;
