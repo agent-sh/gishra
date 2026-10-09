@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { makeRepo, BIN } = require('./helpers');
+const { makeRepo, cachedFixture, BIN } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 const { COMMANDS } = require('../bin/tower-crane');
 const Authority = require('../lib/authority');
@@ -181,6 +181,70 @@ test('an approved waiver lets the orchestrator accept, and only that approval ma
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
 });
 
+for (const answered of [false, true]) {
+  test(`a successful owner write retires a matching ${answered ? 'approved' : 'open'} request`, (t) => {
+    const h = cachedFixture(t, 'owner-setting-requests', h => h.init());
+    const args = ['project', 'set', '--merge-admin', 'true'];
+    assert.match(h.run(args, as('orchestrator')).stderr, /opened D1 /);
+    if (answered) h.ok(['answer', 'D1', '--choice', 'approve']);
+    const pending = decisions(h)[0];
+    h.ok(['project', 'set', '--merge-admin', 'false', '--workers', '3']);
+    assert.deepEqual(decisions(h)[0], pending, 'another value does not retire this request');
+    assert.notEqual(h.run([...args, '--workers', '0']).code, 0);
+    assert.deepEqual(decisions(h)[0], pending, 'a failed write leaves the request usable');
+
+    const before = audits(h).length;
+    h.ok(args);
+    const retired = decisions(h)[0];
+    assert.equal(retired.applied?.by, 'owner');
+    assert.equal(retired.status, 'answered');
+    assert.equal(retired.answer, 'approve');
+    assert.equal(retired.answered_by, 'owner');
+    assert.equal(audits(h).length, before + 1);
+    assert.equal(audits(h).at(-1).detail.approved_by, undefined, 'the owner acts on their own authority');
+    h.ok(['project', 'set', '--merge-admin', 'false']);
+    assert.match(h.run(args, as('orchestrator')).stderr, /opened D2 /);
+    assert.equal(h.readState('project.json').merge.admin, false, 'the retry cannot overwrite the later owner choice');
+  });
+}
+
+test('the board audits removing a tier range at its current rung just like the CLI', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Board', '--acceptance', 'works', '--tier', 'easy..hard']);
+  h.ok(['task', 'add', '--title', 'CLI', '--acceptance', 'works', '--tier', 'easy..hard']);
+  const before = audits(h).length;
+  await withServe(h, async (post) => {
+    await post('api/tiers', { tiers: { T1: 'easy' }, base: { T1: 'easy' } });
+  });
+  h.ok(['task', 'update', 'T2', '--tier', 'easy']);
+  assert.ok(h.readState('tasks.json').tasks.every(t => t.tier === 'easy' && !t.tier_range));
+  assert.deepEqual(audits(h).slice(before).map(e => e.detail), ['board', 'cli'].map(mode => ({
+    command: 'task update', actor: 'owner', mode, settings: { 'task.tier': 'operational' },
+  })));
+});
+
+test('owner acceptance retires a matching approval only after the gates pass', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const sha = gateFixture(h);
+  h.ok(['project', 'set', '--repo', 'acme/demo']);
+  h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
+  const args = ['accept', 'T1', '--waive', 'tests', '--reason', 'no harness yet'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1/);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  assert.equal(h.run(args, { env: { FIXTURE_GATE_OK: '0' } }).code, 1);
+  assert.equal(decisions(h)[0].applied, undefined);
+  h.ok(['check', 'clean', 'T1']);
+  h.ok(args);
+  assert.equal(h.json(['task', 'show', 'T1']).status, 'accepted');
+  assert.equal(decisions(h)[0].applied?.by, 'owner');
+});
+
 test('a spawned orchestrator applies an approved waiver under its recorded role', (t) => {
   const h = makeRepo(t);
   h.init();
@@ -293,4 +357,16 @@ test('an orchestrator spawn uses the owner\'s delegation approval and records it
     { command: 'spawn', actor: 'orchestrator', mode: 'cli', approved_by: 'D1', settings: { delegation: 'owner-required' } },
   ]);
   assert.match(spawn().stderr, /opened D2 /, 'the approval is used up');
+
+  h.ok(['answer', 'D2', '--choice', 'approve']);
+  rung(path.join(h.base, 'missing-program'));
+  const args = ['spawn', '--task', 'T1', '--role', 'orchestrator', '--wait'];
+  assert.equal(h.run(args).code, 1);
+  assert.equal(decisions(h)[1].applied, undefined, 'a failed owner spawn keeps the approval');
+  rung(process.execPath);
+  h.ok(args);
+  assert.equal(decisions(h)[1].applied?.by, 'owner');
+  assert.equal(delegations().at(-1).detail.actor, 'owner');
+  assert.equal(delegations().at(-1).detail.approved_by, undefined);
+  assert.match(spawn().stderr, /opened D3 /, 'a successful owner spawn retires the approval');
 });
