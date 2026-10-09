@@ -169,9 +169,10 @@ test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents 
   const lower = f.h.json(['task', 'show', 'T1']);
   assert.equal(lower.status, 'submitted');
   assert.equal(lower.gates.ok, true, 'passing receipts still need an acceptance');
-  const calls = f.read().calls.length;
+  f.write((d) => { d.calls = []; });
   assert.match(f.h.run(['merge', 'T2']).stdout, /T1: every lower task must be accepted with passing gates/);
-  assert.equal(f.read().calls.length, calls, 'an unaccepted member stops the merge before contacting GitHub');
+  assert.ok(f.read().calls.every((c) => c.args[0] === 'pr' && c.args[1] === 'view'),
+    'an unaccepted member stops the merge after reading the target, which may already have landed; nothing merges or retargets');
   f.accept('T1');
   f.write((d) => { d.order.unshift(99); });
   assert.match(f.h.run(['merge', 'T2']).stdout, /untracked lower PR/);
@@ -201,7 +202,10 @@ test('queued stack merges are not evidence of a merge', (t) => {
   });
   f.h.git(['push', 'origin', `${base}:main`]);
   f.h.ok(['merge', 'T2']);
-  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.some((e) => e.type === 'merge'), false, 'confirming the upper task records nothing for the lower one');
+  f.h.ok(['merge', 'T1']);
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.findLast((e) => e.type === 'merge').ok, true);
   assert.deepEqual(routes(f), ['async 11']);
 });
 
@@ -491,6 +495,121 @@ test('lower acceptance cannot hide failing current gate evidence', (t) => {
   f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
   assert.match(f.h.run(['merge', 'T2']).stdout, /T1.*passing gates/);
   assert.deepEqual(routes(f), []);
+});
+
+test('a stack member merged at its accepted head is confirmed without current gates, and nothing above it moves', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
+  const upperBase = f.read().prs[12].baseRefName;
+  const landed = (head) => f.write((d) => {
+    Object.assign(d.prs[11], { state: 'MERGED', headRefOid: head, mergeCommit: { oid: 'c'.repeat(40) } });
+    d.calls = [];
+  });
+  landed('b'.repeat(40));
+  const rejected = f.h.run(['merge', 'T1']);
+  assert.equal(rejected.code, 1, rejected.stderr);
+  assert.match(rejected.stdout, /merged with head b+, not the accepted/);
+  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false, 'a different landed head is refused without a merge');
+  landed(f.sha);
+  const confirmed = f.h.json(['merge', 'T1']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.match(confirmed.summary, /was already merged/);
+  assert.deepEqual(f.read().calls.map((c) => c.args.slice(0, 2)), [['pr', 'view']],
+    'confirmation reads the PR and runs no merge, retarget or stack command');
+  const lower = f.h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'merge');
+  assert.deepEqual(lower.map((e) => e.ok), [false, true], 'the refused landing stays on record beside the confirmation');
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge'), false, 'the upper task keeps no merge evidence');
+  assert.deepEqual([f.read().prs[12].state, f.read().prs[12].baseRefName], ['OPEN', upperBase]);
+});
+
+test('a stack member merged at its accepted head with passing gates is confirmed without a stack sync', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  const upperBase = f.read().prs[12].baseRefName;
+  f.write((d) => {
+    Object.assign(d.prs[11], { state: 'MERGED', mergeCommit: { oid: 'c'.repeat(40) } });
+    d.calls = [];
+  });
+  const confirmed = f.h.json(['merge', 'T1']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.match(confirmed.summary, /was already merged/);
+  assert.ok(f.read().calls.every((c) => c.args[0] === 'pr' && c.args[1] === 'view'),
+    'confirmation with passing gates reads the PR and runs no merge, retarget or stack sync');
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge'), false, 'the upper task keeps no merge evidence');
+  assert.deepEqual([f.read().prs[12].state, f.read().prs[12].baseRefName], ['OPEN', upperBase]);
+});
+
+test('a merged stack member is confirmed while its lower PR is still open, and the lower PR is left alone', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => {
+    Object.assign(d.prs[12], { state: 'MERGED', mergeCommit: { oid: 'd'.repeat(40) } });
+    d.calls = [];
+  });
+  const confirmed = f.h.json(['merge', 'T2']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.ok(f.read().calls.every((c) => c.args[0] === 'pr' && c.args[1] === 'view'), 'an open lower PR is not merged, retargeted or synced');
+  assert.deepEqual([f.read().prs[11].state, f.read().prs[11].baseRefName], ['OPEN', 'main']);
+});
+
+test('a merged stack member with passing gates is confirmed even while a lower task fails review', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
+  f.write((d) => {
+    Object.assign(d.prs[12], { state: 'MERGED', mergeCommit: { oid: 'd'.repeat(40) } });
+    d.calls = [];
+  });
+  const confirmed = f.h.json(['merge', 'T2']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.match(confirmed.summary, /was already merged/);
+  assert.ok(f.read().calls.every((c) => c.args[0] === 'pr' && c.args[1] === 'view'),
+    'confirmation with a failing lower review reads the PR and runs no merge or stack sync');
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.some((e) => e.type === 'merge'), false, 'the failing lower task gets no merge evidence');
+});
+
+test('a merged stack member with passing gates is confirmed without re-checking a stale lower CI receipt', (t) => {
+  const f = stacked(t);
+  f.h.ok(['project', 'set', '--ci-local', JSON.stringify({ command: [process.execPath, '-e', 'process.exit(0)'], timeout: 30 })]);
+  f.h.ok(['check', 'ci', 'T1']);
+  f.h.ok(['accept', 'T1', '--waive', 'review', '--reason', 'offline fixture']);
+  f.accept('T2');
+  f.h.git(['commit', '--allow-empty', '-qm', 'main moved']);
+  f.h.git(['push', 'origin', 'main']);
+  f.write((d) => {
+    Object.assign(d.prs[12], { state: 'MERGED', mergeCommit: { oid: 'd'.repeat(40) } });
+    d.calls = [];
+  });
+  const confirmed = f.h.json(['merge', 'T2']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.match(confirmed.summary, /was already merged/);
+  assert.ok(f.read().calls.every((c) => c.args[0] === 'pr' && c.args[1] === 'view'),
+    'confirmation reads only the PR, so the lower receipt base is not compared');
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.some((e) => e.type === 'merge'), false, 'the lower task gets no merge evidence');
+});
+
+test('confirming a merged stack member records evidence for it alone, not for merged lower members', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => {
+    Object.assign(d.prs[11], { state: 'MERGED', mergeCommit: { oid: 'c'.repeat(40) } });
+    Object.assign(d.prs[12], { state: 'MERGED', mergeCommit: { oid: 'd'.repeat(40) } });
+    d.calls = [];
+  });
+  const confirmed = f.h.json(['merge', 'T2']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.some((e) => e.type === 'merge'), false, 'the merged lower task gets no receipt from the upper confirmation');
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.ok(f.read().calls.every((c) => c.args[0] === 'pr' && c.args[1] === 'view'));
 });
 
 test('local CI covers each dependency base and merge rechecks lower receipts', (t) => {
