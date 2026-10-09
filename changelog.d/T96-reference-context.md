@@ -1,0 +1,1 @@
+- Model lint exempts imports and file-reference sites rather than harness-like words. Model/profile values remain checked even when they match module or plugin filenames. Test-only labels avoid looking like model IDs.

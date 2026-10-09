@@ -102,7 +102,7 @@ test('research web MCP stays owner guarded alongside personal provider fallbacks
   assert.deepEqual(h.json(['ladder', 'show']).ladder.research.fallbacks, fallbacks);
 });
 
-test('research web MCP inheritance remains Claude-only and refuses additional MCP servers', (t) => {
+test('research web MCP inheritance requires Claude and refuses additional MCP servers', (t) => {
   const h = makeRepo(t);
   h.init();
   const server = { name: 'harness-web', command: 'node', args: ['/web/server.mjs'] };

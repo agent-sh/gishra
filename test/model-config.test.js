@@ -8,9 +8,6 @@ const cp = require('node:child_process');
 const { createRequire } = require('node:module');
 const { ROOT, makeRepo, makeProjectRepo, makeTaskRepo, cachedFixture, fixtureLadder } = require('./helpers');
 
-// Harness file names are not model selections.
-const harnessNames = new Set(['claude-plugin', 'claude-config', 'claude-error', 'claude-global',
-  'claude-only', 'claude-provider', 'claude-provider.js', 'claude-provider.test.js', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
 const aliasWords = Object.keys(require('../lib/ladder').BUILTIN.claude_aliases || {})
   .map(alias => alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
 const selections = new RegExp(String.raw`\b(?:claude-[\w.-]+|gpt-[\w.-]+|opus|sonnet|haiku|sol|luna|astra${aliasWords ? '|' + aliasWords : ''})\b`, 'gi');
@@ -22,6 +19,40 @@ const requestLiteral = "(['\"`])([^'\"`]+)\\1";
 // Only literal requests are resolved; module bodies are never executed.
 const importCall = new RegExp(String.raw`\b(?:require${importSpace}(?:\.${importSpace}resolve${importSpace})?|import${importSpace})\(${importSpace}` + requestLiteral, 'g');
 const staticImport = new RegExp(String.raw`\b(?:from|import)${importSpace}` + requestLiteral, 'g');
+
+function maskReferences(file, text) {
+  const blank = value => value.replace(/[^\r\n]/g, ' ');
+  const pathValue = value => typeof value === 'string' && (/[\\/]/.test(value) || /\.[a-z\d]+$/i.test(value));
+  // These expressions construct paths; their arguments are file references.
+  text = text.replace(/\bpath(?:\.(?:posix|win32))?\.(?:join|resolve)\([^()\r\n]*\)/g, (value, offset) => {
+    if (/\b(?:model|profile)["']?\s*[:=]\s*$/.test(text.slice(0, offset)) || /\b(?:model|profile)["']?\s*:/.test(value)) return value;
+    return blank(value);
+  });
+  if (file === 'test/usage.test.js') {
+    text = text.replace(/\b(?:text|fixture)\(\s*(['"])[^'"]+\1\s*\)/g, blank);
+  }
+  // Package manifests, pack receipts and captured cwd/log fields name files.
+  text = text.replace(/["'](?:path|cwd|log)["']\s*:\s*(['"])([^'"]+)\1/g,
+    (value, quote, path) => pathValue(path) ? blank(value) : value);
+  text = text.replace(/["'](?:files|tests)["']\s*:\s*(\[[^\]]*\])/g, (value, list) => {
+    try {
+      const paths = JSON.parse(list);
+      if (paths.every(pathValue)) return blank(value);
+    } catch { /* A nonliteral collection cannot be certified as file references. */ }
+    return value;
+  });
+  text = text.replace(/\bfor\s*\(\s*const\s+file\s+of\s+(\[[^\]]*\])\s*\)/g, (value, list) => {
+    const remainder = list.slice(1, -1).replace(/(['"])[^'"]*\1/g, '');
+    return /^[\s,]*$/.test(remainder) ? blank(value) : value;
+  });
+  if (file === 'tools/tests-map.json') {
+    const table = JSON.parse(text);
+    const references = Object.entries(table).every(([pattern, tests]) =>
+      pathValue(pattern) && Array.isArray(tests) && tests.every(test => test.startsWith('test/') && test.endsWith('.test.js')));
+    if (references) return blank(text);
+  }
+  return text;
+}
 
 function documentaryJSON(file, text) {
   if (!researchDocuments.has(file)) return false;
@@ -93,24 +124,31 @@ function modelSelections(root, env = process.env) {
   const files = cp.execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
     { cwd: root, env, encoding: 'utf8' }).split('\0').filter(Boolean);
   const importedJSON = new Set();
+  const sourceText = new Map();
   for (const file of new Set(files)) {
     if (!/\.(?:cjs|mjs|js)$/.test(file)) continue;
-    const text = fs.readFileSync(path.join(root, file), 'utf8');
+    let text = fs.readFileSync(path.join(root, file), 'utf8');
     const resolve = createRequire(path.resolve(root, file)).resolve;
+    const references = [];
     for (const match of [...text.matchAll(importCall), ...text.matchAll(staticImport)]) {
       try {
         const imported = resolve(match[2]);
         if (path.extname(imported) === '.json') importedJSON.add(path.relative(root, imported).split(path.sep).join('/'));
+        references.push([match.index, match.index + match[0].length]);
       } catch {
         // An unresolved request cannot load a documentary record.
       }
     }
+    for (const [start, end] of references.sort((a, b) => b[0] - a[0])) {
+      text = text.slice(0, start) + text.slice(start, end).replace(/[^\r\n]/g, ' ') + text.slice(end);
+    }
+    sourceText.set(file, text);
   }
   const violations = [];
   for (const file of new Set(files)) {
     if ((file.startsWith('docs/') && file !== 'docs/cli.md') || file === 'README.md' || file === 'CHANGELOG.md'
       || file.startsWith('changelog.d/') || file === 'test/fixtures/usage/README.md') continue;
-    let text = fs.readFileSync(path.join(root, file), 'utf8');
+    let text = sourceText.get(file) ?? fs.readFileSync(path.join(root, file), 'utf8');
     if (!importedJSON.has(file) && documentaryJSON(file, text)) continue;
     if (file === 'docs/cli.md') {
       // API JSON examples use fixture selections; configuration prose keeps real IDs.
@@ -123,10 +161,10 @@ function modelSelections(root, env = process.env) {
     if (file === 'lib/ladder.js') {
       text = text.replace(/const BUILTIN = \{[\s\S]*?\n\};/, block => block.replace(/[^\n]/g, ' '));
     }
+    text = maskReferences(file, text);
     // The lint's vocabulary names the selections it rejects.
     if (file === 'test/model-config.test.js') text = text.replace(/^const selections = .*$/m, '');
     for (const match of text.matchAll(selections)) {
-      if (harnessNames.has(match[0].toLowerCase())) continue;
       const line = text.slice(0, match.index).split('\n').length;
       violations.push(`${file}:${line}: ${match[0]}`);
     }
@@ -137,14 +175,41 @@ function modelSelections(root, env = process.env) {
 test('model lint allows harness module paths and rejects model selections', (t) => {
   const h = makeRepo(t);
   const file = path.join(h.repo, 'selection.js');
-  fs.writeFileSync(file, "require('../lib/claude-provider.js');\n");
-  fs.writeFileSync(path.join(h.repo, 'test-map.json'), JSON.stringify({ tests: ['test/claude-provider.test.js'] }));
+  fs.mkdirSync(path.join(h.repo, 'lib'));
+  const module = 'claude-' + 'provider.js';
+  fs.writeFileSync(path.join(h.repo, 'lib', module), 'module.exports = {};\n');
+  const request = './lib/' + module;
+  fs.writeFileSync(file, 'require(' + JSON.stringify(request) + ');\n');
+  fs.writeFileSync(path.join(h.repo, 'test-map.json'), JSON.stringify({ tests: ['test/' + 'claude-' + 'provider.test.js'] }));
   assert.deepEqual(modelSelections(h.repo, h.env), []);
   const ids = [['claude', 'fixture-2099'].join('-'), ['gpt', 'fixture-2099'].join('-'), ['as', 'tra'].join('')];
   for (const id of ids) {
-    fs.writeFileSync(file, `require('../lib/claude-provider.js');\nconst selection = '${id}';\n`);
+    fs.writeFileSync(file, 'require(' + JSON.stringify(request) + ');\n' + `const selection = '${id}';\n`);
     assert.deepEqual(modelSelections(h.repo, h.env), [`selection.js:2: ${id}`]);
   }
+});
+
+test('harness-like names are rejected as runtime model and profile values', (t) => {
+  const h = makeRepo(t);
+  fs.mkdirSync(path.join(h.repo, 'lib'));
+  const file = path.join(h.repo, 'lib', 'runtime-selection.js');
+  const names = ['global', 'config', 'provider', 'plugin', 'error', 'only',
+    'provider.js', 'provider.test.js', 'result.json', 'print-result.json', 'scratch-2026-10-06']
+    .map(suffix => 'claude-' + suffix);
+  for (const name of names) for (const key of ['model', 'profile']) {
+    fs.writeFileSync(file, 'module.exports = ' + JSON.stringify({ harness: 'claude', [key]: name }) + ';\n');
+    assert.deepEqual(modelSelections(h.repo, h.env), [`lib/runtime-selection.js:1: ${name}`]);
+  }
+  for (const value of ['lib/' + names[6], 'test/' + names[7], '.' + names[3] + '/plugin.json']) {
+    fs.writeFileSync(file, 'module.exports = ' + JSON.stringify({ model: value }) + ';\n');
+    assert.equal(modelSelections(h.repo, h.env).length, 1, value);
+  }
+  for (const config of [{ tests: [{ model: names[0] }] }, { files: [{ profile: names[0] }] }]) {
+    fs.writeFileSync(file, 'module.exports = ' + JSON.stringify(config) + ';\n');
+    assert.deepEqual(modelSelections(h.repo, h.env), [`lib/runtime-selection.js:1: ${names[0]}`]);
+  }
+  fs.writeFileSync(file, 'const model = path.join("lib", ' + JSON.stringify(names[6]) + ');\n');
+  assert.deepEqual(modelSelections(h.repo, h.env), [`lib/runtime-selection.js:1: ${names[6]}`]);
 });
 
 test('model lint rejects every shipped Claude alias in runtime selections', (t) => {
