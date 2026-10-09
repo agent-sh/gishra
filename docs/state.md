@@ -630,8 +630,9 @@ commit without merging again, including after an executor dies before
 writing its receipt. A PR GitHub reports merged at the accepted head needs
 no current gate evidence or CI receipt base, so tasks accepted before merge
 evidence existed are confirmed rather than refused. Stack members follow the
-same path. Confirmation runs no merge, retarget or stack sync, and writes no
-receipts for other tasks.
+same path: confirmation reads only the member's own PR, runs no merge, retarget
+or stack sync, writes no receipts for other tasks, and an open lower PR does
+not block it.
 The confirmation lookup validates merge text and method before calling
 GitHub. Failed current gates permit this read-only lookup; an open PR still
 requires passing gates. Confirmation evidence records the lookup that
