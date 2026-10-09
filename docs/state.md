@@ -682,6 +682,8 @@ permits a `MERGEABLE` PR whose merge state is `UNSTABLE`.
 The command reports each task's merge, confirmation or refusal from the
 queue and its recorded evidence, without fetching inbox findings. JSON
 contains `results: [{task, ok, summary}]` and `remaining: [{task, reason}]`.
+A skipped stack entry's refusal reason is reported for every unmerged
+member, including the lower task whose PR or gates blocked the entry.
 `queue skipped` records `{sha, revision, reason}` on that task once per
 sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain

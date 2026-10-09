@@ -279,6 +279,7 @@ drains the queue through the same reserved merge path as `merge ID`.
 An unobservable executor refuses with its PID and host. Each task reports
 its merge or confirmation summary, refusal or pending reason. JSON returns
 `results` with `{task, ok, summary}` and `remaining` with `{task, reason}`.
+A skipped stack entry reports its refusal reason for every unmerged member.
 `MERGEABLE` PRs with an `UNSTABLE` merge state use the same passing CI
 evidence and `ci.capped_review` policy as a single merge.
 Merge text and method are validated before any GitHub call. Current gates do

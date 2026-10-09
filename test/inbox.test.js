@@ -363,6 +363,14 @@ test('accepted batch routes linked members through pinned stack merges', (t) => 
   f.accept('T1');
   f.accept('T2');
   f.write((d) => { for (const pr of Object.values(d.prs)) Object.assign(pr, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
+  f.write((d) => { d.prs[11].state = 'CLOSED'; });
+  const refused = f.h.run(['merge', '--accepted', '--agent', 'orchestrator', '--json']);
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+  const remaining = JSON.parse(refused.stdout).remaining;
+  assert.deepEqual(remaining.map((r) => r.task), ['T1', 'T2']);
+  for (const entry of remaining) assert.match(entry.reason, /T1: PR #11 is CLOSED/);
+  assert.equal(f.read().calls.filter((c) => c.args.includes('POST') && c.args[1].endsWith('/merge-async')).length, 0);
+  f.write((d) => { d.prs[11].state = 'OPEN'; });
   const result = f.h.run(['merge', '--accepted', '--agent', 'orchestrator']);
   assert.equal(result.code, 0, result.stdout + result.stderr);
   const merges = f.read().calls.filter((c) => c.args[0] === 'api' && c.args.includes('POST') && c.args[1].endsWith('/merge-async'));
