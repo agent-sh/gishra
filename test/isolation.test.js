@@ -516,6 +516,45 @@ test('sandbox owner-key denials use the project binding after the caller changes
   }
 });
 
+test('unbound projects spawn workers and reviewers with owner-key denials but still refuse headless owner access', { skip: NO_STUBS }, (t) => {
+  for (const harness of ['claude', 'codex']) {
+    const { h, u } = setup(t);
+    for (const rung of ['easy', 'medium', 'hard', 'review']) isolated(h, rung, harness);
+    h.ok(['task', 'update', 'T1', '--kind', 'docs']);
+    const project = h.readState('project.json');
+    delete project.owner_config_dir;
+    h.writeState('project.json', project);
+    const callerConfig = harness === 'claude' ? path.join(h.base, 'caller-config', 'config.json') : '';
+    const env = { TOWER_CRANE_AGENT: 'orchestrator', TOWER_CRANE_CONFIG: callerConfig };
+    const configDir = callerConfig ? path.dirname(callerConfig) : path.join(u.home, '.config', 'tower-crane');
+    const ownerDir = path.join(configDir, 'owner');
+    assert.equal(fs.existsSync(ownerDir), false);
+    for (const role of ['hard', 'review']) {
+      if (role === 'review') {
+        const opts = { env: { TOWER_CRANE_AGENT: 'builder' } };
+        h.ok(['claim', 'T1', '--agent', 'builder'], opts);
+        h.ok(['submit', 'T1', '--sha', h.git(['rev-parse', 'HEAD']), '--agent', 'builder'], opts);
+      }
+      spawn(h, u, role, env);
+      assert.ok(fs.statSync(ownerDir).isDirectory());
+      const seen = u.report();
+      if (harness === 'claude') {
+        assert.ok(seen.settings.sandbox.filesystem.denyRead.includes(ownerDir));
+        const posix = ownerDir.split(path.sep).join('/');
+        for (const tool of ['Read', 'Grep', 'Glob']) {
+          assert.ok(seen.settings.permissions.deny.includes(`${tool}(/${posix}/**)`));
+        }
+      } else {
+        assert.equal(seen.config.permissions['tower-crane'].filesystem[ownerDir], 'none');
+      }
+      assert.equal(h.readState('project.json').owner_config_dir, undefined);
+    }
+    const denied = h.run(['project', 'show']);
+    assert.equal(denied.code, 1, denied.stderr);
+    assert.match(denied.stderr, /project.json has no valid owner_config_dir/);
+  }
+});
+
 test('a spawned codex agent is pointed at the user\'s global rules, loads none of the user memory, instructions, MCP servers or rules, and reaches auth through a link', { skip: NO_STUBS }, (t) => {
   const { h, u } = setup(t);
   isolated(h, 'small', 'codex');
@@ -614,8 +653,13 @@ test('browser tasks attach the user kit on every rung with approved tools and no
       for (const role of roles) {
         isolated(h, role, harness);
         const dry = h.json(['spawn', '--role', role, '--task', 'T1', '--dry-run'], { env: u.env });
-        assert.deepEqual(dry.home.mcp, ['playwright'], `${harness} ${role} ${declaration}`);
-        if (harness === 'claude') assert.match(dry.argv[dry.argv.indexOf('--allowedTools') + 1], /mcp__playwright/);
+        const servers = role === 'orchestrator' ? ['playwright', 'tower-crane'] : ['playwright'];
+        assert.deepEqual(dry.home.mcp, servers, `${harness} ${role} ${declaration}`);
+        if (harness === 'claude') {
+          const allowed = dry.argv[dry.argv.indexOf('--allowedTools') + 1];
+          assert.match(allowed, /mcp__playwright/);
+          assert.equal(allowed.includes('mcp__tower-crane'), role === 'orchestrator');
+        }
       }
     }
     const started = spawn(h, u, 'hard');

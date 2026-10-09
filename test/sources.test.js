@@ -194,6 +194,7 @@ test('the source fetch refuses non-public addresses and redirects before connect
 test('research kind requires sources and citation review on every tier, including after a tier move', async (t) => {
   const { h, submit } = await fixture(t, 'easy');
   const sha = submit();
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha]);
   const tiers = ['easy', 'medium', 'hard', 'research'];
   for (const tier of tiers) {
@@ -227,6 +228,7 @@ test('sources gate follows research kind when kind changes without moving the ta
   h.ok(['claim', 'T1', '--agent', 'worker']);
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha]);
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha]);
   assert.equal(h.json(['task', 'show', 'T1']).tier, 'medium');
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, false);
