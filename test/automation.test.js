@@ -126,6 +126,20 @@ fs.writeFileSync('generated.txt', rows + '\\n');
   return h;
 }
 
+test('generated mappings recognize only declared paths, including names shared with object properties', async () => {
+  const G = require('../lib/generated-conflicts');
+  for (const [pkg, names] of [
+    [{}, []],
+    [{ scripts: { generate: 'node generate.js' }, 'tower-crane': { generated: { 'docs/cli.md': 'generate' } } }, ['docs/cli.md']],
+    [{ scripts: { generate: 'node generate.js' }, 'tower-crane': { generated: { constructor: 'generate', toString: 'generate' } } }, ['constructor', 'toString']],
+  ]) {
+    const config = await G.configuration({ exec: () => ({ status: 0, stdout: JSON.stringify(pkg) }) }, 'repo', 'base');
+    assert.deepEqual(Object.keys(config), names);
+    assert.equal(config.__proto__, undefined);
+    for (const name of ['constructor', 'toString']) if (!names.includes(name)) assert.equal(config[name], undefined);
+  }
+});
+
 test('generated-only conflicts merge, regenerate and push without rework or a worker', (t) => {
   const h = generatedSetup(t);
   h.submit();
@@ -165,6 +179,33 @@ test('a sole docs conflict regenerates every declared output of its script', (t)
   const receipt = h.logs().find((e) => e.cmd === 'generated merge' && e.detail.phase === 'prepared');
   assert.deepEqual(receipt.detail.generated, ['docs/cli.md']);
   assert.equal(h.logs().some((e) => e.cmd === 'rework' || e.cmd === 'spawn'), false);
+});
+
+test('an accepted generated-only conflict returns to submitted with old review kept historical', (t) => {
+  const h = generatedSetup(t);
+  const github = h.github();
+  Object.assign(github.prs['7'], { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' });
+  github.ci[h.sha] = 'success';
+  h.saveGithub(github);
+  h.submit();
+  for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'orchestrator');
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['accept', 'T1', '--agent', 'orchestrator']);
+  const accepted = h.readState('tasks.json').tasks[0];
+  assert.equal(accepted.status, 'accepted');
+  const conflicting = h.github();
+  Object.assign(conflicting.prs['7'], { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' });
+  h.saveGithub(conflicting);
+  h.consume();
+  const repaired = h.readState('tasks.json').tasks[0];
+  assert.equal(repaired.status, 'submitted');
+  assert.notEqual(repaired.sha, h.sha);
+  assert.equal(repaired.revision, accepted.revision);
+  assert.equal(repaired.submitted_by, 'worker');
+  assert.ok(repaired.evidence.some((e) => e.type === 'review' && e.sha === h.sha));
+  assert.equal(repaired.evidence.some((e) => e.type === 'review' && e.sha === repaired.sha), false);
+  assert.equal(h.logs().some((e) => e.cmd === 'rework'), false);
 });
 
 test('mixed conflicts keep a prepared merge with generated files staged and only hand-written files unresolved', (t) => {
