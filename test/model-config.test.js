@@ -26,20 +26,21 @@ function maskReferences(file, text) {
   if (file === 'test/usage.test.js') {
     text = text.replace(/\b(?:text|fixture)\(\s*(['"])[^'"]+\1\s*\)/g, blank);
   }
-  // Package manifests, pack receipts and captured cwd/log fields name files.
-  text = text.replace(/["'](?:path|cwd|log)["']\s*:\s*(['"])([^'"]+)\1/g,
-    (value, quote, path) => pathValue(path) ? blank(value) : value);
-  text = text.replace(/["'](?:files|tests)["']\s*:\s*(\[[^\]]*\])/g, (value, list) => {
-    try {
-      const paths = JSON.parse(list);
-      if (paths.every(pathValue)) return blank(value);
-    } catch { /* A nonliteral collection cannot be certified as file references. */ }
-    return value;
-  });
-  text = text.replace(/\bfor\s*\(\s*const\s+file\s+of\s+(\[[^\]]*\])\s*\)/g, (value, list) => {
-    const remainder = list.slice(1, -1).replace(/(['"])[^'"]*\1/g, '');
-    return /^[\s,]*$/.test(remainder) ? blank(value) : value;
-  });
+  // Only these established metadata records assign file-reference meaning.
+  if (file === 'test/fixtures/npm-pack/npm-11.json' || file === 'test/fixtures/npm-pack/npm-12.json') {
+    text = text.replace(/"path"\s*:\s*"([^"]+)"/g, (value, path) => pathValue(path) ? blank(value) : value);
+  }
+  if (file === 'test/fixtures/live-slots-2026-10-07.jsonl') {
+    text = text.replace(/"(?:cwd|log)"\s*:\s*"([^"]+)"/g, (value, path) => pathValue(path) ? blank(value) : value);
+  }
+  if (file === 'package.json') {
+    text = text.replace(/"files"\s*:\s*(\[[^\]]*\])/g, (value, list) => {
+      try {
+        if (JSON.parse(list).every(pathValue)) return blank(value);
+      } catch { /* Invalid metadata remains visible to the guard. */ }
+      return value;
+    });
+  }
   if (file === 'tools/tests-map.json') {
     const table = JSON.parse(text);
     const references = Object.entries(table).every(([pattern, tests]) =>
@@ -175,7 +176,10 @@ test('model lint allows harness module paths and rejects model selections', (t) 
   fs.writeFileSync(path.join(h.repo, 'lib', module), 'module.exports = {};\n');
   const request = './lib/' + module;
   fs.writeFileSync(file, 'require(' + JSON.stringify(request) + ');\n');
-  fs.writeFileSync(path.join(h.repo, 'test-map.json'), JSON.stringify({ tests: ['test/' + 'claude-' + 'provider.test.js'] }));
+  fs.mkdirSync(path.join(h.repo, 'tools'));
+  fs.writeFileSync(path.join(h.repo, 'tools', 'tests-map.json'), JSON.stringify({
+    ['lib/' + module]: ['test/' + 'claude-' + 'provider.test.js'],
+  }));
   assert.deepEqual(modelSelections(h.repo, h.env), []);
   const ids = [['claude', 'fixture-2099'].join('-'), ['gpt', 'fixture-2099'].join('-'), ['as', 'tra'].join('')];
   for (const id of ids) {
@@ -219,6 +223,20 @@ test('path constructors do not exempt literal model IDs through indirection or c
   ]) {
     fs.writeFileSync(file, source);
     assert.deepEqual(modelSelections(h.repo, h.env), [`selection.js:1: ${id}`]);
+  }
+});
+
+test('path properties and file loop variables do not exempt runtime model literals', (t) => {
+  const h = makeRepo(t);
+  const file = path.join(h.repo, 'selection.js');
+  const id = ['gpt', 'probe-2099'].join('-');
+  for (const source of [
+    'const selected = ' + JSON.stringify({ path: 'openai/' + id }) + '; module.exports = { model: selected.path };\n',
+    'for (const file of [' + JSON.stringify(id) + ']) { module.exports = { model: file }; }\n',
+    'module.exports = ' + JSON.stringify({ files: ['openai/' + id], tests: ['openai/' + id] }) + ';\n',
+  ]) {
+    fs.writeFileSync(file, source);
+    assert.ok(modelSelections(h.repo, h.env).some(value => value === `selection.js:1: ${id}`), source);
   }
 });
 
