@@ -248,6 +248,36 @@ test('an asynchronous stack merge into another base stops before the upper PR is
   assert.match(merges[0].args[1], /pulls\/11\/merge-async$/);
 });
 
+for (const finalRead of [false, true]) {
+  test(`an asynchronous merge into the dependency branch stays failed and retains the lower merge${finalRead ? ' on the final read' : ''}`, (t) => {
+    const f = stacked(t);
+    f.accept('T1');
+    f.accept('T2');
+    f.write((d) => {
+      d.moveOnMerge = { pr: 12, base: f.lower.branch, onPr: 12 };
+      if (finalRead) d.asyncResponses = { 12: { views: [{ body: { ...d.prs[12], state: 'MERGED', baseRefName: 'main' } }] } };
+    });
+    const r = f.h.run(['merge', 'T2', '--agent', 'orchestrator', '--json']);
+    const landed = f.read().prs[12];
+    assert.equal(landed.state, 'MERGED');
+    assert.equal(landed.baseRefName, f.lower.branch);
+    assert.equal(f.h.git(['ls-remote', 'origin', `refs/heads/${f.lower.branch}`]).split(/\s/)[0], landed.mergeCommit.oid);
+    assert.ok(f.h.git(['show', '-s', '--format=%P', landed.mergeCommit.oid]).split(' ').includes(f.upper.sha));
+    assert.equal(r.code, 1, r.stdout);
+    const report = JSON.parse(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.ref, landed.mergeCommit.oid);
+    assert.ok(report.summary.includes(`into ${f.lower.branch}`), report.summary);
+    if (!finalRead) assert.ok(report.summary.includes(`PR #12 merged into ${f.lower.branch}`), report.summary);
+    assert.match(report.summary, /expected main/);
+    const lower = f.h.json(['task', 'show', 'T1', '--agent', 'orchestrator']);
+    const upper = f.h.json(['task', 'show', 'T2', '--agent', 'orchestrator']);
+    assert.equal(lower.evidence.findLast((e) => e.type === 'merge').ok, true);
+    assert.equal(upper.evidence.findLast((e) => e.type === 'merge').ok, false);
+    assert.equal(upper.evidence.some((e) => e.type === 'merge' && e.ok), false);
+  });
+}
+
 test('a partially merged stack retries on the project base and refuses an unrelated base', (t) => {
   const f = stacked(t);
   f.accept('T1');
