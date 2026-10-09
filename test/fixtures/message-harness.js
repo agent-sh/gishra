@@ -51,7 +51,8 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   if (harness === 'claude' && process.env.MESSAGE_HEADLESS) {
-    // Stop is asked twice, so the test shows the hold is taken once.
+    // Stop is asked twice, so the test shows the hold is taken once. A resumed
+    // turn reports, then ends with an empty final message.
     const mode = process.env.MESSAGE_HEADLESS;
     const settings = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json')));
     const hookWith = (name, body) => {
@@ -63,11 +64,12 @@ async function main() {
     };
     const background = ['background', 'submitted'].includes(mode);
     const report = mode === 'silent' ? '' : 'last report from claude';
+    const reports = mode === 'resumed' ? ['last report from claude', ''] : [report, report];
     if (background) out.turns.push(hookWith('PostToolUse', {
       tool_name: 'Bash', tool_input: { command: 'gh pr checks 1 --watch', run_in_background: true },
     }));
     if (mode === 'submitted') cli('submit', 'T1', '--sha', 'abcdef1');
-    out.stops = [0, 1].map(() => hookWith('Stop', { last_assistant_message: report }));
+    out.stops = reports.map((last) => hookWith('Stop', { last_assistant_message: last }));
     out.blocked = out.stops.some((stop) => stop.decision === 'block');
     fs.writeFileSync(process.env.MESSAGE_OUT, JSON.stringify(out));
     return;
