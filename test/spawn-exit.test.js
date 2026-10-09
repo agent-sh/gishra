@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const cp = require('node:child_process');
 const { cachedFixture, BIN, runPty, PTY_AVAILABLE } = require('./helpers');
 
 const PRIVATE_LOG = 'prompt: synthetic private instruction\ncredential: synthetic-secret-for-recovery-test';
@@ -132,6 +133,26 @@ test('a killed spawned claimant is reported with its log tail and released for r
   const replacement = await start(t, h);
   assert.notEqual(replacement.agent, spawned.agent);
   assert.deepEqual(h.json(['ready']).exited_claims, [], 'the replacement is alive');
+});
+
+test('teardown observes a monitor exit recorded after its PID snapshot', async (t) => {
+  const h = setup(t);
+  const child = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    detached: true, stdio: 'ignore',
+  });
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  t.after(async () => { child.kill(); await closed; });
+  const dir = path.join(h.base, 'detached');
+  fs.mkdirSync(dir);
+  const file = path.join(dir, `${child.pid}.json`);
+  fs.writeFileSync(file, JSON.stringify({ pid: child.pid, kind: 'monitor' }));
+  const snapshot = h.detached();
+  assert.equal(snapshot[0].exited, undefined);
+  // The stand-in stays alive to represent an unrelated process reusing the PID.
+  fs.writeFileSync(file, JSON.stringify({ pid: child.pid, kind: 'monitor', exited: true }));
+  h.detached = () => snapshot;
+  await h.cleanup();
+  assert.equal(process.kill(child.pid, 0), true, 'teardown killed a reused PID');
 });
 
 test('submitted workers and claims without a matching spawn are not reported', async (t) => {
