@@ -318,6 +318,7 @@ try {
     $monitors += $monitor
   }
   [Console]::Out.WriteLine('ready')
+  $null = [Console]::In.ReadLine()
   $clock = [System.Diagnostics.Stopwatch]::StartNew()
   $survivors = @()
   foreach ($monitor in $monitors) {
@@ -340,7 +341,7 @@ try {
 `;
     const child = cp.spawn('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
-    ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
     let stopped = false;
@@ -349,6 +350,7 @@ try {
       if (!stopped && stdout.split('\n').some((line) => line.trim() === 'ready')) {
         stopped = true;
         for (const worker of children.filter((c) => c.kind === 'worker')) killDetached(worker);
+        child.stdin.end('\n');
       }
     });
     child.stderr.on('data', (data) => { stderr += data; });
