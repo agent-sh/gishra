@@ -20,6 +20,8 @@ Decision delegation (`decision delegate` and `project set --decision-delegation`
 
 If the owner makes the exact requested change directly, the successful write retires matching open or approved requests. A subsequent orchestrator attempt opens a new decision; it cannot use that old approval to overwrite a later owner choice. Failed writes, including acceptance or spawn failures, leave the approval available.
 
+For budgets, retirement matches the requested hours and tokens even if writing them now lowers or repeats the current limit. The owner setting 20, then the approved amount 10, then 5 leaves no approval the orchestrator can reuse to restore 10. Authorization and audit still use the current raise/lower classification.
+
 In a sandboxed claude or codex agent (`TOWER_CRANE_BROKER` set by its spawn), commands that only read, and `worktree` for the worktree spawn made, run as usual, and every other command on the spawn's state directory is sent to the [state broker](ladder.md#state-broker), which runs it as the spawned agent if its role allows it on its own task, and prints its output and exits with its code. A refused command exits 1 and writes nothing, except a refused `msg` (below). The broker refuses `check`: it runs outside the sandbox and never runs the agent's code, so a worker runs its tests directly and the orchestrator runs the gates.
 
 Writes take the lock, re-read the files, validate, write atomically and append to `events.jsonl`. The Git/gh runner refuses commands inside mutation transactions. Rendering follows after the mutation releases its lock and reads current state under its own lock. A refused command writes nothing, except a refused brokered `msg`, which appends a `msg refused` event.

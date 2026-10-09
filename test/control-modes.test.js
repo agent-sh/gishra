@@ -208,6 +208,67 @@ for (const answered of [false, true]) {
   });
 }
 
+for (const field of ['hours', 'tokens']) {
+  for (const unchanged of [false, true]) {
+    test(`an owner ${unchanged ? 'unchanged' : 'lower'} ${field} budget write retires its earlier raise approval`, (t) => {
+      const h = cachedFixture(t, 'budget-requests', h => h.init(['--budget-hours', '5', '--budget-tokens', '5']));
+      const flag = `--budget-${field}`;
+      const args = ['project', 'set', flag, '10'];
+      assert.match(h.run(args, as('orchestrator')).stderr, /opened D1 /);
+      h.ok(['answer', 'D1', '--choice', 'approve']);
+      h.ok(['project', 'set', flag, '20']);
+      const pending = decisions(h)[0];
+      assert.equal(pending.applied, undefined, 'a different amount leaves the approval pending');
+      if (unchanged) {
+        h.ok(args, as('orchestrator'));
+        assert.deepEqual(decisions(h)[0], pending, 'an operational orchestrator write does not act for the owner');
+      }
+      assert.notEqual(h.run([...args, '--workers', '0']).code, 0);
+      assert.deepEqual(decisions(h)[0], pending, 'a failed owner write leaves the approval pending');
+      const before = audits(h).length;
+      h.ok(args);
+      assert.equal(decisions(h)[0].applied?.by, 'owner');
+      assert.deepEqual(audits(h).slice(before).map(e => e.detail), [{
+        command: 'project set', actor: 'owner', mode: 'cli', settings: { 'budget.lower': 'operational' },
+      }]);
+      h.ok(['project', 'set', flag, '5']);
+      assert.match(h.run(args, as('orchestrator')).stderr, /opened D2 /);
+      assert.equal(h.readState('project.json').budget[field], 5, 'an old approval cannot overwrite the later owner budget');
+    });
+  }
+}
+
+test('an owner lower-budget write retires a combined open request with its other owner settings', (t) => {
+  const h = cachedFixture(t, 'budget-requests', h => h.init(['--budget-hours', '5', '--budget-tokens', '5']));
+  const args = ['project', 'set', '--merge-admin', 'true', '--budget-hours', '10', '--budget-tokens', '10'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1 /);
+  h.ok(['project', 'set', '--budget-hours', '20', '--budget-tokens', '20']);
+  h.ok(args);
+  const retired = decisions(h)[0];
+  assert.equal(retired.status, 'answered');
+  assert.equal(retired.applied?.by, 'owner');
+  assert.deepEqual(audits(h).at(-1).detail.settings, { 'merge.admin': 'owner-required', 'budget.lower': 'operational' });
+  h.ok(['project', 'set', '--merge-admin', 'false', '--budget-hours', '5', '--budget-tokens', '5']);
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D2 /);
+  assert.deepEqual(h.readState('project.json').budget, { hours: 5, tokens: 5 });
+  assert.equal(h.readState('project.json').merge.admin, false);
+});
+
+test('operational budget edits remain outside an orchestrator approval for another setting', (t) => {
+  const h = cachedFixture(t, 'budget-requests', h => h.init(['--budget-hours', '5', '--budget-tokens', '5']));
+  const args = ['project', 'set', '--merge-admin', 'true', '--budget-hours'];
+  assert.match(h.run([...args, '3'], as('orchestrator')).stderr, /opened D1 /);
+  assert.deepEqual(decisions(h)[0].escalation, { settings: ['merge.admin'], change: { 'merge-admin': 'true' } });
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  h.ok([...args, '2'], as('orchestrator'));
+  assert.equal(h.readState('project.json').budget.hours, 2);
+  assert.equal(decisions(h)[0].applied.by, 'orchestrator');
+  assert.deepEqual(audits(h).at(-1).detail, {
+    command: 'project set', actor: 'orchestrator', mode: 'cli',
+    settings: { 'merge.admin': 'owner-required', 'budget.lower': 'operational' }, approved_by: 'D1',
+  });
+});
+
 test('the board audits removing a tier range at its current rung just like the CLI', async (t) => {
   const h = makeRepo(t);
   h.init();
