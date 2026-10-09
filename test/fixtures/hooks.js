@@ -444,6 +444,8 @@ if (env.HOOK_PROCESSES_DIR) {
     }
     const child = original.call(this, file, args, options);
     if (options?.detached && child.pid) {
+      const startTime = process.platform === 'win32' && monitor
+        ? require('../windows-process').startTime(child.pid) : undefined;
       let startTicks;
       if (process.platform === 'linux') {
         try {
@@ -454,11 +456,12 @@ if (env.HOOK_PROCESSES_DIR) {
       real.mkdirSync(env.HOOK_PROCESSES_DIR, { recursive: true });
       const trackedFile = path.join(env.HOOK_PROCESSES_DIR, `${child.pid}.json`);
       real.writeFileSync(trackedFile, JSON.stringify({
-        pid: child.pid, startTicks,
+        pid: child.pid, startTicks, startTime,
         kind: monitor ? 'monitor' : 'worker',
       }));
       // A reaped Windows PID can immediately belong to another test's CLI.
-      // The live parent observes worker exit; monitors record their own exit.
+      // The live parent observes worker exit. A monitor's own exit marker
+      // precedes OS termination, so teardown also checks process identity.
       if (!monitor) child.once('exit', () => real.rmSync(trackedFile, { force: true }));
     }
     return child;
