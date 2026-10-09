@@ -313,6 +313,33 @@ test('lower acceptance cannot hide failing current gate evidence', (t) => {
   assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
 });
 
+test('a stack member merged at its accepted head is confirmed without current gates, and nothing above it moves', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
+  const upperBase = f.read().prs[12].baseRefName;
+  const landed = (head) => f.write((d) => {
+    Object.assign(d.prs[11], { state: 'MERGED', headRefOid: head, mergeCommit: { oid: 'c'.repeat(40) } });
+    d.calls = [];
+  });
+  landed('b'.repeat(40));
+  const rejected = f.h.run(['merge', 'T1']);
+  assert.equal(rejected.code, 1, rejected.stderr);
+  assert.match(rejected.stdout, /merged with head b+, not the accepted/);
+  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false, 'a different landed head is refused without a merge');
+  landed(f.sha);
+  const confirmed = f.h.json(['merge', 'T1']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.match(confirmed.summary, /was already merged/);
+  assert.deepEqual(f.read().calls.map((c) => c.args.slice(0, 2)), [['pr', 'view']],
+    'confirmation reads the PR and runs no merge, retarget or stack command');
+  const lower = f.h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'merge');
+  assert.deepEqual(lower.map((e) => e.ok), [false, true], 'the refused landing stays on record beside the confirmation');
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge'), false, 'the upper task keeps no merge evidence');
+  assert.deepEqual([f.read().prs[12].state, f.read().prs[12].baseRefName], ['OPEN', upperBase]);
+});
+
 test('local CI covers each dependency base and merge rechecks lower receipts', (t) => {
   const f = stacked(t);
   f.h.ok(['project', 'set', '--ci-local', JSON.stringify({ command: [process.execPath, '-e', 'process.exit(0)'], timeout: 30 })]);
