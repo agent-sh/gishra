@@ -23,6 +23,7 @@ function reviewedTask(t, kind = 'docs') {
   if (kind === 'code') {
     for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
   }
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '1', '--agent', 'reviewer']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
   return { h, sha };
@@ -62,6 +63,7 @@ for (const status of ['submitted', 'accepted']) {
     assert.match(h.ok(['task', 'show', 'T1']), /review ok .* \(revision 1, does not count\)/);
 
     await reviewSettled(h);
+    h.reviewer('T1', 'new-reviewer', sha);
     h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'new-reviewer']);
     assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
   });
@@ -80,6 +82,7 @@ test('G4: changing a submitted brief invalidates the review at the unchanged sha
   assert.match(h.ok(['task', 'show', 'T1']), /review ok .* \(revision 1, does not count\)/);
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).review_pending, true);
   await reviewSettled(h);
+  h.reviewer('T1', 'new-reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'new-reviewer']);
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
 });
@@ -114,6 +117,7 @@ test('an accepted brief needs explicit rework before edits, and dependents wait 
   assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).review_pending, true);
   assert.equal(h.run(['claim', 'T2', '--agent', 'dependent']).code, 1);
   await reviewSettled(h);
+  h.reviewer('T1', 'new-reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', String(h.json(['task', 'show', 'T1']).revision), '--agent', 'new-reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   h.ok(['claim', 'T2', '--agent', 'dependent']);
@@ -135,6 +139,7 @@ for (const change of ['rework', 'brief']) {
     assert.deepEqual(shown.gates.gates.filter((g) => !g.ok).map((g) => g.type), ['tests', 'clean', 'review']);
     assert.deepEqual(shown.evidence, before.evidence);
     for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
+    h.reviewer('T1', 'new-reviewer', sha);
     h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'new-reviewer']);
     assert.equal(h.json(['accept', 'T1', '--agent', 'orchestrator']).status, 'accepted');
   });
@@ -151,6 +156,7 @@ test('brief edits before submission and identical writes preserve the revision',
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '1', '--agent', 'reviewer']);
   const before = h.json(['task', 'show', 'T1']);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Final brief.\n' });
@@ -209,10 +215,10 @@ setTimeout(() => process.exit(2), 60000).unref();
   });
 }
 
-test('a reviewer spawn did not start names the revision it reviewed, and a stale one does not count', (t) => {
+test('owner review evidence names the revision reviewed, and a stale one does not count', (t) => {
   const { h, sha } = reviewedTask(t);
   h.ok(['brief', 'set', 'T1', '-'], { input: 'Check the link and cover the CLI docs.\n' });
-  const review = (...more) => h.run(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, ...more, '--agent', 'native-reviewer']);
+  const review = (...more) => h.run(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, ...more, '--agent', 'owner']);
 
   const unnamed = review();
   assert.equal(unnamed.code, 1);
@@ -226,6 +232,6 @@ test('a reviewer spawn did not start names the revision it reviewed, and a stale
   const stale = h.json(['task', 'show', 'T1']);
   assert.equal(stale.evidence.at(-1).revision, 1);
   assert.equal(stale.gates.ok, false, 'a review of the old brief cannot pass the new revision');
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'native-reviewer']);
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', '2', '--agent', 'owner']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
 });

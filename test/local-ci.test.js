@@ -44,7 +44,8 @@ fs.writeFileSync(process.argv[2], JSON.stringify({
   h.ok(['task', 'add', '--title', 'local check', '--kind', 'docs', '--acceptance', 'checked']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', h.sha, '--branch', 'local-change', '--pr', '1']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--revision', h.revision('T1'), '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer', h.sha);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   return { log: h.log, command: h.command, sha: h.sha, baseSha: h.baseSha };
 }
 
@@ -130,7 +131,8 @@ test('accept reruns local CI when the submitted head has no receipt', (t) => {
   h.git(['commit', '--allow-empty', '-qm', 'another head with the same tree']);
   const next = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', next]);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', next, '--revision', h.revision('T1'), '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer', next);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', next, '--agent', 'reviewer']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'ci').ok, false);
   h.ok(['accept', 'T1']);
   const evidence = h.json(['task', 'show', 'T1']).evidence.filter((e) => e.type === 'ci');
@@ -232,7 +234,8 @@ test('hosted CI merges without fetching an unavailable origin when ci.local is a
   h.ok(['task', 'add', '--title', 'hosted check', '--kind', 'docs', '--acceptance', 'checked']);
   h.ok(['claim', 'T1', '--agent', 'worker']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', sha, '--branch', 'fixture-change', '--pr', '1']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', h.revision('T1'), '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer', sha);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
   h.ok(['check', 'ci', 'T1']);
   h.ok(['accept', 'T1']);
   fs.renameSync(h.origin, `${h.origin}.offline`);
@@ -287,7 +290,8 @@ test('matching audit copies cannot bind a receipt to another head or tree', (t) 
   h.git(['commit', '--allow-empty', '-qm', 'new head for receipt validation']);
   const next = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--agent', 'worker', '--sha', next]);
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', next, '--revision', h.revision('T1'), '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer', next);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', next, '--agent', 'reviewer']);
   const doc = h.readState('tasks.json');
   const evidence = doc.tasks[0].evidence.findLast((e) => e.type === 'ci');
   const log = path.join(h.state, 'events.jsonl');

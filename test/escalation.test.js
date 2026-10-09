@@ -125,8 +125,9 @@ if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
   h.task = () => h.readState('tasks.json').tasks.find((task) => task.id === 'T1');
   h.openDecisions = () => h.readState('decisions.json').decisions.filter((decision) => decision.status === 'open');
   h.until = (fn, dirs = [h.state, h.base]) => until(t, dirs, () => {
-    if (fn()) return true;
+    // The predicate must see a ceiling the guard saw before rejecting that ceiling.
     const ceiling = h.openDecisions().find((decision) => decision.blocks.includes('T1'));
+    if (fn()) return true;
     if (ceiling) {
       const exit = events(h).findLast((event) => event.cmd === 'spawn exit' && event.task === 'T1');
       const log = exit?.detail.log;
@@ -231,6 +232,19 @@ test('a worker exiting before its attempt record fails the submission wait at th
   assert.ok(events(h).some((event) => event.cmd === 'claim' && event.agent === 'worker-T1-2'));
 });
 
+test('an expected ceiling published between wait reads completes without a false failure', async (t) => {
+  const h = await setup(t, 'top', 'easy..medium');
+  h.ok(['spawn', '--task', 'T1']);
+  await until(t, [h.state, h.base], () => h.openDecisions().length === 1);
+  const readDecisions = h.openDecisions;
+  let reads = 0;
+  // Reproduce a reader just before publication followed by one after publication.
+  t.mock.method(h, 'openDecisions', () => ++reads === 1 ? [] : readDecisions());
+  await h.until(() => h.openDecisions().length === 1);
+  assert.equal(reads, 2);
+  assert.deepEqual(h.readAttempts().map((attempt) => attempt.rung), ['easy', 'medium']);
+});
+
 test('tier ranges start low; invalid and reversed ranges are refused without state writes', async (t) => {
   const h = await setup(t);
   const preview = h.json(['spawn', '--task', 'T1', '--dry-run']);
@@ -274,8 +288,9 @@ for (const trigger of ['exit', 'preclaim', 'stall', 'review']) {
     h.ok(['spawn', '--task', 'T1']);
     if (trigger === 'review') {
       await h.until(() => h.task().status === 'submitted');
-      h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', 'abcdef1', '--agent', 'reviewer']);
-      h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
+      h.reviewer('T1', 'reviewer');
+      h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer']);
+      h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
         '--agent', 'worker-T1-1']);
       assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 0);
       h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
@@ -390,11 +405,12 @@ test('a failed review waits for the monitor to finish cleaning submitted worker 
   const h = await setup(t, 'cleanup');
   h.ok(['spawn', '--task', 'T1']);
   await h.until(() => fs.existsSync(h.attempts + '.ready') && h.task().status === 'submitted');
-  h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
     '--agent', 'reviewer', '--summary', 'wrong result']);
   fs.writeFileSync(h.attempts + '.exit', '');
   await h.until(() => fs.existsSync(h.attempts + '.term'));
-  assert.equal(events(h).filter((e) => e.cmd === 'spawn exit').length, 0);
+  assert.equal(events(h).filter((e) => e.cmd === 'spawn exit' && e.detail.agent === 'worker-T1-1').length, 0);
   h.ok(['recover', 'T1', '--agent', 'orchestrator']);
   assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy', 'the parent exit cannot release a live process group');
   await h.until(() => h.readAttempts().length === 2 && h.task().status === 'submitted');
@@ -409,7 +425,8 @@ test('rework records the review climb before pending worker cleanup finishes', {
   const h = await setup(t, 'cleanup');
   h.ok(['spawn', '--task', 'T1']);
   await h.until(() => fs.existsSync(h.attempts + '.ready') && h.task().status === 'submitted');
-  h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
     '--agent', 'reviewer', '--summary', 'wrong result']);
   h.ok(['rework', 'T1', '--reason', 'correct the reviewed result', '--agent', 'orchestrator']);
   const pending = h.json(['task', 'show', 'T1']);
@@ -562,10 +579,11 @@ test('a later eligible passing review supersedes a failure before worker exit', 
   await h.until(() => h.readAttempts().length === 1);
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', spawn.agent]);
-  h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', sha, '--agent', 'reviewer', '--summary', 'first verdict']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--ok', '--sha', sha, '--agent', 'reviewer', '--summary', 'corrected verdict']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', 'abcdef1', '--agent', 'reviewer']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', sha, '--agent', spawn.agent]);
+  h.reviewer('T1', 'reviewer', sha);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer', '--summary', 'first verdict']);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer', '--summary', 'corrected verdict']);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', 'abcdef1', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', sha, '--agent', spawn.agent]);
   process.kill(spawn.pid, 'SIGKILL');
   await h.until(() => events(h).some((e) => e.cmd === 'spend' && e.detail.source === `spawn:${spawn.agent}`));
   assert.equal(h.json(['task', 'show', 'T1']).tier, 'easy');
@@ -607,7 +625,8 @@ test('a sandboxed reviewer waits for a hidden live worker to exit before climbin
   await h.until(() => h.readAttempts().length === 1);
   const sha = h.git(['rev-parse', 'HEAD']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', spawn.agent]);
-  h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', sha, '--agent', 'reviewer',
+  h.reviewer('T1', 'reviewer', sha);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', sha, '--agent', 'reviewer',
     '--summary', 'wrong result'], {
     hooks: { HOOK_HIDDEN_PIDS: JSON.stringify([spawn.pid, spawn.monitor_pid]) },
   });
@@ -627,6 +646,7 @@ test('a reviewer without permission to create a worker home leaves the climb for
   const h = await setup(t, 'review');
   h.ok(['spawn', '--task', 'T1']);
   await h.until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+  h.reviewer('T1', 'reviewer');
   const homes = path.join(h.state, 'homes');
   fs.chmodSync(homes, 0o500);
   try {
@@ -645,6 +665,7 @@ test('a brokered failed review records the climb and leaves dispatch to its host
   const h = await setup(t, 'review');
   const spawn = h.json(['spawn', '--task', 'T1']);
   await h.until(() => events(h).some((e) => e.cmd === 'spawn exit'));
+  h.reviewer('T1', 'reviewer-T1-1');
   const B = require('../lib/broker');
   const binding = path.join(h.base, 'review-broker', B.FILE);
   const broker = await B.start({
@@ -668,11 +689,11 @@ test('a brokered failed review records the climb and leaves dispatch to its host
     h.ok(['recover', 'T1', '--agent', 'orchestrator']);
     await h.until(() => h.readAttempts().length === 2 && h.task().status === 'submitted');
     const sha = h.git(['rev-parse', 'HEAD']);
-    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha,
-      '--revision', '1', '--agent', 'stale-reviewer']);
+    h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', sha,
+      '--revision', '1', '--agent', 'owner']);
     assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'review').ok, false);
-    h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha,
-      '--revision', '2', '--agent', 'fresh-reviewer']);
+    h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', sha,
+      '--revision', '2', '--agent', 'owner']);
     assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'review').ok, true);
     assert.equal(events(h).filter((e) => e.cmd === 'escalate').length, 1);
   } finally {
@@ -687,7 +708,8 @@ test('a resource lock delays dispatch while retaining the recorded climb for wai
   h.ok(['task', 'update', 'T1', '--lock', 'lab']);
   h.ok(['task', 'add', '--title', 'Hold the lab', '--lock', 'lab', '--acceptance', 'exclusive use']);
   h.ok(['claim', 'T2', '--agent', 'lab-holder']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--revision', h.revision(), '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--fail', '--sha', h.git(['rev-parse', 'HEAD']),
     '--agent', 'reviewer', '--summary', 'wrong result']);
   const task = h.json(['task', 'show', 'T1']);
   assert.equal(task.tier, 'medium');

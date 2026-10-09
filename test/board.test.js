@@ -12,6 +12,7 @@ test.after(closeBrowser);
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const { preserve } = require('../lib/board/identity');
 const { POSITION } = require('../lib/board/position');
+const B = require('../lib/broker');
 
 // A project with something in every column: a decision, an owner task, a
 // claimed task with a message, a submitted task, and work ready and blocked.
@@ -181,12 +182,39 @@ test('the board escapes every text the state holds', (t) => {
   const sha = h.git(['rev-parse', 'HEAD']).trim();
   h.ok(['ask', '--question', 'Pick <script>alert(1)</script>?', '--option', '<b>a</b>', '--option', 'b', '--why', 'why <i>', '--blocks', 'T2']);
   h.ok(['msg', '--to', 'owner', '--task', 'T1', 'look <img src=x onerror=alert(1)>', '--agent', 'w-1']);
-  h.ok(['evidence', 'T5', '--type', 'note', '--ok', '--sha', sha, '--summary', 'note <svg onload=alert(1)>', '--ref', 'https://example.com/x"onmouseover="alert(1)', '--agent', 'rev-2']);
+  h.ok(['evidence', 'T5', '--revision', h.revision('T5'), '--type', 'note', '--ok', '--sha', sha, '--summary', 'note <svg onload=alert(1)>', '--ref', 'https://example.com/x"onmouseover="alert(1)', '--agent', 'rev-2']);
   const page = fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8');
   for (const raw of ['<script>alert(1)', '<b>a</b>', 'why <i>', '<img src=x', '<svg onload', '"onmouseover="']) assert.ok(!page.includes(raw), `${raw} is escaped`);
   assert.match(page, /Pick &lt;script&gt;alert\(1\)&lt;\/script&gt;\?/);
   assert.match(page, /look &lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(page, /href="https:\/\/example\.com\/x&quot;onmouseover=&quot;alert\(1\)"/);
+});
+
+test('review gate pips and ledger ignore unspawned and self-review verdicts', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Docs', '--acceptance', 'reads well', '--kind', 'docs']);
+  h.ok(['claim', 'T1', '--agent', 'worker']);
+  const sha = h.git(['rev-parse', 'HEAD']);
+  h.ok(['submit', 'T1', '--sha', sha, '--agent', 'worker']);
+  const sheet = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article id="T1"[\s\S]*?<\/article>/)[0];
+
+  for (const agent of ['made-up-reviewer', 'worker']) {
+    for (const verdict of ['--ok', '--fail']) {
+      h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', verdict, '--sha', sha, '--agent', agent]);
+      const page = sheet();
+      assert.match(page, /class="pip missing">review<\/span>/, `${agent} ${verdict} leaves review missing`);
+      assert.doesNotMatch(page, /class="pip (?:pass|fail)">review<\/span>/);
+      assert.match(page, /class="nocount">\(does not count: (?:not a spawned reviewer|self-review)\)/);
+      assert.equal(h.json(['task', 'show', 'T1']).gates.gates.find((g) => g.type === 'review').ok, false);
+    }
+  }
+
+  h.reviewer('T1', 'reviewer', sha);
+  for (const [verdict, state] of [['--fail', 'fail'], ['--ok', 'pass']]) {
+    h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', verdict, '--sha', sha, '--agent', 'reviewer']);
+    assert.match(sheet(), new RegExp(`class="pip ${state}">review</span>`));
+  }
 });
 
 test('accepted task gate pips and ledger stop counting tests after the owner changes mode', (t) => {
@@ -199,7 +227,8 @@ test('accepted task gate pips and ledger stop counting tests after the owner cha
   h.ok(['project', 'set', '--tests-mode', 'run-only']);
   gateEvidence(h, 'tests', 'checker');
   gateEvidence(h, 'clean', 'checker');
-  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--revision', h.revision('T1'), '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer', sha);
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
   h.ok(['accept', 'T1']);
   const sheet = () => fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8').match(/<article id="T1"[\s\S]*?<\/article>/)[0];
   assert.match(sheet(), /class="pip pass">tests<\/span>/);
@@ -912,4 +941,21 @@ test('phone gates keep whole names and states in both themes without horizontal 
     assert.equal(gates.fits, true, `gates fit in ${theme}`);
     for (const [label, lines] of gates.cells) assert.equal(lines, 1, `${label} stays whole in ${theme}`);
   }
+});
+
+test('the board shows a refused brokered message as trouble, without its text', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'one', '--acceptance', 'noted']);
+  h.ok(['task', 'add', '--title', 'two', '--acceptance', 'noted']);
+  const job = { state: h.state, task: 'T2', agent: 'worker-T2-1', role: 'worker', cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T2-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const refused = await B.forward(job.broker, ['msg', '--to', 'worker-T1-1', 'text the board must not show'], h.state);
+  assert.equal(refused.code, 1, refused.stderr);
+  const board = require('../lib/board/model').build(require('../lib/state').loadState(h.state));
+  const item = board.history.find((e) => e.cmd === 'msg refused');
+  assert.deepEqual([item.kind, item.tone], ['trouble', 'fault']);
+  assert.match(item.text, /worker-T2-1 tried to message worker-T1-1; the broker refused it/);
+  assert.ok(!JSON.stringify(board).includes('text the board must not show'), 'the board never shows the refused text');
 });

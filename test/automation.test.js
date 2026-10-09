@@ -78,7 +78,8 @@ test('CI completion refreshes a pending or failed receipt at the exact head and 
   const h = setup(t, { ci: 'pending' });
   h.submit();
   h.consume();
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   const bad = h.github();
   bad.ci[h.sha] = 'failure';
   h.saveGithub(bad);
@@ -165,12 +166,15 @@ test('an accepted task with green gates merges in the event reaction without an 
   const h = setup(t);
   h.submit();
   for (const type of ['tests', 'clean', 'ci']) gateEvidence(h, type, 'orchestrator');
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  const spawns = () => h.logs().filter((e) => e.cmd === 'spawn').length;
+  const recorded = spawns();
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   const notification = JSON.parse(h.ok(['wait', '--types', 'merged', '--timeout', '5', '--agent', 'orchestrator']));
   assert.equal(notification.type, 'merged', 'startup catches up accepted PRs and retains its automatic merge event');
   assert.equal(h.github().prs['7'].state, 'MERGED');
-  assert.equal(h.logs().filter((e) => e.cmd === 'spawn').length, 0);
+  assert.equal(spawns(), recorded);
   h.consume();
   assert.equal(h.github().calls.filter((a) => a[1] === 'merge').length, 1);
 });
@@ -189,7 +193,8 @@ test('a merge sends another conflicting PR to rework with real filenames and pre
   github.advanceBase = true;
   h.saveGithub(github);
   h.submit('T2', other, '8');
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   const before = h.git(['status', '--porcelain']);
   h.consume();
   const task = h.readState('tasks.json').tasks[1];
@@ -222,7 +227,8 @@ test('startup reconciles a newly conflicting PR after a merge happened without a
   const ci = h.logs().findLast((e) => e.cmd === 'check ci' && e.task === 'T2');
   assert.ok(h.logs().some((e) => e.cmd === 'automation' && e.detail.source === ci.id && e.detail.phase === 'done'));
 
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   const changed = h.github();
   changed.advanceBase = true;
@@ -257,7 +263,8 @@ test('a matching UNKNOWN head runs submission gates during the same wait', async
   assert.equal(h.github().prs['7'].mergeable, 'MERGEABLE');
   assert.equal(h.logs().filter((e) => e.cmd === 'spawn').length, 0);
   assert.equal(h.github().calls.some((a) => a[1] === 'merge'), false);
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
   const unknown = h.github();
   unknown.prs['7'].mergeable = unknown.prs['7'].mergeStateStatus = 'UNKNOWN';
@@ -327,7 +334,8 @@ test('stale or unknown PR heads and missing review never merge', (t) => {
 test('a completion webhook is only a hint, rejects another repository and ignores stale heads', (t) => {
   const h = setup(t, { kind: 'docs', ci: 'failure' });
   h.submit();
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   const payload = { repository: { full_name: 'acme/demo' }, action: 'completed',
     check_suite: { head_sha: h.sha, status: 'completed', conclusion: 'success' } };
   const deliver = () => h.run(['ci', 'webhook', '-', '--agent', 'orchestrator'], { input: JSON.stringify(payload) });
@@ -467,7 +475,8 @@ for (const reason of ['unknown mergeability', 'transport error']) {
   test(`startup retries ${reason} without a new lifecycle event`, (t) => {
     const h = setup(t, { kind: 'docs' });
     h.submit();
-    h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+    h.reviewer('T1', 'reviewer');
+    h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
     const state = h.github();
     if (reason === 'transport error') state.failView = true;
     else state.prs['7'].mergeable = state.prs['7'].mergeStateStatus = 'UNKNOWN';
@@ -491,7 +500,8 @@ test('startup confirms the accepted head after the executor dies between remote 
   const h = setup(t, { kind: 'docs' });
   h.submit();
   h.ok(['check', 'ci', 'T1', '--agent', 'orchestrator']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   const crash = h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator'],
     { env: { AUTOMATION_CRASH_AFTER_MERGE: '1' } });
@@ -512,7 +522,8 @@ test('a remotely merged different head produces failed merge evidence', (t) => {
   const h = setup(t, { kind: 'docs' });
   h.submit();
   h.ok(['check', 'ci', 'T1', '--agent', 'orchestrator']);
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   const state = h.github();
   state.prs['7'].state = 'MERGED';
@@ -728,8 +739,10 @@ const softwareEvidence = (h, id) => h.readState('tasks.json').tasks.find((x) => 
   .filter((e) => ['tests', 'clean', 'ci'].includes(e.type));
 
 function acceptBoth(h) {
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
-  h.ok(['evidence', 'T2', '--type', 'review', '--sha', h.second, '--revision', h.revision('T2'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.reviewer('T2', 'reviewer');
+  h.ok(['evidence', 'T2', '--revision', h.revision('T2'), '--type', 'review', '--sha', h.second, '--ok', '--agent', 'reviewer']);
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
   h.ok(['accept', 'T2', '--agent', 'orchestrator']);
 }
@@ -739,7 +752,8 @@ test('main moves: a mergeable PR keeps its evidence and merges after one head-of
   const before = softwareEvidence(h, 'T1');
   h.moveMain();
   const suites = h.suites().length;
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.deepEqual(softwareEvidence(h, 'T1'), before, 'a base move reruns no gate and resets no evidence');
   assert.equal(h.github().prs['7'].state, 'MERGED');
@@ -803,7 +817,8 @@ test('a base that moves during the head check gets a new check before the merge'
   const h = queueFixture(t);
   h.moveMain();
   fs.writeFileSync(path.join(h.base, 'move-main-once'), '');
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   const checks = headChecks(h);
   assert.equal(checks.length, 2, 'the check against the old base does not authorize the merge');
@@ -834,10 +849,18 @@ fs.writeFileSync(file, JSON.stringify(gh));
 cli('claim', 'T1', '--agent', 'worker');
 cli('submit', 'T1', '--sha', ${JSON.stringify(replacement)}, '--pr', '7', '--agent', 'worker');
 for (const gate of ['tests', 'clean', 'ci']) cli('check', gate, 'T1', '--agent', 'orchestrator');
-cli('evidence', 'T1', '--type', 'review', '--sha', ${JSON.stringify(replacement)}, '--revision', cli('task', 'show', 'T1', '--agent', 'orchestrator').match(/revision: (\\d+)/)[1], '--ok', '--agent', 'reviewer');
+const events = ${JSON.stringify(path.join(h.state, 'events.jsonl'))};
+const revision = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(h.state, 'tasks.json'))}, 'utf8')).tasks.find((x) => x.id === 'T1').revision;
+const at = new Date().toISOString();
+fs.appendFileSync(events, [
+  { at, agent: 'orchestrator', cmd: 'spawn', task: 'T1', detail: { agent: 'reviewer', role: 'reviewer', rung: 'review', sha: ${JSON.stringify(replacement)}, revision, pid: 999999, attempt: 1 } },
+  { at, agent: 'orchestrator', cmd: 'spawn exit', task: 'T1', detail: { agent: 'reviewer', pid: 999999, attempt: 1, code: 0 } },
+].map((e) => JSON.stringify(e) + '\\n').join(''));
+cli('evidence', 'T1', '--type', 'review', '--sha', ${JSON.stringify(replacement)}, '--ok', '--agent', 'reviewer');
 cli('accept', 'T1', '--agent', 'orchestrator');
 `);
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the replacement ran during the check');
   assert.deepEqual(headChecks(h).map((e) => [e.detail.sha, e.detail.ok]), [[h.sha, true], [replacement, true]],
@@ -880,7 +903,8 @@ test('a merged-head suite timeout stops the queue without reworking an accepted 
 console.log('# Subtest: test/slow.test.js');
 setTimeout(() => {}, 10000);
 `);
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   const check = headChecks(h).at(-1).detail;
   assert.equal(check.ok, false);
@@ -904,7 +928,8 @@ cp.execFileSync(process.execPath, [${JSON.stringify(BIN)}, 'project', 'set', '--
   { cwd: ${JSON.stringify(h.repo)}, env: ${JSON.stringify(h.env)}, encoding: 'utf8' });
 process.exitCode = 1;
 `);
-  h.ok(['evidence', 'T1', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T1'), '--ok', '--agent', 'reviewer']);
+  h.reviewer('T1', 'reviewer');
+  h.ok(['evidence', 'T1', '--revision', h.revision('T1'), '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
   h.consume();
   assert.equal(fs.existsSync(path.join(h.base, 'during-check.js.ran')), true, 'the settings changed during the check');
   assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted', 'the stale failure sends nothing to rework');

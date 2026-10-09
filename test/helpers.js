@@ -222,7 +222,21 @@ function context(t, base) {
     // The current revision of a task, for review evidence a test records as a reviewer spawn did not start.
     revision: (id = 'T1') => String(ctx.readState('tasks.json').tasks.find((t) => t.id === id).revision),
     writeState: (file, data) => fs.writeFileSync(path.join(ctx.state, file), JSON.stringify(data, null, 2) + '\n'),
+    // Record an exited reviewer dispatch of `agent` for the task's current head
+    // and revision, so that agent's review evidence counts.
+    reviewer: (id, agent, sha) => {
+      const task = ctx.readState('tasks.json').tasks.find((x) => x.id === id);
+      const at = new Date().toISOString();
+      const detail = { agent, role: 'reviewer', rung: 'review', sha: sha || task.sha, revision: task.revision, pid: 999999, attempt: 1 };
+      fs.appendFileSync(path.join(ctx.state, 'events.jsonl'), [
+        { at, agent: 'orchestrator', cmd: 'spawn', task: id, detail },
+        { at, agent: 'orchestrator', cmd: 'spawn exit', task: id, detail: { agent, pid: 999999, attempt: 1, code: 0 } },
+      ].map((e) => `${JSON.stringify(e)}\n`).join(''));
+    },
     git: (args, cwd = repo) => git(args, cwd, env),
+    // Git prints Windows worktree paths with forward slashes, so compare resolved paths.
+    registers: (dir) => ctx.git(['worktree', 'list', '--porcelain']).split(/\r?\n/)
+      .some((line) => line.startsWith('worktree ') && path.resolve(line.slice('worktree '.length)) === path.resolve(dir)),
     init: (extra = []) => ctx.ok(['init', '--name', 'demo', '--goal', 'prove the engine', ...(ctx.gateSettings || []), ...extra]),
   };
   if (t) t.after(ctx.cleanup);
