@@ -6,11 +6,13 @@ Tasks may carry `stack: { parent, base, parent_sha, repo, linked, synced_base }`
 
 A successful `stack link` clears fallback markers for its linked members and restores the stack merge gate, including its refusal of admin merges.
 
+When claim or worker spawn readiness depends on an existing stack PR, Tower Crane queries `gh api repos/OWNER/REPO/stacks` outside the state lock and applies linked-state changes only if the affected task snapshot is unchanged. A confirmed remote chain clears stale disabled markers; a missing remote link is recorded as unlinked for that member's own chain only. An outage marks only members that have a stack record and a PR, so a dependent without a stack record carries no flag; one left by an earlier outage is cleared once its submitted dependency's chain is confirmed. Transient GitHub errors refuse the readiness check without disabling stacks.
+
 For an unlinked dependent whose lower members all have merge evidence, linking retargets its PR to the project base, removes `stack` and `stack_disabled`, and emits `stack complete` with the former parent, new base and PR number. Its sha is unchanged. Rework notes append only to an existing brief; a brief removed during the append is treated as absent.
 
 `github_stack` holds the unmodified `pull_request.stack` object (or the payload's top-level `stack`) from a trusted payload passed to `stack webhook`, or null when the payload has no stack. The repository and PR number must match a known task. Task show and board sheets expose this metadata separately from Tower Crane's local dependency chain. Webhook metadata does not satisfy a gate, change a submitted head, accept a task or prove a merge.
 
-Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, bottom-up asynchronous merge requests (`gh api repos/{owner}/{repo}/pulls/{n}/merge-async --method POST` with `merge_method=merge` and `expected_head_sha`) and their status polls, upper PR retargeting and the confirmations. Merge commits keep every accepted head as an ancestor of the project base; the submitted shas remain unchanged. A refused or queued member stops later merges; confirmed accepted lower members retain successful evidence even when the target fails. Terminal POST or job failures retain their reason across status and PR read errors. Unless the PR is confirmed merged at its accepted head, the failure is reported when the PR is read open or when the confirmation deadline expires. Branches are retained while merging a linked chain. Sync emits `stack sync` events for the affected tasks with `ok`, `head`, the parsed abort `reason`, and `failure` (`conflict`, `tool`, or null on success). A moved branch or an explicit conflict report emits rework and appends its reason to the task's brief. A tooling or transport failure preserves unchanged submissions, claims, briefs, gate evidence and stack metadata; the next refresh retries it. A branch moved before a failed push still requires rework. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack unavailable` and `stack link failed` events.
+Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, bottom-up asynchronous merge requests (`gh api repos/{owner}/{repo}/pulls/{n}/merge-async --method POST` with `merge_method=merge` and `expected_head_sha`) and their status polls, upper PR retargeting and the confirmations. Merge commits keep every accepted head as an ancestor of the project base; the submitted shas remain unchanged. A refused or queued member stops later merges; confirmed accepted lower members retain successful evidence even when the target fails. Terminal POST or job failures retain their reason across status and PR read errors. Unless the PR is confirmed merged at its accepted head, the failure is reported when the PR is read open or when the confirmation deadline expires. Branches are retained while merging a linked chain. Sync emits `stack sync` events for the affected tasks with `ok`, `head`, the parsed abort `reason`, and `failure` (`conflict`, `tool`, or null on success). A moved branch or an explicit conflict report emits rework and appends its reason to the task's brief. A tooling or transport failure preserves unchanged submissions, claims, briefs, gate evidence and stack metadata; the next refresh retries it. A branch moved before a failed push still requires rework. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack readiness`, `stack unavailable` and `stack link failed` events. An open PR whose head GitHub moved after a lower stack merge, the requested task or a dependent above it, records a `stack head` event with its old and new sha and returns to submitted.
 
 Sync holds the state lock only for its initial read and final compare-and-apply. Its gh commands and branch reads, fetches and pushes run unlocked. Application compares project configuration, stack membership, complete member task records and member events against the snapshot, leaving out hook, startup and spawn session receipts, automation reservation receipts and the orchestrator notice a hook stop writes. A difference refuses application without writing sync events, briefs or task records. Writes to unrelated tasks are preserved by applying to freshly read state.
 
@@ -63,6 +65,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd` | operational | `project set --tests-cmd`, `--clean-cmd`, `--tests-proof-cmd`; gate self-pinning below |
 | `gates.executors` | operational | `project set --executors` |
 | `gates.tests_timeout_min`, `gates.clean_timeout_min` | operational | `project set --tests-timeout-min`, `--clean-timeout-min` |
+| `gates.priority` | operational | `gates prioritize ID --reason R`: a task's queued gate reactions run before older queued work |
 | `ci.required`, `ci.ignore_apps`, `ci.capped_review` | operational | `project set --ci-required`, `--ci-ignore-apps`, `--ci-capped-review` |
 | `ci.local` | operational | `project set --ci-local`, `task update --ci-local` |
 | `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `tests.map` | operational | `project set --tests-*` |
@@ -549,6 +552,10 @@ A submitted head can move at any time until acceptance or rework. Reviewers must
 
 The default method is squash. Commit text defaults to the task's `title` and `acceptance.join('\n')`; `merge ID --subject S --body B` overrides either independently without changing task state. Empty bodies and multiline text are preserved. Method `merge` uses the same text options; `rebase` omits them and refuses explicit text overrides. The command verifies the PR head matches the accepted SHA and always passes GitHub's full head SHA as `--match-head-commit`, including admin merges and merges that retain the branch. Merge command receipts record the selected text and options.
 
+The ordinary merge gate refuses cross-repository PRs and a `baseRefName` different from the task's target base (`stack.base` or the project base). In unstacked fallback, every lower task must have merged before the project base becomes the target. Only a PR still targeting its recorded dependency branch may be retargeted, followed by a fresh state, head, repository and base check. Other wrong bases are refused without a PR write. Already-merged confirmation checks the base too, on the plain path and for every stack member, where the dependency branch or the project base is accepted. Summaries name GitHub's reported base; a merge confirmed into another base records failed evidence with the merge commit and asks for inspection of what landed.
+
+For a stack member attempted in the current invocation, final confirmation requires the project base and a successful asynchronous result. The recorded dependency base is accepted only for members confirmed already merged before this invocation's attempts that have no prior audited asynchronous POST for the same repository, PR and accepted head. The gate reads command receipts from all merge events, including attempts recorded under a higher stack task. These receipts bind retries to the project base independently of stack sync. An asynchronous failure stays in the failed stack result; the member gets no successful merge evidence, while valid lower merges retain their own successful evidence.
+
 The standards profile may add gates. `--waive TYPE --reason TEXT` records an owner waiver as evidence; only an explicit `--agent owner` or `TOWER_CRANE_AGENT=owner` can waive. A waiver satisfies its gate. If the accept is still refused, the waiver is not recorded.
 
 ## decisions.json
@@ -628,9 +635,24 @@ identity releases it when the process dies. Running receipts from other
 hosts do not count against this host's cap.
 `automation queued` records a blocked notification's source, with
 `executors` set to the cap when the cap blocked it rather than another
-executor of the same task. Queued notifications run in submission order:
-while one waits, a later notification queues behind it even if a slot is
-free. Each executor drains the queue after releasing its slot; watchers
+executor of the same task. Queued notifications run in drain order: submission
+order, except that the queued notifications a `gates prioritize` event names
+run first, the most recent request first. While one waits, a later
+notification queues behind it even if a slot is free. A notification queued
+after the request keeps submission order.
+`gates prioritize ID --reason R` is operational ([Authority](#authority)); it
+records a `gates prioritize` event with `reason`, `sources` (the sources of
+the task's queued notifications at that moment), `queued` (their count) and
+`authority`. Only those notifications move. It is refused when the task has
+no queued notification, since it would change nothing. A notification queued
+behind the task's own running reaction counts, but the running reaction does
+not: its receipt is running and its executor is live, so it is no longer
+queued. A dead executor's notification stays queued for its retry. `status`
+lists the gate queue: running tasks, then the queued tasks in the order a free
+executor takes them, then the tasks whose notification waits behind their own
+running reaction, marked as blocked. `--json` carries it as `gate_queue` with
+`running`, `queued` and `blocked`, each queued or blocked task with its
+`prioritized` request or `null`. `inbox` carries the same `gate_queue`. Each executor drains the queue after releasing its slot; watchers
 also retry their pending notifications on their next check. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
@@ -645,8 +667,8 @@ it refuses, as its release. It drains reactions queued behind it, as an
 executor does. The merge queue takes the head of the line's reservation
 with source `queue:<uuid>` around its merge, unless its own process
 already holds it. Stack head checks ignore `automation`,
-`automation queued` and `automation reconcile` events, which change no
-task state.
+`automation queued`, `automation reconcile` and `gates prioritize` events,
+which change no task state.
 An accepted PR already merged remotely goes through the merge gate's
 confirmation path. It records the matching accepted head and the PR's merge
 commit without merging again, including after an executor dies before
@@ -685,6 +707,18 @@ gates, a refused merge or head check) is passed over for the rest of the
 pass and the next entry takes the line; each later pass tries it again.
 PR lookup refusals and unreadable GitHub responses use this skip path;
 unexpected execution errors still abort the queue.
+An explicit `merge --accepted` requests a busy queue once and waits for
+its observable executor to release the reservation before taking its own
+pass. The wait uses `gates.tests_timeout_min` (20 minutes by default);
+an unobservable executor or an expired wait refuses with a queue reason.
+Its entries use the same task reservation and merge gate as `merge ID`,
+after the head checks above. Passing CI evidence under `ci.capped_review`
+permits a `MERGEABLE` PR whose merge state is `UNSTABLE`.
+The command reports each task's merge, confirmation or refusal from the
+queue and its recorded evidence, without fetching inbox findings. JSON
+contains `results: [{task, ok, summary}]` and `remaining: [{task, reason}]`.
+A skipped stack entry's refusal reason is reported for every unmerged
+member, including the lower task whose PR or gates blocked the entry.
 `queue skipped` records `{sha, revision, reason}` on that task once per
 sha and revision. A `requested` after the
 executor's latest `running` makes it record another `running` and drain
@@ -797,7 +831,7 @@ Agy homes place native settings and the rendered `agents/gishra-<job>.md` below 
 
 ## Orchestrator inbox
 
-`inbox` derives a snapshot from one state read and current GitHub observations. It does not change tasks or consume messages. JSON has `items` and live gate `executors`. Each item has a stable `id`, `kind`, nullable `task`, finding data, and `action: {command, argv}`. Text output includes the same findings and command. Kinds include `gate_failed`, `review_failed`, `rework_ready`, `ready`, `dead_claim`, `decision`, `accepted_unmerged`, `revuto_failed`, `codeql_alert`, `head_changed`, `message`, `stall`, `decision_answer`, `owner_comment` and `github_error`. Open decisions carry their question and options; their answer command needs the owner's supplied choice and the existing answer authority. Answered decisions retain their choice, note, author and blocked tasks until acknowledged. Owner task and decision comments retain their text and target until acknowledged; a later comment creates a new item.
+`inbox` derives a snapshot from one state read and current GitHub observations. It does not change tasks or consume messages. JSON has `items`, live gate `executors` and `gate_queue`, the same queue `status` shows; text ends with the executor count and a `gate queue` line. Each item has a stable `id`, `kind`, nullable `task`, finding data, and `action: {command, argv}`. Text output includes the same findings and command. Kinds include `gate_failed`, `review_failed`, `rework_ready`, `ready`, `dead_claim`, `decision`, `accepted_unmerged`, `revuto_failed`, `codeql_alert`, `head_changed`, `message`, `stall`, `decision_answer`, `owner_comment` and `github_error`. Open decisions carry their question and options; their answer command needs the owner's supplied choice and the existing answer authority. Answered decisions retain their choice, note, author and blocked tasks until acknowledged. Owner task and decision comments retain their text and target until acknowledged; a later comment creates a new item.
 
 `gate_failed` items report the latest audited failure for each software gate (`tests`, `clean`, `sources`, `ci`) at the current head and revision of an unmerged submitted or accepted task. They include the gate name, summary, ref, audited `confirmed_failure` flag and any `test_failure` names and output tail. Confirmed code failures resolve through rework carrying the failure summary and its test names. Pending checks, observation failures and infrastructure failures offer `check GATE ID`; infrastructure findings also retain their timeout metadata. A later pass, rework, a new head or revision, or a confirmed merge clears the finding. Failed gates cannot be acknowledged away. On an open mergeable accepted PR, a stale or unconfirmed failed required software gate offers its check command instead of `merge --accepted`; confirmed code failures offer rework instead; after that rerun passes, the inbox advances to the next blocker or merge. Review blockers still require rework.
 

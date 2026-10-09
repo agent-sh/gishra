@@ -65,8 +65,9 @@ cp.spawnSync = function stackGh(command, args, opts) {
   const posted = asyncPath && !asyncPath[2] && args[args.indexOf('--method') + 1] === 'POST';
   const mergeOf = args[0] === 'pr' && args[1] === 'merge' ? Number(args[2]) : posted ? Number(asyncPath[1]) : null;
   if (mergeOf && data.moveOnMerge && (!data.moveOnMerge.onPr || mergeOf === data.moveOnMerge.onPr)) {
-    const { pr, head } = data.moveOnMerge;
-    data.prs[pr].headRefOid = head;
+    const { pr, head, base } = data.moveOnMerge;
+    if (head !== undefined) data.prs[pr].headRefOid = head;
+    if (base !== undefined) data.prs[pr].baseRefName = base;
     delete data.moveOnMerge;
   }
   const land = (pr, parents, subject, deleteBranch) => {
@@ -79,9 +80,20 @@ cp.spawnSync = function stackGh(command, args, opts) {
     pr.state = 'MERGED';
     pr.mergeCommit = { oid };
     if (deleteBranch) git(['push', 'origin', `:${pr.headRefName}`]);
+    // GitHub rebases the PRs above the merged one onto the new base.
+    const end = data.order.indexOf(pr.number);
+    for (const n of end === -1 ? [] : data.order.slice(end + 1)) {
+      if (data.rebased?.[n]) data.prs[n].headRefOid = data.rebased[n];
+    }
     return null;
   };
   if (args[0] === 'api') {
+    if (data.apiFailure) {
+      const failure = data.apiFailure;
+      const result = finish(failure.stdout || '', failure.status === undefined ? 1 : failure.status, failure.stderr || '');
+      if (failure.error) result.error = failure.error;
+      return result;
+    }
     if (data.unavailable) return finish('', 9, 'Stacked pull requests are not enabled');
     if (args[1].includes('/stacks')) return finish(data.linked ? [{ id: 5, pull_requests: data.order.map((number) => ({ number })) }] : []);
     // GitHub's asynchronous merge: the POST pins the head and returns at once; the merge
