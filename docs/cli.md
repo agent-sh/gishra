@@ -273,6 +273,14 @@ completion requests that pass while the executor is still running. Its
 `done` event names the first head that did not merge and lists the skipped
 ones. An accepted PR already merged on GitHub at its accepted head is
 confirmed through the merge gate without current gate evidence.
+`merge --accepted` waits for an observable queue executor to release its
+reservation, up to `gates.tests_timeout_min` (20 minutes by default), then
+drains the queue through the same reserved merge path as `merge ID`.
+An unobservable executor refuses with its PID and host. Each task reports
+its merge or confirmation summary, refusal or pending reason. JSON returns
+`results` with `{task, ok, summary}` and `remaining` with `{task, reason}`.
+`MERGEABLE` PRs with an `UNSTABLE` merge state use the same passing CI
+evidence and `ci.capped_review` policy as a single merge.
 Merge text and method are validated before any GitHub call. Current gates do
 not bind that read-only PR lookup: it confirms a completed merge even when the
 task's gates fail, or a lower stack member's review fails or its CI receipt
