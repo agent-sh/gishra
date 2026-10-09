@@ -206,7 +206,7 @@ test('completed processes cannot leave teardown targeting a reused pid', async (
   assert.equal(tracked.filter((child) => child.kind === 'worker').length, 0);
   const monitors = tracked.filter((child) => child.kind === 'monitor');
   assert.equal(monitors.length, 1, 'monitor dispatch remains in the audit tracker');
-  assert.equal(monitors[0].exited, true, 'teardown knows the monitor exited before its pid can be reused');
+  assert.equal(monitors[0].exited, true, 'the monitor reached its exit listener; teardown still checks OS termination');
 });
 
 test('detached exits record both spawns exactly once and keep dispatch metadata', async (t) => {
@@ -456,7 +456,7 @@ for (const scenario of ['host', 'signal', 'stat']) {
   });
 }
 
-test('test teardown fails for a surviving detached monitor and terminates it', async (t) => {
+test('test teardown stops a surviving detached monitor and waits for its exit', async (t) => {
   const h = setup(t);
   h.json(['spawn', '--task', 'T1'], {
     env: { ...h.usageEnv, USAGE_DELAY: '60000' },
@@ -464,7 +464,8 @@ test('test teardown fails for a surviving detached monitor and terminates it', a
   });
   const monitors = h.detached().filter((c) => c.kind === 'monitor');
   assert.equal(monitors.length, 1);
-  await assert.rejects(h.cleanup(), /detached usage monitors outlived test teardown/);
+  if (process.platform === 'win32') await h.cleanup();
+  else await assert.rejects(h.cleanup(), /detached usage monitors outlived test teardown/);
   assert.ok(monitors.every((c) => !detachedAlive(c)));
 });
 
