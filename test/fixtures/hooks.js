@@ -235,6 +235,26 @@ if (env.HOOK_STOP_WORKTREE_ADD) {
   };
 }
 
+// HOOK_STOP_WORKTREE_STATUS=SIGNAL: stop before the first git status runs, which
+// is the first look at a worktree that a removal may delete.
+if (env.HOOK_STOP_WORKTREE_STATUS) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function hookedExecFileSync(file, args, ...rest) {
+    if (args[0] === 'status' && first('worktree-status')) stop(env.HOOK_STOP_WORKTREE_STATUS);
+    return orig.call(this, file, args, ...rest);
+  };
+}
+
+// HOOK_STOP_WORKTREE_REMOVE=SIGNAL: stop before the first git worktree remove runs,
+// after the removal has passed its checks and released the state lock.
+if (env.HOOK_STOP_WORKTREE_REMOVE) {
+  const orig = cp.execFileSync;
+  cp.execFileSync = function hookedExecFileSync(file, args, ...rest) {
+    if (args[0] === 'worktree' && args[1] === 'remove' && first('worktree-remove')) stop(env.HOOK_STOP_WORKTREE_REMOVE);
+    return orig.call(this, file, args, ...rest);
+  };
+}
+
 if (env.HOOK_REVIEW_DIFF_REPORT || env.HOOK_STOP_REVIEW_DIFF) {
   const orig = cp.execFileSync;
   cp.execFileSync = function reviewDiff(file, args, ...rest) {
@@ -424,6 +444,8 @@ if (env.HOOK_PROCESSES_DIR) {
     }
     const child = original.call(this, file, args, options);
     if (options?.detached && child.pid) {
+      const startTime = process.platform === 'win32' && monitor
+        ? require('../windows-process').startTime(child.pid) : undefined;
       let startTicks;
       if (process.platform === 'linux') {
         try {
@@ -434,11 +456,12 @@ if (env.HOOK_PROCESSES_DIR) {
       real.mkdirSync(env.HOOK_PROCESSES_DIR, { recursive: true });
       const trackedFile = path.join(env.HOOK_PROCESSES_DIR, `${child.pid}.json`);
       real.writeFileSync(trackedFile, JSON.stringify({
-        pid: child.pid, startTicks,
+        pid: child.pid, startTicks, startTime,
         kind: monitor ? 'monitor' : 'worker',
       }));
       // A reaped Windows PID can immediately belong to another test's CLI.
-      // The live parent observes worker exit; monitors record their own exit.
+      // The live parent observes worker exit. A monitor's own exit marker
+      // precedes OS termination, so teardown also checks process identity.
       if (!monitor) child.once('exit', () => real.rmSync(trackedFile, { force: true }));
     }
     return child;

@@ -30,9 +30,9 @@ const MUTANTS = [
   { id: 'sources-loopback-public', area: 'gates', file: 'lib/public-http.js',
     from: "['127.0.0.0', 8],", to: '', tests: ['test/sources.test.js'] },
   { id: 'evidence-without-audit', area: 'gates', file: 'lib/tasks.js',
-    from: "entry.agent !== task.submitted_by : hasGateEvent(task, entry, events)", to: 'entry.agent !== task.submitted_by : true', tests: ['test/evidence.test.js'] },
+    from: "independentReviewer(task, entry, events) : hasGateEvent(task, entry, events)", to: 'independentReviewer(task, entry, events) : true', tests: ['test/evidence.test.js'] },
   { id: 'review-by-submitter', area: 'gates', file: 'lib/tasks.js',
-    from: "entry.type === 'review' ? entry.agent !== task.submitted_by :", to: "entry.type === 'review' ? true :", tests: ['test/accept.test.js'] },
+    from: "entry.type === 'review' ? independentReviewer(task, entry, events) :", to: "entry.type === 'review' ? true :", tests: ['test/accept.test.js'] },
   { id: 'evidence-old-revision', area: 'gates', file: 'lib/tasks.js',
     from: 'e.type === type && e.revision === task.revision\n', to: 'e.type === type\n', tests: ['test/accept.test.js'] },
   // authority
@@ -66,7 +66,7 @@ const MUTANTS = [
   { id: 'lock-breaks-live-holder', area: 'state lock', file: 'lib/state.js',
     from: '    if (!lockIsStale(marker)) {', to: '    if (false) {', tests: ['test/lock.test.js'] },
   { id: 'lock-ignores-pid-namespace', area: 'state lock', file: 'lib/state.js',
-    from: "host === os.hostname() && (pidns ?? null) === pidNamespace() && Number.isInteger(pid)", to: 'host === os.hostname() && Number.isInteger(pid)', tests: ['test/lock.test.js'] },
+    from: '(pidns ?? null) === pidNamespace() && Number.isInteger(pid)', to: 'Number.isInteger(pid)', tests: ['test/lock.test.js'] },
   { id: 'lock-never-ages-out', area: 'state lock', file: 'lib/state.js',
     from: 'const LOCK_STALE_MS = 60000;', to: 'const LOCK_STALE_MS = 6000000;', tests: ['test/lock.test.js'] },
   // merge and stacks
@@ -78,6 +78,10 @@ const MUTANTS = [
     from: 'if (lower.some((pr) => !known.includes(pr)))', to: 'if (false)', tests: ['test/stack-merge.test.js'] },
   { id: 'stack-merge-admin', area: 'merge/stacks', file: 'lib/gates/merge.js',
     from: "if (ctx.args?.admin || project.merge?.admin === true) return fail('stack merges cannot use --admin;", to: "if (false) return fail('stack merges cannot use --admin;", tests: ['test/stack-merge.test.js'] },
+  { id: 'merge-confirm-skips-sync', area: 'merge/stacks', file: 'lib/check.js',
+    from: "if (name === 'merge' && !result.confirmOnly && ", to: "if (name === 'merge' && ", tests: ['test/stack-merge.test.js'] },
+  { id: 'merge-confirm-before-gates', area: 'merge/stacks', file: 'lib/check.js',
+    from: "if (typeof gate.confirm === 'function') {", to: 'if (false) {', tests: ['test/stack-merge.test.js'] },
   // secrets
   { id: 'codex-config-keeps-secrets', area: 'secrets', file: 'lib/agents.js',
     from: 'out.model_providers = keepTables(doc.model_providers, PROVIDER_FIELDS);', to: 'out.model_providers = doc.model_providers;', tests: ['test/isolation.test.js'] },

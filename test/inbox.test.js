@@ -52,6 +52,7 @@ test('one fixture exposes every inbox kind and resolving commands clear their co
   const h = setup(t);
   const review = h.add('Failed review');
   h.submit(review);
+  h.reviewer(review, 'reviewer', h.sha);
   h.ok(['evidence', review, '--type', 'review', '--fail', '--sha', h.sha,
     '--summary', 'Check null before dereferencing.', '--ref', 'https://github.com/acme/demo/pull/1#issuecomment-1', '--agent', 'reviewer']);
   const rework = h.add('Rework without a worker');
@@ -62,6 +63,7 @@ test('one fixture exposes every inbox kind and resolving commands clear their co
   event(h, dead, 'spawn', { agent: 'gone', role: 'worker', pid: 2147483647, host: os.hostname() });
   const accepted = h.add('Accepted but not merged');
   h.submit(accepted, 7);
+  h.reviewer(accepted, 'reviewer', h.sha);
   h.ok(['evidence', accepted, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   h.ok(['check', 'ci', accepted]);
   h.ok(['accept', accepted]);
@@ -137,7 +139,9 @@ test('review replacement, capped revuto, old CodeQL heads and unavailable GitHub
   const h = setup(t);
   const id = h.add('Current findings');
   h.submit(id, 8);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--fail', '--sha', h.sha, '--summary', 'old fail', '--agent', 'reviewer']);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   assert.equal(h.run(['rework', '--from-review', id]).code, 1);
   h.ok(['project', 'set', '--ci-capped-review', '[{"app":"revuto-review","pattern":"Daily review limit reached"}]']);
@@ -188,6 +192,7 @@ test('MCP tools retain identity, expose actions and reject argument overrides', 
   const h = setup(t);
   const id = h.add('Review');
   h.submit(id);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--fail', '--sha', h.sha, '--summary', 'fix bounds', '--agent', 'reviewer']);
   const requests = [
     { method: 'initialize', params: { protocolVersion: '2024-11-05' } },
@@ -232,6 +237,7 @@ test('accepted batch skips unknown PRs and merges independent ready PRs with the
   for (const pr of [7, 8]) {
     const id = h.add(`PR ${pr}`);
     h.submit(id, pr);
+    h.reviewer(id, 'reviewer', h.sha);
     h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
     h.ok(['check', 'ci', id]);
     h.ok(['accept', id]);
@@ -262,6 +268,7 @@ test('accepted batch confirms a landed head with stale gates before merging the 
   for (const pr of [7, 8]) {
     const id = h.add(`PR ${pr}`);
     h.submit(id, pr);
+    h.reviewer(id, 'reviewer', h.sha);
     h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
     h.ok(['check', 'ci', id]);
     h.ok(['accept', id]);
@@ -281,16 +288,97 @@ test('accepted batch confirms a landed head with stale gates before merging the 
   assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8']);
 });
 
+test('accepted batch waits for the queue, merges capped and crashed revuto checks in acceptance order and reports each outcome', async (t) => {
+  const h = setup(t);
+  h.ok(['project', 'set', '--ci-capped-review', JSON.stringify([
+    { app: 'revuto-review', pattern: 'Daily review limit reached|Revuto could not complete this review' },
+  ])]);
+  const tasks = [7, 8].map((pr) => {
+    const id = h.add(`PR ${pr}`);
+    h.submit(id, pr);
+    h.reviewer(id, 'reviewer', h.sha);
+    h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
+    const github = h.github();
+    github.prs[pr].mergeStateStatus = 'UNSTABLE';
+    github.revuto = { name: 'revuto', app: 'revuto-review', status: 'completed', conclusion: 'failure',
+      output: { summary: pr === 7 ? 'Daily review limit reached' : 'Revuto could not complete this review' } };
+    h.save(github);
+    h.ok(['check', 'ci', id]);
+    return id;
+  });
+  for (const id of tasks.toReversed()) h.ok(['accept', id]);
+  event(h, null, 'merge queue', { phase: 'running', pid: process.pid, ...require('../lib/processes').identity(process.pid) });
+  let settled = false;
+  const merging = h.runAsync(['merge', '--accepted', '--agent', 'orchestrator', '--json']).then((result) => {
+    settled = true;
+    return result;
+  });
+  try {
+    const deadline = Date.now() + 10000;
+    while (!h.logs().some((e) => e.cmd === 'merge queue' && e.detail.phase === 'requested')) {
+      assert.ok(Date.now() < deadline, 'batch requested the busy queue');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(settled, false, 'batch waits until the queue is released');
+    assert.equal(h.github().calls.filter((a) => a[1] === 'merge').length, 0);
+  } finally {
+    event(h, null, 'merge queue', { phase: 'done' });
+  }
+  const result = await merging;
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['8', '7']);
+  const data = JSON.parse(result.stdout);
+  assert.deepEqual(data.remaining, []);
+  for (const id of tasks) {
+    assert.equal(data.results.find((r) => r.task === id).ok, true);
+    assert.match(data.results.find((r) => r.task === id).summary, /merged PR/);
+    assert.equal(h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+  }
+});
+
+test('accepted batch reports an unobservable queue holder and bounds an observable wait', (t) => {
+  const h = setup(t);
+  const id = h.add('Accepted PR');
+  h.submit(id, 7);
+  h.reviewer(id, 'reviewer', h.sha);
+  h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
+  h.ok(['check', 'ci', id]);
+  h.ok(['accept', id]);
+  event(h, null, 'merge queue', { phase: 'running', pid: process.pid, host: 'unobservable-fixture-host' });
+  const result = h.run(['merge', '--accepted', '--agent', 'orchestrator']);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr + result.stdout, /queue.*cannot be observed/);
+  assert.doesNotMatch(result.stderr + result.stdout, /accepted PR has not merged/);
+  assert.equal(h.github().prs[7].state, 'OPEN');
+  h.ok(['project', 'set', '--tests-timeout-min', '0.001']);
+  event(h, null, 'merge queue', { phase: 'running', pid: process.pid, ...require('../lib/processes').identity(process.pid) });
+  const timeout = h.run(['merge', '--accepted', '--agent', 'orchestrator']);
+  assert.equal(timeout.code, 1);
+  assert.match(timeout.stderr, /merge queue remained busy for 0\.001 min/);
+  assert.equal(h.github().calls.filter((a) => a[1] === 'merge').length, 0);
+});
+
 test('accepted batch routes linked members through pinned stack merges', (t) => {
   const f = require('./stack-fixture').stacked(t);
   f.accept('T1');
   f.accept('T2');
   f.write((d) => { for (const pr of Object.values(d.prs)) Object.assign(pr, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
+  f.write((d) => { d.prs[11].state = 'CLOSED'; });
+  const refused = f.h.run(['merge', '--accepted', '--agent', 'orchestrator', '--json']);
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+  const remaining = JSON.parse(refused.stdout).remaining;
+  assert.deepEqual(remaining.map((r) => r.task), ['T1', 'T2']);
+  for (const entry of remaining) assert.match(entry.reason, /T1: PR #11 is CLOSED/);
+  assert.equal(f.read().calls.filter((c) => c.args.includes('POST') && c.args[1].endsWith('/merge-async')).length, 0);
+  f.write((d) => { d.prs[11].state = 'OPEN'; });
   const result = f.h.run(['merge', '--accepted', '--agent', 'orchestrator']);
   assert.equal(result.code, 0, result.stdout + result.stderr);
-  const merges = f.read().calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'merge');
-  assert.deepEqual(merges.map((c) => c.args[2]), ['11', '12']);
-  assert.ok(merges.every((c) => c.args.includes('--merge') && c.args.includes('--match-head-commit')));
+  const merges = f.read().calls.filter((c) => c.args[0] === 'api' && c.args.includes('POST') && c.args[1].endsWith('/merge-async'));
+  assert.deepEqual(merges.map((c) => c.args[1]), ['repos/acme/app/pulls/11/merge-async', 'repos/acme/app/pulls/12/merge-async']);
+  for (const [index, head] of [f.sha, f.upper.sha].entries()) {
+    assert.ok(merges[index].args.includes('merge_method=merge'));
+    assert.ok(merges[index].args.includes(`expected_head_sha=${head}`));
+  }
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
 });
 
@@ -494,6 +582,7 @@ test('an accepted PR with stale gate policy resolves through gate reruns before 
   const id = h.add('Accepted policy changes', 'code');
   h.submit(id, 7);
   for (const type of ['tests', 'clean', 'ci']) h.ok(['check', type, id]);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   h.ok(['accept', id, '--agent', 'orchestrator']);
   const clean = path.join(h.base, 'new-clean.js');
@@ -554,6 +643,7 @@ test('a remotely merged accepted PR remains actionable until its audited merge r
   const id = h.add('Missing merge confirmation');
   h.submit(id, 7);
   h.ok(['check', 'ci', id]);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   h.ok(['accept', id, '--agent', 'orchestrator']);
   const github = h.github();
@@ -587,6 +677,7 @@ function reviewComments(h, id) {
     + '- [P1] lib/store.js:12 - First finding: reject duplicate writes - Prevent corruption.\n'
     + '- [P2] lib/cache.js:31 - Second finding: invalidate deleted entries - Prevent stale reads.\n';
   h.submit(id, 7);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--fail', '--sha', h.sha, '--agent', 'reviewer',
     '--summary', '2 blocking findings: reject duplicate writes', '--ref', ref]);
   const github = h.github();
@@ -656,6 +747,7 @@ test('review rework rechecks the verdict after fetching comments outside the sta
   const h = setup(t);
   const id = h.add('Concurrent review');
   reviewComments(h, id);
+  h.reviewer(id, 'replacement-reviewer', h.sha);
   const github = h.github();
   github.reviewDuringFetch = { task: id, sha: h.sha };
   h.save(github);

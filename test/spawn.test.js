@@ -6,7 +6,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { cachedFixture, real, BIN, PTY_AVAILABLE } = require('./helpers');
+const stack = require('./stack-fixture');
 const A = require('../lib/agents');
+const S = require('../lib/state');
+const SHORT_WAIT = path.join(__dirname, 'fixtures', 'lock-wait.js');
 
 function setup(t) {
   return cachedFixture(t, 'task', (h) => {
@@ -733,23 +736,24 @@ test('a spawn whose program fails to start records nothing and leaves its worktr
   assert.equal(h.readState('tasks.json').tasks[0].branch, 'tower-crane/T1-idempotency-key-on-retries');
 });
 
-test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', async (t) => {
+test('a spawn that cannot take the lock leaves its worktree, names it and exits 3', (t) => {
   const h = setup(t);
   commandRung(h, 'small', [process.execPath, '-e', 'process.exit(0)', '{prompt}']);
   const { tasks } = footprint(h);
-  const paused = path.join(h.base, 'holder');
-  const holder = h.runAsync(['task', 'note', 'T1', 'holding the lock'], { hooks: { HOOK_PAUSE_ON: 'tasks.json', HOOK_PAUSED: paused } });
-  await waitForFile(paused);
+  // The test process keeps the lock until the spawn exhausts its short budget.
+  const lock = S.acquireLock(h.state);
   try {
-    const r = h.run(['spawn', '--role', 'small', '--task', 'T1']);
+    const r = h.run(['spawn', '--role', 'small', '--task', 'T1'], {
+      env: { NODE_OPTIONS: `--require=${JSON.stringify(SHORT_WAIT)}` },
+    });
     assert.equal(r.code, 3, r.stderr);
     assert.match(r.stderr, /state is locked by .*; its worktree stays at .*T1-idempotency-key-on-retries for the next spawn/);
+    assert.ok(fs.existsSync(lock.file), 'the holder keeps its lock through the refusal');
     assert.equal(footprint(h).tasks, tasks);
     assert.ok(fs.existsSync(leftover(h)));
   } finally {
-    fs.writeFileSync(`${paused}.go`, '');
+    S.releaseLock(lock);
   }
-  assert.equal((await holder).code, 0);
   assert.equal(real(h.json(['spawn', '--role', 'small', '--task', 'T1', '--wait']).cwd), real(leftover(h)));
 });
 
@@ -844,4 +848,25 @@ test('spawn runs the rung of the tier and ladder it finds under the lock, not th
   assert.ok(!fs.existsSync(out));
   const spawns = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.cmd === 'spawn');
   assert.equal(spawns.length, 1);
+});
+
+test('spawn refuses a stacked rework with claim\'s reason when its dependency went back to in_progress, before its worktree work', (t) => {
+  const f = stack.stacked(t);
+  stack.worker(f);
+  // T2's worktree is prepared on T1's head. T1 then takes a new head and goes back to in_progress.
+  f.h.ok(['rework', 'T2', '--reason', 'more upper work']);
+  stack.resubmit(f, false);
+  f.h.ok(['rework', 'T1', '--reason', 'more lower work']);
+  f.h.ok(['claim', 'T1', '--agent', 'worker-T1']);
+  // The stack is not linked on GitHub, so T2's worktree is stale and must be revalidated at dispatch.
+  const state = f.h.readState('tasks.json');
+  state.tasks.find((item) => item.id === 'T2').stack.linked = false;
+  f.h.writeState('tasks.json', state);
+  f.write((d) => { d.linked = false; });
+
+  const r = f.h.run(['spawn', '--task', 'T2']);
+  assert.equal(r.code, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /T2 is blocked: depends on T1 \(in_progress\)/);
+  assert.doesNotMatch(r.stderr, /prepared on T1|before dispatch/);
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'rework');
 });
