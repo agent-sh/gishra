@@ -244,9 +244,9 @@ test('refused commands without a context placeholder retain messages', (t) => {
 });
 
 // Stop holds a worker that still holds its task with a background job or no final
-// report, once. A pending job is reported as waiting, not as a stop without submit.
+// report, once. A pending job sends the orchestrator no note.
 const HEADLESS = [
-  ['background', true, /is waiting on a background job/],
+  ['background', true, null],
   ['silent', true, /stopped without submit/],
   ['submitted', false, /stopped after submit/],
   ['reported', false, /stopped without submit/],
@@ -275,10 +275,13 @@ for (const [mode, held, note] of HEADLESS) {
     if (mode === 'background' || mode === 'submitted') {
       assert.ok(audit.some((e) => e.cmd === 'hook background' && e.agent === 'worker-T1-1'), 'background start missing');
     }
-    const notes = audit.filter((e) => e.cmd === 'msg' && e.detail.to === 'orchestrator'
-      && /stopped|waiting on a background job/.test(e.detail.text));
-    assert.equal(notes.length, 1, 'the orchestrator hears one note');
-    assert.match(notes[0].detail.text, note);
-    if (held) assert.ok(audit.indexOf(waits[0]) < audit.indexOf(notes[0]), 'the hold must come before the note');
+    const notes = audit.filter((e) => e.cmd === 'msg' && e.detail.to === 'orchestrator' && /stopped/.test(e.detail.text));
+    if (note) {
+      assert.equal(notes.length, 1, 'the orchestrator hears one stop note');
+      assert.match(notes[0].detail.text, note);
+      if (held) assert.ok(audit.indexOf(waits[0]) < audit.indexOf(notes[0]), 'the hold must come before the note');
+    } else {
+      assert.equal(notes.length, 0, 'a pending job sends no stop note');
+    }
   });
 }
