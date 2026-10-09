@@ -7,6 +7,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const { makeRepo, ROOT } = require('./helpers');
 const { shellQuote } = require('../lib/gates/common');
+const { clearPlaceholders } = require('../lib/git-placeholders');
 
 function orphan(h, name = 'orphan') {
   const dir = path.join(h.repo, '.git', 'worktrees', name);
@@ -155,4 +156,21 @@ test('a sandboxed git push clears an empty read-only lock placeholder that would
   assert.match(push.stderr, /removed empty read-only placeholder .*config\.lock/);
   assert.equal(fs.existsSync(lock), false);
   assert.equal(h.git(['config', '--get', 'branch.task-T1.remote']), remote);
+});
+
+test('a lock that a process holds is kept when the git directory is reached through a symlink', { skip: !fs.existsSync('/proc/self/fd') && 'needs /proc to see which process holds the lock' }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const lock = path.join(h.repo, '.git', 'index.lock');
+  fs.writeFileSync(lock, '', { mode: 0o444 });
+  const link = path.join(h.base, 'git-link');
+  fs.symlinkSync(path.join(h.repo, '.git'), link);
+  const holder = cp.spawn(process.execPath, ['-e', `require('node:fs').openSync(${JSON.stringify(lock)}, 'r'); console.log('open'); setInterval(() => {}, 1000);`], { stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    await new Promise((resolve) => holder.stdout.once('data', resolve));
+    assert.deepEqual(clearPlaceholders(link), []);
+  } finally {
+    holder.kill();
+  }
+  assert.equal(fs.existsSync(lock), true);
 });
