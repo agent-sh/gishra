@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { TMP_ROOT, detachedAlive, makeRepo } = require('./helpers');
 const B = require('../lib/broker');
+const harnessHooks = require('../lib/harness-hooks');
 const { resolveCommand, parseOptions, GLOBAL } = require('../bin/tower-crane');
 
 function scratch(t) {
@@ -55,6 +56,37 @@ test('the broker rejects an identity that differs from its spawn', () => {
   for (const agent of ['owner', 'worker-T2-1']) {
     assert.throws(() => B.authorize(job, ['task', 'note', 'T1', 'text', '--agent', agent]), new RegExp(`cannot act as ${agent}`));
   }
+});
+
+test('a worker broker refuses unscoped dead-claim recovery and preserves peer claims', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  for (const id of ['T1', 'T2']) {
+    h.ok(['task', 'add', '--title', id, '--acceptance', 'claim is scoped']);
+    h.ok(['claim', id, '--agent', `worker-${id}-1`]);
+  }
+  const file = path.join(h.state, 'events.jsonl');
+  fs.appendFileSync(file, JSON.stringify({ id: 'dead-peer', at: new Date().toISOString(), cmd: 'spawn',
+    agent: 'orchestrator', task: 'T2', detail: { agent: 'worker-T2-1', role: 'worker', pid: 2147483647 } }) + '\n');
+  const job = { state: h.state, task: 'T1', agent: 'worker-T1-1', role: 'worker', harness: 'codex',
+    cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T1-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const before = h.readState('tasks.json');
+  const events = fs.readFileSync(file, 'utf8');
+  const result = await h.runAsync(['release', '--dead'], {
+    env: { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task },
+  });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /release --dead.*orchestrator|unscoped/i);
+  assert.deepEqual(h.readState('tasks.json'), before);
+  assert.equal(fs.readFileSync(file, 'utf8'), events);
+  assert.throws(() => B.authorize(job, ['release', '--dead']), /release --dead.*orchestrator|unscoped/i);
+  const own = await h.runAsync(['release', 'T1', '--reason', 'handoff'], {
+    env: { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task },
+  });
+  assert.equal(own.code, 0, own.stderr);
+  assert.equal(h.readState('tasks.json').tasks[1].claim.agent, 'worker-T2-1');
 });
 
 test('the broker answers no request without its token and acts on its own task only', async (t) => {
@@ -267,4 +299,36 @@ cp.spawnSync = function (command, args, opts) {
   assert.equal(calls[0].cwd, h.state);
   assert.ok(calls[0].git_dir && !fs.existsSync(calls[0].git_dir), 'git finds no repository');
   assert.equal(h.readState('tasks.json').tasks[0].sha, 'abcdef2');
+});
+
+test('a brokered worker or reviewer messages only the orchestrator or the owner', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'one', '--acceptance', 'noted']);
+  h.ok(['task', 'add', '--title', 'two', '--acceptance', 'noted']);
+  const events = () => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const reviewer = { state: h.state, task: 'T2', agent: 'reviewer-T2-1', role: 'reviewer' };
+  assert.throws(() => B.authorize(reviewer, ['msg', '--to', 'worker-T1-1', 'note from T2']), /messages only the orchestrator or the owner, not worker-T1-1/);
+  assert.throws(() => B.authorize(reviewer, ['msg', '--to=worker-T1-1', 'note from T2']), /not worker-T1-1/);
+
+  const job = { state: h.state, task: 'T2', agent: 'worker-T2-1', role: 'worker', cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T2-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  // A worker's message to another task's agent would enter that agent's
+  // prompt, so the broker refuses it and the recipient's inbox stays empty.
+  const refused = await B.forward(job.broker, ['msg', '--to', 'worker-T1-1', 'note from T2'], h.state);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /messages only the orchestrator or the owner, not worker-T1-1/);
+  assert.deepEqual(harnessHooks.unread(events(), 'worker-T1-1'), []);
+  assert.equal(events().filter((e) => e.cmd === 'msg').length, 0, 'the refused message wrote no message event');
+  // The attempt is logged for the orchestrator and the board, without its text.
+  const refusals = events().filter((e) => e.cmd === 'msg refused');
+  assert.deepEqual(refusals.map((e) => [e.agent, e.task, e.to, e.detail.to]), [['worker-T2-1', 'T2', 'orchestrator', 'worker-T1-1']]);
+  assert.ok(!fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').includes('note from T2'), 'the refusal keeps the text out of the log');
+
+  for (const to of ['orchestrator', 'owner']) {
+    const r = await B.forward(job.broker, ['msg', '--to', to, `status from T2 to ${to}`], h.state);
+    assert.equal(r.code, 0, r.stderr);
+  }
+  assert.deepEqual(events().filter((e) => e.cmd === 'msg').map((e) => [e.task, e.detail.to]), [['T2', 'orchestrator'], ['T2', 'owner']]);
 });
