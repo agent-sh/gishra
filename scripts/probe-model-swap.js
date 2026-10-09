@@ -9,6 +9,11 @@ const root = path.resolve(__dirname, '..');
 const cache = process.env.TOWER_CRANE_TEST_TMP || path.join(os.homedir(), '.cache', 'tower-crane-tests');
 fs.mkdirSync(cache, { recursive: true });
 const probe = fs.mkdtempSync(path.join(cache, 'model-swap-'));
+const temporary = fs.mkdtempSync(path.join(cache, 'model-swap-tmp-'));
+// Chrome's Unix socket paths have a much smaller limit than filesystem paths.
+const aliasRoot = process.platform === 'win32' ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'tc-swap-'));
+const testTmp = aliasRoot ? path.join(aliasRoot, 't') : temporary;
+if (aliasRoot) fs.symlinkSync(temporary, testTmp, 'dir');
 const files = cp.execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
   { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
 
@@ -33,15 +38,17 @@ try {
   };
   fs.writeFileSync(file, text.replace(/const BUILTIN = \{[\s\S]*?\n\};/,
     `const BUILTIN = ${JSON.stringify(builtin, null, 2)};`));
-  const tests = files.filter(f => /^test\/(?:gates\/)?[^/]+\.test\.js$/.test(f));
   const log = path.join(cache, 'model-swap-probe.tap');
   const fd = fs.openSync(log, 'w+');
   let result;
   let output;
   try {
-    result = cp.spawnSync(process.execPath, ['--test', '--test-concurrency=4', '--test-reporter=tap',
-      ...tests.map(f => path.join(probe, f))], {
-      cwd: probe, env: { ...process.env, TOWER_CRANE_TEST_TMP: cache }, stdio: ['ignore', fd, fd], timeout: 600000,
+    const env = { ...process.env, TOWER_CRANE_TEST_TMP: testTmp };
+    // Every fixture owns its HOME and cache; a caller's agent cache changes those paths.
+    for (const key of ['XDG_CACHE_HOME', 'LOCALAPPDATA', 'TC_TEST_SHARD', 'NODE_TEST_CONTEXT']) delete env[key];
+    result = cp.spawnSync(process.execPath, [path.join(probe, 'test', 'run.js'),
+      '--test-concurrency=3', '--test-reporter=tap'], {
+      cwd: probe, env, stdio: ['ignore', fd, fd], timeout: 45 * 60 * 1000,
     });
     // Validate the same open file the runner wrote, even if its path changes.
     const buffer = Buffer.alloc(fs.fstatSync(fd).size);
@@ -59,7 +66,7 @@ try {
   const expected = 'BUILTIN matches the documented defaults and init fallback';
   // A timed-out run leaves unfinished tests that say nothing about the swap.
   if (result.error?.code === 'ETIMEDOUT') {
-    throw new Error(`the suite did not finish within the probe timeout; rerun on a less loaded machine (log: ${log})`);
+    throw new Error(`the suite did not finish within the 45-minute software-gate deadline (log: ${log})`);
   }
   if (result.error || result.status !== 1 || failures.length !== 1 || failures[0] !== expected) {
     throw new Error(`expected only "${expected}" to fail: ${JSON.stringify(failures)}; ${result.error || ''}`);
@@ -67,4 +74,6 @@ try {
   console.log('Model swap probe passed: only the documented defaults assertion failed.');
 } finally {
   fs.rmSync(probe, { recursive: true, force: true });
+  fs.rmSync(temporary, { recursive: true, force: true });
+  if (aliasRoot) fs.rmSync(aliasRoot, { recursive: true, force: true });
 }
