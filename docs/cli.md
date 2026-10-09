@@ -289,7 +289,12 @@ merge keeps the task submitted, preserves its submitter and revision, and
 runs gates again at the new sha. An accepted task returns to submitted for
 fresh gates and review. There is no rework or worker dispatch for that repair.
 Dirty or moved branches and live workers defer it. Generator failures abort
-generated-only merges; push failures retain a prepared merge for retry.
+generated-only merges and restore the clean checkout, including removing new
+untracked files from that attempt; push failures retain a prepared merge for
+retry. Generation must preserve text outside declared blocks. Before changing
+the branch and again before pushing, automation verifies the PR head repository
+and the single origin push destination against the project and PR. Fork heads
+and mismatched or changed push destinations defer repair.
 
 For mixed conflicts, the task goes to rework with its merge already prepared.
 Generated files are staged; only hand-written conflicts remain unresolved,

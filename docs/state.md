@@ -596,6 +596,10 @@ workers, dirty checkouts and moved local or remote heads defer repair.
 
 `generated merge` records `phase: prepared` before a generated-only push,
 with `{previous_sha, sha, revision, base_sha, branch, path, generated, commands}`.
+It also records `destination_sha`, a SHA-256 digest of the verified origin push
+URL. The URL itself is not stored. The PR head repository must match the project;
+the push destination must resolve to that same PR. Every push re-verifies it
+and matches the digest, then uses the verified destination explicitly.
 `commands` records generation command strings, exit statuses and summaries.
 A prepared receipt retries the same commit after a failed push, or confirms
 it after a push whose executor stopped before updating state.
@@ -609,7 +613,8 @@ The checkout retains `MERGE_HEAD`, generated resolutions are staged and
 `remaining` names the hand-written conflicts. `regenerated: false` means
 source conflicts prevented generation; the worker must rerun the scripts
 after resolving them. A generator failure in a generated-only merge aborts
-the merge and retains the submitted head.
+the merge, restores the clean checkout and retains the submitted head.
+Generators cannot change hand-written text outside declared blocks.
 
 `ci completed` records a `ci-completed` hint with `sha` and `revision`.
 The host delivers completion hints directly or through `ci webhook`

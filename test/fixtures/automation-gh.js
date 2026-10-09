@@ -56,7 +56,11 @@ if (args[0] === 'pr') {
     const unknown = pr.unknownViews > 0;
     if (unknown) pr.unknownViews -= 1;
     const view = unknown ? { ...pr, mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' } : pr;
-    out = pr.invalidView ? '{' : JSON.stringify(view);
+    const target = args[args.indexOf('-R') + 1];
+    const destination = state.pushRepository && target !== 'acme/demo'
+      ? { ...view, url: `https://github.com/${state.pushRepository}/pull/${args[2]}`,
+        headRepository: { nameWithOwner: state.pushRepository } } : view;
+    out = pr.invalidView ? '{' : JSON.stringify(destination);
     if (state.becomeMergeableAfterView) {
       pr.mergeable = 'MERGEABLE';
       pr.mergeStateStatus = 'CLEAN';

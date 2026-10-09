@@ -48,6 +48,7 @@ cp.spawnSync=(cmd,args,opts)=>{
   h.saveGithub = (state) => fs.writeFileSync(h.env.AUTOMATION_GITHUB, JSON.stringify(state));
   h.saveGithub({ root: h.repo, prs: { 7: {
     state: 'OPEN', headRefOid: h.sha, headRefName: 'fixture-change',
+    headRepository: { nameWithOwner: 'acme/demo' }, url: 'https://github.com/acme/demo/pull/7',
     mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', baseRefName: 'main',
   } }, ci: { [h.sha]: ci } });
   h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'it works', '--kind', kind]);
@@ -285,6 +286,64 @@ test('a failing generator aborts a generated-only merge and retains the submissi
   assert.ok(h.logs().some((e) => e.cmd === 'automation' && /generation failed/.test(e.detail.error)));
   assert.equal(h.logs().some((e) => e.cmd === 'rework'), false);
 });
+
+test('failed generation restores modified source files and removes new files before retry', (t) => {
+  const h = generatedSetup(t);
+  h.git(['switch', 'main']);
+  const script = path.join(h.repo, 'generate.js');
+  fs.writeFileSync(script, "const fs=require('node:fs'); fs.writeFileSync('README.md','changed'); fs.writeFileSync('leftover.txt','new'); process.exit(1);\n");
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'generator writes before failing']);
+  h.git(['push', 'origin', 'main']);
+  h.git(['switch', 'fixture-change']);
+  h.submit();
+  const before = fs.readFileSync(path.join(h.repo, 'README.md'), 'utf8');
+  h.consume();
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
+  assert.equal(h.git(['rev-parse', 'HEAD']), h.sha);
+  assert.equal(h.git(['status', '--porcelain']), '');
+  assert.equal(fs.readFileSync(path.join(h.repo, 'README.md'), 'utf8'), before);
+  assert.equal(fs.existsSync(path.join(h.repo, 'leftover.txt')), false);
+  h.consume();
+  assert.ok(h.logs().filter((e) => e.cmd === 'automation' && /generation failed/.test(e.detail.error)).length >= 2);
+});
+
+test('generation cannot commit edits to hand-written text outside declared blocks', (t) => {
+  const h = generatedSetup(t);
+  h.git(['switch', 'main']);
+  fs.appendFileSync(path.join(h.repo, 'generate.js'), "fs.appendFileSync('docs/cli.md', 'Unexpected hand-written text.\\n');\n");
+  h.git(['add', '.']);
+  h.git(['commit', '-qm', 'generator changes hand-written text']);
+  h.git(['push', 'origin', 'main']);
+  h.git(['switch', 'fixture-change']);
+  h.submit();
+  const before = fs.readFileSync(path.join(h.repo, 'docs', 'cli.md'), 'utf8');
+  h.consume();
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
+  assert.equal(h.git(['rev-parse', 'HEAD']), h.sha);
+  assert.equal(h.git(['--git-dir', h.remote, 'rev-parse', 'fixture-change']), h.sha);
+  assert.equal(fs.readFileSync(path.join(h.repo, 'docs', 'cli.md'), 'utf8'), before);
+  assert.equal(h.git(['status', '--porcelain']), '');
+  assert.ok(h.logs().some((e) => e.cmd === 'automation' && /outside declared blocks/.test(e.detail.error)));
+});
+
+for (const mismatch of ['fork head', 'origin repository']) {
+  test(`generated-file repair defers a mismatched ${mismatch} before changing or pushing the branch`, (t) => {
+    const h = generatedSetup(t);
+    const state = h.github();
+    if (mismatch === 'fork head') state.prs['7'].headRepository.nameWithOwner = 'someone/fork';
+    else state.pushRepository = 'other/repository';
+    h.saveGithub(state);
+    h.submit();
+    h.consume();
+    assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
+    assert.equal(h.git(['rev-parse', 'HEAD']), h.sha);
+    assert.equal(h.git(['--git-dir', h.remote, 'rev-parse', 'fixture-change']), h.sha);
+    assert.equal(h.git(['status', '--porcelain']), '');
+    assert.ok(h.logs().some((e) => e.cmd === 'automation' && /repository/.test(e.detail.error)));
+    assert.equal(h.logs().some((e) => e.cmd === 'generated merge' || e.cmd === 'rework'), false);
+  });
+}
 
 test('a failed generated-file push retries the prepared merge without a worker or another generation', (t) => {
   const h = generatedSetup(t);
