@@ -14,6 +14,24 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 if (path.resolve(process.argv[1] || '') !== __filename) {
+  if (path.basename(process.argv[1] || '') === 'spawn-monitor.js' && process.env.LIVE_PAUSE_FINAL) {
+    const usage = require(path.join(path.dirname(process.argv[1]), 'usage-files.js'));
+    const readResult = usage.readResult;
+    let paused = false;
+    usage.readResult = function (...args) {
+      if (!paused) {
+        paused = true;
+        const marker = process.env.LIVE_PAUSE_FINAL;
+        fs.writeFileSync(marker, '');
+        const deadline = Date.now() + 60000;
+        while (!fs.existsSync(`${marker}.go`)) {
+          if (Date.now() >= deadline) throw new Error('final sample was not released');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+        }
+      }
+      return readResult.apply(this, args);
+    };
+  }
   if (path.basename(process.argv[1] || '') === 'spawn-monitor.js' && process.env.LIVE_READS) {
     const read = fs.readFileSync;
     fs.readFileSync = function (file, ...args) {

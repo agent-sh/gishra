@@ -254,6 +254,38 @@ for (const partialLog of [false, true]) {
   });
 }
 
+test('final session usage repairs spend collected before submitted supervisor reconciliation', async (t) => {
+  const h = setup(t, 'claude');
+  const finish = path.join(h.base, 'finish');
+  const paused = path.join(h.base, 'final-paused');
+  h.ok(['task', 'update', 'T1', '--budget-tokens', '1500']);
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+    LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_FINISH: finish, LIVE_LOG_PREFIX: '1', LIVE_PAUSE_FINAL: paused,
+  }) });
+  try {
+    await until(t, h, () => liveEntries(h).some((e) => e.tokens === 1000), 'initial usage was not recorded');
+    h.ok(['submit', 'T1', '--agent', spawned.agent, '--sha', h.git(['rev-parse', 'HEAD'])]);
+    fs.writeFileSync(finish, '');
+    await until(t, h, () => fs.existsSync(paused), 'the supervisor did not pause before its final read');
+    assert.equal(fs.readFileSync(h.done, 'utf8'), '2');
+    h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+    const early = recordedSpend(h);
+    assert.equal(early.tokens, 1000);
+    assert.equal(early.entries.length, 1);
+    assert.equal(early.entries[0].live, undefined, 'the early collector finalized the entry');
+  } finally {
+    fs.writeFileSync(`${paused}.go`, '');
+  }
+  await until(t, h, () => exited(h, spawned.agent), 'the supervisor did not finish reconciliation');
+  const final = h.json(['task', 'show', 'T1']).spend;
+  assert.equal(final.tokens, 2000, 'the final reading replaces early collection');
+  assert.equal(final.entries.length, 1);
+  assert.equal(final.entries[0].live, undefined, 'final reconciliation does not reopen live telemetry');
+  assert.ok(events(h).some((e) => e.cmd === 'budget stop'), 'reconciled usage still enforces the budget');
+  h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+  assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 2000, 'recollection preserves the reconciled total');
+});
+
 for (const tokens of [1500, 0]) {
   test(`a Claude invocation result authoritatively reconciles to ${tokens} tokens`, async (t) => {
     const h = setup(t, 'claude');
@@ -389,34 +421,39 @@ test('live and reconciled spend keep the configured cost for their rung', async 
   assert.deepEqual(h.json(['task', 'show', 'T1']).spend_by_rung, before.spend_by_rung);
 });
 
-test('unavailable telemetry preserves known spend and its age through recovery and exit', async (t) => {
-  const h = setup(t, 'claude');
-  const location = path.join(h.base, 'usage-file');
-  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
-    LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_FILE: location,
-  }) });
-  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'initial usage was not recorded');
-  const before = h.json(['task', 'show', 'T1']).spend;
-  const file = fs.readFileSync(location, 'utf8');
-  const data = fs.readFileSync(file);
-  fs.unlinkSync(file);
-  await until(t, h, () => events(h).some((e) => e.cmd === 'spend live' && ['unavailable', 'stale'].includes(e.detail.live.state)), 'missing telemetry was not observed');
-  const missing = h.json(['task', 'show', 'T1']).spend;
-  for (const key of ['tokens', 'input', 'cached', 'output']) assert.equal(missing[key], before[key], key);
-  assert.equal(missing.entries[0].at, before.entries[0].at, 'missing data cannot refresh the last measured usage');
-  assert.equal(h.json(['status']).spend.live[0].state, 'stale');
-  fs.writeFileSync(file, data);
-  await until(t, h, () => liveEntries(h)[0]?.live.state === 'live', 'recovered telemetry stayed stale');
-  fs.unlinkSync(file);
-  await until(t, h, () => liveEntries(h)[0]?.live.state === 'stale', 'lost telemetry did not become stale again');
-  h.ok(['task', 'update', 'T1', '--budget-tokens', '500']);
-  await until(t, h, () => exited(h, spawned.agent), 'the harness did not exit');
-  assert.ok(events(h).some((e) => e.cmd === 'budget stop'), 'missing telemetry cannot restore spent budget');
-  await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'exit usage was not finalized');
-  assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 1000);
-  h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
-  assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 1000);
-});
+for (const partialLog of [false, true]) {
+  test(`${partialLog ? 'a smaller partial log' : 'unavailable telemetry'} preserves known spend and its age through recovery and exit`, async (t) => {
+    const h = setup(t, 'claude');
+    const location = path.join(h.base, 'usage-file');
+    const tokens = partialLog ? 2000 : 1000;
+    const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+      LIVE_STEPS: partialLog ? '2' : '1', LIVE_HOLD: 'until-stop', LIVE_FILE: location,
+      ...(partialLog ? { LIVE_LOG_PREFIX: '1' } : {}),
+    }) });
+    await until(t, h, () => events(h).some((e) => e.cmd === 'spend live' && e.detail.tokens === tokens), 'initial usage was not recorded');
+    const before = h.json(['task', 'show', 'T1']).spend;
+    const file = fs.readFileSync(location, 'utf8');
+    const data = fs.readFileSync(file);
+    const readings = events(h).filter((e) => e.cmd === 'spend live').length;
+    fs.unlinkSync(file);
+    await until(t, h, () => events(h).filter((e) => e.cmd === 'spend live').length > readings, 'missing telemetry was not observed');
+    const missing = h.json(['task', 'show', 'T1']).spend;
+    for (const key of ['tokens', 'input', 'cached', 'output']) assert.equal(missing[key], before[key], key);
+    assert.equal(missing.entries[0].at, before.entries[0].at, 'missing data cannot refresh the last measured usage');
+    assert.equal(h.json(['status']).spend.live[0].state, 'stale');
+    fs.writeFileSync(file, data);
+    await until(t, h, () => liveEntries(h)[0]?.live.state === 'live', 'recovered telemetry stayed stale');
+    fs.unlinkSync(file);
+    await until(t, h, () => liveEntries(h)[0]?.live.state === 'stale', 'lost telemetry did not become stale again');
+    h.ok(['task', 'update', 'T1', '--budget-tokens', String(tokens - 500)]);
+    await until(t, h, () => exited(h, spawned.agent), 'the harness did not exit');
+    assert.ok(events(h).some((e) => e.cmd === 'budget stop'), 'missing telemetry cannot restore spent budget');
+    await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'exit usage was not finalized');
+    assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, tokens);
+    h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+    assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, tokens);
+  });
+}
 
 test('an open board ages live telemetry without state writes or a page reload', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
   const b = await openBrowser(t);

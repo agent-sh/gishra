@@ -351,13 +351,13 @@ Pass the commit actually reviewed to `evidence --sha S`. A submitted head can mo
 
 `spend --cache-write N` records cache-write input separately from `--cached` cache reads. Both are included in `--input`; their sum cannot exceed input. Review pricing uses the entry when available and conservatively prices non-cached input in older records at the higher input or cache-write rate.
 
-For a supervised claude exit without a result, the supervisor reads the session again after the process group exits. Exit collection includes that final usage and replaces the live entry. Repeating `spend --from-spawn` keeps the same total.
+For a supervised claude exit without a result, the supervisor reads the session again after the process group exits. Exit collection includes that final usage and replaces the live entry. Repeating `spend --from-spawn` keeps the same total. If collection runs before the supervisor finishes its final read, that reading updates the collected entry in place and rechecks budgets without double counting.
 
 A live entry can exist before exit collection finishes. Wait for its `live` field to disappear, and use the matching `worker-exited` receipt when waiting for a worker exit.
 
 Readers preserve future live-spend state and error-class strings. If supervision stops for incompatible state, it also skips the final live sample after the worker exits.
 
-Submitting ends lease renewal and retries; live usage collection and budget enforcement continue until the harness closes. Missing telemetry retains known spend and marks it stale. A fresh reading restores live status. The open board updates telemetry age, freshness and spend summaries each second, even when no state change arrives.
+Submitting ends lease renewal and retries; live usage collection and budget enforcement continue until the harness closes. Missing telemetry or a smaller cumulative reading retains known spend and its age, and marks it stale. Only an explicit invocation result may lower that total. A fresh reading restores live status. The open board updates telemetry age, freshness and spend summaries each second, even when no state change arrives.
 
 A budget stop keeps a ranged task on its current rung and asks the owner about the budget. Live and final spend use configured model prices in the task's per-rung cost breakdown.
 
