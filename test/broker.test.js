@@ -146,6 +146,37 @@ for (const role of ['worker', 'reviewer', 'small']) test(`a sandboxed ${role} an
   assert.equal(h.readState('tasks.json').tasks[0].notes.at(-1).agent, job.agent);
 });
 
+test('a sandboxed reviewer asks through the broker: a technical question reaches the orchestrator, an escalation stays with the owner', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Review a store choice', '--acceptance', 'ask is authorized']);
+  h.ok(['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}', '--agent', 'owner']);
+  const job = {
+    state: h.state, task: 'T1', agent: 'reviewer-T1-1', role: 'reviewer', harness: 'codex',
+    cwd: h.repo, broker: path.join(h.base, 'brokers', 'reviewer-T1-1', B.FILE),
+  };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const env = { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task };
+
+  const asked = await h.runAsync(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres', '--blocks', 'T1'], { env });
+  assert.equal(asked.code, 0, asked.stderr);
+  const technical = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([technical.asked_by, technical.technical, technical.escalation], [job.agent, true, undefined]);
+  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'orchestrator']);
+  assert.equal(h.readState('decisions.json').decisions[0].answer_rule, 'owner-technical-delegation');
+
+  const escalated = await h.runAsync(['ask', '--question', 'Raise the budget?', '--option', 'yes', '--option', 'no', '--setting', 'budget.raise', '--blocks', 'T1'], { env });
+  assert.equal(escalated.code, 0, escalated.stderr);
+  assert.deepEqual(h.readState('decisions.json').decisions[1].escalation, { settings: ['budget.raise'], change: null });
+  const refused = h.run(['answer', 'D2', '--choice', 'yes', '--agent', 'orchestrator']);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /D2 escalates budget\.raise to the owner/);
+
+  const asks = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).filter((event) => event.cmd === 'ask');
+  assert.deepEqual(asks.map((event) => [event.agent, event.via]), [[job.agent, 'broker'], [job.agent, 'broker']]);
+});
+
 test('closing the broker stops the commands it is running and what they started', async (t) => {
   const { base, state, job } = scratch(t);
   const pids = path.join(base, 'pids.json');
