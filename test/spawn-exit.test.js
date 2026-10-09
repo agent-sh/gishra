@@ -57,7 +57,7 @@ ${wait ? 'process.exit(7);' : 'setInterval(() => {}, 1000);'}
   fs.writeFileSync(worker, script);
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--command', JSON.stringify([process.execPath, worker, BIN, marker, '{prompt}']),
     '--clear', 'profile', '--clear', 'effort']);
-  if (wait) return h.run(['spawn', '--role', 'easy', '--task', 'T1', '--wait']);
+  if (wait) return h.run(['spawn', '--role', 'easy', '--task', 'T1', '--wait'], { env });
   const spawned = h.json(['spawn', '--task', 'T1'], { env });
   let killed = false;
   const kill = () => {
@@ -278,4 +278,13 @@ test('a spawned replacement can claim after another worker lease expires', async
   spawned.kill();
   await until(() => (h.json(['status']).exited_claims || []).length === 1, 'replacement exit was not reported');
   assert.equal(h.json(['ready']).exited_claims[0].pid, spawned.pid);
+});
+
+test('spawn receipts go under XDG_CACHE_HOME when it is set, not under the home cache', async (t) => {
+  const h = setup(t);
+  const home = path.join(h.base, 'home');
+  const cache = path.join(h.base, 'xdg-cache');
+  await start(t, h, { claim: false, wait: true, env: { HOME: home, XDG_CACHE_HOME: cache } });
+  assert.equal(fs.existsSync(path.join(cache, 'tower-crane')), true, 'the receipts directory is under XDG_CACHE_HOME');
+  assert.equal(fs.existsSync(path.join(home, '.cache')), false, 'the home cache is not created');
 });

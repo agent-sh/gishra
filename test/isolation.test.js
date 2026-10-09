@@ -8,12 +8,25 @@ const cp = require('node:child_process');
 const { makeRepo, ROOT, BIN, detachedAlive } = require('./helpers');
 const A = require('../lib/agents');
 const TOML = require('../lib/toml');
+const ClaudeSandboxPlaceholders = require('../lib/claude-sandbox-placeholders');
 
 const STUB = path.join(__dirname, 'fixtures', 'harness-stub.js');
 // The stubs are scripts started through a shebang; Windows starts only .exe
 // and .com files from a rung, so the end-to-end runs are POSIX only.
 const NO_STUBS = process.platform === 'win32' && 'harness stubs are shebang scripts';
 const SECRET = 'PLANTED-SECRET';
+const CLAUDE_SANDBOX_PLACEHOLDERS = ClaudeSandboxPlaceholders.FILES;
+// What the sandbox mounts over in a worker worktree, listed here rather than
+// taken from the module, so the cleanup test fails if the module misses one.
+const SANDBOX_MOUNTS = [
+  '.bash_profile', '.bashrc', '.gitconfig', '.gitmodules', '.idea', '.mcp.json',
+  '.profile', '.ripgreprc', '.vscode', '.zprofile', '.zshrc',
+  '.claude/agents', '.claude/commands', '.claude/hooks', '.claude/launch.json', '.claude/loop.md',
+  '.claude/output-styles', '.claude/routines', '.claude/scheduled_tasks.json', '.claude/settings.json',
+  '.claude/settings.local.json', '.claude/skills', '.claude/workflows',
+];
+// The repository tracks this file, so the sandbox never leaves a placeholder in its place.
+const TRACKED_SETTINGS = '.claude/settings.json';
 
 // A user home holding what must never reach a tower-crane agent: memory and
 // instruction files, hooks, an MCP server, approved-command rules, and
@@ -120,6 +133,21 @@ function setup(t) {
   const wt = h.json(['worktree', 'T1']).path;
   fs.writeFileSync(path.join(wt, '.claude', 'settings.local.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'planted-local-hook' }] }] } }));
   return { h, u: plant(h), wt };
+}
+
+function isolateGitEnvironment(h, u) {
+  const global = path.join(h.base, 'gitconfig');
+  const xdg = path.join(u.home, 'test-xdg');
+  for (const env of [h.env, u.env]) {
+    for (const key of Object.keys(env)) {
+      if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|SYSTEM)$/i.test(key)) delete env[key];
+    }
+    Object.assign(env, {
+      HOME: u.home, USERPROFILE: u.home, XDG_CONFIG_HOME: xdg,
+      GIT_CONFIG_GLOBAL: global, GIT_CONFIG_NOSYSTEM: '1',
+    });
+  }
+  return { global, xdg };
 }
 
 // Every regular file under dir, without following links into the user's home.
@@ -464,6 +492,118 @@ test('a spawned claude agent imports the user\'s global rules by path, loads non
   assert.match(fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8'), /^\.claude\/\.cc-writes\/$/m, 'the sandbox marker is never committed');
   assert.equal(fs.readFileSync(path.join(h.state, 'homes', '.gitignore'), 'utf8'), '*\n');
   noSecretsCopied(h);
+});
+
+test('a sandboxed claude removes its ignored cwd placeholders after exit', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const { xdg } = isolateGitEnvironment(h, u);
+  isolated(h, 'small', 'claude');
+  fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
+  const gitignoreFile = path.join(h.repo, '.gitignore');
+  const gitignore = fs.existsSync(gitignoreFile) ? fs.readFileSync(gitignoreFile, 'utf8') : null;
+  const globalIgnore = path.join(xdg, 'git', 'ignore');
+  fs.mkdirSync(path.dirname(globalIgnore), { recursive: true });
+  fs.writeFileSync(globalIgnore, 'globally-ignored/\n');
+  fs.mkdirSync(path.join(wt, 'globally-ignored'));
+  fs.writeFileSync(path.join(wt, 'globally-ignored', 'file.txt'), "ignored by the user's global excludes\n");
+  const status = (cwd) => cp.execFileSync('git', ['status', '--short', '--untracked-files=all'], {
+    cwd, env: u.env, encoding: 'utf8',
+  }).trim();
+
+  const started = spawn(h, u, 'small', {
+    STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(SANDBOX_MOUNTS),
+  });
+  const seen = u.report();
+  assert.deepEqual(seen.placeholderGitStatus, { code: 0, stdout: '', stderr: '' }, 'git status stays clean while the placeholders exist');
+  for (const relative of SANDBOX_MOUNTS.filter((name) => name !== TRACKED_SETTINGS)) {
+    assert.equal(fs.existsSync(path.join(wt, relative)), false, `${relative} is removed after exit`);
+  }
+  assert.equal(fs.existsSync(path.join(wt, TRACKED_SETTINGS)), true, 'the tracked project settings stay');
+  assert.equal(status(started.cwd), '', 'the worktree stays clean after exit');
+
+  const excludes = fs.readFileSync(path.join(h.repo, '.git', 'info', 'exclude'), 'utf8').split(/\r?\n/);
+  for (const pattern of ClaudeSandboxPlaceholders.IGNORE_PATTERNS) {
+    assert.ok(!excludes.includes(pattern), `${pattern} is not left in shared git info/exclude`);
+  }
+  assert.equal(fs.existsSync(gitignoreFile) ? fs.readFileSync(gitignoreFile, 'utf8') : null, gitignore, 'the repository .gitignore is unchanged');
+
+  const other = path.join(h.base, 'other-worktree');
+  h.git(['worktree', 'add', '--detach', other, 'main']);
+  for (const cwd of [wt, other]) {
+    fs.writeFileSync(path.join(cwd, '.bashrc'), 'a real shell config\n');
+    fs.mkdirSync(path.join(cwd, '.claude', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.claude', 'agents', 'x.md'), 'a real project agent\n');
+    assert.equal(status(cwd), '?? .bashrc\n?? .claude/agents/x.md');
+  }
+});
+
+test('sandbox cleanup preserves and reports a pre-existing empty read-only file with a placeholder name', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  const { global } = isolateGitEnvironment(h, u);
+  isolated(h, 'small', 'claude');
+  fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
+  const realFile = path.join(wt, '.bash_profile');
+  fs.writeFileSync(realFile, '');
+  fs.chmodSync(realFile, 0o444);
+  const globalIgnore = path.join(h.base, 'explicit-global-ignore');
+  fs.writeFileSync(globalIgnore, 'explicitly-ignored/\n');
+  fs.mkdirSync(path.join(wt, 'explicitly-ignored'));
+  fs.writeFileSync(path.join(wt, 'explicitly-ignored', 'file.txt'), 'ignored by the configured core.excludesFile\n');
+  u.env.GIT_CONFIG_PARAMETERS = `'core.excludesFile'='${globalIgnore.replace(/\\/g, '/')}'`;
+  const status = (cwd) => cp.execFileSync('git', ['status', '--short', '--untracked-files=all'], {
+    cwd, env: u.env, encoding: 'utf8',
+  }).trim();
+
+  const started = spawn(h, u, 'small', {
+    STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(CLAUDE_SANDBOX_PLACEHOLDERS),
+  });
+  const seen = u.report();
+  assert.deepEqual(seen.placeholderGitStatus, { code: 0, stdout: '?? .bash_profile\n', stderr: '' });
+  assert.equal(fs.existsSync(realFile), true, 'the existing file remains');
+  assert.equal(fs.statSync(realFile).size, 0, 'the existing file stays empty');
+  assert.equal(fs.statSync(realFile).mode & 0o222, 0, 'the existing file keeps its read-only mode');
+  for (const relative of CLAUDE_SANDBOX_PLACEHOLDERS.filter((name) => name !== '.bash_profile' && name !== TRACKED_SETTINGS)) {
+    assert.equal(fs.existsSync(path.join(wt, relative)), false, `${relative} placeholder is removed`);
+  }
+  assert.equal(status(started.cwd), '?? .bash_profile');
+  assert.equal(u.env.GIT_CONFIG_GLOBAL, global, 'Git uses the test-only global config');
+});
+
+test('sandbox cleanup refuses placeholder paths under a symlinked parent', { skip: NO_STUBS }, (t) => {
+  const { h, u, wt } = setup(t);
+  isolateGitEnvironment(h, u);
+  isolated(h, 'small', 'claude');
+  fs.rmSync(path.join(wt, '.claude', 'settings.local.json'));
+  const outside = path.join(h.base, 'outside-claude');
+  fs.mkdirSync(outside);
+  const outsideFile = path.join(outside, 'loop.md');
+  fs.writeFileSync(outsideFile, '');
+  fs.chmodSync(outsideFile, 0o444);
+  const claudeDir = path.join(wt, '.claude');
+  const replaceParent = [
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    `fs.rmSync(path.join(process.cwd(), ".claude"), { recursive: true, force: true });`,
+    `fs.symlinkSync(${JSON.stringify(outside)}, path.join(process.cwd(), ".claude"), "dir");`,
+  ].join('\n');
+
+  const started = spawn(h, u, 'small', {
+    STUB_CLAUDE_SANDBOX_PLACEHOLDERS: JSON.stringify(CLAUDE_SANDBOX_PLACEHOLDERS),
+    STUB_RUN: JSON.stringify([[process.execPath, '-e', replaceParent]]),
+  });
+  assert.equal(u.report().ran[0].code, 0);
+  assert.equal(fs.lstatSync(claudeDir).isSymbolicLink(), true, 'the parent symlink remains');
+  assert.equal(fs.existsSync(outsideFile), true, 'cleanup leaves the outside file alone');
+  assert.equal(fs.statSync(outsideFile).size, 0);
+  assert.equal(fs.statSync(outsideFile).mode & 0o222, 0, 'the outside file keeps its read-only mode');
+
+  fs.unlinkSync(claudeDir);
+  fs.mkdirSync(claudeDir);
+  fs.copyFileSync(path.join(h.repo, '.claude', 'settings.json'), path.join(claudeDir, 'settings.json'));
+  const status = cp.execFileSync('git', ['status', '--short', '--untracked-files=all'], {
+    cwd: started.cwd, env: u.env, encoding: 'utf8',
+  }).trim();
+  assert.equal(status, '', 'restoring the tracked project settings leaves the worktree clean');
 });
 
 test('claude\'s own Read, Grep and Glob tools are denied every path its sandbox hides', { skip: NO_STUBS }, (t) => {
