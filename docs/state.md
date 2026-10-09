@@ -605,9 +605,11 @@ notification submitted after the request keeps submission order.
 `gates prioritize ID --reason R` is operational ([Authority](#authority)); it
 records a `gates prioritize` event with `reason`, `queued` (the task's queued
 notifications at that moment) and `authority`. It is refused when the task
-has no queued notification, since it would change nothing. `status` lists the
+has no queued notification, since it would change nothing. A notification
+queued behind the task's own running reaction counts. `status` lists the
 gate queue in drain order, running tasks first, and `--json` carries it as
-`gate_queue`. Each executor drains the queue after releasing its slot; watchers
+`gate_queue`; a task whose notification waits behind its running reaction
+appears in both. Each executor drains the queue after releasing its slot; watchers
 also retry their pending notifications on their next check. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
