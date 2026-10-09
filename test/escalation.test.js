@@ -125,8 +125,9 @@ if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
   h.task = () => h.readState('tasks.json').tasks.find((task) => task.id === 'T1');
   h.openDecisions = () => h.readState('decisions.json').decisions.filter((decision) => decision.status === 'open');
   h.until = (fn, dirs = [h.state, h.base]) => until(t, dirs, () => {
-    if (fn()) return true;
+    // The predicate must see a ceiling the guard saw before rejecting that ceiling.
     const ceiling = h.openDecisions().find((decision) => decision.blocks.includes('T1'));
+    if (fn()) return true;
     if (ceiling) {
       const exit = events(h).findLast((event) => event.cmd === 'spawn exit' && event.task === 'T1');
       const log = exit?.detail.log;
@@ -229,6 +230,19 @@ test('a worker exiting before its attempt record fails the submission wait at th
     /Unexpected escalation ceiling:[\s\S]*worker exit without submit \(code 1\)[\s\S]*ENOENT: attempt publication/);
   assert.deepEqual(h.readAttempts().map((attempt) => attempt.rung), ['easy']);
   assert.ok(events(h).some((event) => event.cmd === 'claim' && event.agent === 'worker-T1-2'));
+});
+
+test('an expected ceiling published between wait reads completes without a false failure', async (t) => {
+  const h = await setup(t, 'top', 'easy..medium');
+  h.ok(['spawn', '--task', 'T1']);
+  await until(t, [h.state, h.base], () => h.openDecisions().length === 1);
+  const readDecisions = h.openDecisions;
+  let reads = 0;
+  // Reproduce a reader just before publication followed by one after publication.
+  t.mock.method(h, 'openDecisions', () => ++reads === 1 ? [] : readDecisions());
+  await h.until(() => h.openDecisions().length === 1);
+  assert.equal(reads, 2);
+  assert.deepEqual(h.readAttempts().map((attempt) => attempt.rung), ['easy', 'medium']);
 });
 
 test('tier ranges start low; invalid and reversed ranges are refused without state writes', async (t) => {
