@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { cachedFixture, detachedAlive } = require('./helpers');
+const { cachedFixture, pinRung, detachedAlive } = require('./helpers');
 
 const fixture = (name) => path.join(__dirname, 'fixtures', 'usage', name);
 const text = (name) => fs.readFileSync(fixture(name), 'utf8');
@@ -98,6 +98,31 @@ function setup(t, harness = 'codex') {
 
 const spends = (h) => h.json(['task', 'show', 'T1']).spend;
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+
+test('native Claude alias spend records release-priced cost without rewriting its stored ID', (t) => {
+  const [alias, release] = Object.entries(require('../lib/ladder').BUILTIN.claude_aliases)[0];
+  const bedrock = `global.anthropic.${release}`;
+  for (const [harness, provider, stored, cost] of [
+    ['claude', undefined, alias, 0.02],
+    ['claude', 'anthropic', release, 0.02],
+    ['claude', 'bedrock', bedrock, 0.03],
+    ['codex', undefined, alias, null],
+  ]) {
+    const h = setup(t, harness);
+    pinRung(h, 'review', { harness, provider, model: alias, effort: 'high' });
+    h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: {
+      [release]: { input: 1, cache_write: 1, cache_read: 1, output: 20 },
+      [bedrock]: { input: 1, cache_write: 1, cache_read: 1, output: 30 },
+    } })]);
+    h.ok(['spend', 'T1', '--rung', 'review', '--tokens', '1000', '--input', '0', '--cached', '0', '--output', '1000']);
+    const task = h.json(['task', 'show', 'T1']);
+    const entry = task.spend.entries[0];
+    assert.equal(entry.model, stored);
+    assert.equal(entry.cost_usd, cost, `${harness}/${provider || 'default'}`);
+    assert.deepEqual(task.spend_by_rung.review, { tokens: 1000, cost_usd: cost });
+    assert.equal(events(h).findLast(e => e.cmd === 'spend').detail.cost_usd, cost);
+  }
+});
 
 async function collected(h, length = 1, timeout = 15000) {
   const deadline = Date.now() + timeout;
@@ -216,8 +241,9 @@ test('collectors and concurrent waiters share one private exit event and usage e
   const privateText = 'prompt: private task text\ncredential: synthetic-private-token';
   const sample = path.join(h.base, 'usage-with-private-text.log');
   fs.writeFileSync(sample, privateText + '\n' + fs.readFileSync(fixture('codex-stream.jsonl'), 'utf8'));
+  // Match the CLI startup guard while both observers await the collector.
   const waits = ['observer-a', 'observer-b'].map((agent) => h.runAsync([
-    'wait', '--agent', agent, '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '8',
+    'wait', '--agent', agent, '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '60',
   ]));
   const started = h.json(['spawn', '--task', 'T1'], {
     env: { ...h.usageEnv, USAGE_DELAY: '900', USAGE_CLAIM: '1' },

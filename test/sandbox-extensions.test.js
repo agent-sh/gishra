@@ -301,6 +301,7 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
   skip: process.env.TOWER_CRANE_LIVE_CODEX !== '1' && 'set TOWER_CRANE_LIVE_CODEX=1 to run a real Codex worker',
   timeout: 240000,
 }, async (t) => {
+  assert.ok(process.env.TOWER_CRANE_LIVE_PROFILE, 'set TOWER_CRANE_LIVE_PROFILE to run a live codex probe');
   const fixtureRoot = process.env.TOWER_CRANE_TEST_TMP;
   const inside = (dir, target) => {
     const rel = path.relative(path.resolve(dir), path.resolve(target));
@@ -368,7 +369,7 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
   ].join('\n'));
   h.ok(['project', 'set', '--sandbox', JSON.stringify({ write: [cargo, results] }), '--scope', '{"CPUQuota":"200%","MemoryMax":"8G"}',
     '--env', JSON.stringify({ CARGO_HOME: cargo, RUSTUP_HOME: rustup }), '--env_file', file]);
-  h.ok(['ladder', 'set', 'medium', '--harness', 'codex', '--profile', process.env.TOWER_CRANE_LIVE_PROFILE || 'fixture-main',
+  h.ok(['ladder', 'set', 'medium', '--harness', 'codex', '--profile', process.env.TOWER_CRANE_LIVE_PROFILE,
     '--clear', 'model', '--clear', 'effort', '--supervision', '{"retries":0}']);
   h.ok(['brief', 'set', 'T1', '-'], {
     input: `This task is a live sandbox verification fixture. Run exactly this command with your command tool, then report its exit code and stop. Do not read the script or private environment file, print environment variables, change files, use tower-crane, open a PR or delegate work.\n\n${JSON.stringify(process.execPath)} ${JSON.stringify(script)}\n`,
