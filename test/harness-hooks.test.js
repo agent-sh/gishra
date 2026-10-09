@@ -190,7 +190,7 @@ test('the bridge refuses path-selected bindings and another dispatch identity', 
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
 });
 
-test('the hook bridge reads hook input from a non-blocking stdin pipe', { skip: process.platform === 'win32' && 'needs a FIFO and sh' }, async (t) => {
+test('the hook bridge reads hook input from a non-blocking stdin pipe', { skip: process.platform === 'win32' && 'needs a FIFO' }, async (t) => {
   const { h, ready } = setup(t, 'command');
   const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json']);
   await until(ready);
@@ -201,18 +201,17 @@ test('the hook bridge reads hook input from a non-blocking stdin pipe', { skip: 
   const preload = path.join(__dirname, 'fixtures', 'stdin-marker.js');
   const binding = path.join(h.state, 'homes', 'worker-T1-1', 'hook.json');
   const marker = path.join(h.base, 'stdin-read');
-  // libuv resets fds 0-2 of each child to blocking, so the FIFO reaches the
-  // bridge on fd 3 and a shell redirect. Its O_NONBLOCK flag survives, as it
-  // does on a hook runner's stdin: an empty read gives EAGAIN.
+  // libuv resets fds 0-2 of each child to blocking, so the preload reopens the
+  // FIFO on fd 0 with O_NONBLOCK, as a hook runner's stdin is: an empty read
+  // gives EAGAIN. The parent opens the FIFO once, read-write, so it holds the
+  // writer without blocking and closes it to send EOF.
   const fifo = path.join(h.base, 'stdin.fifo');
   cp.execFileSync('mkfifo', [fifo]);
-  const reader = fs.openSync(fifo, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
-  const writer = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
-  const env = { ...h.env, TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_STATE: h.state, TOWER_CRANE_HOOK: binding, STDIN_MARKER: marker };
-  const child = cp.spawn('sh', ['-c', 'exec "$@" <&3', 'sh', process.execPath, '--require', preload, bridge, 'hook'], {
-    env, stdio: ['ignore', 'pipe', 'pipe', reader],
+  const writer = fs.openSync(fifo, fs.constants.O_RDWR);
+  const env = { ...h.env, TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_STATE: h.state, TOWER_CRANE_HOOK: binding, STDIN_MARKER: marker, STDIN_FIFO: fifo };
+  const child = cp.spawn(process.execPath, ['--require', preload, bridge, 'hook'], {
+    env, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  fs.closeSync(reader);
   t.after(() => child.kill());
   // Listen before the bridge can exit: a failing bridge may exit inside the wait below.
   const closed = once(child, 'close');
@@ -222,12 +221,7 @@ test('the hook bridge reads hook input from a non-blocking stdin pipe', { skip: 
   child.stderr.setEncoding('utf8').on('data', (chunk) => { err += chunk; });
   // Deliver input only once the bridge is reading, so an empty read is seen.
   await until(marker);
-  try {
-    fs.writeSync(writer, JSON.stringify({ hook_event_name: 'UserPromptSubmit' }));
-  } catch (e) {
-    // A bridge that already failed has closed its end; its exit code says why.
-    if (e.code !== 'EPIPE') throw e;
-  }
+  fs.writeSync(writer, JSON.stringify({ hook_event_name: 'UserPromptSubmit' }));
   fs.closeSync(writer);
   const [code] = await closed;
   assert.equal(code, 0, err);
