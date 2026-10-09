@@ -823,7 +823,9 @@ test('two queued PRs run exactly one full suite each at their turn and none befo
   ready.prs['7'].mergeable = 'MERGEABLE';
   ready.prs['7'].mergeStateStatus = 'CLEAN';
   h.saveGithub(ready);
-  h.ok(['wait', '--types', 'merged', '--task', 'T2', '--timeout', '10', '--agent', 'orchestrator']);
+  // The wait runs both suites in this process: 55s alone and 119s with the
+  // whole file running in parallel, so a shorter timeout fails under load.
+  h.ok(['wait', '--types', 'merged', '--task', 'T2', '--timeout', '120', '--agent', 'orchestrator']);
   assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['7', '8']);
   assert.deepEqual(h.suites().slice(suites), [{ pr7: 'OPEN' }, { pr7: 'MERGED' }],
     'T1 runs its suite before merging; T2 runs its suite only after T1 merged');
