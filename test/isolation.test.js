@@ -107,7 +107,7 @@ process.exit(result.status ?? 1);
   for (const key of ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'PI_CODING_AGENT_DIR', 'DOCKER_CONFIG', 'CARGO_HOME',
     'KUBECONFIG', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS', 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',
     'AZURE_CONFIG_DIR', 'NPM_CONFIG_USERCONFIG', 'npm_config_userconfig',
-    'PIP_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE']) runEnv[key] = '';
+    'PIP_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE', 'AWS_WEB_IDENTITY_TOKEN_FILE']) runEnv[key] = '';
   // Agent caches belong under the fixture's home, not the runner's cache.
   runEnv.XDG_CACHE_HOME = '';
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
@@ -1014,6 +1014,59 @@ test('Google credential file overrides stay hidden across environment sources', 
       assert.match(refused.stderr, /house rule.*credential store/i);
     }
     fs.rmSync(path.join(wt, 'AGENTS.md'));
+  }
+});
+
+test('web identity tokens stay hidden across environment sources', { skip: NO_STUBS }, t => {
+  const { h, u, wt } = setup(t);
+  const sources = ['inherited', 'project', 'rung', 'file', 'claude', 'codex'].map(label => {
+    const file = path.join(h.base, `${label}-web-identity`);
+    fs.writeFileSync(file, 'SYNTHETIC-WEB-IDENTITY-TOKEN\n');
+    return { AWS_WEB_IDENTITY_TOKEN_FILE: file };
+  });
+  const [inherited, project, rung, file, claude, codex] = sources;
+  const text = env => `AWS_WEB_IDENTITY_TOKEN_FILE=${JSON.stringify(env.AWS_WEB_IDENTITY_TOKEN_FILE)}\n`;
+  const envFile = path.join(h.base, 'web-identity.env');
+  fs.writeFileSync(envFile, text(file));
+  fs.writeFileSync(path.join(u.home, '.codex', '.env'), text(codex));
+  const settingsFile = path.join(u.home, '.claude', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  Object.assign(settings.env, claude);
+  fs.writeFileSync(settingsFile, JSON.stringify(settings));
+  h.ok(['project', 'set', '--env', JSON.stringify(project), '--env_file', envFile]);
+  const files = sources.map(env => env.AWS_WEB_IDENTITY_TOKEN_FILE);
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    h.ok(['ladder', 'set', 'hard', '--env', JSON.stringify(rung)]);
+    spawn(h, u, 'hard', { ...inherited, STUB_READ: JSON.stringify(files) });
+    assertCredentialsHidden(u.report(), files);
+    if (harness === 'claude') assert.ok(u.report().reads.every(read => read.denied));
+    fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${inherited.AWS_WEB_IDENTITY_TOKEN_FILE}\n`);
+    const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: { ...u.env, ...inherited } });
+    assert.notEqual(refused.code, 0, 'web identity token imports must be refused');
+    assert.match(refused.stderr, /house rule.*credential store/i);
+    fs.rmSync(path.join(wt, 'AGENTS.md'));
+  }
+});
+
+test('credential stores equal to required runtime directories refuse dispatch', { skip: NO_STUBS }, t => {
+  const { h, u, wt } = setup(t);
+  fs.writeFileSync(path.join(wt, 'config.json'), '{"auths":{"example":{"auth":"SYNTHETIC-DOCKER-TOKEN"}}}\n');
+  const alias = path.join(h.base, 'worktree-alias');
+  fs.symlinkSync(wt, alias, 'dir');
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    for (const store of [wt, alias, h.state]) {
+      fs.rmSync(u.out, { force: true });
+      const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--wait', '--json'], {
+        env: { ...u.env, DOCKER_CONFIG: store },
+      });
+      assert.notEqual(refused.code, 0, `${harness}: ${store} must refuse dispatch`);
+      assert.match(refused.stderr, /credential store.*required.*path/i);
+      assert.ok(!fs.existsSync(u.out), 'the harness must not start');
+    }
+    spawn(h, u, 'hard');
+    assert.equal(u.report().harness, harness, 'a refused dispatch leaves the worktree usable');
   }
 });
 

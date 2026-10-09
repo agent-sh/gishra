@@ -576,9 +576,9 @@ Sandboxed claude and codex roles deny reads of the user's credential stores. The
 
 This gh path is enforced after settings are merged for initial, retry and fallback launches. Credential denials retain paths from every environment source instead of replacing original locations with child overrides. Linked files and directories inside stores protect their targets too, and importing either path as repository instructions refuses startup.
 
-Relative credential locations retain both their caller-directory and worker-directory interpretations, including on fallback routes. Google service-account files selected by `GOOGLE_APPLICATION_CREDENTIALS` or `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` are protected through the same environment-source discovery.
+Relative credential locations retain both their caller-directory and worker-directory interpretations, including on fallback routes. Google service-account files selected by `GOOGLE_APPLICATION_CREDENTIALS` or `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` are protected through the same environment-source discovery. A credential store equal to a required rule or runtime path refuses dispatch, including when reached through a symlink.
 
-The sources include the user's Claude settings environment, Codex `.env` and resolved provider launch paths. Custom AWS files loaded by a harness remain unavailable to agent commands and Claude file tools, including when a provider resolves a relative filename before entering the worker's directory.
+The sources include the user's Claude settings environment, Codex `.env` and resolved provider launch paths. Custom AWS files loaded by a harness, including `AWS_WEB_IDENTITY_TOKEN_FILE`, remain unavailable to agent commands and Claude file tools, including when a provider resolves a relative filename before entering the worker's directory.
 
 The denial list follows standard credential-location overrides, including each `KUBECONFIG` entry, and covers Tower Crane config and Pi/Agy credential files. Inherited environment, literal settings and `env_file` paths use the same checks when the home is rendered; dry-run does not read `env_file`. Repository rule imports cannot exempt credentials: an import resolving to a denied store refuses startup before the harness loads it. See [credential stores](ladder.md#agent-files-and-homes) for the paths and global-rule exceptions.
 
