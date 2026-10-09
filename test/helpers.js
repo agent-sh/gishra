@@ -269,11 +269,10 @@ function runAsync(args, { cwd, env, pre = [] } = {}) {
 const real = (p) => fs.realpathSync.native(p);
 
 function detachedAlive(child) {
-  if (child.file) {
-    try { if (JSON.parse(fs.readFileSync(child.file, 'utf8')).exited) return false; }
-    catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+  if (process.platform === 'win32' && child.startTime !== undefined) {
+    return child.startTime !== null && require('./windows-process').startTime(child.pid) === child.startTime;
   }
-  if (child.exited) return false;
+  if (child.kind === 'worker' && child.file && !fs.existsSync(child.file)) return false;
   try { process.kill(child.pid, 0); } catch (e) { if (e.code === 'ESRCH') return false; throw e; }
   if (process.platform === 'linux') {
     let stat;
@@ -296,7 +295,7 @@ function killDetached(child) {
 
 async function stopDetached(children) {
   const monitors = children.filter((c) => c.kind === 'monitor');
-  if (process.platform === 'win32' && monitors.some(detachedAlive)) {
+  if (process.platform === 'win32' && monitors.length) {
     // Retain native handles before stopping workers. A PID can be reused
     // between probes, but WaitForExit still observes the original process.
     const records = JSON.stringify(monitors).replaceAll("'", "''");
@@ -305,19 +304,19 @@ $ErrorActionPreference = 'Stop'
 $monitors = @()
 try {
   foreach ($entry in (ConvertFrom-Json '${records}')) {
-    if (!(Test-Path -LiteralPath $entry.file)) { continue }
-    $record = Get-Content -LiteralPath $entry.file -Raw | ConvertFrom-Json
-    if ($record.exited) { continue }
+    if ($null -eq $entry.startTime) { continue }
     try {
       $monitor = [System.Diagnostics.Process]::GetProcessById($entry.pid)
       $null = $monitor.Handle
     } catch [System.ArgumentException] { continue }
       catch [System.InvalidOperationException] { $monitor.Dispose(); continue }
-    $record = Get-Content -LiteralPath $entry.file -Raw | ConvertFrom-Json
-    if ($record.exited) { $monitor.Dispose(); continue }
+    if ($monitor.StartTime.ToFileTimeUtc().ToString() -ne $entry.startTime) {
+      $monitor.Dispose()
+      continue
+    }
     $monitors += $monitor
   }
-  [Console]::Out.WriteLine('ready')
+  [Console]::Out.WriteLine('ready:' + (ConvertTo-Json -InputObject @($monitors | ForEach-Object { $_.Id }) -Compress))
   $null = [Console]::In.ReadLine()
   $clock = [System.Diagnostics.Stopwatch]::StartNew()
   $survivors = @()
@@ -339,10 +338,13 @@ try {
     let stopped = false;
     child.stdout.on('data', (data) => {
       stdout += data;
-      if (!stopped && stdout.split('\n').some((line) => line.trim() === 'ready')) {
+      const ready = stdout.split('\n').slice(0, -1).find((line) => line.startsWith('ready:'));
+      if (!stopped && ready) {
         stopped = true;
         for (const worker of children.filter((c) => c.kind === 'worker')) killDetached(worker);
-        for (const monitor of monitors) killDetached(monitor);
+        for (const pid of JSON.parse(ready.slice(6).trim())) {
+          cp.spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 });
+        }
         child.stdin.end('\n');
       }
     });

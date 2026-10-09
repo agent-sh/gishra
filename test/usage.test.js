@@ -181,7 +181,7 @@ test('completed processes cannot leave teardown targeting a reused pid', async (
   assert.equal(tracked.filter((child) => child.kind === 'worker').length, 0);
   const monitors = tracked.filter((child) => child.kind === 'monitor');
   assert.equal(monitors.length, 1, 'monitor dispatch remains in the audit tracker');
-  assert.equal(monitors[0].exited, true, 'teardown knows the monitor exited before its pid can be reused');
+  assert.equal(monitors[0].exited, true, 'the monitor reached its exit listener; teardown still checks OS termination');
 });
 
 test('detached exits record both spawns exactly once and keep dispatch metadata', async (t) => {
