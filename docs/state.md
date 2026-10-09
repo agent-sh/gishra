@@ -629,9 +629,11 @@ no queued notification, since it would change nothing. A notification queued
 behind the task's own running reaction counts, but the running reaction does
 not: its receipt is running and its executor is live, so it is no longer
 queued. A dead executor's notification stays queued for its retry. `status`
-lists the gate queue in drain order, running tasks first, and `--json`
-carries it as `gate_queue`; a task whose notification waits behind its
-running reaction appears in both. `inbox` carries the same `gate_queue`. Each executor drains the queue after releasing its slot; watchers
+lists the gate queue: running tasks, then the queued tasks in the order a free
+executor takes them, then the tasks whose notification waits behind their own
+running reaction, marked as blocked. `--json` carries it as `gate_queue` with
+`running`, `queued` and `blocked`, each queued or blocked task with its
+`prioritized` request or `null`. `inbox` carries the same `gate_queue`. Each executor drains the queue after releasing its slot; watchers
 also retry their pending notifications on their next check. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
