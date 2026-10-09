@@ -46,7 +46,9 @@ on startup through fresh reconciliation requests. Completed reaction
 receipts do not suppress checking current mergeability, so conflicts
 after a missed merge sweep still go to rework. Tests, cleanup and source
 verification run at a matching submitted head while mergeability is
-unknown; CI, review and merge retain their guards.
+unknown; CI, review and merge retain their guards. Before any of them run,
+an UNKNOWN read is repeated for a few seconds. A PR that GitHub then reports
+CONFLICTING goes to rework with its files and runs no suite.
 The dispatch supervisor handles submission and review after
 agent exit even without a waiter. Native workers without an exit receipt
 use explicit `accept` for review dispatch. `ci completed ID --sha SHA` and
