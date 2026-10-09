@@ -617,6 +617,48 @@ test('a task sent back and claimed after merge looked at its worktree keeps the 
   assert.equal(kept.detail.reason, 'the task changed before its worktree was removed');
 });
 
+test('a merge of an older head keeps the worktree of a newer accepted head', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const wt = acceptedWithWorktree(h);
+  const merged = h.readState('tasks.json').tasks[0].sha;
+  // The worktree starts from the submitted head, so a commit on top of it passes the same gates.
+  h.git(['merge', '--ff-only', '-q', merged], wt.path);
+  const cli = cliCopy(h);
+  fs.mkdirSync(cli.gates, { recursive: true });
+  fs.writeFileSync(path.join(cli.gates, 'merge.js'), FAKE_GATE);
+
+  // The merge of the first head pauses before its first look at the worktree.
+  const paused = path.join(h.base, 'paused');
+  const merge = cli.start(['merge', 'T1'], {
+    GATE_OUT: path.join(h.base, 'gate.json'), GATE_OK: '1', HOOK_STOP_WORKTREE_STATUS: paused,
+  });
+  assert.ok(await waitFor(paused), 'merge reached its first look at the worktree');
+  h.ok(['rework', 'T1', '--reason', 'newer head']);
+  h.ok(['claim', 'T1', '--agent', 'w-2']);
+  h.git(['commit', '-q', '--allow-empty', '-m', 'newer head'], wt.path);
+  const newer = h.git(['rev-parse', 'HEAD'], wt.path);
+  h.ok(['submit', 'T1', '--sha', newer, '--agent', 'w-2']);
+  for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
+  h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', newer, '--agent', 'r-1']);
+  h.ok(['accept', 'T1']);
+  fs.writeFileSync(`${paused}.go`, '');
+  const result = await merge.result;
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(fs.existsSync(wt.path), 'the worktree of the newer head stays');
+  assert.ok(h.registers(wt.path), 'git still registers it');
+  const task = h.readState('tasks.json').tasks[0];
+  assert.equal(task.status, 'accepted');
+  assert.equal(task.sha, newer);
+  assert.equal(task.retiring, undefined, 'the marker is cleared once the merge ends');
+  const events = readEvents(h);
+  assert.ok(!events.some((e) => e.cmd === 'worktree removed'), 'nothing was removed');
+  const kept = events.find((e) => e.cmd === 'worktree kept');
+  assert.equal(kept.task, 'T1');
+  assert.equal(kept.detail.reason, 'the task changed before its worktree was removed');
+});
+
 test('merge refuses rework and claim while it removes the task worktree', async (t) => {
   const h = makeRepo(t);
   h.init();
