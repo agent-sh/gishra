@@ -57,6 +57,56 @@ test('the broker rejects an identity that differs from its spawn', () => {
   }
 });
 
+test('a worker broker refuses unscoped dead-claim recovery and preserves peer claims', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  for (const id of ['T1', 'T2']) {
+    h.ok(['task', 'add', '--title', id, '--acceptance', 'claim is scoped']);
+    h.ok(['claim', id, '--agent', `worker-${id}-1`]);
+  }
+  const file = path.join(h.state, 'events.jsonl');
+  fs.appendFileSync(file, JSON.stringify({ id: 'dead-peer', at: new Date().toISOString(), cmd: 'spawn',
+    agent: 'orchestrator', task: 'T2', detail: { agent: 'worker-T2-1', role: 'worker', pid: 2147483647 } }) + '\n');
+  const job = { state: h.state, task: 'T1', agent: 'worker-T1-1', role: 'worker', harness: 'codex',
+    cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T1-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const before = h.readState('tasks.json');
+  const events = fs.readFileSync(file, 'utf8');
+  const result = await h.runAsync(['release', '--dead'], {
+    env: { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task },
+  });
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /release --dead.*orchestrator|unscoped/i);
+  assert.deepEqual(h.readState('tasks.json'), before);
+  assert.equal(fs.readFileSync(file, 'utf8'), events);
+  assert.throws(() => B.authorize(job, ['release', '--dead']), /release --dead.*orchestrator|unscoped/i);
+  const own = await h.runAsync(['release', 'T1', '--reason', 'handoff'], {
+    env: { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task },
+  });
+  assert.equal(own.code, 0, own.stderr);
+  assert.equal(h.readState('tasks.json').tasks[1].claim.agent, 'worker-T2-1');
+});
+
+test('the broker answers no request without its token and acts on its own task only', async (t) => {
+  const { job } = scratch(t);
+  for (const argv of [['task', 'note', 'T2', 'x'], ['claim', 'T2'], ['ask', '--question', 'q', '--option', 'a', '--option', 'b', '--blocks', 'T2']]) {
+    assert.throws(() => B.authorize(job, argv), /works on T1 only, not T2/, argv.join(' '));
+  }
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const at = JSON.parse(fs.readFileSync(job.broker, 'utf8'));
+  const reply = await new Promise((resolve, reject) => {
+    const s = require('node:net').connect(at.socket || { host: at.host, port: at.port }, () => {
+      s.write(JSON.stringify({ token: '0'.repeat(64), argv: ['task', 'note', 'T1', 'forged'] }) + '\n');
+    });
+    let out = '';
+    s.on('data', (d) => { out += d; }).on('end', () => resolve(JSON.parse(out))).on('error', reject);
+  });
+  assert.equal(reply.code, 1);
+  assert.match(reply.stderr, /without its token/);
+});
+
 for (const role of ['worker', 'reviewer', 'small']) test(`a sandboxed ${role} answers through the CLI and broker only after owner delegation`, async (t) => {
   const h = makeRepo(t);
   h.init();

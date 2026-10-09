@@ -12,6 +12,7 @@ const BIN = path.join(ROOT, 'bin', 'tower-crane.js');
 const HOOKS = path.join(__dirname, 'fixtures', 'hooks.js');
 const TMP_ROOT = process.env.TOWER_CRANE_TEST_TMP || os.tmpdir();
 const SHARED_REPO_SEED = process.env.TC_TEST_REPO_SEED;
+const OWNER_KEY = 'fixture-owner-key';
 delete process.env.TC_TEST_REPO_SEED;
 
 // Tests must not see the developer's git config (hooks, signing), an
@@ -23,11 +24,17 @@ function baseEnv(home) {
   for (const k of Object.keys(env)) {
     if (k.startsWith('TOWER_CRANE_') || k.startsWith('GIT_') || k === 'TC_TEST_REPO_SEED') delete env[k];
   }
-  // Existing fixtures act as the owner, so they must provide that identity.
+  // Existing fixtures act as the owner without a terminal, so they must
+  // provide that identity and the owner key.
   env.TOWER_CRANE_AGENT = 'owner';
   env.GIT_CONFIG_GLOBAL = path.join(home, 'gitconfig');
   env.GIT_CONFIG_NOSYSTEM = '1';
   env.TOWER_CRANE_CONFIG = path.join(home, 'user-config', 'config.json');
+  fs.mkdirSync(path.join(home, 'user-config', 'owner'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'user-config', 'owner', 'key'), `${OWNER_KEY}\n`);
+  env.TOWER_CRANE_OWNER_KEY = OWNER_KEY;
+  // spawn keeps receipts under the user's cache, which is not the tests' to write.
+  env.HOME = path.join(home, 'home');
   return env;
 }
 
@@ -118,8 +125,69 @@ function copyRepo(t, source) {
   return context(t, base);
 }
 
+// A fixture built once per test process, each test getting its own copy:
+// build(h) runs on a fresh repository and returns fields to carry, such as a
+// sha. Paths naming the template's directory are rewritten in the copy's
+// files, env, gate settings and fields; worktrees are relinked to the copy.
+const fixtures = new Map();
+function cachedFixture(t, key, build) {
+  let template = fixtures.get(key);
+  if (!template) {
+    const h = makeRepo();
+    try {
+      template = { h, fields: build(h) || {} };
+    } catch (error) {
+      fs.rmSync(h.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      throw error;
+    }
+    fixtures.set(key, template);
+    process.once('exit', () => fs.rmSync(h.base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  }
+  const from = template.h;
+  const h = copyRepo(t, from.base);
+  // Both separators, raw and JSON-escaped, since git reports Windows paths with forward slashes.
+  const forms = (p) => [...new Set([p, p.replaceAll('\\', '/')].flatMap((s) => [JSON.stringify(s).slice(1, -1), s]))];
+  const [olds, news] = [forms(from.base), forms(h.base)];
+  const rewrite = (text) => olds.reduce((s, old, i) => s.split(old).join(news[i]), text);
+  const fix = (p) => {
+    const text = fs.readFileSync(p, 'utf8');
+    const next = rewrite(text);
+    if (next === text) return;
+    // In place, not writeFileSync: Windows refuses to recreate a hidden file,
+    // and git hides a linked worktree's .git file.
+    const fd = fs.openSync(p, 'r+');
+    try {
+      fs.ftruncateSync(fd, 0);
+      fs.writeSync(fd, next, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  // Of a git directory, bare or not, only its config names paths, such as a local remote.
+  const walk = (dir) => {
+    if (fs.existsSync(path.join(dir, 'HEAD')) && fs.existsSync(path.join(dir, 'objects'))) {
+      fix(path.join(dir, 'config'));
+      return;
+    }
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(path.join(dir, e.name));
+      else if (e.isFile()) fix(path.join(dir, e.name));
+    }
+  };
+  walk(h.base);
+  for (const [k, v] of Object.entries(from.env)) if (typeof v === 'string') h.env[k] = rewrite(v);
+  h.env.HOME = path.join(h.base, 'home');
+  h.env.GIT_CONFIG_GLOBAL = path.join(h.base, 'gitconfig');
+  h.env.TOWER_CRANE_CONFIG = path.join(h.base, 'user-config', 'config.json');
+  if (from.gateSettings) h.gateSettings = from.gateSettings.map(rewrite);
+  const worktrees = path.join(h.base, 'repo-worktrees');
+  if (fs.existsSync(worktrees)) h.git(['worktree', 'repair', ...fs.readdirSync(worktrees).map((name) => path.join(worktrees, name))]);
+  return Object.assign(h, JSON.parse(rewrite(JSON.stringify(template.fields))));
+}
+
 function context(t, base) {
   const env = baseEnv(base);
+  fs.mkdirSync(env.HOME, { recursive: true });
   const repo = path.join(base, 'repo');
   const ctx = {
     base,
@@ -168,8 +236,11 @@ function withHooks(ctx, opts) {
   return { cwd: ctx.repo, ...opts, env, pre };
 }
 
+// A timeout here only guards against a hung CLI; the runner's per-test timeout
+// is the backstop. Spawns that waited 15 to 23 s on a machine at load 50 to 80
+// set the 60 s floor, so a slow machine does not read as a failure.
 function run(args, { cwd, env, input, pre = [], timeout = 60000 } = {}) {
-  const r = cp.spawnSync(process.execPath, [...pre, BIN, ...args], { cwd, env, input, encoding: 'utf8', timeout });
+  const r = cp.spawnSync(process.execPath, [...pre, BIN, ...args], { cwd, env, input, encoding: 'utf8', timeout: Math.max(timeout, 60000) });
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '', signal: r.signal };
 }
 
@@ -237,4 +308,4 @@ async function stopDetached(children) {
   }
 }
 
-module.exports = { makeRepo, makeProjectRepo, makeTaskRepo, copyRepo, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
+module.exports = { makeRepo, makeProjectRepo, makeTaskRepo, copyRepo, cachedFixture, run, runPty, PTY_AVAILABLE, runAsync, BIN, ROOT, HOOKS, real, TMP_ROOT, detachedAlive };
