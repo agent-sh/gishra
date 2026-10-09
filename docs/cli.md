@@ -271,9 +271,10 @@ completion requests that pass while the executor is still running. Its
 `done` event names the first head that did not merge and lists the skipped
 ones. An accepted PR already merged on GitHub at its accepted head is
 confirmed through the merge gate without current gate evidence.
-Merge text and method are validated before any GitHub call. With failed
-current gates, a read-only PR lookup can confirm a completed merge; an open
-PR is refused until its gates pass.
+Merge text and method are validated before any GitHub call. Current gates do
+not bind that read-only PR lookup: it confirms a completed merge even when the
+task's gates fail, or a lower stack member's review fails or its CI receipt
+is stale. An open PR is refused until its gates pass.
 Gate evidence belongs to the submitted sha, so a base move alone reruns no
 gate. The fail-before proof reruns only for a new head. Before merging, the
 head runs the pinned `gates.tests_cmd` once on the merge of `project.base`'s

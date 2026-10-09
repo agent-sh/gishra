@@ -632,7 +632,8 @@ no current gate evidence or CI receipt base, so tasks accepted before merge
 evidence existed are confirmed rather than refused. Stack members follow the
 same path: confirmation reads only the member's own PR, runs no merge, retarget
 or stack sync, writes no receipts for other tasks, and an open lower PR does
-not block it.
+not block it. A lower member's failing review or stale CI receipt does not
+block it either.
 The confirmation lookup validates merge text and method before calling
 GitHub. Failed current gates permit this read-only lookup; an open PR still
 requires passing gates. Confirmation evidence records the lookup that
