@@ -455,6 +455,26 @@ for (const partialLog of [false, true]) {
   });
 }
 
+test('exit collection preserves cumulative usage when a harness log shrinks', async (t) => {
+  const h = setup(t, 'opencode');
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '2', LIVE_HOLD: 'until-stop' }) });
+  await until(t, h, () => events(h).some((e) => e.cmd === 'spend live' && e.detail.tokens === 2000), 'initial usage was not recorded');
+  const file = events(h).find((e) => e.cmd === 'spawn' && e.detail.agent === spawned.agent).detail.log;
+  const first = fs.readFileSync(file, 'utf8').split('\n').find((line) => {
+    try { return JSON.parse(line).type === 'step_finish'; } catch { return false; }
+  });
+  assert.ok(first, 'the harness captured a first step');
+  fs.writeFileSync(file, first + '\n');
+  await until(t, h, () => liveEntries(h)[0]?.live.state === 'stale', 'the truncated log was not marked stale');
+  assert.equal(recordedSpend(h).tokens, 2000);
+  h.ok(['task', 'update', 'T1', '--budget-tokens', '1500']);
+  await until(t, h, () => exited(h, spawned.agent), 'known spend did not stop the agent');
+  await until(t, h, () => recordedSpend(h).entries.every((e) => !e.live), 'exit usage was not finalized');
+  assert.equal(recordedSpend(h).tokens, 2000, 'exit collection cannot refund a cumulative snapshot');
+  h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
+  assert.equal(recordedSpend(h).tokens, 2000);
+});
+
 test('an open board ages live telemetry without state writes or a page reload', { skip: !CHROME && 'no Chrome to drive' }, async (t) => {
   const b = await openBrowser(t);
   const h = setup(t, 'claude', { usage_ms: 1000 });
