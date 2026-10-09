@@ -666,6 +666,7 @@ test('review rework rechecks the verdict after fetching comments outside the sta
   const h = setup(t);
   const id = h.add('Concurrent review');
   reviewComments(h, id);
+  h.reviewer(id, 'replacement-reviewer', h.sha);
   const github = h.github();
   github.reviewDuringFetch = { task: id, sha: h.sha };
   h.save(github);
