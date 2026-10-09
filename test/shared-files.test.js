@@ -277,7 +277,7 @@ test('generated table cells escape every backslash and pipe in one pass', (t) =>
 
 test('release fragments follow landing history rather than task or PR filename order', (t) => {
   const f = fixture(t);
-  f.h.git(['rm', 'changelog.d/T86.md']);
+  f.h.git(['rm', 'changelog.d/T86.md', 'changelog.d/T100.md']);
   f.h.git(['commit', '-qm', 'prepare release history']);
   const oldest = ['T9.md', 'T86.md', 'T100.md', '123.md'];
   for (const name of oldest) {
