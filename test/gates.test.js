@@ -536,6 +536,7 @@ function acceptedWithWorktree(h) {
   const wt = h.json(['worktree', 'T1']);
   h.ok(['submit', 'T1', '--sha', sha, '--agent', 'w-1']);
   for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
+  h.reviewer('T1', 'r-1', sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'r-1']);
   h.ok(['accept', 'T1']);
   return wt;
@@ -643,6 +644,7 @@ test('a merge of an older head keeps the worktree of a newer accepted head', asy
   const newer = h.git(['rev-parse', 'HEAD'], wt.path);
   h.ok(['submit', 'T1', '--sha', newer, '--agent', 'w-2']);
   for (const type of ['tests', 'clean']) gateEvidence(h, type, 'checker');
+  h.reviewer('T1', 'r-1', newer);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', newer, '--agent', 'r-1']);
   h.ok(['accept', 'T1']);
   fs.writeFileSync(`${paused}.go`, '');
