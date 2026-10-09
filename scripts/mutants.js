@@ -42,6 +42,8 @@ const MUTANTS = [
     from: 'if (broker && isOrchestrator(identity, events)) return null;', to: '', tests: ['test/authority.test.js', 'test/broker.test.js'] },
   { id: 'orchestrator-makes-owner-changes', area: 'authority', file: 'lib/authority.js',
     from: "if (who === 'owner' || (who === 'orchestrator' && !owner.length)) {", to: "if (who === 'owner' || who === 'orchestrator') {", tests: ['test/authority.test.js'] },
+  { id: 'tagged-question-grants-approval', area: 'authority', file: 'lib/authority.js',
+    from: 'd.approval_request === true && d.escalation', to: 'd.escalation', tests: ['test/control-modes.test.js'] },
   { id: 'terminal-fallback-is-owner', area: 'authority', file: 'lib/authority.js',
     from: "if (!ctx.agentExplicit || typeof ctx.agent !== 'string' || !ctx.agent.trim()) return null;", to: "if (typeof ctx.agent !== 'string' || !ctx.agent.trim()) return null;", tests: ['test/identity.test.js'] },
   // broker

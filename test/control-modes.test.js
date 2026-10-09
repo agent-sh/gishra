@@ -229,7 +229,7 @@ test('ask --setting requests an owner-required change no command makes, and appl
   assert.equal(operational.code, 1);
   assert.match(operational.stderr, /limits\.workers is operational: the orchestrator makes it with project set --workers/);
   assert.equal(h.run(['ask', '--setting', 'nope'], as('orchestrator')).code, 2);
-  assert.equal(h.run(['ask', '--setting', 'publish', '--question', 'q'], as('orchestrator')).code, 2);
+  assert.equal(h.run(['ask', '--setting', 'publish', '--question', 'q', '--change', '{}'], as('orchestrator')).code, 2);
   assert.match(h.run(['ask', '--setting', 'publish']).stderr, /the owner makes publish changes directly/);
   assert.match(h.run(publish, as('worker-T1-1')).stderr, /only the owner/);
 
@@ -244,6 +244,23 @@ test('ask --setting requests an owner-required change no command makes, and appl
     assert.match(r.stderr, new RegExp(`${setting.replace('.', '\\.')} is changed by .*run that command`), setting);
   }
   assert.equal(decisions(h).length, before, 'no decision opens for them');
+});
+
+test('tagged questions cannot be reused as one-use setting approvals', (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['ask', '--question', 'Discuss publishing?', '--option', 'approve', '--option', 'decline',
+    '--setting', 'publish'], as('worker-T1-1'));
+  const publish = ['ask', '--setting', 'publish'];
+  assert.match(h.run(publish, as('orchestrator')).stderr, /opened D2/, 'an open question is not an approval request');
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  assert.match(h.run(publish, as('orchestrator')).stderr, /opened D2/, 'answering a question authorizes no command');
+  assert.equal(decisions(h)[0].applied, undefined);
+  assert.equal(audits(h).length, 0);
+  h.ok(['answer', 'D2', '--choice', 'approve']);
+  h.ok(publish, as('orchestrator'));
+  assert.equal(audits(h).at(-1).detail.approved_by, 'D2');
+  assert.equal(decisions(h)[0].applied, undefined);
 });
 
 test('an orchestrator spawn uses the owner\'s delegation approval and records it only once the spawn starts', (t) => {
