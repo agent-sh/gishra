@@ -291,7 +291,10 @@ CI completion requires notification delivery by the host's webhook or job
 integration, using `ci webhook` or `ci completed`. No listener or CI polling
 loop is installed. The notification's conclusion is never evidence: the
 CI gate queries GitHub at the current submitted head. A pending or failing
-gate remains failing until an explicit retry or another completion.
+gate remains failing until an explicit retry or another completion. `gates
+retry ID` is the explicit retry for failed software gates: it reruns them at
+unchanged inputs. A passing gate whose inputs changed, such as the pinned
+command or tests policy, reruns in the next reaction without one.
 Automatic failures are recorded in `automation` events. Concurrent
 consumers serialize per task and reuse completed event receipts; commands
 execute outside the state lock. Deferred or errored reactions remain
@@ -641,6 +644,8 @@ The CLI refuses manual software verdicts, and software receipts require matching
 | `check sources ID` | fetch the distinct cited pages from committed `research/ID.json` and verify every quote; records sources evidence; required for research kind on every tier |
 | | |
 | `check tests ID [--cmd CMD] [--proof-cmd CMD]` | use `tests.by_kind` over `tests.mode` (default `prove`); `prove` requires pinned `gates.tests_cmd` to pass at head and fail after reverting other changes, with T8 build-file keeps; expensive proof runs CMD once and uses a scoped `{tests}` command at head and after reversion; `run-only` requires the pinned command to pass once at head; `none` verifies the submitted commit without running CMD; records `tests`, resolved `tests_mode`, and failed test names plus a bounded output tail when its command fails; timeouts record infrastructure failure and interrupted files instead |
+| | |
+| `gates retry ID` | orchestrator or owner: rerun each failed `tests`, `clean`, `sources` or `ci` gate of a submitted task at its current head and revision, with the same pinned commands and policy. Use it when a failure was caused by infrastructure that a later fix removed, such as a timeout. Automation never retries a failure at unchanged inputs; passing evidence whose inputs changed, such as the pinned command or tests policy, reruns on its own. Refuses a task that is not submitted and one with no failed software gate. Run `accept` afterwards to continue |
 | | |
 | `merge ID [--subject S] [--body B] [--method M]` | merge the task's PR with `--match-head-commit` when the task is accepted and its gates still pass for its current revision (refused otherwise). Linked stacks merge bottom up with `--merge`, pinning each accepted head and confirming it before the next member. If an upper member fails, the target reports `merge FAIL` while confirmed lower members retain successful merge evidence. Inspect each member with `task show ID` and check its PR state; fix the refusal or wait for queued merges to complete. Sync the idle remaining chain when needed with `stack sync ID`; changed heads need rework, a new submission, passing gates, review and acceptance. Refresh stale gates and retry `merge ID` on the target; confirmed lower members are skipped. Records `merge` |
 <!-- commands:Gates:end -->
