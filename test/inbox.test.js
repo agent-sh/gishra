@@ -52,6 +52,7 @@ test('one fixture exposes every inbox kind and resolving commands clear their co
   const h = setup(t);
   const review = h.add('Failed review');
   h.submit(review);
+  h.reviewer(review, 'reviewer', h.sha);
   h.ok(['evidence', review, '--type', 'review', '--fail', '--sha', h.sha,
     '--summary', 'Check null before dereferencing.', '--ref', 'https://github.com/acme/demo/pull/1#issuecomment-1', '--agent', 'reviewer']);
   const rework = h.add('Rework without a worker');
@@ -62,6 +63,7 @@ test('one fixture exposes every inbox kind and resolving commands clear their co
   event(h, dead, 'spawn', { agent: 'gone', role: 'worker', pid: 2147483647, host: os.hostname() });
   const accepted = h.add('Accepted but not merged');
   h.submit(accepted, 7);
+  h.reviewer(accepted, 'reviewer', h.sha);
   h.ok(['evidence', accepted, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   h.ok(['check', 'ci', accepted]);
   h.ok(['accept', accepted]);
@@ -137,7 +139,9 @@ test('review replacement, capped revuto, old CodeQL heads and unavailable GitHub
   const h = setup(t);
   const id = h.add('Current findings');
   h.submit(id, 8);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--fail', '--sha', h.sha, '--summary', 'old fail', '--agent', 'reviewer']);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   assert.equal(h.run(['rework', '--from-review', id]).code, 1);
   h.ok(['project', 'set', '--ci-capped-review', '[{"app":"revuto-review","pattern":"Daily review limit reached"}]']);
@@ -188,6 +192,7 @@ test('MCP tools retain identity, expose actions and reject argument overrides', 
   const h = setup(t);
   const id = h.add('Review');
   h.submit(id);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--fail', '--sha', h.sha, '--summary', 'fix bounds', '--agent', 'reviewer']);
   const requests = [
     { method: 'initialize', params: { protocolVersion: '2024-11-05' } },
@@ -232,6 +237,7 @@ test('accepted batch skips unknown PRs and merges independent ready PRs with the
   for (const pr of [7, 8]) {
     const id = h.add(`PR ${pr}`);
     h.submit(id, pr);
+    h.reviewer(id, 'reviewer', h.sha);
     h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
     h.ok(['check', 'ci', id]);
     h.ok(['accept', id]);
@@ -262,6 +268,7 @@ test('accepted batch confirms a landed head with stale gates before merging the 
   for (const pr of [7, 8]) {
     const id = h.add(`PR ${pr}`);
     h.submit(id, pr);
+    h.reviewer(id, 'reviewer', h.sha);
     h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
     h.ok(['check', 'ci', id]);
     h.ok(['accept', id]);
@@ -288,9 +295,12 @@ test('accepted batch routes linked members through pinned stack merges', (t) => 
   f.write((d) => { for (const pr of Object.values(d.prs)) Object.assign(pr, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
   const result = f.h.run(['merge', '--accepted', '--agent', 'orchestrator']);
   assert.equal(result.code, 0, result.stdout + result.stderr);
-  const merges = f.read().calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'merge');
-  assert.deepEqual(merges.map((c) => c.args[2]), ['11', '12']);
-  assert.ok(merges.every((c) => c.args.includes('--merge') && c.args.includes('--match-head-commit')));
+  const merges = f.read().calls.filter((c) => c.args[0] === 'api' && c.args.includes('POST') && c.args[1].endsWith('/merge-async'));
+  assert.deepEqual(merges.map((c) => c.args[1]), ['repos/acme/app/pulls/11/merge-async', 'repos/acme/app/pulls/12/merge-async']);
+  for (const [index, head] of [f.sha, f.upper.sha].entries()) {
+    assert.ok(merges[index].args.includes('merge_method=merge'));
+    assert.ok(merges[index].args.includes(`expected_head_sha=${head}`));
+  }
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
 });
 
@@ -494,6 +504,7 @@ test('an accepted PR with stale gate policy resolves through gate reruns before 
   const id = h.add('Accepted policy changes', 'code');
   h.submit(id, 7);
   for (const type of ['tests', 'clean', 'ci']) h.ok(['check', type, id]);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   h.ok(['accept', id, '--agent', 'orchestrator']);
   const clean = path.join(h.base, 'new-clean.js');
@@ -554,6 +565,7 @@ test('a remotely merged accepted PR remains actionable until its audited merge r
   const id = h.add('Missing merge confirmation');
   h.submit(id, 7);
   h.ok(['check', 'ci', id]);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--ok', '--sha', h.sha, '--agent', 'reviewer']);
   h.ok(['accept', id, '--agent', 'orchestrator']);
   const github = h.github();
@@ -587,6 +599,7 @@ function reviewComments(h, id) {
     + '- [P1] lib/store.js:12 - First finding: reject duplicate writes - Prevent corruption.\n'
     + '- [P2] lib/cache.js:31 - Second finding: invalidate deleted entries - Prevent stale reads.\n';
   h.submit(id, 7);
+  h.reviewer(id, 'reviewer', h.sha);
   h.ok(['evidence', id, '--type', 'review', '--fail', '--sha', h.sha, '--agent', 'reviewer',
     '--summary', '2 blocking findings: reject duplicate writes', '--ref', ref]);
   const github = h.github();
@@ -656,6 +669,7 @@ test('review rework rechecks the verdict after fetching comments outside the sta
   const h = setup(t);
   const id = h.add('Concurrent review');
   reviewComments(h, id);
+  h.reviewer(id, 'replacement-reviewer', h.sha);
   const github = h.github();
   github.reviewDuringFetch = { task: id, sha: h.sha };
   h.save(github);
