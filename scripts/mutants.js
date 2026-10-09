@@ -30,9 +30,9 @@ const MUTANTS = [
   { id: 'sources-loopback-public', area: 'gates', file: 'lib/public-http.js',
     from: "['127.0.0.0', 8],", to: '', tests: ['test/sources.test.js'] },
   { id: 'evidence-without-audit', area: 'gates', file: 'lib/tasks.js',
-    from: "entry.agent !== task.submitted_by : hasGateEvent(task, entry, events)", to: 'entry.agent !== task.submitted_by : true', tests: ['test/evidence.test.js'] },
+    from: "independentReviewer(task, entry, events) : hasGateEvent(task, entry, events)", to: 'independentReviewer(task, entry, events) : true', tests: ['test/evidence.test.js'] },
   { id: 'review-by-submitter', area: 'gates', file: 'lib/tasks.js',
-    from: "entry.type === 'review' ? entry.agent !== task.submitted_by :", to: "entry.type === 'review' ? true :", tests: ['test/accept.test.js'] },
+    from: "entry.type === 'review' ? independentReviewer(task, entry, events) :", to: "entry.type === 'review' ? true :", tests: ['test/accept.test.js'] },
   { id: 'evidence-old-revision', area: 'gates', file: 'lib/tasks.js',
     from: 'e.type === type && e.revision === task.revision\n', to: 'e.type === type\n', tests: ['test/accept.test.js'] },
   // authority
