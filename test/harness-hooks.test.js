@@ -214,13 +214,14 @@ test('the hook bridge reads hook input from a non-blocking stdin pipe', { skip: 
   });
   fs.closeSync(reader);
   t.after(() => child.kill());
+  // Listen before the bridge can exit: a failing bridge may exit inside the wait below.
+  const closed = once(child, 'close');
   let out = '';
   let err = '';
   child.stdout.setEncoding('utf8').on('data', (chunk) => { out += chunk; });
   child.stderr.setEncoding('utf8').on('data', (chunk) => { err += chunk; });
   // Deliver input only once the bridge is reading, so an empty read is seen.
   await until(marker);
-  const closed = once(child, 'close');
   try {
     fs.writeSync(writer, JSON.stringify({ hook_event_name: 'UserPromptSubmit' }));
   } catch (e) {
