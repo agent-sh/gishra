@@ -144,8 +144,8 @@ test('spawn --dry-run builds each harness command', (t) => {
     [['--harness', 'codex', '--model', 'gpt-x', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p, s) => ['codex', 'exec', '--json', '-m', 'gpt-x', '-c', 'model_reasoning_effort=high', ...codexOwn(s), p, '--skip-git-repo-check']],
     [['--harness', 'opencode', '--model', 'anthropic/claude'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'anthropic/claude', p]],
     [['--harness', 'opencode', '--model', 'openai/gpt-x', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/gpt-x', '--variant', 'high', p]],
-    [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro']],
-    [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--output-format","json"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--output-format', 'json']],
+    [['--harness', 'agy', '--model', 'gemini-3-pro'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--agent', 'gishra-small', '--disable-slash-commands', '--sandbox']],
+    [['--harness', 'agy', '--model', 'gemini-3-pro', '--effort', 'max', '--args', '["--print-timeout","60s"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'gemini-3-pro', '--effort', 'max', '--agent', 'gishra-small', '--disable-slash-commands', '--sandbox', '--print-timeout', '60s']],
     [['--harness', 'pi', '--model', 'openai/gpt-5.5'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', ...piOwn(s)]],
     [['--harness', 'pi', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'openai/gpt-5.5', '--provider', 'openai', '--thinking', 'xhigh', ...piOwn(s), '--no-session']],
   ];
@@ -439,6 +439,17 @@ test('spawn --wait runs the command rung in the task worktree with the tower-cra
   assert.equal(spawnEv.detail.rung, 'medium');
   assert.ok(Number.isInteger(spawnEv.detail.pid));
   assert.equal(events.find((e) => e.cmd === 'spawn exit').detail.code, 7);
+});
+
+test('a spawned agent never inherits the owner key that admitted its spawn', (t) => {
+  const h = setup(t);
+  const out = path.join(h.base, 'agent-env.json');
+  commandRung(h, 'medium', [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify(Object.keys(process.env)))`]);
+  assert.ok(h.env.TOWER_CRANE_OWNER_KEY);
+  h.ok(['spawn', '--task', 'T1', '--wait']);
+  const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.ok(seen.includes('TOWER_CRANE_AGENT'));
+  assert.ok(!seen.includes('TOWER_CRANE_OWNER_KEY'));
 });
 
 test('spawn removes outer Node test runner variables so an agent can run its own test suite', (t) => {
