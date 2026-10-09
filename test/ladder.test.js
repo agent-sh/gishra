@@ -441,3 +441,17 @@ test('validate allows identical Codex profile and explicit model identities', (t
   for (const tier of ['medium', 'hard', 'research']) h.ok(['ladder', 'set', tier, '--harness', 'codex', '--profile', 'author-profile', '--clear', 'model']);
   assert.deepEqual(h.json(['validate']).warnings, [], 'shared profiles are allowed');
 });
+
+test('switching from Codex to agy refuses inherited Codex flags until explicitly cleared', t => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['ladder', 'set', 'hard', '--harness', 'codex', '--model', 'fixture',
+    '--clear', 'profile', '--args', '["--skip-git-repo-check"]']);
+  const before = h.readState('project.json');
+  const refused = h.run(['ladder', 'set', 'hard', '--harness', 'agy', '--model', 'gemini-3-pro']);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /args may only use.*refused --skip-git-repo-check/);
+  assert.deepEqual(h.readState('project.json'), before);
+  h.ok(['ladder', 'set', 'hard', '--harness', 'agy', '--model', 'gemini-3-pro', '--clear', 'args']);
+  assert.equal(h.json(['ladder', 'show']).ladder.hard.harness, 'agy');
+});

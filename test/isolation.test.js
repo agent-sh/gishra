@@ -72,9 +72,11 @@ function plant(h) {
     'echo fake gh', '',
   ].join('\n'), { mode: 0o755 });
   // A test nested inside an agent must not cycle through the parent and
-  // child git shims. Delegate local work through the parent's guarded PATH;
-  // network pushes return a fixture error without contacting a remote.
-  const parentPath = process.env.PATH;
+  // child git shims, and the parent's guard refuses the options a shim adds to
+  // a push, so the fixture delegates past every agent shim to the real git.
+  // Network pushes return a fixture error without contacting a remote.
+  const parentPath = String(process.env.PATH || '').split(path.delimiter)
+    .filter((dir) => !fs.existsSync(path.join(dir, '..', '.tower-crane-origin.json'))).join(path.delimiter);
   fs.writeFileSync(path.join(bin, 'git'), `#!${process.execPath}
 const cp = require('node:child_process');
 const args = process.argv.slice(2);
@@ -1446,11 +1448,11 @@ test('TOML tables have no prototype, so __proto__ and inherited names are plain 
   assert.equal(doc.a.__proto__.polluted, true);
 });
 
-test('claude, codex and pi rungs dispatch through spawn, never as native subagents', () => {
+test('claude, codex, agy and pi rungs dispatch through spawn, never as native subagents', () => {
   const skill = fs.readFileSync(path.join(ROOT, 'skills', 'tower-crane', 'SKILL.md'), 'utf8');
   const ladder = fs.readFileSync(path.join(ROOT, 'docs', 'ladder.md'), 'utf8');
   for (const text of [skill, ladder]) {
-    assert.match(text, /A rung on claude, codex or pi always runs through `tower-crane spawn`/);
+    assert.match(text, /A rung on claude, codex, agy or pi always runs through `tower-crane spawn`/);
     assert.doesNotMatch(text, /dispatch natively with (that|the) rung's model/);
   }
 });
