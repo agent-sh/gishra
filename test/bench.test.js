@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { makeRepo } = require('./helpers');
 const { score, ciChecks } = require('../lib/bench-gates');
+const { taskSpend } = require('../lib/bench-tokens');
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
@@ -355,4 +356,48 @@ test('bench excludes accepted tasks missing worker, reviewer or resumed-session 
   h.writeState('tasks.json', updated);
   result = h.json(['bench', 'tokens']);
   assert.equal(result.complete, 2);
+});
+
+test('token categories preserve unknown breakdowns across spend entries', () => {
+  const measured = { tokens: 100, input: 70, cached: 20, output: 30 };
+  const unknown = { tokens: 200, input: null, cached: null, output: null };
+  for (const [entries, expected] of [
+    [[unknown], [null, null, null]],
+    [[measured, unknown], [null, null, null]],
+    [[unknown, measured], [null, null, null]],
+    [[{ ...unknown, cached: 10, output: 20 }], [null, 10, 20]],
+    [[{ ...measured, output: null }], [50, 20, null]],
+    [[{ tokens: 0, input: 0, cached: 0, output: 0 }], [0, 0, 0]],
+  ]) {
+    const row = taskSpend({ spend: { entries } }, new Map());
+    assert.deepEqual([row.fresh, row.cached, row.output], expected, JSON.stringify(entries));
+  }
+});
+
+test('bench tokens excludes unknown categories from medians while retaining known totals and measured zeros', (t) => {
+  const h = makeRepo(t);
+  t.after(h.cleanup);
+  h.init();
+  for (const title of ['measured', 'total only', 'measured zeros']) {
+    h.ok(['task', 'add', '--title', title, '--acceptance', 'done']);
+  }
+  h.ok(['spend', 'T1', '--tokens', '100', '--input', '70', '--cached', '20', '--output', '30', '--rung', 'medium']);
+  h.ok(['spend', 'T2', '--tokens', '200', '--rung', 'medium']);
+  h.ok(['spend', 'T3', '--tokens', '100', '--input', '100', '--cached', '0', '--output', '0', '--rung', 'medium']);
+  const doc = h.readState('tasks.json');
+  for (const task of doc.tasks) task.status = 'accepted';
+  h.writeState('tasks.json', doc);
+  const result = h.json(['bench', 'tokens']);
+  assert.deepEqual([result.accepted, result.complete, result.all_tasks_tokens], [3, 3, 400]);
+  assert.equal(result.overall.median_tokens, 100);
+  for (const group of [result.overall, result.by_path.medium]) {
+    assert.deepEqual([group.median_fresh, group.median_cached, group.median_output], [75, 10, 15]);
+  }
+  const unknown = result.tasks.find((row) => row.id === 'T2');
+  assert.deepEqual([unknown.fresh, unknown.cached, unknown.output], [null, null, null]);
+  // With no measured breakdown left, category medians stay unknown.
+  for (const task of doc.tasks) if (task.id !== 'T2') task.status = 'todo';
+  h.writeState('tasks.json', doc);
+  const onlyUnknown = h.json(['bench', 'tokens']);
+  assert.deepEqual([onlyUnknown.overall.median_fresh, onlyUnknown.overall.median_cached, onlyUnknown.overall.median_output], [null, null, null]);
 });

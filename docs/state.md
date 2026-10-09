@@ -427,6 +427,8 @@ The list and tests policy flags also work with `init`. Omitting a flag leaves it
 
 `bench tokens` compares spend entries with every recorded spawn, including reviewers, resumed attempts, fallback routes and fresh retries. Its read-only report lists unmatched source IDs as `missing_spawns`; it does not add placeholder state entries. A matching native manual token report can cover its dispatch, while minute-only reports cannot. Tasks with missing sessions or unknown token entries stay out of token and USD medians; their recorded spend still contributes to the total cost per accepted task. See [bench.md](bench.md) for the labeling and pricing method.
 
+Missing input, cached or output counts leave the corresponding task category total `null`, and category medians use only measured totals. Known token totals remain eligible for token medians even when their breakdown is incomplete.
+
 The CLI never writes a dependency on a task that does not exist, a dependency cycle, or a task without acceptance. `validate` still checks files edited by hand.
 
 Task ids are never reused. A new task takes the larger of `next` and one past the highest task id any `events.jsonl` record names, so a task that tasks.json lost keeps its id. `validate` reconciles tasks.json with the log and reports drift: a task id the log names that tasks.json lacks, a `task note` the log records that the task lacks, and a `next` at or below a logged id. It reads without the lock; every reader reads `events.jsonl` before tasks.json, and a commit writes tasks.json before it appends its events, so a commit between the two reads is never mistaken for drift.
