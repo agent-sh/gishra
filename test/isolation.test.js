@@ -549,9 +549,13 @@ test('browser tasks attach the user kit on every rung with approved tools and no
     } },
   }));
   for (const harness of ['claude', 'codex']) {
-    for (const declaration of [['--kind', 'design', '--needs', '[]'], ['--kind', 'code', '--needs', '["browser"]']]) {
+    // Every rung for the design kind; an explicit browser need takes the same path.
+    for (const [declaration, roles] of [
+      [['--kind', 'design', '--needs', '[]'], ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']],
+      [['--kind', 'code', '--needs', '["browser"]'], ['hard', 'review']],
+    ]) {
       h.ok(['task', 'update', 'T1', ...declaration]);
-      for (const role of ['easy', 'medium', 'hard', 'research', 'review', 'small', 'orchestrator']) {
+      for (const role of roles) {
         isolated(h, role, harness);
         const dry = h.json(['spawn', '--role', role, '--task', 'T1', '--dry-run'], { env: u.env });
         assert.deepEqual(dry.home.mcp, ['playwright'], `${harness} ${role} ${declaration}`);
@@ -1384,7 +1388,8 @@ test('a rung opts back in to a named tool and MCP server, shown by spawn --dry-r
   assert.match(r.stderr, /opts in MCP server missing, but .*config\.toml defines no \[mcp_servers\.missing\]/);
   const pi = h.run(['ladder', 'set', 'small', '--harness', 'pi', '--model', 'x', '--clear', 'profile']);
   assert.equal(pi.code, 1);
-  assert.match(pi.stderr, /tools applies only to claude and codex and opencode, mcp applies only to claude and codex and opencode/);
+  assert.match(pi.stderr, /MCP opt-ins are unsupported on pi/);
+  assert.match(pi.stderr, /pi tools must be built-ins/);
 });
 
 test('only the orchestrator or the owner widens a rung, a command needs the owner, and args hold only allowlisted flags', (t) => {
@@ -1425,11 +1430,11 @@ test('TOML tables have no prototype, so __proto__ and inherited names are plain 
   assert.equal(doc.a.__proto__.polluted, true);
 });
 
-test('claude, codex and opencode rungs dispatch through spawn, never as native subagents', () => {
+test('claude, codex, opencode, agy and pi rungs dispatch through spawn, never as native subagents', () => {
   const skill = fs.readFileSync(path.join(ROOT, 'skills', 'tower-crane', 'SKILL.md'), 'utf8');
   const ladder = fs.readFileSync(path.join(ROOT, 'docs', 'ladder.md'), 'utf8');
   for (const text of [skill, ladder]) {
-    assert.match(text, /A rung on claude, codex or opencode always runs through `tower-crane spawn`/);
+    assert.match(text, /A rung on claude, codex, opencode, agy or pi always runs through `tower-crane spawn`/);
     assert.doesNotMatch(text, /dispatch natively with (that|the) rung's model/);
   }
 });

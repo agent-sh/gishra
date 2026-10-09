@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, cachedFixture } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 const A = require('../lib/agents');
 const L = require('../lib/ladder');
@@ -36,11 +36,11 @@ function writeUser(h, doc) {
 }
 
 function setup(t) {
-  const h = makeRepo(t);
-  harnessConfig(h);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'done', '--needs-owner', 'approve access']);
-  return h;
+  return cachedFixture(t, 'owner task', (h) => {
+    harnessConfig(h);
+    h.init();
+    h.ok(['task', 'add', '--title', 'Owner action', '--acceptance', 'done', '--needs-owner', 'approve access']);
+  });
 }
 
 const OPERATIONAL = [
@@ -185,9 +185,11 @@ test('only a real orchestrator identity acts as orchestrator', (t) => {
   const r = h.run(args, as('orchestrator'));
   assert.equal(r.code, 1, r.stderr);
   assert.match(r.stderr, /msg --to orchestrator/);
-  // Brokered commands are a sandboxed agent's.
-  const brokered = h.run(args, { env: { TOWER_CRANE_AGENT: 'orchestrator-T1-1', TOWER_CRANE_VIA: 'broker' } });
+  // Brokered commands are a sandboxed agent's, even under an orchestrator's
+  // spawned name. A broker passes --state, since it runs no git.
+  const brokered = h.run([...args, '--state', h.state], { env: { TOWER_CRANE_AGENT: 'orchestrator-T1-1', TOWER_CRANE_VIA: 'broker' } });
   assert.equal(brokered.code, 1, brokered.stderr);
+  assert.match(brokered.stderr, /limits\.workers is operational/);
 });
 
 test('owner-required changes by the orchestrator open one decision and change nothing; the owner makes them', (t) => {
@@ -306,32 +308,6 @@ test('the orchestrator opts a rung in only to MCP servers the owner already defi
   h.ok(['ladder', 'set', 'easy', '--effort', 'low'], as('orchestrator'));
 });
 
-test('opencode MCP authority and dispatch read the same inline configuration', (t) => {
-  const h = setup(t);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'probe inline MCP\n' });
-  const user = path.join(h.base, 'inline-user');
-  fs.mkdirSync(user);
-  const env = {
-    HOME: user, USERPROFILE: user, XDG_CONFIG_HOME: path.join(user, '.config'),
-    XDG_DATA_HOME: path.join(user, '.local', 'share'), OPENCODE_CONFIG: '', OPENCODE_CONFIG_DIR: '',
-    OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: {
-      inlineDocs: { type: 'local', command: ['node', 'inline-docs.js'] },
-    } }),
-  };
-  h.ok(['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'fixture',
-    '--clear', 'profile', '--clear', 'effort', '--clear', 'args']);
-  h.ok(['ladder', 'set', 'hard', '--mcp', '["inlineDocs"]'], { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
-  assert.equal(h.readState('decisions.json').decisions.length, 0);
-  const preview = h.json(['spawn', '--task', 'T1', '--role', 'hard', '--dry-run'], { env });
-  assert.deepEqual(preview.home.mcp, ['inlineDocs']);
-  const before = h.readState('project.json');
-  const missing = h.run(['ladder', 'set', 'hard', '--mcp', '["inlineMissing"]'],
-    { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
-  assert.equal(missing.code, 1, missing.stderr);
-  assert.match(missing.stderr, /inlineMissing.*OPENCODE_CONFIG_CONTENT/);
-  assert.deepEqual(h.readState('project.json'), before);
-});
-
 test('a tool that is not a harness built-in or changes the rung sandbox is owner-required', (t) => {
   const h = setup(t);
   h.ok(['ladder', 'set', 'easy', '--harness', 'codex', '--model', 'sonnet']);
@@ -369,40 +345,6 @@ test('a tool that is not a harness built-in or changes the rung sandbox is owner
   assert.deepEqual(h.readState('project.json').ladder.review.tools, ['Edit']);
 });
 
-test('moving confined roles to opencode requires the owner despite its private home and native edit rules', (t) => {
-  const h = setup(t);
-  for (const rung of L.RUNGS) h.ok(['ladder', 'set', rung, '--model', 'fixture',
-    '--clear', 'profile', '--clear', 'effort', '--clear', 'args', '--clear', 'provider']);
-  h.ok(['ladder', 'harness', 'claude']);
-  writeUser(h, { ladder: { research: { fallbacks: [{ model: 'backup' }] } } });
-  for (const [index, args] of [
-    ...['hard', 'review', 'small', 'research'].map((rung) => ['ladder', 'set', rung, '--harness', 'opencode', '--model', 'fixture']),
-    ['ladder', 'harness', 'opencode'],
-  ].entries()) {
-    const before = h.readState('project.json');
-    const result = h.run(args, as('orchestrator'));
-    assert.equal(result.code, 1, result.stderr);
-    assert.match(result.stderr, new RegExp(`ladder\\.reach is owner-required; opened D${index + 1} `));
-    assert.deepEqual(h.readState('project.json'), before);
-    const routes = h.readState('decisions.json').decisions.at(-1).escalation.change.ladder;
-    assert.ok(Object.values(routes).every((rung) => rung.unconfined.every((route) => route.harness === 'opencode')));
-  }
-  assert.equal(A.CAPABILITIES.opencode.sandbox, false);
-  assert.equal(A.CAPABILITIES.opencode.osSandbox, false);
-});
-
-test('native opencode web tool names are operational like their agent-file aliases on an owner-selected route', (t) => {
-  const h = setup(t);
-  h.ok(['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'fixture',
-    '--clear', 'profile', '--clear', 'effort', '--clear', 'args']);
-  for (const tools of [['webfetch'], ['WebFetch'], ['websearch'], ['WebSearch'], ['webfetch', 'WebFetch', 'websearch', 'WebSearch']]) {
-    h.ok(['ladder', 'set', 'hard', '--tools', JSON.stringify(tools)], as('orchestrator'));
-    assert.deepEqual(h.readState('project.json').ladder.hard.tools, tools);
-    assert.equal(h.readState('decisions.json').decisions.length, 0);
-    assert.equal(events(h).findLast((event) => event.cmd === 'ladder set').detail.authority, 'orchestrator');
-  }
-});
-
 for (const harness of L.HARNESSES.filter((name) => name !== 'command')) {
   test(`${harness}: primary, following fallback and default harness moves follow its sandbox capability`, (t) => {
     const h = setup(t);
@@ -411,7 +353,7 @@ for (const harness of L.HARNESSES.filter((name) => name !== 'command')) {
     for (const rung of L.RUNGS) h.ok(['ladder', 'set', rung, '--model', 'fixture',
       '--clear', 'profile', '--clear', 'effort', '--clear', 'args', '--clear', 'provider']);
     h.ok(['ladder', 'harness', 'claude']);
-    const sandbox = A.CAPABILITIES[harness].osSandbox;
+    const sandbox = A.CAPABILITIES[harness].sandbox;
     const unconfined = { unconfined: [{ harness }] };
     writeUser(h, { ladder: { research: { fallbacks: [{ model: 'backup' }] } } });
     let opened = 0;
@@ -450,15 +392,15 @@ for (const harness of L.HARNESSES.filter((name) => name !== 'command')) {
 
 test('new args on an unsandboxed route require the owner, including following fallbacks', (t) => {
   const h = setup(t);
-  const harness = L.HARNESSES.find((name) => name !== 'command' && !A.CAPABILITIES[name].osSandbox);
+  const harness = L.HARNESSES.find((name) => name !== 'command' && !A.CAPABILITIES[name].sandbox);
   assert.ok(harness, 'the fixture needs an unsandboxed harness');
   writeUser(h, { ladder: {
-    research: { fallbacks: [{ model: 'backup', args: ['--anything'] }] },
-    small: { fallbacks: [{ harness, model: 'fixture', args: ['--anything'] }] },
+    research: { fallbacks: [{ model: 'backup', args: ['--verbose'] }] },
+    small: { fallbacks: [{ harness, model: 'fixture', args: ['--verbose'] }] },
   } });
   for (const [index, args] of [
     ['ladder', 'set', 'research', '--harness', harness, '--model', 'fixture', '--clear', 'effort'],
-    ['ladder', 'set', 'orchestrator', '--harness', harness, '--model', 'fixture', '--args', '["--anything"]', '--clear', 'effort'],
+    ['ladder', 'set', 'orchestrator', '--harness', harness, '--model', 'fixture', '--args', '["--verbose"]', '--clear', 'effort'],
   ].entries()) {
     const before = h.readState('project.json');
     const result = h.run(args, as('orchestrator'));
@@ -466,7 +408,7 @@ test('new args on an unsandboxed route require the owner, including following fa
     assert.match(result.stderr, new RegExp(`ladder\\.reach is owner-required; opened D${index + 1} `));
     assert.deepEqual(h.readState('project.json'), before);
     const routes = h.readState('decisions.json').decisions.at(-1).escalation.change.ladder;
-    assert.ok(Object.values(routes).flatMap((rung) => rung.unconfined).some((route) => route.args?.includes('--anything')));
+    assert.ok(Object.values(routes).flatMap((rung) => rung.unconfined).some((route) => route.args?.includes('--verbose')));
   }
   // An unchanged unsandboxed fallback does not block a model/effort change.
   h.ok(['ladder', 'set', 'small', '--effort', 'medium'], as('orchestrator'));
@@ -474,30 +416,17 @@ test('new args on an unsandboxed route require the owner, including following fa
 
 test('authority follows a sandbox capability flip without changing the private-home list', (t) => {
   const h = setup(t);
-  const harness = L.HARNESSES.find((name) => name !== 'command' && !A.CAPABILITIES[name].osSandbox);
+  const harness = L.HARNESSES.find((name) => name !== 'command' && !A.CAPABILITIES[name].sandbox);
   assert.ok(harness, 'the fixture needs an unsandboxed harness');
   const args = ['ladder', 'set', 'hard', '--harness', harness, '--model', 'fixture', '--clear', 'effort'];
   const refused = h.run(args, as('orchestrator'));
   assert.equal(refused.code, 1, refused.stderr);
   assert.match(refused.stderr, /ladder\.reach is owner-required/);
   const hook = path.join(h.base, 'capability.cjs');
-  const nativeOnly = [
-    `const agents = require(${JSON.stringify(require.resolve('../lib/agents'))});`,
-    `const name = ${JSON.stringify(harness)};`,
-    'agents.CAPABILITIES = { ...agents.CAPABILITIES, [name]: { ...agents.CAPABILITIES[name], sandbox: true, osSandbox: false } };',
-    '',
-  ].join('\n');
-  fs.writeFileSync(hook, nativeOnly);
-  const stillUnconfined = h.run(args, { env: {
-    TOWER_CRANE_AGENT: 'orchestrator', NODE_OPTIONS: `--require ${JSON.stringify(hook)}`,
-  } });
-  assert.equal(stillUnconfined.code, 1, stillUnconfined.stderr);
-  assert.match(stillUnconfined.stderr, /ladder\.reach is owner-required/);
-  assert.equal(h.readState('decisions.json').decisions.length, 1);
   fs.writeFileSync(hook, [
     `const agents = require(${JSON.stringify(require.resolve('../lib/agents'))});`,
     `const name = ${JSON.stringify(harness)};`,
-    'agents.CAPABILITIES = { ...agents.CAPABILITIES, [name]: { ...agents.CAPABILITIES[name], sandbox: true, osSandbox: true } };',
+    'agents.CAPABILITIES = { ...agents.CAPABILITIES, [name]: { ...agents.CAPABILITIES[name], sandbox: true } };',
     '',
   ].join('\n'));
   const allowed = h.run(args, { env: {
@@ -573,4 +502,64 @@ test('cancelling a task that waits on the owner needs the owner', (t) => {
   assert.match(worker.stderr, /only the owner/);
   h.ok(['task', 'update', 'T1', '--status', 'cancelled']);
   assert.equal(h.json(['task', 'show', 'T1']).status, 'cancelled');
+});
+
+test('opencode MCP authority and dispatch read the same inline configuration', (t) => {
+  const h = setup(t);
+  h.ok(['brief', 'set', 'T1', '-'], { input: 'probe inline MCP\n' });
+  const user = path.join(h.base, 'inline-user');
+  fs.mkdirSync(user);
+  const env = {
+    HOME: user, USERPROFILE: user, XDG_CONFIG_HOME: path.join(user, '.config'),
+    XDG_DATA_HOME: path.join(user, '.local', 'share'), OPENCODE_CONFIG: '', OPENCODE_CONFIG_DIR: '',
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: {
+      inlineDocs: { type: 'local', command: ['node', 'inline-docs.js'] },
+    } }),
+  };
+  h.ok(['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'fixture',
+    '--clear', 'profile', '--clear', 'effort', '--clear', 'args']);
+  h.ok(['ladder', 'set', 'hard', '--mcp', '["inlineDocs"]'], { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
+  assert.equal(h.readState('decisions.json').decisions.length, 0);
+  const preview = h.json(['spawn', '--task', 'T1', '--role', 'hard', '--dry-run'], { env });
+  assert.deepEqual(preview.home.mcp, ['inlineDocs']);
+  const before = h.readState('project.json');
+  const missing = h.run(['ladder', 'set', 'hard', '--mcp', '["inlineMissing"]'],
+    { env: { ...env, TOWER_CRANE_AGENT: 'orchestrator' } });
+  assert.equal(missing.code, 1, missing.stderr);
+  assert.match(missing.stderr, /inlineMissing.*OPENCODE_CONFIG_CONTENT/);
+  assert.deepEqual(h.readState('project.json'), before);
+});
+
+test('moving confined roles to opencode requires the owner despite its private home and native edit rules', (t) => {
+  const h = setup(t);
+  for (const rung of L.RUNGS) h.ok(['ladder', 'set', rung, '--model', 'fixture',
+    '--clear', 'profile', '--clear', 'effort', '--clear', 'args', '--clear', 'provider']);
+  h.ok(['ladder', 'harness', 'claude']);
+  writeUser(h, { ladder: { research: { fallbacks: [{ model: 'backup' }] } } });
+  for (const [index, args] of [
+    ...['hard', 'review', 'small', 'research'].map((rung) => ['ladder', 'set', rung, '--harness', 'opencode', '--model', 'fixture']),
+    ['ladder', 'harness', 'opencode'],
+  ].entries()) {
+    const before = h.readState('project.json');
+    const result = h.run(args, as('orchestrator'));
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, new RegExp(`ladder\\.reach is owner-required; opened D${index + 1} `));
+    assert.deepEqual(h.readState('project.json'), before);
+    const routes = h.readState('decisions.json').decisions.at(-1).escalation.change.ladder;
+    assert.ok(Object.values(routes).every((rung) => rung.unconfined.every((route) => route.harness === 'opencode')));
+  }
+  assert.equal(A.CAPABILITIES.opencode.sandbox, false);
+  assert.equal(A.CAPABILITIES.opencode.osSandbox, false);
+});
+
+test('native opencode web tool names are operational like their agent-file aliases on an owner-selected route', (t) => {
+  const h = setup(t);
+  h.ok(['ladder', 'set', 'hard', '--harness', 'opencode', '--model', 'fixture',
+    '--clear', 'profile', '--clear', 'effort', '--clear', 'args']);
+  for (const tools of [['webfetch'], ['WebFetch'], ['websearch'], ['WebSearch'], ['webfetch', 'WebFetch', 'websearch', 'WebSearch']]) {
+    h.ok(['ladder', 'set', 'hard', '--tools', JSON.stringify(tools)], as('orchestrator'));
+    assert.deepEqual(h.readState('project.json').ladder.hard.tools, tools);
+    assert.equal(h.readState('decisions.json').decisions.length, 0);
+    assert.equal(events(h).findLast((event) => event.cmd === 'ladder set').detail.authority, 'orchestrator');
+  }
 });
