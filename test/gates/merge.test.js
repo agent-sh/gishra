@@ -335,6 +335,27 @@ test('a member retry uses async receipts recorded under a higher stack task', (t
   assert.equal(f.read().prs[13].state, 'OPEN');
 });
 
+test('the accepted merge queue keeps wrong-base stack retries failed', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => {
+    d.moveOnMerge = { pr: 12, base: f.lower.branch, onPr: 12 };
+    d.syncError = 'temporary transport failure';
+  });
+  const command = ['merge', '--accepted', '--agent', 'orchestrator', '--json'];
+  const first = f.h.run(command);
+  assert.equal(first.code, 1, first.stdout + first.stderr);
+  assert.equal(f.read().prs[12].state, 'MERGED');
+  for (let retry = 0; retry < 2; retry++) {
+    const r = f.h.run(command);
+    assert.equal(r.code, 1, r.stdout + r.stderr);
+    const upper = f.h.json(['task', 'show', 'T2', '--agent', 'orchestrator']);
+    assert.equal(upper.evidence.some((e) => e.type === 'merge' && e.ok), false);
+    assert.ok(fs.existsSync(f.upper.wt.path));
+  }
+});
+
 test('a partially merged stack retries on the project base and refuses an unrelated base', (t) => {
   const f = stacked(t);
   f.accept('T1');
