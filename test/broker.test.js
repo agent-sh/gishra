@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { TMP_ROOT, detachedAlive, makeRepo } = require('./helpers');
 const B = require('../lib/broker');
+const harnessHooks = require('../lib/harness-hooks');
 const { resolveCommand, parseOptions, GLOBAL } = require('../bin/tower-crane');
 
 function scratch(t) {
@@ -144,6 +145,81 @@ for (const role of ['worker', 'reviewer', 'small']) test(`a sandboxed ${role} an
     job.agent, 'broker', job.agent, 'owner-named-agent',
   ]);
   assert.equal(h.readState('tasks.json').tasks[0].notes.at(-1).agent, job.agent);
+});
+
+test('a sandboxed worker withdraws its own question through the broker; a reviewer cannot withdraw it', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Waits on a question', '--acceptance', 'the withdrawal frees it']);
+  h.ok(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres', '--blocks', 'T1', '--agent', 'worker-T1-1']);
+  const brokerEnv = async (role) => {
+    const job = {
+      state: h.state, task: 'T1', agent: `${role}-T1-1`, role, harness: 'codex',
+      cwd: h.repo, broker: path.join(h.base, 'brokers', `${role}-T1-1`, B.FILE),
+    };
+    const broker = await B.start(job);
+    t.after(() => broker.close());
+    return { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task };
+  };
+  const log = () => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8');
+  const withdraw = ['decision', 'withdraw', 'D1', '--reason', 'the question went away'];
+  const before = log();
+
+  // The grant is for the asker only: a reviewer's withdrawal of the worker's question is refused by the CLI.
+  const refused = await h.runAsync(withdraw, { env: await brokerEnv('reviewer') });
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stderr, /only the agent that opened D1 \(worker-T1-1\) or the owner/);
+  assert.equal(h.readState('decisions.json').decisions[0].status, 'open');
+  assert.equal(log(), before, 'a refused brokered withdrawal writes no event');
+
+  // The worker names no other identity, and withdraws its own question with a reason.
+  const worker = await brokerEnv('worker');
+  const forged = await h.runAsync([...withdraw, '--agent', 'owner'], { env: worker });
+  assert.equal(forged.code, 1, forged.stderr);
+  assert.match(forged.stderr, /owner identity needs a process the owner runs/);
+  assert.equal(log(), before, 'a forged identity writes no event');
+  const done = await h.runAsync(withdraw, { env: worker });
+  assert.equal(done.code, 0, done.stderr);
+  const decision = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([decision.status, decision.withdrawn_by, decision.withdraw_reason], [
+    'withdrawn', 'worker-T1-1', 'the question went away',
+  ]);
+  const event = log().trim().split('\n').map(JSON.parse).findLast((entry) => entry.cmd === 'decision withdraw');
+  assert.deepEqual([event.type, event.agent, event.via, event.detail.reason], [
+    'decision-withdrawn', 'worker-T1-1', 'broker', 'the question went away',
+  ]);
+  assert.match(h.readState('tasks.json').tasks[0].notes.at(-1).text, /decision D1 withdrawn: the question went away/);
+});
+
+test('a sandboxed reviewer asks through the broker: a technical question reaches the orchestrator, an escalation stays with the owner', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Review a store choice', '--acceptance', 'ask is authorized']);
+  h.ok(['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}', '--agent', 'owner']);
+  const job = {
+    state: h.state, task: 'T1', agent: 'reviewer-T1-1', role: 'reviewer', harness: 'codex',
+    cwd: h.repo, broker: path.join(h.base, 'brokers', 'reviewer-T1-1', B.FILE),
+  };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  const env = { ...broker.env, TOWER_CRANE_AGENT: job.agent, TOWER_CRANE_TASK: job.task };
+
+  const asked = await h.runAsync(['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres', '--blocks', 'T1'], { env });
+  assert.equal(asked.code, 0, asked.stderr);
+  const technical = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([technical.asked_by, technical.technical, technical.escalation], [job.agent, true, undefined]);
+  h.ok(['answer', 'D1', '--choice', 'redis', '--agent', 'orchestrator']);
+  assert.equal(h.readState('decisions.json').decisions[0].answer_rule, 'owner-technical-delegation');
+
+  const escalated = await h.runAsync(['ask', '--question', 'Raise the budget?', '--option', 'yes', '--option', 'no', '--setting', 'budget.raise', '--blocks', 'T1'], { env });
+  assert.equal(escalated.code, 0, escalated.stderr);
+  assert.deepEqual(h.readState('decisions.json').decisions[1].escalation, { settings: ['budget.raise'], change: null });
+  const refused = h.run(['answer', 'D2', '--choice', 'yes', '--agent', 'orchestrator']);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /D2 escalates budget\.raise to the owner/);
+
+  const asks = fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).filter((event) => event.cmd === 'ask');
+  assert.deepEqual(asks.map((event) => [event.agent, event.via]), [[job.agent, 'broker'], [job.agent, 'broker']]);
 });
 
 test('closing the broker stops the commands it is running and what they started', async (t) => {
@@ -298,4 +374,36 @@ cp.spawnSync = function (command, args, opts) {
   assert.equal(calls[0].cwd, h.state);
   assert.ok(calls[0].git_dir && !fs.existsSync(calls[0].git_dir), 'git finds no repository');
   assert.equal(h.readState('tasks.json').tasks[0].sha, 'abcdef2');
+});
+
+test('a brokered worker or reviewer messages only the orchestrator or the owner', async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'one', '--acceptance', 'noted']);
+  h.ok(['task', 'add', '--title', 'two', '--acceptance', 'noted']);
+  const events = () => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const reviewer = { state: h.state, task: 'T2', agent: 'reviewer-T2-1', role: 'reviewer' };
+  assert.throws(() => B.authorize(reviewer, ['msg', '--to', 'worker-T1-1', 'note from T2']), /messages only the orchestrator or the owner, not worker-T1-1/);
+  assert.throws(() => B.authorize(reviewer, ['msg', '--to=worker-T1-1', 'note from T2']), /not worker-T1-1/);
+
+  const job = { state: h.state, task: 'T2', agent: 'worker-T2-1', role: 'worker', cwd: h.repo, broker: path.join(h.base, 'brokers', 'worker-T2-1', B.FILE) };
+  const broker = await B.start(job);
+  t.after(() => broker.close());
+  // A worker's message to another task's agent would enter that agent's
+  // prompt, so the broker refuses it and the recipient's inbox stays empty.
+  const refused = await B.forward(job.broker, ['msg', '--to', 'worker-T1-1', 'note from T2'], h.state);
+  assert.equal(refused.code, 1, refused.stderr);
+  assert.match(refused.stderr, /messages only the orchestrator or the owner, not worker-T1-1/);
+  assert.deepEqual(harnessHooks.unread(events(), 'worker-T1-1'), []);
+  assert.equal(events().filter((e) => e.cmd === 'msg').length, 0, 'the refused message wrote no message event');
+  // The attempt is logged for the orchestrator and the board, without its text.
+  const refusals = events().filter((e) => e.cmd === 'msg refused');
+  assert.deepEqual(refusals.map((e) => [e.agent, e.task, e.to, e.detail.to]), [['worker-T2-1', 'T2', 'orchestrator', 'worker-T1-1']]);
+  assert.ok(!fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').includes('note from T2'), 'the refusal keeps the text out of the log');
+
+  for (const to of ['orchestrator', 'owner']) {
+    const r = await B.forward(job.broker, ['msg', '--to', to, `status from T2 to ${to}`], h.state);
+    assert.equal(r.code, 0, r.stderr);
+  }
+  assert.deepEqual(events().filter((e) => e.cmd === 'msg').map((e) => [e.task, e.detail.to]), [['T2', 'orchestrator'], ['T2', 'owner']]);
 });
