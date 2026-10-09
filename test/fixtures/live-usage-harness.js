@@ -6,7 +6,8 @@
 // cumulative token_count events to its rollout under CODEX_HOME. Preloaded
 // with NODE_OPTIONS, it replaces the harness binary in the supervisor.
 // LIVE_STEPS steps of LIVE_STEP_TOKENS tokens, one every LIVE_EVERY ms, then
-// it holds for LIVE_HOLD ms, writes LIVE_DONE and exits 0.
+// it holds for LIVE_HOLD ms or an explicit completion signal, writes LIVE_DONE
+// and exits 0. Tests stop an "until-stop" hold through the supervisor.
 
 const cp = require('node:child_process');
 const fs = require('node:fs');
@@ -78,19 +79,23 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
       }, 25);
     } else if (step < steps) setTimeout(write, Number(env.LIVE_EVERY || 100));
     else {
-      setTimeout(() => {
+      const finish = () => {
         if (env.LIVE_RESULT && harness === 'claude') console.log(JSON.stringify({
           type: 'result', usage: { input_tokens: step * (per - output), output_tokens: step * output },
         }));
         if (env.LIVE_OUTAGE) console.error('HTTP 503 service unavailable');
         fs.writeFileSync(env.LIVE_DONE, String(step));
         process.exit(Number(env.LIVE_EXIT || 0));
-      }, Number(env.LIVE_HOLD || 0));
+      };
+      if (env.LIVE_COMPLETE) {
+        setInterval(() => { if (fs.existsSync(env.LIVE_COMPLETE)) finish(); }, 25);
+      } else if (env.LIVE_HOLD === 'until-stop') setInterval(() => {}, 1000);
+      else setTimeout(finish, Number(env.LIVE_HOLD || 0));
     }
   };
   if (env.LIVE_UNREADABLE) {
     fs.mkdirSync(file);
-    setTimeout(() => process.exit(0), 60000);
+    setInterval(() => {}, 1000);
   } else write();
   if (env.LIVE_FINISH) {
     setInterval(() => {

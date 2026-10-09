@@ -5,20 +5,47 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { cachedFixture, BIN } = require('./helpers');
+const { cachedFixture, BIN, HOOKS } = require('./helpers');
 const { CHROME, openBrowser, closeBrowser } = require('./browser');
 
 test.after(closeBrowser);
 
 const STUB = path.join(__dirname, 'fixtures', 'live-usage-harness.js').replace(/\\/g, '/');
-const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+const events = (h) => require('../lib/state').readEvents(h.state);
+const recordedSpend = (h) => h.readState('tasks.json').tasks[0].spend;
+const liveEntries = (h) => (recordedSpend(h).entries || []).filter((e) => e.live);
 
-async function until(fn, message, timeout = 20000) {
-  const deadline = Date.now() + timeout;
-  while (!fn()) {
-    if (Date.now() >= deadline) assert.fail(message);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+function until(t, h, fn, message, stream) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const watchers = [h.state, h.base].map((dir) => fs.watch(dir, check));
+    const abort = () => finish(new Error(message, { cause: t.signal.reason }));
+    function finish(error) {
+      if (done) return;
+      done = true;
+      for (const watcher of watchers) watcher.close();
+      stream?.off('data', check);
+      t.signal.removeEventListener('abort', abort);
+      if (error) reject(error);
+      else resolve();
+    }
+    function check() {
+      if (done) return;
+      try { if (fn()) finish(); }
+      catch (error) { finish(error); }
+    }
+    for (const watcher of watchers) watcher.once('error', finish);
+    stream?.on('data', check);
+    t.signal.addEventListener('abort', abort, { once: true });
+    if (t.signal.aborted) abort();
+    else check();
+  });
+}
+
+function viewClock(h, at) {
+  const file = path.join(h.base, 'view-clock');
+  fs.writeFileSync(file, String(Date.parse(at) + 1000));
+  return { hooks: { HOOK_CLOCK_FILE: file } };
 }
 
 function setup(t, harness, supervision = {}) {
@@ -59,11 +86,11 @@ for (const [harness, next] of [['claude', 'retry'], ['codex', 'retry'], ['claude
       LIVE_STEPS: '1', LIVE_STEP_TOKENS: '5000', LIVE_RESULT: '1', LIVE_ATTEMPTS: attempts,
       LIVE_EXIT: next === 'retry' ? '75' : '1', ...(next === 'fallback' ? { LIVE_OUTAGE: '1' } : {}),
     }) });
-    await until(() => exited(h, spawned.agent), 'the supervised run did not finish');
+    await until(t, h, () => exited(h, spawned.agent), 'the supervised run did not finish');
     assert.equal(fs.readFileSync(attempts, 'utf8'), `${harness}\n`, 'no paid retry or fallback starts after the budget is exhausted');
     assert.ok(events(h).some((e) => e.cmd === 'budget stop'));
     assert.deepEqual(h.readState('decisions.json').decisions.find((d) => d.escalation).escalation.settings, ['budget.raise']);
-    await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'exit usage was not finalized');
+    await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'exit usage was not finalized');
     assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 5000);
     h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
     assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 5000);
@@ -73,16 +100,16 @@ for (const [harness, next] of [['claude', 'retry'], ['codex', 'retry'], ['claude
 test('sub-second usage requests obey the sampling floor and unchanged readings write once', async (t) => {
   const h = setup(t, 'claude', { usage_ms: 1 });
   const reads = path.join(h.base, 'reads');
-  h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_READS: reads, LIVE_NO_CLAIM: '1' }) });
-  await until(() => h.readState('tasks.json').tasks[0].spend.tokens === 1000, 'initial usage was not recorded');
+  h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_READS: reads, LIVE_NO_CLAIM: '1' }) });
+  await until(t, h, () => h.readState('tasks.json').tasks[0].spend.tokens === 1000, 'initial usage was not recorded');
   const readTimes = () => fs.readFileSync(reads, 'utf8').trim().split('\n').map(Number);
-  await until(() => readTimes().length >= 3, 'the supervisor did not keep sampling');
+  await until(t, h, () => readTimes().length >= 3, 'the supervisor did not keep sampling');
   const samples = events(h).filter((e) => e.cmd === 'spend live' && e.detail.tokens === 1000);
   assert.equal(samples.length, 1, 'watcher wakes and unchanged snapshots do not write more usage');
   assert.equal(samples[0].detail.live.interval_ms, 1000);
   h.ok(['task', 'note', 'T1', 'wake the sampler']);
   const count = readTimes().length;
-  await until(() => readTimes().length >= count + 2, 'the supervisor stopped sampling after a state change');
+  await until(t, h, () => readTimes().length >= count + 2, 'the supervisor stopped sampling after a state change');
   assert.equal(events(h).filter((e) => e.cmd === 'spend live' && e.detail.tokens === 1000).length, 1);
   const times = readTimes();
   assert.ok(times.length >= 2, 'the supervisor still samples an unchanged file');
@@ -93,12 +120,14 @@ test('an initial read error records unavailable telemetry with only its error cl
   const h = setup(t, 'claude');
   const location = path.join(h.base, 'usage-file');
   h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_UNREADABLE: '1', LIVE_FILE: location }) });
-  await until(() => h.json(['status']).spend.live.length === 1, 'initial read errors left the agent absent from live spend', 10000);
-  const [live] = h.json(['status']).spend.live;
+  await until(t, h, () => liveEntries(h).some((e) => e.live.error), 'initial read errors left the agent absent from live spend');
+  const entry = liveEntries(h).find((e) => e.live.error);
+  const [live] = h.json(['status'], viewClock(h, entry.at)).spend.live;
   assert.equal(live.state, 'unavailable');
   assert.equal(live.tokens, null);
   assert.match(live.error, /^(EISDIR|EPERM|EACCES)$/);
-  const detail = events(h).find((e) => e.cmd === 'spend live').detail;
+  const detail = events(h).find((e) => e.cmd === 'spend live' && e.detail.live.error).detail;
+  assert.equal(detail.live.state, 'unavailable');
   assert.equal(detail.live.error, live.error);
   assert.equal(JSON.stringify(detail).includes(fs.readFileSync(location, 'utf8')), false, 'the error contains no session path');
   assert.equal('message' in detail.live, false);
@@ -111,11 +140,11 @@ test('completed attempts below budget continue and reconcile each fresh invocati
   const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
     LIVE_STEPS: '1', LIVE_STEP_TOKENS: '5000', LIVE_RESULT: '1', LIVE_ATTEMPTS: attempts, LIVE_EXIT: '75',
   }) });
-  await until(() => exited(h, spawned.agent), 'the supervised run did not finish');
+  await until(t, h, () => exited(h, spawned.agent), 'the supervised run did not finish');
   assert.equal(fs.readFileSync(attempts, 'utf8'), 'claude\nclaude\n');
   assert.equal(events(h).some((e) => e.cmd === 'budget stop'), false);
-  await until(() => {
-    const entries = h.json(['task', 'show', 'T1']).spend.entries;
+  await until(t, h, () => {
+    const entries = recordedSpend(h).entries;
     return entries.length === 2 && entries.every((e) => !e.live);
   }, 'both attempts were not finalized');
   assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 10000);
@@ -130,11 +159,13 @@ for (const [harness, scope, logOnly] of [['claude', 'project'], ['claude', 'task
     h.ok(['project', 'set', '--decision-delegation', '{"orchestrator_technical":true}']);
     if (scope === 'project') h.ok(['project', 'set', '--budget-tokens', '3500']);
     else h.ok(['task', 'update', 'T1', '--budget-tokens', '3500']);
-    // 60 steps of 1000 tokens over about 18 s; the budget falls at step 4.
+    // Four steps cross the budget. Completion needs a signal, so a loaded
+    // supervisor still has to stop a live process rather than collect an exit.
     const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
-      LIVE_STEPS: '60', LIVE_STEP_TOKENS: '1000', LIVE_EVERY: '300', ...(logOnly ? { LIVE_LOG_ONLY: '1' } : {}),
+      LIVE_STEPS: '4', LIVE_STEP_TOKENS: '1000', LIVE_EVERY: '300', LIVE_COMPLETE: path.join(h.base, 'complete'),
+      ...(logOnly ? { LIVE_LOG_ONLY: '1' } : {}),
     }) });
-    await until(() => exited(h, spawned.agent), 'the agent was not stopped');
+    await until(t, h, () => exited(h, spawned.agent), 'the agent was not stopped');
     assert.equal(fs.existsSync(h.done), false, 'the agent was stopped before it finished on its own');
 
     const log = events(h);
@@ -168,13 +199,13 @@ for (const [harness, scope, logOnly] of [['claude', 'project'], ['claude', 'task
     assert.match(answer.stderr, /only the owner answers it/);
 
     // The exit collection replaces the live entry: one entry, counted once.
-    await until(() => {
-      const s = h.json(['task', 'show', 'T1']).spend;
+    await until(t, h, () => {
+      const s = recordedSpend(h);
       return s.entries?.length === 1 && !s.entries[0].live;
     }, 'exit collection did not reconcile the live entry');
     const spend = h.json(['task', 'show', 'T1']).spend;
     assert.equal(spend.entries[0].source, `spawn:${spawned.agent}`);
-    assert.ok(spend.tokens > 3500 && spend.tokens < 60000, String(spend.tokens));
+    assert.equal(spend.tokens, 4000);
     assert.equal(spend.tokens, spend.entries[0].tokens);
     h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
     assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, spend.tokens, 'recollection does not count twice');
@@ -205,12 +236,12 @@ test('Claude exit without a result includes usage written after the last live sa
   const h = setup(t, 'claude');
   const finish = path.join(h.base, 'finish');
   const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
-    LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_FINISH: finish,
+    LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_FINISH: finish,
   }) });
-  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'the first usage was not collected');
+  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'the first usage was not collected');
   fs.writeFileSync(finish, '');
-  await until(() => exited(h, spawned.agent), 'the harness did not exit');
-  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'exit usage was not finalized');
+  await until(t, h, () => exited(h, spawned.agent), 'the harness did not exit');
+  await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'exit usage was not finalized');
   const spend = h.json(['task', 'show', 'T1']).spend;
   assert.equal(fs.readFileSync(h.done, 'utf8'), '2', 'the harness wrote a final session record');
   assert.equal(spend.tokens, 2000);
@@ -224,12 +255,12 @@ test('submission ends lease renewal and retries but live budgets hold until the 
   h.ok(['task', 'update', 'T1', '--budget-tokens', '3500']);
   const resume = path.join(h.base, 'continue');
   const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
-    LIVE_STEPS: '60', LIVE_EVERY: '200', LIVE_CONTINUE: resume,
+    LIVE_STEPS: '4', LIVE_EVERY: '200', LIVE_CONTINUE: resume, LIVE_COMPLETE: path.join(h.base, 'complete'),
   }) });
-  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'initial usage was not recorded');
   h.ok(['submit', 'T1', '--agent', spawned.agent, '--sha', h.git(['rev-parse', 'HEAD'])]);
   fs.writeFileSync(resume, '');
-  await until(() => exited(h, spawned.agent), 'submitted worker was not stopped');
+  await until(t, h, () => exited(h, spawned.agent), 'submitted worker was not stopped');
   const log = events(h);
   const submit = log.findIndex((e) => e.cmd === 'submit');
   const after = log.slice(submit + 1);
@@ -239,17 +270,17 @@ test('submission ends lease renewal and retries but live budgets hold until the 
   assert.equal(after.some((e) => ['renew', 'spawn retry', 'spawn fallback'].includes(e.cmd)), false);
   assert.equal(h.json(['task', 'show', 'T1']).status, 'submitted');
   assert.deepEqual(h.readState('decisions.json').decisions.find((d) => d.escalation).escalation.settings, ['budget.raise']);
-  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'submitted exit usage was not finalized');
+  await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'submitted exit usage was not finalized');
 });
 
 test('interrupt stops a live-spend dispatch and reconciles usage without changing its revision', async (t) => {
   const h = setup(t, 'claude');
-  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: '60000' }) });
-  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: 'until-stop' }) });
+  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'initial usage was not recorded');
   const revision = h.json(['task', 'show', 'T1']).revision;
   h.ok(['interrupt', 'T1']);
-  await until(() => exited(h, spawned.agent), 'the interrupted harness did not exit');
-  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'interrupted exit usage was not finalized');
+  await until(t, h, () => exited(h, spawned.agent), 'the interrupted harness did not exit');
+  await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'interrupted exit usage was not finalized');
   const task = h.json(['task', 'show', 'T1']);
   assert.equal(task.revision, revision);
   assert.equal(task.claim, null);
@@ -266,9 +297,11 @@ test('interrupt stops a live-spend dispatch and reconciles usage without changin
 test('a ranged task budget stop does not climb the quality ladder', async (t) => {
   const h = setup(t, 'codex');
   h.ok(['task', 'update', 'T1', '--tier', 'easy..medium', '--budget-tokens', '3500']);
-  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '60', LIVE_EVERY: '300' }) });
-  await until(() => exited(h, spawned.agent), 'the budget did not stop the ranged worker');
-  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'ranged exit usage was not finalized');
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
+    LIVE_STEPS: '4', LIVE_EVERY: '300', LIVE_COMPLETE: path.join(h.base, 'complete'),
+  }) });
+  await until(t, h, () => exited(h, spawned.agent), 'the budget did not stop the ranged worker');
+  await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'ranged exit usage was not finalized');
   h.ok(['recover', 'T1']);
   const task = h.json(['task', 'show', 'T1']);
   assert.equal(task.tier, 'easy', 'a budget stop is not a quality failure');
@@ -286,15 +319,15 @@ test('live and reconciled spend keep the configured cost for their rung', async 
   h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: {
     'live-model': { input: 1, cache_write: 1, cache_read: 1, output: 1 },
   } })]);
-  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_CACHED: '0' }) });
-  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_CACHED: '0' }) });
+  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'initial usage was not recorded');
   const before = h.json(['task', 'show', 'T1']);
   assert.deepEqual(before.spend_by_rung.easy, { tokens: 1000, cost_usd: 0.001 });
   assert.equal(before.spend.entries[0].cost_usd, 0.001);
   assert.match(h.ok(['task', 'show', 'T1']), /easy: 1000 tokens, USD 0\.001/);
   h.ok(['interrupt', 'T1']);
-  await until(() => exited(h, spawned.agent), 'the priced worker did not exit');
-  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'priced exit usage was not finalized');
+  await until(t, h, () => exited(h, spawned.agent), 'the priced worker did not exit');
+  await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'priced exit usage was not finalized');
   const after = h.json(['task', 'show', 'T1']);
   assert.deepEqual(after.spend_by_rung, before.spend_by_rung);
   assert.equal(after.spend.entries.length, 1);
@@ -306,26 +339,26 @@ test('unavailable telemetry preserves known spend and its age through recovery a
   const h = setup(t, 'claude');
   const location = path.join(h.base, 'usage-file');
   const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({
-    LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_FILE: location,
+    LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_FILE: location,
   }) });
-  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'initial usage was not recorded');
   const before = h.json(['task', 'show', 'T1']).spend;
   const file = fs.readFileSync(location, 'utf8');
   const data = fs.readFileSync(file);
   fs.unlinkSync(file);
-  await until(() => events(h).some((e) => e.cmd === 'spend live' && ['unavailable', 'stale'].includes(e.detail.live.state)), 'missing telemetry was not observed');
+  await until(t, h, () => events(h).some((e) => e.cmd === 'spend live' && ['unavailable', 'stale'].includes(e.detail.live.state)), 'missing telemetry was not observed');
   const missing = h.json(['task', 'show', 'T1']).spend;
   for (const key of ['tokens', 'input', 'cached', 'output']) assert.equal(missing[key], before[key], key);
   assert.equal(missing.entries[0].at, before.entries[0].at, 'missing data cannot refresh the last measured usage');
   assert.equal(h.json(['status']).spend.live[0].state, 'stale');
   fs.writeFileSync(file, data);
-  await until(() => h.json(['status']).spend.live[0].state === 'live', 'recovered telemetry stayed stale');
+  await until(t, h, () => liveEntries(h)[0]?.live.state === 'live', 'recovered telemetry stayed stale');
   fs.unlinkSync(file);
-  await until(() => h.json(['status']).spend.live[0].state === 'stale', 'lost telemetry did not become stale again');
+  await until(t, h, () => liveEntries(h)[0]?.live.state === 'stale', 'lost telemetry did not become stale again');
   h.ok(['task', 'update', 'T1', '--budget-tokens', '500']);
-  await until(() => exited(h, spawned.agent), 'the harness did not exit');
+  await until(t, h, () => exited(h, spawned.agent), 'the harness did not exit');
   assert.ok(events(h).some((e) => e.cmd === 'budget stop'), 'missing telemetry cannot restore spent budget');
-  await until(() => h.json(['task', 'show', 'T1']).spend.entries.every((e) => !e.live), 'exit usage was not finalized');
+  await until(t, h, () => recordedSpend(h).entries?.length && recordedSpend(h).entries.every((e) => !e.live), 'exit usage was not finalized');
   assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 1000);
   h.ok(['spend', 'T1', '--from-spawn', spawned.agent]);
   assert.equal(h.json(['task', 'show', 'T1']).spend.tokens, 1000);
@@ -335,12 +368,13 @@ test('an open board ages live telemetry without state writes or a page reload', 
   const b = await openBrowser(t);
   const h = setup(t, 'claude', { usage_ms: 1000 });
   const location = path.join(h.base, 'usage-file');
-  h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: '60000', LIVE_FILE: location }) });
-  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1000), 'initial usage was not recorded');
+  h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '1', LIVE_HOLD: 'until-stop', LIVE_FILE: location }) });
+  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1000), 'initial usage was not recorded');
   const file = fs.readFileSync(location, 'utf8');
   fs.unlinkSync(file);
   fs.mkdirSync(file); // Failed reads leave the last reading to age without another state write.
-  const reading = h.json(['status']).spend.live[0];
+  const reading = liveEntries(h)[0];
+  const clock = viewClock(h, reading.at);
   await b.send('Page.enable');
   await b.send('Page.addScriptToEvaluateOnNewDocument', { source: `
     window.boardNow = ${Date.parse(reading.at) + 1000};
@@ -348,12 +382,13 @@ test('an open board ages live telemetry without state writes or a page reload', 
     window.boardTimers = [];
     window.setInterval = (callback) => window.boardTimers.push(callback);
   ` });
-  const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json', '--agent', 'viewer'], { cwd: h.repo, env: h.env });
+  const server = cp.spawn(process.execPath, ['--require', HOOKS, BIN, 'serve', '--port', '0', '--json', '--agent', 'viewer'],
+    { cwd: h.repo, env: { ...h.env, ...clock.hooks } });
   const closed = new Promise((resolve) => server.once('close', resolve));
   let output = '';
   server.stdout.on('data', (chunk) => { output += chunk; });
   try {
-    await until(() => output.includes('\n'), 'serve did not start');
+    await until(t, h, () => output.includes('\n'), 'serve did not start', server.stdout);
     const { url } = JSON.parse(output.split('\n')[0]);
     await b.goto(`${url}#spend`);
     await b.until(`document.querySelector('.conn').dataset.conn === 'live'`, 'the live stream');
@@ -381,21 +416,23 @@ test('an open board ages live telemetry without state writes or a page reload', 
 test('live usage shows its freshness: live, stale when no reading arrives, unavailable without harness data', async (t) => {
   const h = setup(t, 'claude');
   // Two readings, then a long hold: age follows the last changed reading.
-  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '2', LIVE_STEP_TOKENS: '700', LIVE_HOLD: '60000' }) });
-  await until(() => h.json(['status']).spend.live.some((l) => l.tokens === 1400), 'live usage was not shown');
-  const status = h.json(['status']);
+  const spawned = h.json(['spawn', '--task', 'T1'], { env: h.liveEnv({ LIVE_STEPS: '2', LIVE_STEP_TOKENS: '700', LIVE_HOLD: 'until-stop' }) });
+  await until(t, h, () => liveEntries(h).some((l) => l.tokens === 1400), 'live usage was not shown');
+  const at = liveEntries(h)[0].at;
+  const fresh = viewClock(h, at);
+  const status = h.json(['status'], fresh);
   assert.equal(status.spend.tokens, 1400, 'live usage is in the totals');
   assert.equal(status.spend.missing_usage, 0);
   assert.deepEqual(status.spend.live.map((l) => [l.task, l.agent, l.state]), [['T1', spawned.agent, 'live']]);
-  assert.match(h.ok(['status']), new RegExp(`live spend: T1 ${spawned.agent}: 1400 tokens, live`));
-  assert.match(h.ok(['task', 'show', 'T1']), /live spend: .*1400 tokens, live/);
+  assert.match(h.ok(['status'], fresh), new RegExp(`live spend: T1 ${spawned.agent}: 1400 tokens, live`));
+  assert.match(h.ok(['task', 'show', 'T1'], fresh), /live spend: .*1400 tokens, live/);
   // A write re-renders after it releases the lock, so read a render of our own.
-  h.ok(['render']);
+  h.ok(['render'], fresh);
   assert.match(fs.readFileSync(path.join(h.state, 'sketch.html'), 'utf8'), /data-live-state="live"/);
 
   // An hour without a new reading, as when the supervisor is gone.
   const clock = path.join(h.base, 'clock');
-  fs.writeFileSync(clock, String(Date.now() + 3600000));
+  fs.writeFileSync(clock, String(Date.parse(at) + 3600000));
   const later = { hooks: { HOOK_CLOCK_FILE: clock } };
   assert.equal(h.json(['status'], later).spend.live[0].state, 'stale');
   assert.match(h.run(['status'], later).stdout, /1400 tokens, stale, last read 60m ago/);
@@ -405,15 +442,16 @@ test('live usage shows its freshness: live, stale when no reading arrives, unava
 
 test('a harness without live usage is shown unavailable, never as zero', async (t) => {
   const h = setup(t, 'claude');
-  const script = "require('node:child_process').execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']); setTimeout(() => {}, 60000);";
+  const script = "require('node:child_process').execFileSync(process.execPath, [process.argv[1], 'claim', 'T1']); setInterval(() => {}, 1000);";
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, require('./helpers').BIN, '{prompt}'])]);
   const spawned = h.json(['spawn', '--task', 'T1']);
-  await until(() => h.json(['status']).spend.live.length === 1, 'no live state was recorded');
-  const [live] = h.json(['status']).spend.live;
+  await until(t, h, () => liveEntries(h).length === 1, 'no live state was recorded');
+  const fresh = viewClock(h, liveEntries(h)[0].at);
+  const [live] = h.json(['status'], fresh).spend.live;
   assert.equal(live.state, 'unavailable');
   assert.equal(live.tokens, null);
   assert.equal(h.json(['status']).spend.missing_usage, 0, 'a running spawn is not yet missing usage');
-  assert.match(h.ok(['status']), /usage unavailable from command while it runs/);
+  assert.match(h.ok(['status'], fresh), /usage unavailable from command while it runs/);
 });
 
 test('a budget lowered during retry backoff cancels the relaunch, records the stop and asks the owner', async (t) => {
@@ -424,9 +462,9 @@ test('a budget lowered during retry backoff cancels the relaunch, records the st
   h.ok(['ladder', 'set', 'easy', '--harness', 'command', '--clear', 'model', '--command', JSON.stringify([process.execPath, '-e', script, require('./helpers').BIN, attempts, '{prompt}'])]);
   h.ok(['spend', 'T1', '--agent', 'earlier', '--tokens', '5000']);
   const spawned = h.json(['spawn', '--task', 'T1']);
-  await until(() => h.json(['task', 'show', 'T1']).run?.phase === 'retrying', 'retry was not scheduled');
+  await until(t, h, () => events(h).some((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying'), 'retry was not scheduled');
   h.ok(['project', 'set', '--budget-tokens', '1000']);
-  await until(() => exited(h, spawned.agent), 'the pending retry was not cancelled');
+  await until(t, h, () => exited(h, spawned.agent), 'the pending retry was not cancelled');
   const log = events(h);
   assert.equal(fs.readFileSync(attempts, 'utf8'), 'x', 'no paid attempt was launched');
   assert.equal(log.filter((e) => e.cmd === 'spawn retry').length, 0);
