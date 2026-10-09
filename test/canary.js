@@ -80,13 +80,13 @@ function processListing() {
   return parts.join('\n');
 }
 
-// File creation can precede the PID write, so an empty marker is not ready.
-async function waitFor(file, ms = 20000) {
+// Empty files signal events; PID markers need content after file creation.
+async function waitFor(file, { ms = 20000, nonempty = false } = {}) {
   const deadline = Date.now() + ms;
   for (;;) {
     try {
       const text = fs.readFileSync(file, 'utf8');
-      if (text) return text;
+      if (!nonempty || text) return text;
     } catch (e) {
       if (e.code !== 'ENOENT') throw e;
     }
