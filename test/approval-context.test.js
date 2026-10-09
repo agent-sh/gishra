@@ -12,6 +12,17 @@ const decisions = h => h.readState('decisions.json').decisions;
 const events = h => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const audits = h => events(h).filter(e => e.cmd === 'setting');
 
+function removeBinding(h, id, key) {
+  const doc = h.readState('decisions.json');
+  delete doc.decisions.find(d => d.id === id).escalation.change[key];
+  h.writeState('decisions.json', doc);
+  const log = events(h);
+  for (const event of log) {
+    if (event.cmd === 'ask' && event.detail.decision === id) delete event.detail.escalation.change[key];
+  }
+  fs.writeFileSync(path.join(h.state, 'events.jsonl'), log.map(e => JSON.stringify(e)).join('\n') + '\n');
+}
+
 function setup(t) {
   return cachedFixture(t, 'approval-context', h => {
     h.init();
@@ -196,4 +207,86 @@ test('waiver proof requires the exact positive revision, including legacy record
   }
   delete change.revision;
   assert.equal(Authority.approvedIn(log, 'D1', 'waive.tests', 'T1', change.sha, 1), false);
+});
+
+test('release approvals bind the claim instance while allowing renewal of that instance', t => {
+  const h = setup(t);
+  h.ok(['claim', 'T1', '--agent', 'worker-one']);
+  const original = h.readState('tasks.json').tasks[0].claim;
+  const args = ['release', 'T1', '--reason', 'owner requested release'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1/);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  h.ok(['interrupt', 'T1']);
+  h.ok(['claim', 'T1', '--agent', 'worker-one']);
+  const replacement = h.readState('tasks.json').tasks[0].claim;
+  assert.notEqual(replacement.since, original.since);
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D2/);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].claim, replacement);
+  assert.equal(decisions(h)[0].applied, undefined);
+  assert.equal(decisions(h)[1].escalation.change.claim_since, replacement.since);
+  h.ok(['answer', 'D2', '--choice', 'approve']);
+  h.ok(['renew', 'T1', '--agent', 'worker-one', '--lease', '90']);
+  assert.equal(h.readState('tasks.json').tasks[0].claim.since, replacement.since);
+  h.ok(args, as('orchestrator'));
+  assert.equal(h.readState('tasks.json').tasks[0].claim, null);
+  assert.equal(audits(h).at(-1).detail.approved_by, 'D2');
+});
+
+test('release rejects an approved legacy request without a claim binding', t => {
+  const h = setup(t);
+  h.ok(['claim', 'T1', '--agent', 'worker-one']);
+  const claim = h.readState('tasks.json').tasks[0].claim;
+  const args = ['release', 'T1', '--reason', 'owner requested release'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1/);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  removeBinding(h, 'D1', 'claim_since');
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D2/);
+  assert.deepEqual(h.readState('tasks.json').tasks[0].claim, claim);
+  assert.equal(decisions(h)[0].applied, undefined);
+});
+
+test('browser-kit approvals authorize only their resolved personal file', t => {
+  const h = setup(t);
+  const other = path.join(h.base, 'other-config.json');
+  const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(h.userConfig, JSON.stringify({ keep: 'first', browser_kit: ['old'] }));
+  fs.writeFileSync(other, JSON.stringify({ keep: 'second', browser_kit: ['other'] }));
+  const args = ['browser-kit', 'set', '--servers', '["new-server"]'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1/);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  const redirected = { env: { TOWER_CRANE_AGENT: 'orchestrator', TOWER_CRANE_CONFIG: other } };
+  assert.match(h.run(args, redirected).stderr, /opened D2/);
+  assert.deepEqual(read(h.userConfig), { keep: 'first', browser_kit: ['old'] });
+  assert.deepEqual(read(other), { keep: 'second', browser_kit: ['other'] });
+  assert.equal(decisions(h)[0].applied, undefined);
+  assert.equal(decisions(h)[0].escalation.change.user_file, h.userConfig);
+  h.ok(args, { env: { TOWER_CRANE_AGENT: 'orchestrator', TOWER_CRANE_CONFIG: path.relative(h.repo, h.userConfig) } });
+  assert.deepEqual(read(h.userConfig), { keep: 'first', browser_kit: ['new-server'] });
+  h.ok(['answer', 'D2', '--choice', 'approve']);
+  h.ok(args, redirected);
+  assert.deepEqual(read(other), { keep: 'second', browser_kit: ['new-server'] });
+  assert.deepEqual(decisions(h).map(d => d.applied.by), ['orchestrator', 'orchestrator']);
+});
+
+test('browser-kit owner writes retire only requests for the file they write', t => {
+  const h = setup(t);
+  const other = path.join(h.base, 'other-config.json');
+  const args = ['browser-kit', 'set', '--servers', '["new-server"]'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1/);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  h.ok(args, { env: { TOWER_CRANE_CONFIG: other } });
+  assert.equal(decisions(h)[0].applied, undefined);
+  h.ok(args);
+  assert.equal(decisions(h)[0].applied?.by, 'owner');
+});
+
+test('browser-kit rejects legacy approvals without a file binding', t => {
+  const h = setup(t);
+  const args = ['browser-kit', 'set', '--servers', '["new-server"]'];
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D1/);
+  h.ok(['answer', 'D1', '--choice', 'approve']);
+  removeBinding(h, 'D1', 'user_file');
+  assert.match(h.run(args, as('orchestrator')).stderr, /opened D2/);
+  assert.equal(fs.existsSync(h.userConfig), false);
+  assert.equal(decisions(h)[0].applied, undefined);
 });
