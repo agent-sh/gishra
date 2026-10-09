@@ -15,6 +15,9 @@ const selections = /\b(?:claude-[\w.-]+|gpt-[\w.-]+|opus|sonnet|haiku|sol|luna|a
 // These records quote sources or historical probe output, rather than configure runtime models.
 const researchDocuments = new Set(['research/T38.json', 'research/T101-probes/results/identity.json',
   'research/T101-probes/results/secrets.json']);
+const importSpace = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*`;
+// The literal first argument determines the file regardless of trailing syntax.
+const importCall = new RegExp(String.raw`\brequire${importSpace}(?:\.${importSpace}resolve${importSpace})?\(${importSpace}(['"])([^'"]+)\1`, 'g');
 
 test('cached fixtures pin their ladder and keep copies independent', (t) => {
   const tasks = [{ args: ['--title', 'Cached task', '--acceptance', 'pinned model'], brief: 'cached brief\n' }];
@@ -70,7 +73,7 @@ function modelSelections(root, env = process.env) {
     if (!/\.(?:cjs|mjs|js)$/.test(file)) continue;
     const text = fs.readFileSync(path.join(root, file), 'utf8');
     const resolve = createRequire(path.resolve(root, file)).resolve;
-    for (const match of text.matchAll(/\brequire(?:\.resolve)?\(\s*(['"])([^'"]+)\1\s*\)/g)) {
+    for (const match of text.matchAll(importCall)) {
       try {
         const imported = resolve(match[2]);
         if (path.extname(imported) === '.json') importedJSON.add(path.relative(root, imported).split(path.sep).join('/'));
@@ -142,11 +145,22 @@ test('model lint scans research JSON and imported documentary records', (t) => {
   assert.deepEqual(modelSelections(h.repo, h.env), []);
   fs.writeFileSync(path.join(h.repo, 'research', 'package.json'), JSON.stringify({ main: 'T38.json' }));
   for (const request of ['../' + record, '../research/T38', '../research']) {
-    fs.writeFileSync(module, 'module.exports = require(' + JSON.stringify(request) + ');\n');
-    const loaded = cp.execFileSync(process.execPath,
-      ['-e', 'process.stdout.write(require(process.argv[1]).claims[0].quote)', module], { env: h.env, encoding: 'utf8' });
-    assert.equal(loaded, id, `${request} loads the documentary JSON`);
-    assert.deepEqual(modelSelections(h.repo, h.env), [`${record}:1: ${id}`], request);
+    const quoted = JSON.stringify(request);
+    for (const call of [
+      'require(' + quoted + ')',
+      'require(' + quoted + ',)',
+      'require(' + quoted + ' /* after */)',
+      'require(/* before */ ' + quoted + ')',
+      'require /* between */ (' + quoted + ')',
+      'require(// before\n' + quoted + '\n)',
+      'require(' + quoted + '// after\n)',
+    ]) {
+      fs.writeFileSync(module, 'module.exports = ' + call + ';\n');
+      const loaded = cp.execFileSync(process.execPath,
+        ['-e', 'process.stdout.write(require(process.argv[1]).claims[0].quote)', module], { env: h.env, encoding: 'utf8' });
+      assert.equal(loaded, id, `${call} loads the documentary JSON`);
+      assert.deepEqual(modelSelections(h.repo, h.env), [`${record}:1: ${id}`], call);
+    }
   }
 });
 

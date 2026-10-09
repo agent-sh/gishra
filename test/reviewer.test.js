@@ -379,6 +379,34 @@ test('a standalone Codex profile inherits base-model pricing for review promotio
   assert.ok(choice(h).argv.some(arg => arg.includes('builder model fixture-main')));
 });
 
+test('Codex review pricing follows the user origin from a private caller home', (t) => {
+  const h = setup(t, 'medium', 'other', 'fixture-main');
+  ready(h);
+  const userHome = path.join(h.base, 'user-origin');
+  const codex = path.join(userHome, '.codex');
+  const privateHome = path.join(h.base, 'private-caller');
+  fs.mkdirSync(codex, { recursive: true });
+  fs.mkdirSync(privateHome);
+  fs.writeFileSync(path.join(codex, 'config.toml'), 'model = "fixture-main"\n');
+  fs.writeFileSync(path.join(codex, 'origin-review.config.toml'), 'model_reasoning_effort = "high"\n');
+  const marker = {
+    home: userHome, codex,
+    claude: { dir: path.join(userHome, '.claude'), json: path.join(userHome, '.claude.json') },
+    pi: path.join(userHome, '.pi', 'agent'), agy: path.join(userHome, '.gemini'),
+  };
+  fs.writeFileSync(path.join(privateHome, '.tower-crane-origin.json'), JSON.stringify(marker));
+  pinRung(h, 'medium', { harness: 'codex', profile: 'origin-review', effort: 'high' });
+  sample(h, 'fixture-main', 100000, 50000, 60000);
+  sample(h, 'fixture-large', 100000, 50000, 20000, 20000);
+  const userEnv = { HOME: userHome, USERPROFILE: userHome, CODEX_HOME: '', CLAUDE_CONFIG_DIR: '' };
+  assert.equal(choice(h, userEnv).review_rung, 'hard');
+  const privateEnv = { ...userEnv, HOME: privateHome, USERPROFILE: privateHome };
+  assert.equal(choice(h, privateEnv).review_rung, 'hard');
+  const dispatch = h.json(['spawn', '--task', 'T1', '--dry-run'], { env: { ...h.reviewEnv, ...privateEnv } });
+  assert.equal(dispatch.harness, 'codex');
+  assert.equal(dispatch.argv[dispatch.argv.indexOf('-p') + 1], 'origin-review');
+});
+
 test('a stronger model wins only when its median priced review cost is no higher', (t) => {
   const h = setup(t, 'medium', 'other', undefined, { gated: true });
   // Inclusive input includes cache writes and cache reads.
@@ -478,8 +506,13 @@ test('review history from other tasks and cached tokens determines cost', (t) =>
 test('review escalation climbs one tier after failed reviews', (t) => {
   const h = setup(t, 'easy', 'other', undefined, { gated: true });
   assert.equal(model(choice(h)), 'fixture-light');
+  // A failure under a name no review dispatch started does not escalate.
+  h.ok(['evidence', 'T1', '--agent', 'made-up', '--type', 'review', '--fail', '--sha', h.sha]);
+  assert.equal(model(choice(h)), 'fixture-light');
+  h.reviewer('T1', 'r1');
   h.ok(['evidence', 'T1', '--agent', 'r1', '--type', 'review', '--fail', '--sha', h.sha, '--summary', 'needs stronger reasoning']);
   assert.equal(model(choice(h)), 'fixture-main');
+  h.reviewer('T1', 'r2');
   h.ok(['evidence', 'T1', '--agent', 'r2', '--type', 'review', '--fail', '--sha', h.sha]);
   assert.equal(model(choice(h)), 'fixture-large');
 });
