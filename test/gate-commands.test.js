@@ -297,8 +297,10 @@ for (const [name, before, change] of [
     if (before.length) h.ok(['project', 'set', ...before]);
     h.ok(['check', 'tests', 'T1']);
     h.ok(['check', 'clean', 'T1']);
+    h.reviewer('T1', 'reviewer', sha);
     h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', sha, '--agent', 'reviewer']);
     h.ok(['accept', 'T1']);
+    assert.equal(h.readState('tasks.json').tasks[0].status, 'accepted');
     h.ok(['project', 'set', ...change]);
     assert.equal(shown(h, 'tests').ok, false);
     assert.match(shown(h, 'tests').reason, /tests paths, keep, expensive, map or required CI setting/);
