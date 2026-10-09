@@ -17,6 +17,8 @@ try {
 } finally {
   if ($process) { $process.Dispose() }
 }
+# A caught missing-process error can leave PowerShell's exit status at 1.
+exit 0
 `;
   const value = cp.execFileSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { cachedFixture, BIN, HOOKS, runPty, PTY_AVAILABLE } = require('./helpers');
+const { cachedFixture, BIN, HOOKS, runPty, PTY_AVAILABLE, detachedAlive } = require('./helpers');
 
 const PRIVATE_LOG = 'prompt: synthetic private instruction\ncredential: synthetic-secret-for-recovery-test';
 
@@ -194,8 +194,12 @@ process.exit(0);
   assert.equal(h.detached()[0].exited, true);
   assert.equal(child.kill(0), true, 'monitor must still be running inside the exit listener');
   if (process.platform === 'win32') await h.cleanup();
-  else await assert.rejects(h.cleanup(), /detached usage monitors outlived test teardown/);
+  else {
+    await assert.rejects(h.cleanup(), /detached usage monitors outlived test teardown/);
+    await closed;
+  }
   assert.equal(child.kill(0), false, 'cleanup returned before the original monitor terminated');
+  assert.equal(detachedAlive(record), false, 'a terminated monitor must be observable as stopped');
 });
 
 test('submitted workers and claims without a matching spawn are not reported', async (t) => {
