@@ -240,6 +240,7 @@ test('sources gate follows research kind when kind changes without moving the ta
   assert.equal(reworked.evidence[0].revision, 1);
   assert.equal(reworked.gates.ok, false, 'the review from before rework remains stale');
   assert.ok(!reworked.gates.gates.some(g => g.type === 'sources'));
+  h.reviewer('T1', 'reviewer', sha);
   h.ok(['evidence', 'T1', '--agent', 'reviewer', '--type', 'review', '--ok', '--sha', sha, '--revision', h.revision('T1')]);
   assert.equal(h.json(['task', 'show', 'T1']).gates.ok, true);
 });

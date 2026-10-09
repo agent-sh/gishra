@@ -372,6 +372,7 @@ test('local CI selects kind args, replacement commands and the default with audi
     assert.equal(reworked.revision, before.revision + 1);
     assert.equal(reworked.gates.gates.find(g => g.type === 'review').ok, false);
     assert.deepEqual(reworked.evidence, before.evidence);
+    h.reviewer('T1', 'reviewer', h.sha);
     h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--revision', h.revision('T1'), '--agent', 'reviewer']);
     const e = h.json(['check', 'ci', 'T1']);
     assert.equal(e.revision, reworked.revision);
@@ -463,6 +464,7 @@ test('kind variants with identical argv cannot reuse receipts or merge under a d
   assert.equal(reworked.revision, previousCI.revision + 1);
   assert.equal(reworked.gates.gates.find(g => g.type === 'ci').ok, false);
   assert.deepEqual({ task: reworked.id, ...reworked.evidence.find(e => e.type === 'ci') }, previousCI);
+  h.reviewer('T1', 'reviewer', h.sha);
   h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', h.sha, '--revision', h.revision('T1'), '--agent', 'reviewer']);
   h.ok(['check', 'ci', 'T1']);
   delete local.by_kind.ops;
