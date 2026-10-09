@@ -48,10 +48,11 @@ test('package support, CI matrix, and required jobs target Node 24 and 26', () =
   assert.match(agents, /\bNode 24 or newer\b/);
 });
 
-test('pull requests run CI for main and stacked task branches, and pushes run it for main', () => {
+test('pull requests run CI for every base, and pushes run it for main', () => {
   const root = path.resolve(__dirname, '..');
   const workflow = readWorkflow(root);
-  assert.match(workflow, /^on:\n {2}pull_request:\n(?: {4}#.*\n)? {4}branches: \[main, tower-crane\/\*\*\]\n {2}push:\n {4}branches: \[main\]\n/m);
+  // A base filter would drop CI from stacks on custom task branches, which submission accepts.
+  assert.match(workflow, /^on:\n {2}pull_request:\n(?: {4}#.*\n)* {2}push:\n {4}branches: \[main\]\n/m);
 });
 
 function run(name, conclusion = 'success', status = 'completed', app = 'github-actions', id = 1) {
