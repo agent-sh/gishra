@@ -521,7 +521,7 @@ test('a worker spawned behind a live lease held by another agent never starts an
   h.ok(['claim', 'T1', '--agent', 'holder']);
   const result = h.spawn(undefined, 20000);
   assert.equal(result.code, 1, result.stderr);
-  assert.match(result.stderr, /no lease: its spawn was superseded before its lease was taken/);
+  assert.match(result.stderr, /T1 is claimed by holder until/);
   assert.equal(h.readAttempts().length, 0, 'the harness never started');
   assert.equal(h.json(['task', 'show', 'T1']).claim.agent, 'holder', 'the holder keeps its lease');
 });
