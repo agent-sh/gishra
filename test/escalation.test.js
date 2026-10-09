@@ -10,6 +10,8 @@ const { cachedFixture, detachedAlive, BIN } = require('./helpers');
 const { gateFixture } = require('./gate-helpers');
 
 const events = (h) => require('../lib/state').readEvents(h.state);
+const preloadOption = (file) => `--require ${JSON.stringify(file)}`;
+
 function until(t, dir, fn) {
   return new Promise((resolve, reject) => {
     const watchers = dir.map((entry) => fs.watch(entry, check));
@@ -118,7 +120,7 @@ if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
     server.listen(0, '127.0.0.1', resolve);
   });
   h.env.HOOK_ESCALATION_SIGNAL_PORT = String(server.address().port);
-  h.env.NODE_OPTIONS = `--require "${signal}"`;
+  h.env.NODE_OPTIONS = preloadOption(signal);
   h.until = (fn, dirs = [h.state, h.base]) => until(t, dirs, fn);
   h.task = () => h.readState('tasks.json').tasks.find((task) => task.id === 'T1');
   h.openDecisions = () => h.readState('decisions.json').decisions.filter((decision) => decision.status === 'open');
@@ -155,6 +157,23 @@ if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
   h.readAttempts = () => fs.existsSync(h.attempts) ? JSON.parse(fs.readFileSync(h.attempts)) : [];
   return h;
 }
+
+test('preload paths preserve spaces and Windows backslashes in NODE_OPTIONS', (t) => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(require('./helpers').TMP_ROOT, 'escalation-preload-')));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const files = [
+    path.join(dir, 'process signal.cjs'),
+    path.join(dir, process.platform === 'win32' ? 'process-signal.cjs' : 'D:\\a temp\\tower-crane-tests\\process-signal.cjs'),
+  ];
+  for (const file of files) {
+    fs.writeFileSync(file, 'process.env.ESCALATION_PRELOAD_PATH = __filename;\n');
+    const result = cp.spawnSync(process.execPath, ['-p', 'process.env.ESCALATION_PRELOAD_PATH'], {
+      env: { ...process.env, NODE_OPTIONS: preloadOption(file) }, encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), file);
+  }
+});
 
 test('escalation completion follows file notifications even after the old deadline', async (t) => {
   const dir = fs.mkdtempSync(path.join(require('./helpers').TMP_ROOT, 'escalation-watch-'));
@@ -461,7 +480,7 @@ for (const { status, failingTest } of [{ status: 1 }, { status: 9009 }, { status
       repo.ok(['project', 'set', '--repo', 'acme/demo', '--tests-mode', 'run-only',
         '--tests-cmd', 'tower-crane-missing-test-program']);
       const hook = path.join(__dirname, 'fixtures', 'windows-missing-command.js').replace(/\\/g, '/');
-      repo.env.NODE_OPTIONS += ` --require "${hook}"`;
+      repo.env.NODE_OPTIONS += ` ${preloadOption(hook)}`;
       repo.env.TOWER_CRANE_TEST_MISSING_STATUS = String(status);
       if (failingTest) repo.env.TOWER_CRANE_TEST_DIAGNOSTIC_IN_TEST = '1';
     });
@@ -516,7 +535,7 @@ for (const prior of ['spent', 'lock-timeout']) {
       assert.equal(events(h).filter((e) => e.cmd === 'worker-exited').length, 1);
     } else {
       const hook = path.join(__dirname, 'fixtures', 'escalation-lock-timeout.js').replace(/\\/g, '/');
-      opts.env = { NODE_OPTIONS: `${h.env.NODE_OPTIONS} --require "${hook}"`, TOWER_CRANE_TEST_RECOVERY_LOCK: path.join(h.base, 'lock-timeout') };
+      opts.env = { NODE_OPTIONS: `${h.env.NODE_OPTIONS} ${preloadOption(hook)}`, TOWER_CRANE_TEST_RECOVERY_LOCK: path.join(h.base, 'lock-timeout') };
     }
     const result = await h.runAsync(['wait', '--types', 'submitted', '--task', 'T1', '--agent', 'orchestrator'], opts);
     assert.equal(result.code, 0, result.stderr || result.stdout);
