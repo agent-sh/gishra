@@ -96,6 +96,10 @@ const MUTANTS = [
     from: 'if (lower.some((pr) => !known.includes(pr)))', to: 'if (false)', tests: ['test/stack-merge.test.js'] },
   { id: 'stack-merge-admin', area: 'merge/stacks', file: 'lib/gates/merge.js',
     from: "if (ctx.args?.admin || project.merge?.admin === true) return fail('stack merges cannot use --admin;", to: "if (false) return fail('stack merges cannot use --admin;", tests: ['test/stack-merge.test.js'] },
+  { id: 'merge-confirm-skips-sync', area: 'merge/stacks', file: 'lib/check.js',
+    from: "if (name === 'merge' && !result.confirmOnly && ", to: "if (name === 'merge' && ", tests: ['test/stack-merge.test.js'] },
+  { id: 'merge-confirm-before-gates', area: 'merge/stacks', file: 'lib/check.js',
+    from: "if (typeof gate.confirm === 'function') {", to: 'if (false) {', tests: ['test/stack-merge.test.js'] },
   // secrets
   { id: 'codex-config-keeps-secrets', area: 'secrets', file: 'lib/agents.js',
     from: 'out.model_providers = keepTables(doc.model_providers, PROVIDER_FIELDS);', to: 'out.model_providers = doc.model_providers;', tests: ['test/isolation.test.js'] },
