@@ -18,8 +18,8 @@ const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
   file, text: fs.readFileSync(path.join(h.state, file), 'utf8'),
 }));
 
-async function until(fn, message) {
-  const deadline = Date.now() + 12000;
+async function until(fn, message, timeout = 12000) {
+  const deadline = Date.now() + timeout;
   while (!fn()) {
     if (Date.now() >= deadline) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -552,7 +552,8 @@ test('serve shows the recorded run phase on the board', async (t) => {
     if (output.includes('\n')) url = JSON.parse(output.trim()).url;
   });
   try {
-    await until(() => !!url || server.exitCode !== null, 'serve did not start');
+    // Server startup gets the same minute as other CLI calls under CI load.
+    await until(() => !!url || server.exitCode !== null, 'serve did not start', 60000);
     assert.ok(url);
     const body = await new Promise((resolve, reject) => {
       const request = http.get(url, (response) => {
