@@ -295,9 +295,12 @@ test('accepted batch routes linked members through pinned stack merges', (t) => 
   f.write((d) => { for (const pr of Object.values(d.prs)) Object.assign(pr, { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
   const result = f.h.run(['merge', '--accepted', '--agent', 'orchestrator']);
   assert.equal(result.code, 0, result.stdout + result.stderr);
-  const merges = f.read().calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'merge');
-  assert.deepEqual(merges.map((c) => c.args[2]), ['11', '12']);
-  assert.ok(merges.every((c) => c.args.includes('--merge') && c.args.includes('--match-head-commit')));
+  const merges = f.read().calls.filter((c) => c.args[0] === 'api' && c.args.includes('POST') && c.args[1].endsWith('/merge-async'));
+  assert.deepEqual(merges.map((c) => c.args[1]), ['repos/acme/app/pulls/11/merge-async', 'repos/acme/app/pulls/12/merge-async']);
+  for (const [index, head] of [f.sha, f.upper.sha].entries()) {
+    assert.ok(merges[index].args.includes('merge_method=merge'));
+    assert.ok(merges[index].args.includes(`expected_head_sha=${head}`));
+  }
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
 });
 
