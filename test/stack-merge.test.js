@@ -340,6 +340,25 @@ test('a stack member merged at its accepted head is confirmed without current ga
   assert.deepEqual([f.read().prs[12].state, f.read().prs[12].baseRefName], ['OPEN', upperBase]);
 });
 
+test('a stack member merged at its accepted head with passing gates is confirmed without a stack sync', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  const upperBase = f.read().prs[12].baseRefName;
+  f.write((d) => {
+    Object.assign(d.prs[11], { state: 'MERGED', mergeCommit: { oid: 'c'.repeat(40) } });
+    d.calls = [];
+  });
+  const confirmed = f.h.json(['merge', 'T1']);
+  assert.equal(confirmed.ok, true, confirmed.summary);
+  assert.match(confirmed.summary, /confirmed merged/);
+  assert.ok(f.read().calls.every((c) => c.args[0] === 'pr' && c.args[1] === 'view'),
+    'confirmation with passing gates reads the PR and runs no merge, retarget or stack sync');
+  assert.equal(f.h.json(['task', 'show', 'T1']).evidence.findLast((e) => e.type === 'merge').ok, true);
+  assert.equal(f.h.json(['task', 'show', 'T2']).evidence.some((e) => e.type === 'merge'), false, 'the upper task keeps no merge evidence');
+  assert.deepEqual([f.read().prs[12].state, f.read().prs[12].baseRefName], ['OPEN', upperBase]);
+});
+
 test('local CI covers each dependency base and merge rechecks lower receipts', (t) => {
   const f = stacked(t);
   f.h.ok(['project', 'set', '--ci-local', JSON.stringify({ command: [process.execPath, '-e', 'process.exit(0)'], timeout: 30 })]);
