@@ -256,7 +256,11 @@ Paths in `sandbox.write` and `env_file` accept `~` for the original user's home,
 
 Sandboxed claude and codex children set `GH_CONFIG_DIR` to their isolated `HOME/.config/gh`. The user's credential stores, including custom gh config paths, remain denied. Token lookup in the parent retains the original environment; only the handed token reaches the child, without a linked gh config.
 
+The supervisor applies the enforced gh path at the final launch boundary, after settings and `env_file` values, on initial launches, retries and fallbacks. A settings overlay cannot replace it.
+
 Credential denials also follow `DOCKER_CONFIG`, `CARGO_HOME` credential files, each nonempty platform-delimited `KUBECONFIG` entry, `CLOUDSDK_CONFIG`, `AZURE_CONFIG_DIR`, `NPM_CONFIG_USERCONFIG` (and lowercase), `PIP_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE` and `AWS_CONFIG_FILE`. These paths may come from the inherited environment, literal settings or `env_file`; the last is read only during real startup. Tower Crane's user config and Pi/Agy credential files are denied at their default and configured locations. Only global rule files and their user rule imports outside the repository can be exempted inside credential stores. Trust stops when a global import chain enters the repository, including through a symlink. Repository rules and imports cannot authorize credential reads; startup refuses rules resolving to a denied path before the harness runs.
+
+Credential locations are collected separately from the original environment, project settings, each configured route's environment and the selected `env_file`, before applying environment precedence. All discovered stores remain denied. Linked entries are inspected recursively using metadata only; both their names and targets are protected, including targets outside a store. Cycles terminate without relaxing the denials. These paths are a snapshot at spawn.
 
 Agent launches discard `NODE_TEST_*` values from all environment sources after merging them, including on retries and fallback routes. The supervisor also drops inherited test-runner variables. A parent `node --test` runner's context must not make an agent's own test run skip every file.
 

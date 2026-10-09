@@ -102,6 +102,11 @@ process.exit(result.status ?? 1);
   for (const k of ['GH_TOKEN', 'GITHUB_TOKEN']) runEnv[k] = '';
   runEnv.CLAUDE_CONFIG_DIR = '';
   runEnv.CODEX_HOME = '';
+  // Credential discovery must stay inside the synthetic home unless a test
+  // explicitly supplies another location.
+  for (const key of ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'PI_CODING_AGENT_DIR', 'DOCKER_CONFIG', 'CARGO_HOME',
+    'KUBECONFIG', 'CLOUDSDK_CONFIG', 'AZURE_CONFIG_DIR', 'NPM_CONFIG_USERCONFIG', 'npm_config_userconfig',
+    'PIP_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE']) runEnv[key] = '';
   // Agent caches belong under the fixture's home, not the runner's cache.
   runEnv.XDG_CACHE_HOME = '';
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
@@ -721,9 +726,149 @@ function assertCredentialsHidden(seen, files) {
     return Object.keys(rules).some(dir => rules[dir] === 'none' && under(file, dir)
       && !Object.keys(rules).some(write => rules[write] === 'write' && under(write, dir) && under(file, write)));
   };
-  assert.deepEqual(files.map(file => fs.realpathSync(file)).filter(file => !hidden(file)), [],
+  assert.deepEqual(files.flatMap(file => [path.resolve(file), fs.realpathSync(file)]).filter(file => !hidden(file)), [],
     `${seen.harness}: credential paths must be denied by the sandbox and file tools`);
 }
+
+test('credential symlinks hide their targets and cannot import them into startup', { skip: NO_STUBS }, t => {
+  const { h, u, wt } = setup(t);
+  const outside = path.join(h.base, 'outside-credentials');
+  fs.mkdirSync(path.join(outside, 'directory'), { recursive: true });
+  const links = ['.claude/.credentials.json', '.codex/auth.json', '.docker/nested/token'];
+  const files = [];
+  for (const [index, name] of links.entries()) {
+    const target = path.join(outside, `credential-${index}.json`);
+    const link = path.join(u.home, name);
+    fs.writeFileSync(target, '{"token":"LINKED-CREDENTIAL"}\n');
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.rmSync(link, { force: true });
+    fs.symlinkSync(target, link);
+    files.push(link, target);
+  }
+  const nested = path.join(outside, 'nested-token');
+  fs.writeFileSync(nested, 'LINKED-CREDENTIAL\n');
+  fs.symlinkSync(nested, path.join(outside, 'directory', 'token'));
+  fs.symlinkSync(path.join(outside, 'directory'), path.join(u.home, '.docker', 'directory'));
+  fs.symlinkSync(path.join(u.home, '.docker'), path.join(u.home, '.docker', 'cycle'));
+  files.push(nested, path.join(u.home, '.docker', 'directory', 'token'));
+  fs.mkdirSync(path.join(outside, 'alias-parent'));
+  fs.mkdirSync(path.join(outside, 'relative-store'));
+  const relativeToken = path.join(outside, 'relative-token');
+  fs.writeFileSync(relativeToken, 'LINKED-CREDENTIAL\n');
+  fs.symlinkSync('../relative-token', path.join(outside, 'relative-store', 'token'));
+  fs.symlinkSync('../relative-store', path.join(outside, 'alias-parent', 'store'));
+  const parentLink = path.join(u.home, 'linked-parent');
+  fs.symlinkSync(path.join(outside, 'alias-parent'), parentLink);
+  const dockerConfig = path.join(parentLink, 'store');
+  files.push(relativeToken, path.join(dockerConfig, 'token'));
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    const env = { ...u.env, DOCKER_CONFIG: dockerConfig };
+    spawn(h, u, 'hard', { ...env, STUB_READ: JSON.stringify(files) });
+    const seen = u.report();
+    assertCredentialsHidden(seen, files);
+    if (harness === 'claude') assert.ok(seen.reads.every(read => read.denied), 'file tools refuse aliases and targets');
+    fs.rmSync(u.out);
+    for (const file of files) {
+      fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${file}\n`);
+      const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--wait'], { env });
+      assert.notEqual(refused.code, 0, `${harness}: credential import ${file} must fail`);
+      assert.match(refused.stderr, /house rule.*credential store/i);
+      assert.ok(!fs.existsSync(u.out), 'refuse before loading a credential into the harness');
+      assert.doesNotMatch(refused.stdout + refused.stderr, /LINKED-CREDENTIAL/);
+    }
+    fs.rmSync(path.join(wt, 'AGENTS.md'));
+  }
+});
+
+test('credential settings overlays retain every original credential location', { skip: NO_STUBS }, t => {
+  const { h, u } = setup(t);
+  const locations = label => {
+    const root = path.join(h.base, label);
+    const env = {
+      DOCKER_CONFIG: path.join(root, 'docker'), GH_CONFIG_DIR: path.join(root, 'gh'),
+      CARGO_HOME: path.join(root, 'cargo'), XDG_CONFIG_HOME: path.join(root, 'xdg'),
+      CLOUDSDK_CONFIG: path.join(root, 'gcloud'), AZURE_CONFIG_DIR: path.join(root, 'azure'),
+      NPM_CONFIG_USERCONFIG: path.join(root, 'npmrc'), PIP_CONFIG_FILE: path.join(root, 'pip.conf'),
+      AWS_SHARED_CREDENTIALS_FILE: path.join(root, 'aws'), KUBECONFIG: [path.join(root, 'kube-1'), path.join(root, 'kube-2')].join(path.delimiter),
+    };
+    const files = ['docker/config.json', 'gh/hosts.yml', 'cargo/credentials.toml', 'xdg/git/credentials',
+      'gcloud/credentials.db', 'azure/token.json', 'npmrc', 'pip.conf', 'aws', 'kube-1', 'kube-2'].map(file => path.join(root, file));
+    for (const file of files) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'LAYER-CREDENTIAL\n');
+    }
+    return { env, files };
+  };
+  const original = locations('original'), project = locations('project'), file = locations('file'),
+    rung = locations('rung'), fallback = locations('fallback');
+  const envFile = path.join(h.base, 'credential-layers.env');
+  fs.writeFileSync(envFile, Object.entries(file.env).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n'));
+  h.ok(['project', 'set', '--env', JSON.stringify(project.env), '--env_file', envFile]);
+  for (const harness of ['claude', 'codex']) {
+    isolated(h, 'hard', harness);
+    h.ok(['ladder', 'set', 'hard', '--env', JSON.stringify(rung.env)]);
+    fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+    fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { hard: { fallbacks: [{
+      harness, model: 'second', env: fallback.env,
+    }] } } }));
+    spawn(h, u, 'hard', original.env);
+    assertCredentialsHidden(u.report(), [original, project, file, rung, fallback].flatMap(layer => layer.files));
+  }
+});
+
+test('gh config isolation survives settings on initial and fallback launches', { skip: NO_STUBS }, t => {
+  const { h, u } = setup(t);
+  const reports = path.join(h.base, 'gh-launches.jsonl');
+  const original = path.join(h.base, 'original-gh');
+  const selected = path.join(h.base, 'settings-gh');
+  fs.mkdirSync(original);
+  fs.mkdirSync(selected);
+  fs.writeFileSync(path.join(h.base, 'bin', 'gh'), `#!${process.execPath}
+const path = require('node:path');
+if (process.argv[2] === 'auth') {
+  if (process.env.GH_CONFIG_DIR !== ${JSON.stringify(original)}) process.exit(1);
+  console.log('stub-gh-token');
+} else {
+  if (process.env.GH_CONFIG_DIR !== path.join(process.env.HOME, '.config', 'gh')) {
+    console.error('permission denied reading gh config'); process.exit(1);
+  }
+  if (process.env.GH_TOKEN !== 'stub-gh-token') process.exit(1);
+}
+`);
+  for (const harness of ['claude', 'codex']) fs.writeFileSync(path.join(h.base, 'bin', harness), `#!${process.execPath}
+const fs = require('node:fs');
+require(${JSON.stringify(STUB)})(${JSON.stringify(harness)});
+const report = JSON.parse(fs.readFileSync(process.env.STUB_OUT, 'utf8'));
+fs.appendFileSync(${JSON.stringify(reports)}, JSON.stringify({ harness: report.harness, ran: report.ran, token: report.ghToken }) + '\\n');
+if (process.env.STUB_FAIL_HARNESS === ${JSON.stringify(harness)}) {
+  console.error('HTTP 503 service unavailable'); process.exit(1);
+}
+`);
+  const envFile = path.join(h.base, 'gh-settings.env');
+  fs.writeFileSync(envFile, `GH_CONFIG_DIR=${JSON.stringify(selected)}\n`);
+  for (const source of ['literal', 'file']) {
+    h.ok(['project', 'set', '--env', source === 'literal' ? JSON.stringify({ GH_CONFIG_DIR: selected }) : '{}', '--env_file', envFile]);
+    for (const primary of ['claude', 'codex']) {
+      const fallback = primary === 'claude' ? 'codex' : 'claude';
+      isolated(h, 'hard', primary);
+      h.ok(['ladder', 'set', 'hard', '--supervision', '{"retries":0,"backoff_ms":10,"max_backoff_ms":10}']);
+      fs.mkdirSync(path.dirname(h.userConfig), { recursive: true });
+      fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { hard: { fallbacks: [{
+        harness: fallback, model: 'second', ...(source === 'literal' ? { env: { GH_CONFIG_DIR: selected } } : {}),
+      }] } } }));
+      fs.rmSync(reports, { force: true });
+      spawn(h, u, 'hard', { GH_CONFIG_DIR: original, STUB_FAIL_HARNESS: primary,
+        STUB_RUN: JSON.stringify([['gh', 'pr', 'view', '1']]) });
+      const seen = fs.readFileSync(reports, 'utf8').trim().split('\n').map(JSON.parse);
+      assert.deepEqual(seen.map(report => report.harness), [primary, fallback]);
+      for (const report of seen) {
+        assert.equal(report.token, 'stub-gh-token');
+        assert.equal(report.ran[0].code, 0, `${source} ${report.harness}: ${report.ran[0].stderr}`);
+      }
+    }
+  }
+});
 
 test('repository imports cannot authorize credential reads or send credentials to a harness', { skip: NO_STUBS }, (t) => {
   const { h, u, wt } = setup(t);
