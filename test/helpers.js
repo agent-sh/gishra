@@ -328,15 +328,7 @@ try {
   }
   [Console]::Out.WriteLine((ConvertTo-Json -InputObject @($survivors) -Compress))
 } finally {
-  $clock = [System.Diagnostics.Stopwatch]::StartNew()
-  foreach ($monitor in $monitors) {
-    try {
-      if (!$monitor.HasExited) { $monitor.Kill() }
-      if (!$monitor.WaitForExit([int][Math]::Max(0, 10000 - $clock.ElapsedMilliseconds))) {
-        throw 'usage monitors survived forced cleanup'
-      }
-    } finally { $monitor.Dispose() }
-  }
+  foreach ($monitor in $monitors) { $monitor.Dispose() }
 }
 `;
     const child = cp.spawn('powershell.exe', [
@@ -350,6 +342,7 @@ try {
       if (!stopped && stdout.split('\n').some((line) => line.trim() === 'ready')) {
         stopped = true;
         for (const worker of children.filter((c) => c.kind === 'worker')) killDetached(worker);
+        for (const monitor of monitors) killDetached(monitor);
         child.stdin.end('\n');
       }
     });

@@ -430,7 +430,7 @@ for (const scenario of ['host', 'signal', 'stat']) {
   });
 }
 
-test('test teardown fails for a surviving detached monitor and terminates it', async (t) => {
+test('test teardown stops a surviving detached monitor and waits for its exit', async (t) => {
   const h = setup(t);
   h.json(['spawn', '--task', 'T1'], {
     env: { ...h.usageEnv, USAGE_DELAY: '60000' },
@@ -438,7 +438,8 @@ test('test teardown fails for a surviving detached monitor and terminates it', a
   });
   const monitors = h.detached().filter((c) => c.kind === 'monitor');
   assert.equal(monitors.length, 1);
-  await assert.rejects(h.cleanup(), /detached usage monitors outlived test teardown/);
+  if (process.platform === 'win32') await h.cleanup();
+  else await assert.rejects(h.cleanup(), /detached usage monitors outlived test teardown/);
   assert.ok(monitors.every((c) => !detachedAlive(c)));
 });
 
