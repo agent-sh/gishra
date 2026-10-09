@@ -77,6 +77,8 @@ test('one fixture exposes every inbox kind and resolving commands clear their co
   h.ok(['msg', '--to', 'orchestrator', '--task', stall, 'Need API guidance', '--agent', 'messenger']);
   event(h, accepted, 'automation', { phase: 'running', pid: process.pid, ...require('../lib/processes').identity(process.pid) });
   const github = h.github();
+  github.review_comments = { 1: [{ id: 1, html_url: 'https://github.com/acme/demo/pull/1#issuecomment-1',
+    body: `Review (Tower Crane, clean context)\n\nBlocking: 1 finding at ${h.sha}.\n\n- lib/value.js:1 - Check null before dereferencing. - Avoid the crash.\n` }] };
   github.revuto = { name: 'revuto', app: { slug: 'revuto-review' }, status: 'completed', conclusion: 'failure', output: { summary: 'Fix bounds' } };
   github.comments = [
     { commit_id: h.sha, user: { login: 'revuto-review[bot]' }, body: 'Check index bounds', path: 'parse.js', line: 8, html_url: 'https://github.com/acme/demo/pull/8#discussion_r8' },
@@ -577,4 +579,92 @@ test('a remotely merged accepted PR remains actionable until its audited merge r
   assert.ok(h.logs().some((e) => e.cmd === 'merge' && e.detail.ok && e.detail.sha === h.sha));
   assert.ok(!h.inbox().items.some((i) => i.task === id));
   assert.equal(h.github().calls.filter((a) => a[0] === 'pr' && a[1] === 'merge').length, 0);
+});
+
+function reviewComments(h, id) {
+  const ref = 'https://github.com/acme/demo/pull/7#issuecomment-23';
+  const body = `Review (Tower Crane, clean context)\n\nBlocking: 2 findings at ${h.sha}.\n\n`
+    + '- [P1] lib/store.js:12 - First finding: reject duplicate writes - Prevent corruption.\n'
+    + '- [P2] lib/cache.js:31 - Second finding: invalidate deleted entries - Prevent stale reads.\n';
+  h.submit(id, 7);
+  h.ok(['evidence', id, '--type', 'review', '--fail', '--sha', h.sha, '--agent', 'reviewer',
+    '--summary', '2 blocking findings: reject duplicate writes', '--ref', ref]);
+  const github = h.github();
+  github.review_comments = { 7: [
+    { id: 21, body: body.replaceAll(h.sha, 'a'.repeat(40)), html_url: ref.replace('23', '21') },
+    { id: 22, body: `Review (Tower Crane, clean context)\n\n1 finding at ${h.sha}.\n\n- lib/old.js:1 - Older finding - Superseded.\n`, html_url: ref.replace('23', '22') },
+    { id: 23, body, html_url: ref },
+    { id: 24, body: body.replaceAll(h.sha, 'f'.repeat(40)), html_url: ref.replace('23', '24') },
+    { id: 25, body: `Unrelated comment mentioning ${h.sha}`, html_url: ref.replace('23', '25') },
+  ] };
+  h.save(github);
+  return { ref, body };
+}
+
+test('failed review inbox and rework preserve every finding from the latest comment at the head', (t) => {
+  const h = setup(t);
+  const id = h.add('Two review findings');
+  const { body, ref } = reviewComments(h, id);
+  const finding = h.inbox().items.find((i) => i.kind === 'review_failed');
+  assert.equal(finding.finding_count, 2);
+  assert.equal(finding.findings, body);
+  assert.equal(finding.ref, ref);
+  assert.equal(finding.findings_complete, true);
+  assert.match(h.ok(['inbox', '--agent', 'orchestrator']), /Second finding/);
+  const before = h.github().calls.length;
+  h.ok(['rework', '--from-review', id, '--agent', 'orchestrator']);
+  assert.ok(h.github().calls.slice(before).some((args) => args[0] === 'api'
+    && args[1].includes('/issues/7/comments') && args.includes('--paginate')));
+  const task = h.json(['task', 'show', id]);
+  assert.equal(task.status, 'rework');
+  assert.ok(task.notes.at(-1).text.includes(body));
+  const brief = fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8');
+  assert.ok(brief.includes(body));
+  assert.ok(brief.includes(ref));
+  assert.doesNotMatch(brief, /Older finding/);
+});
+
+test('review comment failures refuse rework without replacing full findings with a summary', (t) => {
+  const h = setup(t);
+  const id = h.add('Review retrieval');
+  const { body } = reviewComments(h, id);
+  const original = fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8');
+  for (const state of ['unavailable', 'wrong-head']) {
+    const github = h.github();
+    if (state === 'unavailable') github.failEndpoint = '/issues/';
+    else {
+      delete github.failEndpoint;
+      github.review_comments[7] = [
+        { id: 22, body },
+        { id: 23, body: body.replaceAll(h.sha, 'e'.repeat(40)) },
+      ];
+    }
+    h.save(github);
+    const result = h.run(['rework', '--from-review', id, '--agent', 'orchestrator']);
+    assert.equal(result.code, 1, result.stdout + result.stderr);
+    assert.equal(h.json(['task', 'show', id]).status, 'submitted');
+    assert.equal(fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8'), original);
+    const inbox = h.inbox();
+    const review = inbox.items.find((i) => i.kind === 'review_failed');
+    assert.equal(review.finding_count, 2);
+    assert.equal(review.findings_complete, false);
+    assert.ok(inbox.items.some((i) => i.kind === 'github_error'));
+  }
+});
+
+test('review rework rechecks the verdict after fetching comments outside the state lock', (t) => {
+  const h = setup(t);
+  const id = h.add('Concurrent review');
+  reviewComments(h, id);
+  const github = h.github();
+  github.reviewDuringFetch = { task: id, sha: h.sha };
+  h.save(github);
+  const original = fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8');
+  const result = h.run(['rework', '--from-review', id, '--agent', 'orchestrator']);
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /review|changed/i);
+  const task = h.json(['task', 'show', id]);
+  assert.equal(task.status, 'submitted');
+  assert.equal(task.evidence.findLast((e) => e.type === 'review').ok, true);
+  assert.equal(fs.readFileSync(path.join(h.state, 'briefs', `${id}.md`), 'utf8'), original);
 });

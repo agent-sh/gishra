@@ -23,6 +23,17 @@ if (data.fail || data.failEndpoint && args[1]?.includes(data.failEndpoint)) {
 } else if (args[1].includes('/git/commits/')) {
   const sha = args[1].split('/').at(-1);
   result = data.commits?.[sha] || { sha, parents: [] };
+} else if (/\/issues\/\d+\/comments/.test(args[1])) {
+  const number = /\/issues\/(\d+)\//.exec(args[1])[1];
+  result = data.review_comments?.[number] || [];
+  if (data.reviewDuringFetch) {
+    const review = data.reviewDuringFetch;
+    delete data.reviewDuringFetch;
+    require('node:child_process').execFileSync(process.execPath, [
+      require('node:path').join(__dirname, '..', '..', 'bin', 'tower-crane.js'),
+      'evidence', review.task, '--type', 'review', '--ok', '--sha', review.sha, '--agent', 'replacement-reviewer',
+    ], { stdio: 'pipe' });
+  }
 } else if (args[1].includes('/comments')) {
   result = data.comments || [];
 } else if (args[1].includes('/code-scanning/')) {
