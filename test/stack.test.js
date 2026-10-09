@@ -231,6 +231,18 @@ test('a stacked rework whose branch is gone resumes from its own pushed head, no
   assert.equal(f.h.git(['rev-parse', 'HEAD'], again.path), sha);
 });
 
+test('a claimed stacked rework whose branch is gone resumes from its own submitted head, not its dependency', (t) => {
+  const f = setup(t);
+  const { wt, sha } = upper(f);
+  f.h.git(['worktree', 'remove', '--force', wt.path]);
+  f.h.git(['branch', '-D', wt.branch]);
+  f.h.ok(['rework', 'T2', '--reason', 'revise the stacked change']);
+  f.h.ok(['claim', 'T2', '--agent', 'worker-T2']);
+  assert.equal(f.h.json(['task', 'show', 'T2']).status, 'in_progress');
+  const again = f.h.json(['worktree', 'T2']);
+  assert.equal(f.h.git(['rev-parse', 'HEAD'], again.path), sha);
+});
+
 test('a stacked rework with its own branch but no worktree is not refused as prepared before its dependency', (t) => {
   const f = setup(t);
   const { wt, sha } = upper(f);
