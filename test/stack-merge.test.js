@@ -153,6 +153,7 @@ test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents 
   f.write((d) => { Object.assign(d.prs[11], { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }); });
   const ci = f.h.run(['check', 'ci', 'T1']);
   assert.equal(ci.code, 0, ci.stdout + ci.stderr);
+  f.h.reviewer('T1', 'independent-reviewer', f.sha);
   f.h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', f.sha, '--agent', 'independent-reviewer', '--summary', 'checked']);
   const lower = f.h.json(['task', 'show', 'T1']);
   assert.equal(lower.status, 'submitted');
@@ -308,6 +309,7 @@ test('lower acceptance cannot hide failing current gate evidence', (t) => {
   const f = stacked(t);
   f.accept('T1');
   f.accept('T2');
+  f.h.reviewer('T1', 'reviewer-independent', f.sha);
   f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
   assert.match(f.h.run(['merge', 'T2']).stdout, /T1.*passing gates/);
   assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);

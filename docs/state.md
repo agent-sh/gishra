@@ -481,10 +481,12 @@ Any agent recovers a verified exited task with `release ID --reason R`. The dete
 
 `tower-crane accept` refuses unless the task's current revision has, at the submitted `sha`:
 
-- `code` tasks: `tests` ok, `clean` ok, and `review` ok from an agent other than the one that submitted
-- `research` tasks on any tier: `sources` ok and `review` ok from another agent
-- other tasks: `review` ok from another agent
+- `code` tasks: `tests` ok, `clean` ok, and `review` ok from an independent reviewer
+- `research` tasks on any tier: `sources` ok and `review` ok from an independent reviewer
+- other tasks: `review` ok from an independent reviewer
 - any task with a PR, whatever its kind: `ci` ok as well
+
+An independent reviewer is the owner, or a reviewer that `spawn` dispatched for that task at that sha and revision, never the submitter. Review evidence that does not count also does not hold back the review dispatch `accept` makes, does not raise the review rung and is not passed to a rework worker as a finding. The board keeps it in the ledger with a does-not-count reason; neither its pass nor its fail verdict sets the review gate indicator.
 
 Tests modes change how `check tests` produces evidence, not which gates acceptance requires. A code task in mode `none` still needs audited tests evidence for its submitted sha, plus cleanup and independent review.
 
@@ -500,7 +502,7 @@ The reviewer receives the submitted diff, task acceptance, audited software gate
 
 Reviewers use the supplied tests, clean and CI results. They do not re-run the full suite unless they change something in a scratch checkout to probe a specific concern, and run only the affected tests for that probe. The submitted worktree stays read-only. Packets over 12,000 characters put the diff in a context file; the user prompt still carries task context and gate results. This bounds diff arguments, not the static system text or unusually large gate receipts. Software waivers requested in the same accept remain atomic with acceptance and cannot authorize a review spawn; use audited software gate evidence or an owner accept that also waives review.
 
-A gate passes when the latest eligible evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `tests`, `clean`, `sources` and `ci`, evidence needs the matching gate `source` and an events.jsonl entry with `cmd === source`, the same task id and agent, and matching `type`, `source`, exact evidence `sha`, `ok`, `revision`, `commands` and optional `confirmed_failure` in `detail`. An ok entry also needs a non-empty commands list. Manual, forged and older unmarked entries are ignored, including later entries that would otherwise override a genuine pass or failure. For `review`, entries by the submitter are ignored. A waiver counts only when its agent is `owner`, for both review and software gates.
+A gate passes when the latest eligible evidence of its type for the current revision, at a sha matching the submitted one, is ok. Shas match when one is a prefix of the other and the shorter has at least 7 characters. For `tests`, `clean`, `sources` and `ci`, evidence needs the matching gate `source` and an events.jsonl entry with `cmd === source`, the same task id and agent, and matching `type`, `source`, exact evidence `sha`, `ok`, `revision`, `commands` and optional `confirmed_failure` in `detail`. An ok entry also needs a non-empty commands list. Manual, forged and older unmarked entries are ignored, including later entries that would otherwise override a genuine pass or failure. For `review`, an entry counts only when its agent is `owner` or has a `spawn` event with `role: reviewer` for the task, at a sha matching the entry's and at the entry's revision, and is not the submitter. Recording review evidence needs no role, so a name no review dispatch started counts for nothing; its entry is kept, `task show` marks it `(does not count)` and the review gate names its agent. A waiver counts only when its agent is `owner`, for both review and software gates.
 
 Local CI adds `receipt` to its evidence and event detail. Both copies must match exactly:
 
