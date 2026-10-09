@@ -361,8 +361,12 @@ Failure at the range top opens one blocking owner decision. Answer it and apply 
 | | |
 | `decision note DID TEXT` | append a comment; an explicit owner comment wakes the orchestrator and tasks blocked by the decision |
 | | |
+| `decision withdraw DID --reason R` | close an open decision that no longer needs an answer. The agent that opened it or the owner can withdraw it; no owner answer is needed. Refused once answered or withdrawn. The decision leaves the open list and stays in history; the event records the reason, and each task it blocked gets the reason in its notes |
+| | |
 | `decisions [--open]` | list |
 <!-- commands:Decisions:end -->
+
+`decision withdraw DID --reason R` closes an open decision that no longer needs an answer. Only the agent that opened it (verified identity, matching `asked_by`) or the owner can withdraw it; anyone else is refused. A decision already answered or withdrawn is refused too. Withdrawing needs no owner answer and does not make the requested change; the event records the reason, and each task the decision blocked gets the reason in its notes.
 
 `decision delegate DID --answerers '["worker-1"]'` replaces the decision's named answerers; `[]` clears them. `--technical true` marks it technical and `false` removes that mark. Both settings require explicit owner identity. `project set --decision-delegation '{"orchestrator_technical":true}' --agent owner` enables orchestrator answers for technical decisions: a worker's or reviewer's `ask` that names no owner-required setting, and any decision the owner marked technical. It does not allow the orchestrator to answer other decisions. `null` clears the project rule. The answer event records the actor and its rule: `owner`, `owner-named-agent` or `owner-technical-delegation`.
 
@@ -401,7 +405,7 @@ A push carries ids, never content: one line per event (`- E…: decision-answer 
 
 On startup or resume without a saved cursor, run `tower-crane wait --timeout 0` once. It exits 2 with a timeout and the current cursor, without observing worker exits or stalls. Save that offset, read state once, then start the background wait with `--after <offset>`. Events during the state read remain available, and the blocking wait observes current exits and stalls. With an explicit earlier `--after`, a zero timeout returns an already available matching event or a timeout cursor.
 
-Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `owner-done`, `released`, and `evidence` (including review, CI and gate results, and the CI gate's conflict refusal). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
+Every state change goes to `orchestrator`, including `submitted`, `accepted`, `rework`, `merged`, `worker-exited`, `spawn-fallback`, `stall`, `worker-message`, `owner-comment`, `decision-opened`, `decision-answer`, `decision-withdrawn`, `owner-done`, `released`, and `evidence` (including review, CI and gate results, and the CI gate's conflict refusal). `merged` requires successful merge evidence. Other changes keep their command name as the type; use `--types` to select a subset. Messages use their explicit recipient.
 
 `tower-crane msg --to NAME [--task ID] [--steer] TEXT` appends a message under the state lock. Its task defaults to `TOWER_CRANE_TASK`, otherwise null. The worker's identity is recorded; only the named recipient wakes, and the orchestrator too when the sender is `owner`. `--steer` records `steer: true`: a harness that can join a running turn delivers it there instead of after the turn. A sandboxed claude or codex worker or reviewer messages only `orchestrator` or `owner`: the [state broker](ladder.md#state-broker) refuses any other `--to` and sends nothing, but appends a `msg refused` event naming the agent, the task and the intended recipient, never the text. The orchestrator answers the owner with `msg --to owner`, which reaches the owner's channel on `serve` (below).
 
