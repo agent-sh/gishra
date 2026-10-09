@@ -4,13 +4,61 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { cachedFixture } = require('./helpers');
 
 function setup(t) {
-  const h = makeRepo(t);
+  const now = () => Number(process.hrtime.bigint()) / 1e6;
+  const started = now();
+  const bootstrap = [];
+  const h = cachedFixture(null, 'claude-provider', (base) => {
+    base.env.TOWER_CRANE_TEST_CLAUDE_PROVIDER = '1';
+    base.env.NODE_OPTIONS = `--require "${path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/')}"`;
+    const run = base.run;
+    base.run = (args, options = {}) => {
+      const start = now();
+      try { return run(args, { ...options, timeout: 0 }); }
+      finally { bootstrap.push({ command: args.slice(0, 2).join(' '), ms: Math.round(now() - start) }); }
+    };
+    base.init();
+    base.ok(['task', 'add', '--title', 'Claude provider switch', '--tier', 'hard', '--acceptance', 'fresh provider session']);
+    base.ok(['brief', 'set', 'T1', '-'], { input: 'Build with the original brief.\n' });
+  });
+  const repoMs = now() - started;
+  const commands = [];
+  h.profiles = () => {
+    const file = h.env.TOWER_CRANE_TEST_PROVIDER_TRACE;
+    return file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
+  };
+  t.after(async () => {
+    try {
+      const processes = new Map();
+      const children = new Map();
+      const profiles = h.profiles();
+      const delays = profiles.filter((profile) => profile.process === 'spawn-monitor.js').flatMap((profile) => profile.delays);
+      const timeouts = [...new Set(profiles.flatMap((profile) => profile.children.map((child) => child.timeout)))];
+      assert.ok(delays.every((ms) => ms === 0), 'provider fixtures schedule no timed wait');
+      assert.ok(timeouts.every((ms) => ms === 0), 'provider subprocesses have no deadline');
+      for (const profile of profiles) {
+        for (const [map, entries] of [[processes, [profile]], [children, profile.children]]) {
+          for (const entry of entries) {
+            const item = map.get(entry.process) || { process: entry.process, count: 0, ms: 0 };
+            item.count++;
+            item.ms += entry.ms || 0;
+            map.set(entry.process, item);
+          }
+        }
+      }
+      const rounded = (items) => [...items.values()].map((item) => ({ ...item, ms: Math.round(item.ms) }));
+      t.diagnostic(JSON.stringify({ repo_ms: Math.round(repoMs), bootstrap, commands, processes: rounded(processes), children: rounded(children), delays, timeouts }));
+    } finally { await h.cleanup(); }
+  });
   // Completion and attempt records decide success; CI owns the suite deadline.
   const run = h.run;
-  h.run = (args, options = {}) => run(args, { ...options, timeout: 0 });
+  h.run = (args, options = {}) => {
+    const start = now();
+    try { return run(args, { ...options, timeout: 0 }); }
+    finally { commands.push({ command: args.slice(0, 2).join(' '), ms: Math.round(now() - start) }); }
+  };
   const home = path.join(h.base, 'user-home');
   const claude = path.join(home, '.claude');
   const aws = path.join(home, '.aws');
@@ -26,10 +74,8 @@ function setup(t) {
     NODE_OPTIONS: `--require "${path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/')}"`,
     TOWER_CRANE_TEST_FALLBACK_FILE: path.join(h.base, 'attempts.json'),
     TOWER_CRANE_TEST_CLAUDE_PROVIDER: '1',
+    TOWER_CRANE_TEST_PROVIDER_TRACE: path.join(h.base, 'processes.jsonl'),
   });
-  h.init();
-  h.ok(['task', 'add', '--title', 'Claude provider switch', '--tier', 'hard', '--acceptance', 'fresh provider session']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: 'Build with the original brief.\n' });
   h.primary = (provider, model = 'opus') => h.ok([
     'ladder', 'set', 'hard', '--provider', provider, '--model', model,
     '--supervision', '{"retries":1,"backoff_ms":10,"max_backoff_ms":10,"stall_ms":60000}',
@@ -60,6 +106,11 @@ function assertRetry(h) {
   const retries = events.filter((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying');
   assert.deepEqual(retries.map((e) => [e.detail.retry, e.detail.backoff_ms]), [[1, 0]]);
   assert.equal(events.filter((e) => e.cmd === 'spawn retry').length, 1);
+  const profiles = h.profiles();
+  const monitors = profiles.filter((profile) => profile.process === 'spawn-monitor.js');
+  assert.equal(monitors.length, 1);
+  assert.deepEqual(monitors[0].delays, [0]);
+  assert.ok(profiles.every((profile) => profile.children.every((child) => child.timeout === 0)));
 }
 
 for (const [provider, other, model, plain] of [
