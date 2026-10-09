@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, runPty, PTY_AVAILABLE } = require('./helpers');
 
 function events(h) {
   return fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
@@ -226,6 +226,19 @@ test('technical delegation recognizes generated orchestrators by their recorded 
     [answerEvent.agent, answerEvent.detail.answered_by, answerEvent.detail.answer_rule],
     [spawned.orchestrator, spawned.orchestrator, 'owner-technical-delegation'],
   );
+});
+
+test('a terminal owner question stays with the owner', { skip: !PTY_AVAILABLE }, (t) => {
+  const h = makeRepo(t);
+  h.init();
+  const env = Object.fromEntries(Object.entries(h.env).filter(([key]) => !key.startsWith('TOWER_CRANE_')));
+  const asked = runPty(
+    ['ask', '--question', 'Which store?', '--option', 'redis', '--option', 'postgres', '--state', h.state],
+    { cwd: h.repo, env },
+  );
+  assert.equal(asked.code, 0, asked.stderr);
+  const decision = h.readState('decisions.json').decisions[0];
+  assert.deepEqual([decision.asked_by, decision.technical], ['owner', false]);
 });
 
 test('a worker ask is answerable by the orchestrator; an owner-required escalation is not', (t) => {
