@@ -15,8 +15,7 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   const spawn = cp.spawn;
   cp.spawn = function offlineHarness(file, args, options) {
     // The supervisor's lease gate starts its harness after `tower-crane-gate`.
-    const gated = file === '/bin/sh' && args[2] === 'tower-crane-gate'
-      || file === process.execPath && args[0] === '-e' && String(args[1]).startsWith('// tower-crane-gate');
+    const gated = file === '/bin/sh' && args[2] === 'tower-crane-gate';
     const target = gated ? args[3] : file;
     const harness = /[\\/]scripts[\\/]fallback(?:\.exe)?$/.test(target) ? 'command' : target;
     if (['codex', 'claude', 'agy', 'command'].includes(harness) && process.env.TOWER_CRANE_TEST_FALLBACK_FILE) {
