@@ -361,8 +361,8 @@ for (const harness of L.HARNESSES.filter((name) => name !== 'command')) {
       [['ladder', 'set', 'hard', '--harness', harness, '--model', 'fixture'], { ladder: { hard: unconfined } }],
       [['ladder', 'set', 'research', '--harness', harness, '--model', 'fixture'],
         { ladder: { research: { unconfined: [{ harness }, { harness }] } } }],
-      [['ladder', 'harness', harness], { harness, ladder: Object.fromEntries(
-        ['easy', 'medium', 'review', 'small'].map((rung) => [rung, unconfined])) }],
+      // easy, review and small pin claude in the built-in ladder, so only medium follows the default harness.
+      [['ladder', 'harness', harness], { harness, ladder: { medium: unconfined } }],
     ]) {
       const before = h.readState('project.json');
       const result = h.run(args, as('orchestrator'));
