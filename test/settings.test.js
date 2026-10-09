@@ -7,7 +7,8 @@ const path = require('node:path');
 const http = require('node:http');
 const cp = require('node:child_process');
 const { makeRepo, BIN } = require('./helpers');
-const { CHROME, openBrowser } = require('./browser');
+const { CHROME, openBrowser, closeBrowser } = require('./browser');
+test.after(closeBrowser);
 
 async function startServe(h) {
   const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json', '--agent', 'owner'], { cwd: h.repo, env: h.env });
@@ -113,7 +114,7 @@ test('the Settings view edits the ladder and task tiers only with the page token
     assert.match(read(h, 'sketch.html'), /<tr data-rung="easy"><th scope="row">easy<\/th><td>codex \(default\)<\/td><td>fixture-model<\/td>/, 'the write re-rendered the sketch');
 
     loaded = await loadedOf(s.url);
-    const harness = await request(ladder, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: ladderBody(loaded, { harness: 'agy', rungs: { medium: { model: 'fixture-large', profile: '' }, review: { model: 'fixture-large', profile: '' }, small: { model: 'fixture-light', profile: '' }, easy: { model: 'fixture-light' } } }) });
+    const harness = await request(ladder, { method: 'POST', headers: { 'x-tower-crane-token': token }, body: ladderBody(loaded, { harness: 'agy', rungs: { medium: { model: 'fixture-large', profile: '' }, review: { model: 'fixture-large', profile: '' }, small: { model: 'fixture-light', profile: '' }, easy: { model: 'fixture-light', args: '' } } }) });
     assert.equal(harness.status, 200, harness.text);
     assert.equal(h.json(['ladder', 'show']).ladder.medium.harness, 'agy', 'the default harness and rungs change in one write');
 

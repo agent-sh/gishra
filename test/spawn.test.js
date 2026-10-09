@@ -5,15 +5,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { makeRepo, pinRung, real, BIN, PTY_AVAILABLE } = require('./helpers');
+const { cachedFixture, pinRung, real, BIN, PTY_AVAILABLE } = require('./helpers');
 const A = require('../lib/agents');
 
 function setup(t) {
-  const h = makeRepo(t);
-  h.init();
-  h.ok(['task', 'add', '--title', 'Idempotency key on retries', '--acceptance', 'processed once', '--acceptance', 'test proves it']);
-  h.ok(['brief', 'set', 'T1', '-'], { input: '- start from the webhook handler\n' });
-  return h;
+  return cachedFixture(t, 'task', (h) => {
+    h.init();
+    h.ok(['task', 'add', '--title', 'Idempotency key on retries', '--acceptance', 'processed once', '--acceptance', 'test proves it']);
+    h.ok(['brief', 'set', 'T1', '-'], { input: '- start from the webhook handler\n' });
+  });
 }
 
 const dry = (h, rung, env) => h.json(['spawn', ...(rung ? ['--role', rung] : []), '--task', 'T1', '--dry-run'], { env });
@@ -160,6 +160,11 @@ test('spawn --dry-run builds each harness command', (t) => {
     '-c', 'default_permissions="tower-crane"', '-c', 'approval_policy="never"', '-c', 'bypass_hook_trust=true', '-c', 'web_search="disabled"',
     ...small.codexDisable.flatMap((f) => ['--disable', f]),
   ];
+  const piOwn = (state) => [
+    '--no-approve', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files',
+    '--tools', 'bash,read,grep,find', '--append-system-prompt', path.join(state, 'homes', 'small-T1-1', 'AGENTS.md'),
+    '--extension', path.join(state, 'homes', 'small-T1-1', 'hook.mjs'),
+  ];
   const cases = [
     [['--harness', 'claude', '--model', 'fixture-large'], (p, s) => ['claude', '-p', p, '--model', 'fixture-large', '--output-format', 'json', ...claudeOwn(s)]],
     [['--harness', 'claude', '--model', 'fixture-large', '--effort', 'high'], (p, s) => ['claude', '-p', p, '--model', 'fixture-large', '--effort', 'high', '--output-format', 'json', ...claudeOwn(s)]],
@@ -167,10 +172,10 @@ test('spawn --dry-run builds each harness command', (t) => {
     [['--harness', 'codex', '--model', 'fixture-model', '--effort', 'high', '--args', '["--skip-git-repo-check"]'], (p, s) => ['codex', 'exec', '--json', '-m', 'fixture-model', '-c', 'model_reasoning_effort=high', ...codexOwn(s), p, '--skip-git-repo-check']],
     [['--harness', 'opencode', '--model', 'provider/fixture-model'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'provider/fixture-model', p]],
     [['--harness', 'opencode', '--model', 'openai/fixture-model', '--effort', 'high'], (p) => ['opencode', 'run', '--format', 'json', '-m', 'openai/fixture-model', '--variant', 'high', p]],
-    [['--harness', 'agy', '--model', 'fixture-large'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'fixture-large']],
-    [['--harness', 'agy', '--model', 'fixture-large', '--effort', 'max', '--args', '["--output-format","json"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'fixture-large', '--effort', 'max', '--output-format', 'json']],
-    [['--harness', 'pi', '--model', 'provider/fixture-model'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'provider/fixture-model', '--extension', path.join(s, 'homes', 'small-T1-1', 'hook.mjs')]],
-    [['--harness', 'pi', '--model', 'provider/fixture-model', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'provider/fixture-model', '--provider', 'openai', '--thinking', 'xhigh', '--extension', path.join(s, 'homes', 'small-T1-1', 'hook.mjs'), '--no-session']],
+    [['--harness', 'agy', '--model', 'fixture-large'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'fixture-large', '--agent', 'gishra-small', '--disable-slash-commands', '--sandbox']],
+    [['--harness', 'agy', '--model', 'fixture-large', '--effort', 'max', '--args', '["--print-timeout","60s"]'], (p) => ['agy', '-p', p, '--mode', 'accept-edits', '--output-format', 'json', '--model', 'fixture-large', '--effort', 'max', '--agent', 'gishra-small', '--disable-slash-commands', '--sandbox', '--print-timeout', '60s']],
+    [['--harness', 'pi', '--model', 'provider/fixture-model'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'provider/fixture-model', ...piOwn(s)]],
+    [['--harness', 'pi', '--model', 'provider/fixture-model', '--provider', 'openai', '--effort', 'xhigh', '--args', '["--no-session"]'], (p, s) => ['pi', '-p', p, '--mode', 'json', '--model', 'provider/fixture-model', '--provider', 'openai', '--thinking', 'xhigh', ...piOwn(s), '--no-session']],
   ];
   const empty = path.join(h.base, 'no-plugin');
   fs.mkdirSync(empty);

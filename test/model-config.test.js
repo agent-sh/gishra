@@ -6,19 +6,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const { createRequire } = require('node:module');
-const { ROOT, makeRepo, makeProjectRepo, makeTaskRepo, fixtureLadder } = require('./helpers');
+const { ROOT, makeRepo, makeProjectRepo, makeTaskRepo, cachedFixture, fixtureLadder } = require('./helpers');
 
 // Harness file names are not model selections.
 const harnessNames = new Set(['claude-plugin', 'claude-config', 'claude-error', 'claude-global',
-  'claude-only', 'claude-provider', 'claude-provider.js', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
+  'claude-only', 'claude-provider', 'claude-provider.js', 'claude-provider.test.js', 'claude-result.json', 'claude-print-result.json', 'claude-scratch-2026-10-06']);
 const selections = /\b(?:claude-[\w.-]+|gpt-[\w.-]+|opus|sonnet|haiku|sol|luna|astra)\b/gi;
 // These records quote sources or historical probe output, rather than configure runtime models.
 const researchDocuments = new Set(['research/T38.json', 'research/T101-probes/results/identity.json',
   'research/T101-probes/results/secrets.json']);
 
-test('cached project and task fixtures pin their ladder and keep copies independent', (t) => {
+test('cached fixtures pin their ladder and keep copies independent', (t) => {
   const tasks = [{ args: ['--title', 'Cached task', '--acceptance', 'pinned model'], brief: 'cached brief\n' }];
-  for (const create of [makeProjectRepo, t => makeTaskRepo(t, tasks)]) {
+  for (const create of [makeProjectRepo, t => makeTaskRepo(t, tasks),
+    t => cachedFixture(t, 'pinned-ladder', h => { h.init(); })]) {
     const first = create(t);
     const second = create(t);
     const pinned = fixtureLadder();
@@ -110,6 +111,7 @@ test('model lint allows harness module paths and rejects model selections', (t) 
   const h = makeRepo(t);
   const file = path.join(h.repo, 'selection.js');
   fs.writeFileSync(file, "require('../lib/claude-provider.js');\n");
+  fs.writeFileSync(path.join(h.repo, 'test-map.json'), JSON.stringify({ tests: ['test/claude-provider.test.js'] }));
   assert.deepEqual(modelSelections(h.repo, h.env), []);
   const ids = [['claude', 'fixture-2099'].join('-'), ['gpt', 'fixture-2099'].join('-'), ['as', 'tra'].join('')];
   for (const id of ids) {
