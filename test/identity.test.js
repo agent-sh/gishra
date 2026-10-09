@@ -4,7 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo, cachedFixture, runPty, PTY_AVAILABLE } = require('./helpers');
+const { spawn } = require('node:child_process');
+const { makeRepo, cachedFixture, runPty, PTY_AVAILABLE, BIN, HOOKS } = require('./helpers');
 
 const noAgent = { TOWER_CRANE_AGENT: undefined };
 const message = 'tower-crane: no agent: pass --agent NAME or set TOWER_CRANE_AGENT\n';
@@ -306,6 +307,45 @@ test('automatic state discovery never passes the owner key to a Git child', (t) 
   const calls = fs.readFileSync(report, 'utf8').trim().split('\n').map(JSON.parse);
   assert.deepEqual(calls[0].args, ['rev-parse', '--git-common-dir']);
   assert.ok(calls.every((call) => !call.ownerKeyPresent), 'discovery and later Git children receive no owner key');
+});
+
+test('identity checks preserve delayed hook input on stdin', async (t) => {
+  const h = setup(t);
+  const agent = 'worker-stdin';
+  const binding = path.join(h.state, 'homes', agent, 'hook.json');
+  fs.mkdirSync(path.dirname(binding), { recursive: true });
+  fs.writeFileSync(binding, JSON.stringify({ agent, task: 'T1', state: h.state, harness: 'codex', attempt: 1 }));
+  const ready = path.join(h.base, 'stdin-ready');
+  const child = spawn(process.execPath, ['--require', HOOKS, BIN, 'hook', 'report', '--binding', binding, '--payload', '-', '--state', h.state], {
+    cwd: h.repo,
+    env: { ...h.env, TOWER_CRANE_AGENT: agent, TOWER_CRANE_TASK: 'T1', HOOK_STATE: h.state, HOOK_STDIN_READY: ready },
+    timeout: 15000,
+  });
+  let stderr = '';
+  let exited = false;
+  child.stdout.resume();
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.stdin.on('error', (error) => assert.equal(error.code, 'EPIPE'));
+  const done = new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => { exited = true; resolve(code); });
+  });
+  try {
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(ready) && !exited && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(fs.existsSync(ready), stderr || 'CLI never attempted to read stdin');
+    // Keep the pipe empty while the child begins its synchronous read.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    child.stdin.end(JSON.stringify({ report: 'Delayed input' }));
+    assert.equal(await done, 0, stderr);
+    const rows = events(h).trim().split('\n').map(JSON.parse);
+    assert.equal(rows.findLast((event) => event.cmd === 'hook report').detail.report, 'Delayed input');
+  } finally {
+    child.kill();
+    await done;
+  }
 });
 
 test('caller config and home cannot redirect an initialized project owner credential', (t) => {

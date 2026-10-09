@@ -21,6 +21,7 @@ for (const stream of [process.stdout, process.stderr]) {
 }
 
 const { TowerCraneError, usage, refuse } = require('../lib/util');
+const { isatty } = require('node:tty');
 const S = require('../lib/state');
 const P = require('../lib/project');
 const T = require('../lib/tasks');
@@ -423,17 +424,18 @@ async function main(argv) {
       if (own[r] === undefined) throw usage(`${cmd.name} needs --${r}; usage: tower-crane ${cmd.name} ${cmd.usage}`);
     }
     let agent = globals.agent ?? process.env.TOWER_CRANE_AGENT;
+    // Inspect descriptors without initializing stdin and changing pipe flags.
+    const ownerTerminal = isatty(0) && isatty(1);
     // Terminal fallback identifies ordinary actions; owner powers need a named identity.
     const agentExplicit = agent !== undefined;
     if (agent === undefined) {
-      if (process.stdin.isTTY && process.stdout.isTTY && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
+      if (ownerTerminal && process.env.TOWER_CRANE_TASK === undefined) agent = 'owner';
       else throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     }
     if (!agent.trim()) throw usage('no agent: pass --agent NAME or set TOWER_CRANE_AGENT');
     const identity = agent.trim();
     let stateDir;
     const locate = () => stateDir ??= S.locateStateDir(globals.state, process.env, process.cwd());
-    const ownerTerminal = !!(process.stdin.isTTY && process.stdout.isTTY);
     const authority = require('../lib/authority');
     const ownerConfigDir = identity === 'owner'
       ? authority.checkOwner(process.env, ownerCredential, ownerTerminal, () => authority.ownerProject(locate()), cmd.name === 'init')

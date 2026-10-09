@@ -149,6 +149,9 @@ function first(key) {
 
 function before(name, args) {
   const target = args[0];
+  if (env.HOOK_STDIN_READY && name === 'readFileSync' && target === 0) {
+    real.writeFileSync(env.HOOK_STDIN_READY, '');
+  }
   // HOOK_JITTER_MS=MS: a random pause of up to MS before each call on the state.
   if (env.HOOK_JITTER_MS && (inState(target) || inState(args[1]))) sleep(Math.floor(Math.random() * Number(env.HOOK_JITTER_MS)));
   // State commits precede board replacement; expose that interval to readers.
