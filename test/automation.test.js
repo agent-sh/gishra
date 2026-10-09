@@ -112,6 +112,20 @@ test('a passing gate reruns in the next reaction after its pinned command change
   assert.equal(latest.gate_policy.tests_cmd, 'node -e "process.exit(0)"');
 });
 
+test('a passing gate reruns in the next reaction after its tests mode changes', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.ok(['project', 'set', '--tests-cmd', 'node -e "process.exit(0)"', '--tests-mode', 'run-only']);
+  h.submit();
+  h.ok(['check', 'tests', 'T1']);
+  const runs = () => h.logs().filter((e) => e.cmd === 'check tests').length;
+  const before = runs();
+  h.ok(['project', 'set', '--tests-mode', 'none']);
+  h.consume();
+  assert.equal(runs(), before + 1, 'the reaction reruns tests under the new mode');
+  const latest = h.readState('tasks.json').tasks[0].evidence.filter((e) => e.type === 'tests').at(-1);
+  assert.equal(latest.tests_mode, 'none');
+});
+
 test('a failed gate at unchanged inputs waits for gates retry, which reruns it', (t) => {
   const h = setup(t, { ci: 'pending' });
   const marker = path.join(h.base, 'infra-failed-once');
@@ -131,6 +145,20 @@ test('a failed gate at unchanged inputs waits for gates retry, which reruns it',
   h.ok(['gates', 'retry', 'T1', '--agent', 'orchestrator']);
   assert.equal(runs(), 2);
   assert.equal(latest().ok, true, 'the retry at the same inputs passes');
+});
+
+test('gates retry exits nonzero while a retried gate still fails', (t) => {
+  const h = setup(t, { ci: 'pending' });
+  h.ok(['project', 'set', '--tests-cmd', 'node -e "process.exit(1)"', '--tests-mode', 'run-only']);
+  h.submit();
+  h.consume();
+  const latest = () => h.readState('tasks.json').tasks[0].evidence.filter((e) => e.type === 'tests').at(-1);
+  assert.equal(latest().ok, false);
+  const retry = h.run(['gates', 'retry', 'T1', '--agent', 'orchestrator']);
+  assert.equal(retry.code, 1, `a retry that still fails must exit nonzero: ${retry.stdout}${retry.stderr}`);
+  assert.match(retry.stdout, /tests/);
+  assert.equal(latest().ok, false, 'the retry ran at the same inputs and still fails');
+  assert.equal(h.readState('tasks.json').tasks[0].status, 'submitted');
 });
 
 test('an accepted task with green gates merges in the event reaction without an agent turn', (t) => {
