@@ -18,7 +18,7 @@ Existing projects keep the ladder copied at initialization. Swap a project rung 
 tower-crane ladder set easy --model YOUR_MODEL_ID --clear profile
 ```
 
-This keeps that rung's harness and effort. `ladder show` confirms the resolved model and its source. [builtin-ladder.json](builtin-ladder.json) records the shipped defaults. Tests pin their own rungs through `fixtureLadder()` and `pinRung()` in `test/helpers.js`; only the defaults test checks that snapshot. `node scripts/probe-model-swap.js` changes every built-in rung to a fictional model on another harness in a temporary copy and checks that only the defaults test fails. Live probes require `TOWER_CRANE_LIVE_MODEL` or `TOWER_CRANE_LIVE_PROFILE` explicitly.
+This keeps that rung's harness and effort. `ladder show` confirms the resolved model and its source. [builtin-ladder.json](builtin-ladder.json) records the shipped defaults. Tests pin their own rungs through `fixtureLadder()` and `pinRung()` in `test/helpers.js`; only the defaults test checks that snapshot. `node scripts/probe-model-swap.js` changes every built-in rung to a fictional model on another harness in a temporary copy and checks that only the defaults test fails. Live probes require `TOWER_CRANE_LIVE_MODEL` or `TOWER_CRANE_LIVE_PROFILE` explicitly. The model lint checks plain literals in runtime code and JSON; reconstructing identifiers assembled at runtime is outside its scope.
 
 | Rung | Does | Good fit |
 |---|---|---|

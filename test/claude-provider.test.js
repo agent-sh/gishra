@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { makeRepo } = require('./helpers');
+const { makeRepo, ROOT } = require('./helpers');
 const L = require('../lib/ladder');
 
 // Read the alias table rather than naming a release, so a swap of the shipped
@@ -112,7 +112,8 @@ for (const [provider, other, model, plain] of [
     const pinned = JSON.parse(fs.readFileSync(path.join(home, 'tool.json'), 'utf8'));
     const events = stateText.trim().split('\n').map(JSON.parse);
     assert.deepEqual(pinned, events.find((e) => e.cmd === 'spawn').detail.tool, 'provider fallback keeps the original runtime');
-    assert.ok(fs.existsSync(path.join(pinned.path, 'lib', 'claude-provider.js')));
+    const providerFile = path.relative(ROOT, require.resolve('../lib/claude-provider'));
+    assert.ok(fs.existsSync(path.join(pinned.path, providerFile)));
     for (const event of Object.values(JSON.parse(generated).hooks)) {
       assert.ok(event[0].hooks[0].command.includes(path.join(pinned.path, 'lib', 'hook-bridge.js')));
     }

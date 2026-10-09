@@ -123,7 +123,7 @@ cp.spawn = function(command, args, options) {
   const pathKey = Object.keys(h.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
   h.env[pathKey] = bins + path.delimiter + (h.env[pathKey] || '');
   h.env.CODEX_HOME = path.join(h.base, 'codex-home');
-  h.env.CLAUDE_CONFIG_DIR = path.join(h.base, 'claude-config');
+  h.env.CLAUDE_CONFIG_DIR = path.join(h.base, 'harness-config');
   h.env.RESUME_USAGE = '1';
   h.ok(['ladder', 'set', 'medium', '--harness', harness, '--clear', 'command',
     ...(harness === 'codex' ? ['--profile', 'fixture-main', '--effort', 'high'] : ['--model', 'fixture-large', '--effort', 'high'])]);

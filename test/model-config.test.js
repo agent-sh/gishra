@@ -23,11 +23,6 @@ const staticImport = new RegExp(String.raw`\b(?:from|import)${importSpace}` + re
 function maskReferences(file, text) {
   const blank = value => value.replace(/[^\r\n]/g, ' ');
   const pathValue = value => typeof value === 'string' && (/[\\/]/.test(value) || /\.[a-z\d]+$/i.test(value));
-  // These expressions construct paths; their arguments are file references.
-  text = text.replace(/\bpath(?:\.(?:posix|win32))?\.(?:join|resolve)\([^()\r\n]*\)/g, (value, offset) => {
-    if (/\b(?:model|profile)["']?\s*[:=]\s*$/.test(text.slice(0, offset)) || /\b(?:model|profile)["']?\s*:/.test(value)) return value;
-    return blank(value);
-  });
   if (file === 'test/usage.test.js') {
     text = text.replace(/\b(?:text|fixture)\(\s*(['"])[^'"]+\1\s*\)/g, blank);
   }
@@ -210,6 +205,21 @@ test('harness-like names are rejected as runtime model and profile values', (t) 
   }
   fs.writeFileSync(file, 'const model = path.join("lib", ' + JSON.stringify(names[6]) + ');\n');
   assert.deepEqual(modelSelections(h.repo, h.env), [`lib/runtime-selection.js:1: ${names[6]}`]);
+});
+
+test('path constructors do not exempt literal model IDs through indirection or comments', (t) => {
+  const h = makeRepo(t);
+  const file = path.join(h.repo, 'selection.js');
+  const id = ['gpt', 'probe-2099'].join('-');
+  for (const source of [
+    'const selectedModel = path.posix.join("openai", ' + JSON.stringify(id) +
+      '); module.exports = { harness: "opencode", model: selectedModel };\n',
+    'module.exports = { model: /* provider-qualified ID */ path.posix.join("openai", ' +
+      JSON.stringify(id) + ') };\n',
+  ]) {
+    fs.writeFileSync(file, source);
+    assert.deepEqual(modelSelections(h.repo, h.env), [`selection.js:1: ${id}`]);
+  }
 });
 
 test('model lint rejects every shipped Claude alias in runtime selections', (t) => {
