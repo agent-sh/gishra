@@ -344,6 +344,12 @@ test('late session detail enriches a partial total without counting it twice', (
 test('detached accounting retries a lock held across the first collection attempt', async (t) => {
   const h = setup(t);
   h.json(['spawn', '--task', 'T1'], { env: { ...h.usageEnv, USAGE_DELAY: '1000' }, hooks: h.usageHooks });
+  // The worker takes its lease before the lock is held; the lock then delays only its collection.
+  const claimed = Date.now() + 10000;
+  while (!events(h).some((e) => e.cmd === 'claim')) {
+    assert.ok(Date.now() < claimed, 'worker did not take its lease');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   const S = require('../lib/state');
   const lock = S.acquireLock(h.state);
   const timer = setTimeout(() => S.releaseLock(lock), S.LOCK_WAIT_MS + 3000);

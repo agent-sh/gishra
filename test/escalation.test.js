@@ -125,8 +125,9 @@ if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
   h.task = () => h.readState('tasks.json').tasks.find((task) => task.id === 'T1');
   h.openDecisions = () => h.readState('decisions.json').decisions.filter((decision) => decision.status === 'open');
   h.until = (fn, dirs = [h.state, h.base]) => until(t, dirs, () => {
-    if (fn()) return true;
+    // The ceiling is read before fn, so a decision that fn is waiting for is never taken as unexpected.
     const ceiling = h.openDecisions().find((decision) => decision.blocks.includes('T1'));
+    if (fn()) return true;
     if (ceiling) {
       const exit = events(h).findLast((event) => event.cmd === 'spawn exit' && event.task === 'T1');
       const log = exit?.detail.log;

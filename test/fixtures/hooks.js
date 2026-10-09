@@ -346,10 +346,11 @@ if (env.HOOK_SPAWN_FAIL) {
 if (env.HOOK_USAGE_HARNESS) {
   const original = cp.spawn;
   cp.spawn = function usageHarness(file, args, options) {
-    if (file === env.HOOK_USAGE_HARNESS) {
-      return original.call(this, process.execPath, [
-        require('node:path').join(__dirname, 'usage-harness.js'), env.HOOK_USAGE_FILE,
-      ], options);
+    // The supervisor's lease gate starts its harness after `tower-crane-gate`.
+    const gated = file === '/bin/sh' && args[2] === 'tower-crane-gate' && args[3] === env.HOOK_USAGE_HARNESS;
+    if (file === env.HOOK_USAGE_HARNESS || gated) {
+      const stub = [require('node:path').join(__dirname, 'usage-harness.js'), env.HOOK_USAGE_FILE];
+      return original.call(this, gated ? file : process.execPath, gated ? [...args.slice(0, 3), process.execPath, ...stub] : stub, options);
     }
     return original.call(this, file, args, options);
   };

@@ -543,6 +543,8 @@ setImmediate(() => process.platform === 'win32' ? process.exit(0) : process.kill
   assert.ok(!workerCopy.text.includes('REVIEWER_ONLY_COMMAND'));
   assert.ok(!fs.existsSync(workerCopy.path));
 
+  // The supervised worker claimed the task, and its exit leaves that lease until released.
+  h.ok(['release', 'T1', '--agent', 'worker-T1-1', '--reason', 'worker finished']);
   reviewable(h);
   commandRung(h, 'medium', [process.execPath, '-e', script, reviewerOut, '{brief}']);
   fs.writeFileSync(cleanupOut, '');
@@ -590,6 +592,9 @@ test('temporary brief copies are removed before normal and signalled foreground 
     assert.equal(result.code, code, result.stderr);
     assert.ok(!fs.existsSync(fs.readFileSync(out, 'utf8')));
     assert.deepEqual(fs.readdirSync(tempRoot), []);
+    // The supervised worker's lease outlives its exit until it is released.
+    const claim = h.json(['task', 'show', 'T1']).claim;
+    if (claim) h.ok(['release', 'T1', '--agent', claim.agent, '--reason', 'worker finished']);
   }
 });
 
