@@ -96,7 +96,7 @@ if (env.HOOK_WATCH_READY || env.HOOK_NO_WATCH || env.HOOK_SILENT_WATCH) {
 }
 const STATE = env.HOOK_STATE ? path.resolve(env.HOOK_STATE) : null;
 const LOCK = STATE ? path.join(STATE, 'lock') : null;
-const WRAPPED = ['openSync', 'closeSync', 'readFileSync', 'writeFileSync', 'appendFileSync', 'renameSync', 'unlinkSync', 'rmdirSync', 'rmSync', 'linkSync', 'statSync', 'readdirSync', 'mkdirSync', 'existsSync', 'utimesSync'];
+const WRAPPED = ['openSync', 'closeSync', 'readFileSync', 'readSync', 'writeFileSync', 'appendFileSync', 'renameSync', 'unlinkSync', 'rmdirSync', 'rmSync', 'linkSync', 'statSync', 'readdirSync', 'mkdirSync', 'existsSync', 'utimesSync'];
 // Calls that remove or move what is at their first argument.
 const CHANGES = ['renameSync', 'unlinkSync', 'rmdirSync', 'rmSync', 'linkSync'];
 const BUSY = ['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EPERM', 'EACCES'];
@@ -149,7 +149,8 @@ function first(key) {
 
 function before(name, args) {
   const target = args[0];
-  if (env.HOOK_STDIN_READY && name === 'readFileSync' && target === 0) {
+  // Stdin is read with readStdin (readSync) or a bare readFileSync(0).
+  if (env.HOOK_STDIN_READY && (name === 'readFileSync' || name === 'readSync') && target === 0) {
     real.writeFileSync(env.HOOK_STDIN_READY, '');
   }
   // HOOK_JITTER_MS=MS: a random pause of up to MS before each call on the state.
