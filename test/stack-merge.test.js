@@ -376,6 +376,56 @@ test('a task changed during the lower merge stops before the upper merge', (t) =
   assert.equal(f.h.json(['task', 'show', 'T1']).stack_disabled, undefined);
 });
 
+test('a bottom PR with a stale local link to its dependent merges through the asynchronous merge API pinned to its head', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  const state = f.h.readState('tasks.json');
+  state.tasks.find((item) => item.id === 'T2').stack.linked = false;
+  f.h.writeState('tasks.json', state);
+
+  const r = f.h.run(['merge', 'T1']);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.equal(f.read().prs[11].state, 'MERGED');
+  const merge = f.read().calls.find((c) => c.args[0] === 'api' && c.args.includes('POST') && /pulls\/11\/merge-async$/.test(c.args[1]));
+  assert.ok(merge, 'the bottom PR merges through the asynchronous merge API');
+  assert.ok(merge.args.includes(`expected_head_sha=${f.sha}`), 'the merge pins the accepted head');
+  assert.equal(f.read().calls.some((c) => c.args[0] === 'stack' && c.args[1] === 'merge'), false);
+});
+
+test('after a lower stack merge, a dependent whose head GitHub moved takes the new head and needs its gates again', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  const wt = f.upper.wt;
+  f.h.git(['commit', '--allow-empty', '-qm', 'T2 rebased onto main'], wt.path);
+  f.h.git(['push', 'origin', wt.branch], wt.path);
+  const rebased = f.h.git(['rev-parse', 'HEAD'], wt.path);
+  f.write((d) => { d.rebased = { 12: rebased }; });
+
+  const r = f.h.run(['merge', 'T1']);
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(task.sha, rebased);
+  assert.equal(task.status, 'submitted');
+});
+
+test('merging a stacked task whose head GitHub rebases after its lower PR merges returns it to submitted at the new head', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  const wt = f.upper.wt;
+  f.h.git(['commit', '--allow-empty', '-qm', 'T2 rebased onto main'], wt.path);
+  f.h.git(['push', 'origin', wt.branch], wt.path);
+  const rebased = f.h.git(['rev-parse', 'HEAD'], wt.path);
+  f.write((d) => { d.rebased = { 12: rebased }; });
+
+  const r = f.h.run(['merge', 'T2']);
+  assert.notEqual(r.code, 0, r.stdout + r.stderr);
+  assert.equal(f.read().prs[11].state, 'MERGED');
+  const task = f.h.json(['task', 'show', 'T2']);
+  assert.equal(task.sha, rebased);
+  assert.equal(task.status, 'submitted');
+});
+
 // The hook binding a spawned worker writes into its own agent home.
 function hookCall(f, id, action = 'tool') {
   const home = path.join(f.h.state, 'homes', `worker-${id}`);
