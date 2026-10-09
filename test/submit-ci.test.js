@@ -1,0 +1,152 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const cp = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const { BIN, cachedFixture } = require('./helpers');
+
+const github = path.join(__dirname, 'fixtures', 'github-submit.js');
+const JOB_LOG = 'https://github.com/acme/app/actions/runs/9/job/456';
+
+function checkRun(name, extra = {}) {
+  return { name, app: 'github-actions', status: 'completed', conclusion: 'success', suite: 1, url: null, output: null, ...extra };
+}
+
+function suite(id, extra = {}) {
+  return { id, app: 'github-actions', status: 'completed', conclusion: 'success', runs: 2, ...extra };
+}
+
+function comment(id, extra = {}) {
+  return { id, in_reply_to_id: null, path: 'lib/x.js', line: 12, body: 'finding', user: 'revuto-review[bot]', ...extra };
+}
+
+function fixture(t) {
+  return cachedFixture(t, 'submit-ci', (h) => {
+    h.init(['--repo', 'acme/app']);
+    const project = h.readState('project.json');
+    project.ci = {
+      required: ['test ('],
+      capped_review: [{ app: 'revuto-review', pattern: 'Revuto could not complete this review' }],
+    };
+    h.writeState('project.json', project);
+    h.ok(['task', 'add', '--title', 'Change', '--acceptance', 'works']);
+    h.ok(['claim', 'T1', '--agent', 'worker']);
+    return { sha: h.git(['rev-parse', 'HEAD']) };
+  });
+}
+
+// Submits T1 with PR 7 while the stubbed GitHub reports `data` for the head.
+function submitPr(h, data, extra = []) {
+  const file = path.join(h.base, 'github.json');
+  fs.writeFileSync(file, JSON.stringify({ sha: h.sha, ...data }));
+  return cp.spawnSync(process.execPath, ['--require', github, BIN, 'submit', 'T1', '--agent', 'worker',
+    '--sha', h.sha, '--pr', '7', ...extra], {
+    cwd: h.repo, env: { ...h.env, TEST_GITHUB: file }, encoding: 'utf8', timeout: 60000,
+  });
+}
+
+function status(h) {
+  return h.readState('tasks.json').tasks[0].status;
+}
+
+function allowPending(h) {
+  const brief = path.join(h.base, 'brief.md');
+  fs.writeFileSync(brief, '# T1\n\n## Shared\n\nforce-ci-pending: allowed\n');
+  h.ok(['brief', 'set', 'T1', '--file', brief]);
+}
+
+test('a pending required check refuses the submit and names the jobs still running', (t) => {
+  const h = fixture(t);
+  const r = submitPr(h, {
+    runs: [checkRun('build'), checkRun('test (ubuntu-latest)', { status: 'in_progress', conclusion: null })],
+    suites: [suite(1, { status: 'in_progress', conclusion: null })],
+  });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /CI is still running at \w+ in acme\/app: wait for CI to finish, then submit again\./);
+  assert.match(r.stderr, /pending: test \(ubuntu-latest\) \(in_progress\)/);
+  assert.equal(status(h), 'in_progress');
+});
+
+test('a failing check refuses with its job and the first failing lines of the log, even when pending is forced', (t) => {
+  const h = fixture(t);
+  allowPending(h);
+  const log = [
+    'test (windows-latest)\tRun tests\t2026-10-09T10:00:00.1234567Z ok 1 - runs fine',
+    'test (windows-latest)\tRun tests\t2026-10-09T10:00:01.0000000Z not ok 4 - quoted paths keep their backslashes',
+    'test (windows-latest)\tRun tests\t2026-10-09T10:00:01.1000000Z   AssertionError: expected C:\\repo\\lib',
+  ].join('\n');
+  const data = {
+    runs: [checkRun('test (windows-latest)', { conclusion: 'failure', url: JOB_LOG }), checkRun('test (ubuntu-latest)', { status: 'in_progress', conclusion: null })],
+    suites: [suite(1, { conclusion: 'failure' })],
+    logs: { 456: log },
+  };
+  const r = submitPr(h, data, ['--force-ci-pending']);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /CI failed at \w+ in acme\/app: fix the failing checks, push, and submit again\./);
+  assert.match(r.stderr, /failing: test \(windows-latest\) \(failure\)/);
+  assert.match(r.stderr, /test \(windows-latest\) log:\n {2}not ok 4 - quoted paths keep their backslashes\n {4}AssertionError: expected C:\\repo\\lib/);
+  assert.doesNotMatch(r.stderr, /ok 1 - runs fine|2026-10-09T10/);
+  assert.equal(status(h), 'in_progress');
+});
+
+test('capped or crashed revuto does not block a green submit', (t) => {
+  const h = fixture(t);
+  const revuto = checkRun('Revuto', {
+    app: 'revuto-review', conclusion: 'failure', suite: 2,
+    output: { title: 'Revuto did not review this pull request', summary: 'Revuto could not complete this review' },
+  });
+  const r = submitPr(h, {
+    runs: [checkRun('build'), checkRun('test (ubuntu-latest)'), checkRun('test (windows-latest)'), revuto],
+    suites: [suite(1), suite(2, { app: 'revuto-review', conclusion: 'failure', runs: 1 })],
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /submitted T1 at \w{7}/);
+  assert.match(r.stdout, /Nonblocking capped reviews as listed in project.json ci.capped_review: Revuto \(revuto-review\)/);
+  assert.equal(status(h), 'submitted');
+});
+
+test('revuto findings print with file, line and body, and answered findings drop out', (t) => {
+  const h = fixture(t);
+  const r = submitPr(h, {
+    runs: [checkRun('test (ubuntu-latest)'), checkRun('test (windows-latest)')],
+    suites: [suite(1)],
+    comments: [
+      comment(11, { line: 12, body: '**[P1]** Quoted paths break on Windows.' }),
+      comment(12, { line: 30, body: 'Answered finding' }),
+      comment(13, { in_reply_to_id: 12, user: 'worker-T1', body: 'fixed in the next commit' }),
+      comment(14, { user: 'a-person', body: 'a human comment' }),
+    ],
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /revuto left 1 open inline finding on PR #7 \(listed for you; they do not block the submit\):\n {2}lib\/x\.js:12\n {4}\*\*\[P1\]\*\* Quoted paths break on Windows\./);
+  assert.doesNotMatch(r.stdout, /Answered finding|a human comment/);
+  assert.equal(status(h), 'submitted');
+});
+
+test('a shimmed agent whose gh policy refuses gh api submits with a notice that the head was not checked', (t) => {
+  const h = fixture(t);
+  const r = submitPr(h, { refuseApi: true, runs: [], suites: [] });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /CI at \w+ in acme\/app was not checked: this agent's gh policy refuses gh api/);
+  assert.equal(status(h), 'submitted');
+});
+
+test('--force-ci-pending submits past pending checks only when the brief allows it', (t) => {
+  const h = fixture(t);
+  const data = {
+    runs: [checkRun('test (ubuntu-latest)', { status: 'queued', conclusion: null })],
+    suites: [suite(1, { status: 'queued', conclusion: null, runs: 1 })],
+  };
+  const refused = submitPr(h, data, ['--force-ci-pending']);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /T1's brief does not allow --force-ci-pending/);
+  assert.equal(status(h), 'in_progress');
+
+  allowPending(h);
+  const forced = submitPr(h, data, ['--force-ci-pending']);
+  assert.equal(forced.status, 0, forced.stderr);
+  assert.match(forced.stdout, /CI still pending at \w+, submitted with --force-ci-pending \(the brief allows it\): test \(ubuntu-latest\) \(queued\)/);
+  assert.equal(status(h), 'submitted');
+});

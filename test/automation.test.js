@@ -54,7 +54,16 @@ cp.spawnSync=(cmd,args,opts)=>{
   h.ok(['brief', 'set', 'T1', '-'], { input: '# Change\n\nImplement the acceptance.\n' });
   h.submit = (id = 'T1', sha = h.sha, pr = '7') => {
     h.ok(['claim', id, '--agent', 'worker']);
+    // A worker's submit refuses pending or failing CI (T149), so the head is submitted while its
+    // CI reads green. The CI the test set returns before any reaction runs.
+    const before = h.github();
+    const ciAtSubmit = before.ci[sha];
+    before.ci[sha] = 'success';
+    h.saveGithub(before);
     h.ok(['submit', id, '--sha', sha, '--pr', pr, '--agent', 'worker']);
+    const after = h.github();
+    after.ci[sha] = ciAtSubmit;
+    h.saveGithub(after);
   };
   h.consume = () => h.run(['wait', '--after', '0', '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
   h.logs = () => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
