@@ -388,7 +388,7 @@ test('unrelated workers logging hook progress and notes during the final head ch
   f.add('unrelated');
   f.write((d) => { d.during = { 'pr view': [hookCall(f, 'T3'), ['task', 'note', 'T3', 'progress', '--agent', 'worker-T3']] }; });
   f.h.ok(['merge', 'T2']);
-  assert.equal(f.read().calls.filter((c) => c.args[1] === 'merge').length, 2);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
   for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
 });
 
@@ -398,7 +398,7 @@ test('stack members logging hook progress during the final head checks do not st
   f.accept('T2');
   f.write((d) => { d.during = { 'pr view': [hookCall(f, 'T2')] }; });
   f.h.ok(['merge', 'T2']);
-  assert.equal(f.read().calls.filter((c) => c.args[1] === 'merge').length, 2);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
 });
 
 test('a stack member stopping during the final head checks does not stop the stack merge', (t) => {
@@ -407,7 +407,7 @@ test('a stack member stopping during the final head checks does not stop the sta
   f.accept('T2');
   f.write((d) => { d.during = { 'pr view': [hookCall(f, 'T2', 'stop')] }; });
   f.h.ok(['merge', 'T2']);
-  assert.equal(f.read().calls.filter((c) => c.args[1] === 'merge').length, 2);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
   // The stop emits its own orchestrator notice; the merge passed with that notice in the log.
   const log = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   assert.ok(log.some((e) => e.cmd === 'hook stop' && e.agent === 'worker-T2'));
@@ -422,7 +422,7 @@ test('an ordinary message from a stack member during the final head checks still
   const r = f.h.run(['merge', 'T2']);
   assert.equal(r.code, 1);
   assert.match(r.stdout, /changed during stack head checks/);
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
 });
 
 test('a member event during the final head checks still stops the stack merge', (t) => {
@@ -433,7 +433,7 @@ test('a member event during the final head checks still stops the stack merge', 
   const r = f.h.run(['merge', 'T2']);
   assert.equal(r.code, 1);
   assert.match(r.stdout, /changed during stack head checks/);
-  assert.equal(f.read().calls.some((c) => c.args[1] === 'merge'), false);
+  assert.deepEqual(routes(f), []);
 });
 
 test('three dependent PRs form one stack and all accepted lower tasks get merge evidence', (t) => {
