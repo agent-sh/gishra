@@ -273,7 +273,8 @@ Repositories declare generated outputs in `package.json`:
 ```
 
 The mapping uses exact repository-relative file paths and existing npm script
-names. A string declares an entire generated file. `blocks` declares only the
+names. A string declares an entire generated file, including add/add outputs
+with no ancestor blob. `blocks` declares only the
 bodies between `<!-- NAME:start -->` and `<!-- NAME:end -->`; text outside
 those markers remains hand-written. Every declared marker must occur exactly
 once in all three merge versions. Tower Crane's own mapping lists every

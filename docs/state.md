@@ -588,7 +588,9 @@ retain their mergeability guards.
 Generated outputs are declared by the fetched base's `package.json`
 `tower-crane.generated` mapping, from exact relative file paths to npm script
 names or `{script, blocks}`. Blocks use paired HTML `NAME:start` and
-`NAME:end` comments; only their bodies are generated. See docs/cli.md for
+`NAME:end` comments; only their bodies are generated. Whole-file add/add
+outputs require only the two branch versions. Partially generated documents
+require an ancestor version to preserve hand-written text. See docs/cli.md for
 the merge and regeneration contract. A matching GitHub conflict authorizes
 the trusted automation executor to merge into an idle, clean task checkout
 outside worker sandboxes and push without force. Other executors, live

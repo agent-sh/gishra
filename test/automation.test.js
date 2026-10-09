@@ -182,6 +182,65 @@ test('a sole docs conflict regenerates every declared output of its script', (t)
   assert.equal(h.logs().some((e) => e.cmd === 'rework' || e.cmd === 'spawn'), false);
 });
 
+for (const partial of [false, true]) {
+  test(`an add/add conflict in a declared ${partial ? 'partially' : 'wholly'} generated file ${partial ? 'keeps its hand-written conflict' : 'repairs without rework'}`, (t) => {
+    const h = generatedSetup(t);
+    const file = partial ? 'new-doc.md' : 'new-generated.txt';
+    const content = (side) => partial
+      ? `${side} intro.\n<!-- commands:Run:start -->\n${side} rows\n<!-- commands:Run:end -->\n`
+      : `${side} output\n`;
+    h.git(['switch', 'main']);
+    const manifest = path.join(h.repo, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    pkg['tower-crane'].generated[file] = partial
+      ? { script: 'docs:generate', blocks: ['commands:Run'] } : 'docs:generate';
+    fs.writeFileSync(manifest, JSON.stringify(pkg));
+    if (!partial) {
+      fs.appendFileSync(path.join(h.repo, 'generate.js'), "fs.writeFileSync('new-generated.txt', rows + '\\n');\n");
+      fs.writeFileSync(path.join(h.repo, 'docs', 'cli.md'),
+        fs.readFileSync(path.join(h.repo, 'docs', 'cli.md'), 'utf8').replace('base / main', 'branch / base'));
+      fs.writeFileSync(path.join(h.repo, 'generated.txt'), 'branch / base\n');
+    }
+    fs.writeFileSync(path.join(h.repo, file), content('main'));
+    h.git(['add', '.']);
+    h.git(['commit', '-qm', 'main introduces generated output']);
+    h.git(['push', 'origin', 'main']);
+    h.git(['switch', 'fixture-change']);
+    fs.writeFileSync(path.join(h.repo, file), content('branch'));
+    h.git(['add', '.']);
+    h.git(['commit', '-qm', 'branch introduces generated output']);
+    h.git(['push', 'origin', 'fixture-change']);
+    h.sha = h.git(['rev-parse', 'HEAD']);
+    const ancestor = h.git(['merge-base', 'main', 'fixture-change']);
+    assert.equal(h.git(['ls-tree', ancestor, '--', file]), '', 'the conflict has no ancestor blob');
+    const github = h.github();
+    github.prs['7'].headRefOid = h.sha;
+    h.saveGithub(github);
+    h.submit();
+    h.consume();
+    const task = h.readState('tasks.json').tasks[0];
+    if (partial) {
+      assert.equal(task.status, 'rework');
+      assert.equal(task.sha, h.sha);
+      assert.equal(h.git(['diff', '--name-only', '--diff-filter=U']), file);
+      const text = fs.readFileSync(path.join(h.repo, file), 'utf8');
+      assert.match(text, /branch intro\./);
+      assert.match(text, /main intro\./);
+    } else {
+      assert.equal(task.status, 'submitted');
+      assert.notEqual(task.sha, h.sha);
+      assert.equal(h.git(['--git-dir', h.remote, 'rev-parse', 'fixture-change']), task.sha);
+      assert.equal(h.git(['rev-parse', `${task.sha}^1`]), h.sha);
+      assert.equal(h.git(['rev-parse', `${task.sha}^2`]), h.git(['rev-parse', 'main']));
+      assert.equal(fs.readFileSync(path.join(h.repo, file), 'utf8'), 'branch / main\n');
+      assert.equal(h.git(['status', '--porcelain']), '');
+      assert.equal(h.logs().some((e) => e.cmd === 'rework' || e.cmd === 'spawn'), false);
+      const receipt = h.logs().find((e) => e.cmd === 'generated merge' && e.detail.phase === 'pushed');
+      assert.deepEqual(receipt.detail.generated, [file]);
+    }
+  });
+}
+
 test('an accepted generated-only conflict returns to submitted with old review kept historical', (t) => {
   const h = generatedSetup(t);
   const github = h.github();
