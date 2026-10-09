@@ -372,6 +372,70 @@ test('a task changed during the lower merge stops before the upper merge', (t) =
   assert.equal(f.h.json(['task', 'show', 'T1']).stack_disabled, undefined);
 });
 
+// The hook binding a spawned worker writes into its own agent home.
+function hookCall(f, id, action = 'tool') {
+  const home = path.join(f.h.state, 'homes', `worker-${id}`);
+  fs.mkdirSync(home, { recursive: true });
+  const binding = path.join(home, 'hook.json');
+  fs.writeFileSync(binding, JSON.stringify({ agent: `worker-${id}`, task: id, state: f.h.state, harness: 'codex', attempt: 1 }) + '\n');
+  return ['hook', action, '--binding', binding, '--agent', `worker-${id}`];
+}
+
+test('unrelated workers logging hook progress and notes during the final head checks do not stop the stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.add('unrelated');
+  f.write((d) => { d.during = { 'pr view': [hookCall(f, 'T3'), ['task', 'note', 'T3', 'progress', '--agent', 'worker-T3']] }; });
+  f.h.ok(['merge', 'T2']);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
+  for (const id of ['T1', 'T2']) assert.equal(f.h.json(['task', 'show', id]).evidence.findLast((e) => e.type === 'merge').ok, true);
+});
+
+test('stack members logging hook progress during the final head checks do not stop the stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.during = { 'pr view': [hookCall(f, 'T2')] }; });
+  f.h.ok(['merge', 'T2']);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
+});
+
+test('a stack member stopping during the final head checks does not stop the stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.during = { 'pr view': [hookCall(f, 'T2', 'stop')] }; });
+  f.h.ok(['merge', 'T2']);
+  assert.deepEqual(routes(f), ['async 11', 'async 12']);
+  // The stop emits its own orchestrator notice; the merge passed with that notice in the log.
+  const log = fs.readFileSync(path.join(f.h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(log.some((e) => e.cmd === 'hook stop' && e.agent === 'worker-T2'));
+  assert.ok(log.some((e) => e.cmd === 'msg' && e.agent === 'worker-T2' && e.detail.to === 'orchestrator'));
+});
+
+test('an ordinary message from a stack member during the final head checks still stops the stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.during = { 'pr view': [['msg', '--to', 'orchestrator', 'still working', '--task', 'T1', '--agent', 'worker-T1']] } });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /changed during stack head checks/);
+  assert.deepEqual(routes(f), []);
+});
+
+test('a member event during the final head checks still stops the stack merge', (t) => {
+  const f = stacked(t);
+  f.accept('T1');
+  f.accept('T2');
+  f.write((d) => { d.during = { 'pr view': [['task', 'note', 'T1', 'progress', '--agent', 'worker-T1']] }; });
+  const r = f.h.run(['merge', 'T2']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /changed during stack head checks/);
+  assert.deepEqual(routes(f), []);
+});
+
 test('three dependent PRs form one stack and all accepted lower tasks get merge evidence', (t) => {
   const f = stacked(t);
   f.add('third', 'T2');
