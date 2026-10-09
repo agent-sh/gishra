@@ -242,3 +242,43 @@ test('refused commands without a context placeholder retain messages', (t) => {
   assert.equal(fs.existsSync(ready), false);
   assert.ok(!events(h).some((e) => e.cmd === 'hook inbox' && e.detail.messages.length));
 });
+
+// Stop holds a worker that still holds its task with a background job or no final
+// report, once. A pending job is reported as waiting, not as a stop without submit.
+const HEADLESS = [
+  ['background', true, /is waiting on a background job/],
+  ['silent', true, /stopped without submit/],
+  ['submitted', false, /stopped after submit/],
+  ['reported', false, /stopped without submit/],
+];
+for (const [mode, held, note] of HEADLESS) {
+  const expected = held ? 'holds the unsubmitted worker once, in the foreground' : 'does not hold';
+  test(`headless claude ${mode}: Stop ${expected}`, async (t) => {
+    const { h, ready, out } = setup(t, 'claude');
+    const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], { env: { MESSAGE_HEADLESS: mode } });
+    await until(ready);
+    fs.writeFileSync(ready + '.go', '');
+    const result = await run;
+    assert.equal(result.code, 0, result.stderr);
+    const [first, second] = JSON.parse(fs.readFileSync(out)).stops;
+    if (held) {
+      assert.equal(first.decision, 'block');
+      assert.match(first.reason, /tower-crane wait --task T1 --timeout SEC/);
+      assert.match(first.reason, /foreground/);
+    } else {
+      assert.equal(first.decision, undefined);
+    }
+    assert.equal(second.decision, undefined, 'the hold is taken once');
+    const audit = events(h);
+    const waits = audit.filter((e) => e.cmd === 'hook wait');
+    assert.equal(waits.length, held ? 1 : 0);
+    if (mode === 'background' || mode === 'submitted') {
+      assert.ok(audit.some((e) => e.cmd === 'hook background' && e.agent === 'worker-T1-1'), 'background start missing');
+    }
+    const notes = audit.filter((e) => e.cmd === 'msg' && e.detail.to === 'orchestrator'
+      && /stopped|waiting on a background job/.test(e.detail.text));
+    assert.equal(notes.length, 1, 'the orchestrator hears one note');
+    assert.match(notes[0].detail.text, note);
+    if (held) assert.ok(audit.indexOf(waits[0]) < audit.indexOf(notes[0]), 'the hold must come before the note');
+  });
+}

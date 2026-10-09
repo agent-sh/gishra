@@ -731,6 +731,8 @@ Hook state lives in the event log, not in another agent-written state file:
 | --- | --- |
 | `hook inbox` | `{messages: [event id, ...]}` acknowledging messages delivered to this event's agent |
 | `hook progress` | `{harness, tool}`; tool activity counts as claimant progress for supervision |
+| `hook background` | `{harness, attempt}`; a Bash call with `run_in_background` started in this dispatch attempt |
+| `hook wait` | `{harness, attempt, source, reasons}`; the one hold a headless worker's stop took before submit, with source `hook-wait:<agent>:<dispatch attempt>` |
 | `hook report` | `{report}` captured assistant text |
 | `hook git-push`, `hook pr-created` | `{harness, unverified: true}`, meant for a successful shim command; an agent's own binding records it with no push or PR, so it is a hint: check GitHub or the repository before acting on it |
 | `hook stop` | `{harness, submitted, report, source}`; source is `hook-stop:<agent>:<dispatch attempt>` |
