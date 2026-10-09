@@ -602,8 +602,13 @@ test('browser tasks attach the user kit on every rung with approved tools and no
       for (const role of roles) {
         isolated(h, role, harness);
         const dry = h.json(['spawn', '--role', role, '--task', 'T1', '--dry-run'], { env: u.env });
-        assert.deepEqual(dry.home.mcp, ['playwright'], `${harness} ${role} ${declaration}`);
-        if (harness === 'claude') assert.match(dry.argv[dry.argv.indexOf('--allowedTools') + 1], /mcp__playwright/);
+        const servers = role === 'orchestrator' ? ['playwright', 'tower-crane'] : ['playwright'];
+        assert.deepEqual(dry.home.mcp, servers, `${harness} ${role} ${declaration}`);
+        if (harness === 'claude') {
+          const allowed = dry.argv[dry.argv.indexOf('--allowedTools') + 1];
+          assert.match(allowed, /mcp__playwright/);
+          assert.equal(allowed.includes('mcp__tower-crane'), role === 'orchestrator');
+        }
       }
     }
     const started = spawn(h, u, 'hard');
