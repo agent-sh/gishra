@@ -20,7 +20,7 @@ Arguments: `$ARGUMENTS`. Use `TOWER_CRANE_TASK` and `TOWER_CRANE_AGENT` when set
    - edge cases, error paths that fail silently, wrong conditions, races, and security boundaries the change crosses;
    - anything added that nothing uses, and anything the standards rule out;
    - files the packet's `## Scope` lists outside the paths the task names: each needs a reason in the task, or it is a finding.
-4. Post one review on the PR as a comment, first line `Review (Tower Crane, clean context)`, findings as `file:line - what is wrong - why it matters`, most severe first, and plainly whether anything blocks. On a repository the project does not own, do not post; put the review in the evidence summary only.
+4. Post one review on the PR as a comment, first line `Review (Tower Crane, clean context)`, followed by `SHA: <full submitted sha>` before the findings. Write findings as `file:line - what is wrong - why it matters`, most severe first, and plainly whether anything blocks. On a repository the project does not own, do not post; put the review in the evidence summary only.
 5. Record it: `tower-crane evidence <id> --agent <name> --type review --ok|--fail --sha <sha> --revision <revision> --summary "<blocking count and the top finding>"`, adding `--ref <comment URL>` when posted. `<revision>` is the task revision you reviewed: the `revision` in `tower-crane task show` when you started, not when you finish. A reviewer that `tower-crane spawn` did not start cannot record review evidence without it. `--ok` only when nothing blocks.
 
 Do not fix the code, push, or merge. Your last message is the review text.

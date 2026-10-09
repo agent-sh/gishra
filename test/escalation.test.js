@@ -44,8 +44,9 @@ ${index === 0 && trigger === 'preclaim' ? '' : "cli(['claim', 'T1']);"}
 const attempts = fs.existsSync(process.argv[2]) ? JSON.parse(fs.readFileSync(process.argv[2])) : [];
 attempts.push({ rung: '${rung}', agent: process.env.TOWER_CRANE_AGENT, session: process.env.TOWER_CRANE_SESSION,
   previous: process.argv[3], cwd: process.cwd() });
-fs.writeFileSync(process.argv[2] + '.tmp', JSON.stringify(attempts));
-fs.renameSync(process.argv[2] + '.tmp', process.argv[2]);
+// Readers and fs.watch can briefly prevent replacing an existing file on Windows.
+require(require('node:path').join(require('node:path').dirname(process.argv[1]), '../lib/state'))
+  .writeAtomic(process.argv[2], JSON.stringify(attempts));
 console.log(JSON.stringify({ type: 'thread.started', thread_id: '${rung}-thread' }));
 console.log(JSON.stringify({ type: 'result', modelUsage: { luna: {} },
   usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 20 } }));
@@ -121,11 +122,23 @@ if (process.execArgv.includes('-e') && process.env.TOWER_CRANE_SESSION
   });
   h.env.HOOK_ESCALATION_SIGNAL_PORT = String(server.address().port);
   h.env.NODE_OPTIONS = preloadOption(signal);
-  h.until = (fn, dirs = [h.state, h.base]) => until(t, dirs, fn);
   h.task = () => h.readState('tasks.json').tasks.find((task) => task.id === 'T1');
   h.openDecisions = () => h.readState('decisions.json').decisions.filter((decision) => decision.status === 'open');
+  h.until = (fn, dirs = [h.state, h.base]) => until(t, dirs, () => {
+    if (fn()) return true;
+    const ceiling = h.openDecisions().find((decision) => decision.blocks.includes('T1'));
+    if (ceiling) {
+      const exit = events(h).findLast((event) => event.cmd === 'spawn exit' && event.task === 'T1');
+      const log = exit?.detail.log;
+      throw new Error(`Unexpected escalation ceiling: ${ceiling.question}\n`
+        + `Worker ${exit?.agent}: exit ${exit?.detail.code}, signal ${exit?.detail.signal}, log ${log}\n`
+        + (log && fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : 'No worker log'));
+    }
+    return false;
+  });
   h.exitSignal = async (child) => {
-    await h.until(() => exits.has(child.pid) || !detachedAlive(child), [h.base]);
+    // Teardown must still observe exits after an expected ceiling decision.
+    await until(t, [h.base], () => exits.has(child.pid) || !detachedAlive(child));
     return { exited: exits.get(child.pid) || Promise.resolve() };
   };
   t.after(async () => {
@@ -191,6 +204,31 @@ test('escalation completion follows file notifications even after the old deadli
   fs.writeFileSync(file, '');
   await completed;
   await until(t, [dir], () => fs.existsSync(file));
+});
+
+function attemptError(h, code) {
+  const hook = path.join(__dirname, 'fixtures', 'escalation-attempt-error.js');
+  h.env.NODE_OPTIONS += ` ${preloadOption(hook)}`;
+  h.env.HOOK_ESCALATION_ATTEMPTS = h.attempts;
+  h.env.HOOK_ESCALATION_ATTEMPT_ERROR = code;
+}
+
+test('a replacement worker retries Windows sharing errors when recording its attempt', async (t) => {
+  const h = await setup(t, 'exit', 'easy..medium', (repo) => attemptError(repo, 'EPERM'));
+  h.ok(['spawn', '--task', 'T1']);
+  await h.until(() => h.readAttempts().length === 2 && h.task().status === 'submitted');
+  assert.deepEqual(h.readAttempts().map((attempt) => attempt.rung), ['easy', 'medium']);
+  assert.equal(fs.readFileSync(h.attempts + '.errors', 'utf8'), 'EPERM\nEACCES\nEBUSY\n');
+  assert.equal(h.openDecisions().length, 0);
+});
+
+test('a worker exiting before its attempt record fails the submission wait at the ceiling with its log', async (t) => {
+  const h = await setup(t, 'exit', 'easy..medium', (repo) => attemptError(repo, 'ENOENT'));
+  h.ok(['spawn', '--task', 'T1']);
+  await assert.rejects(h.until(() => h.readAttempts().length === 2 && h.task().status === 'submitted'),
+    /Unexpected escalation ceiling:[\s\S]*worker exit without submit \(code 1\)[\s\S]*ENOENT: attempt publication/);
+  assert.deepEqual(h.readAttempts().map((attempt) => attempt.rung), ['easy']);
+  assert.ok(events(h).some((event) => event.cmd === 'claim' && event.agent === 'worker-T1-2'));
 });
 
 test('tier ranges start low; invalid and reversed ranges are refused without state writes', async (t) => {
