@@ -73,6 +73,7 @@ Workers, reviewers and every other identity are refused both. For an operational
 | `gates.tests_cmd`, `gates.clean_cmd`, `gates.tests_proof_cmd` | operational | `project set --tests-cmd`, `--clean-cmd`, `--tests-proof-cmd`; gate self-pinning below |
 | `gates.executors` | operational | `project set --executors` |
 | `gates.tests_timeout_min`, `gates.clean_timeout_min` | operational | `project set --tests-timeout-min`, `--clean-timeout-min` |
+| `gates.priority` | operational | `gates prioritize ID --reason R`: a task's queued gate reactions run before older queued work |
 | `ci.required`, `ci.ignore_apps`, `ci.capped_review` | operational | `project set --ci-required`, `--ci-ignore-apps`, `--ci-capped-review` |
 | `ci.local` | operational | `project set --ci-local`, `task update --ci-local` |
 | `tests.paths`, `tests.keep`, `tests.mode`, `tests.by_kind`, `tests.expensive`, `tests.map` | operational | `project set --tests-*` |
@@ -677,9 +678,24 @@ identity releases it when the process dies. Running receipts from other
 hosts do not count against this host's cap.
 `automation queued` records a blocked notification's source, with
 `executors` set to the cap when the cap blocked it rather than another
-executor of the same task. Queued notifications run in submission order:
-while one waits, a later notification queues behind it even if a slot is
-free. Each executor drains the queue after releasing its slot; watchers
+executor of the same task. Queued notifications run in drain order: submission
+order, except that the queued notifications a `gates prioritize` event names
+run first, the most recent request first. While one waits, a later
+notification queues behind it even if a slot is free. A notification queued
+after the request keeps submission order.
+`gates prioritize ID --reason R` is operational ([Authority](#authority)); it
+records a `gates prioritize` event with `reason`, `sources` (the sources of
+the task's queued notifications at that moment), `queued` (their count) and
+`authority`. Only those notifications move. It is refused when the task has
+no queued notification, since it would change nothing. A notification queued
+behind the task's own running reaction counts, but the running reaction does
+not: its receipt is running and its executor is live, so it is no longer
+queued. A dead executor's notification stays queued for its retry. `status`
+lists the gate queue: running tasks, then the queued tasks in the order a free
+executor takes them, then the tasks whose notification waits behind their own
+running reaction, marked as blocked. `--json` carries it as `gate_queue` with
+`running`, `queued` and `blocked`, each queued or blocked task with its
+`prioritized` request or `null`. `inbox` carries the same `gate_queue`. Each executor drains the queue after releasing its slot; watchers
 also retry their pending notifications on their next check. State locks cover only
 reservation and receipts, never Git, GitHub, gates or model calls.
 Automatic state changes and evidence use `agent: orchestrator` and
@@ -694,8 +710,8 @@ it refuses, as its release. It drains reactions queued behind it, as an
 executor does. The merge queue takes the head of the line's reservation
 with source `queue:<uuid>` around its merge, unless its own process
 already holds it. Stack head checks ignore `automation`,
-`automation queued` and `automation reconcile` events, which change no
-task state.
+`automation queued`, `automation reconcile` and `gates prioritize` events,
+which change no task state.
 An accepted PR already merged remotely goes through the merge gate's
 confirmation path. It records the matching accepted head and the PR's merge
 commit without merging again, including after an executor dies before
@@ -856,7 +872,7 @@ Agy homes place native settings and the rendered `agents/gishra-<job>.md` below 
 
 ## Orchestrator inbox
 
-`inbox` derives a snapshot from one state read and current GitHub observations. It does not change tasks or consume messages. JSON has `items` and live gate `executors`. Each item has a stable `id`, `kind`, nullable `task`, finding data, and `action: {command, argv}`. Text output includes the same findings and command. Kinds include `gate_failed`, `review_failed`, `rework_ready`, `ready`, `dead_claim`, `decision`, `accepted_unmerged`, `revuto_failed`, `codeql_alert`, `head_changed`, `message`, `stall`, `decision_answer`, `owner_comment` and `github_error`. Open decisions carry their question and options; their answer command needs the owner's supplied choice and the existing answer authority. Answered decisions retain their choice, note, author and blocked tasks until acknowledged. Owner task and decision comments retain their text and target until acknowledged; a later comment creates a new item.
+`inbox` derives a snapshot from one state read and current GitHub observations. It does not change tasks or consume messages. JSON has `items`, live gate `executors` and `gate_queue`, the same queue `status` shows; text ends with the executor count and a `gate queue` line. Each item has a stable `id`, `kind`, nullable `task`, finding data, and `action: {command, argv}`. Text output includes the same findings and command. Kinds include `gate_failed`, `review_failed`, `rework_ready`, `ready`, `dead_claim`, `decision`, `accepted_unmerged`, `revuto_failed`, `codeql_alert`, `head_changed`, `message`, `stall`, `decision_answer`, `owner_comment` and `github_error`. Open decisions carry their question and options; their answer command needs the owner's supplied choice and the existing answer authority. Answered decisions retain their choice, note, author and blocked tasks until acknowledged. Owner task and decision comments retain their text and target until acknowledged; a later comment creates a new item.
 
 `gate_failed` items report the latest audited failure for each software gate (`tests`, `clean`, `sources`, `ci`) at the current head and revision of an unmerged submitted or accepted task. They include the gate name, summary, ref, audited `confirmed_failure` flag and any `test_failure` names and output tail. Confirmed code failures resolve through rework carrying the failure summary and its test names. Pending checks, observation failures and infrastructure failures offer `check GATE ID`; infrastructure findings also retain their timeout metadata. A later pass, rework, a new head or revision, or a confirmed merge clears the finding. Failed gates cannot be acknowledged away. On an open mergeable accepted PR, a stale or unconfirmed failed required software gate offers its check command instead of `merge --accepted`; confirmed code failures offer rework instead; after that rerun passes, the inbox advances to the next blocker or merge. Review blockers still require rework.
 
