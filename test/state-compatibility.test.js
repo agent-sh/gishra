@@ -6,6 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const { makeTaskRepo, BIN, HOOKS } = require('./helpers');
+const S = require('../lib/state');
+
+const writeState = (h, file, value) => S.writeAtomic(path.join(h.state, file), S.json(value));
 
 function fixture(t) {
   return makeTaskRepo(t, [
@@ -31,8 +34,8 @@ function futureState(h) {
       rung: 'expert', harness: 'future-harness', provider: 'future-provider', model: null, profile: null,
     }] },
   });
-  h.writeState('tasks.json', tasks);
-  h.writeState('decisions.json', {
+  writeState(h, 'tasks.json', tasks);
+  writeState(h, 'decisions.json', {
     version: 1, next: 3, future_index: true, decisions: [
       { id: 'D1', question: 'Obsolete?', status: 'withdrawn', withdrawn_by: 'owner', withdraw_reason: 'No longer needed' },
       { id: 'D2', question: 'Future decision?', status: 'superseded', answer_rule: 'future-rule', future_field: { by: 'D3' } },
@@ -47,7 +50,7 @@ function futureState(h) {
 async function until(fn, message) {
   const deadline = Date.now() + 30000;
   while (!fn()) {
-    if (Date.now() >= deadline) assert.fail(message);
+    if (Date.now() >= deadline) assert.fail(typeof message === 'function' ? message() : message);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -109,7 +112,7 @@ test('a supervised worker survives additive state from a newer tool', async (t) 
   try {
     await until(() => fs.existsSync(worker.ready), 'worker did not start');
     h.ok(['claim', 'T1', '--agent', 'worker-T1-1', '--lease', '1']);
-    futureState(h);
+    S.withLock(h.state, () => futureState(h));
     // The shortened lease and future event force a state read and renewal.
     await until(() => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8')
       .split('\n').some((line) => line && JSON.parse(line).cmd === 'renew'), 'supervisor did not renew through the new state');
@@ -260,25 +263,30 @@ test(`${change} drains the supervisor without killing an edit`, async (t) => {
   const running = new Promise((resolve) => child.on('close', (code) => resolve({ code, stderr: output })));
   try {
     await until(() => fs.existsSync(worker.ready), 'worker did not start');
-    if (change === 'schema bump') {
-      const project = h.readState('project.json');
-      project.schema_version = 2;
-      h.writeState('project.json', project);
-    } else {
-      if (change === 'unknown current task status') {
-        const tasks = h.readState('tasks.json');
-        tasks.tasks[0].status = 'future-paused';
-        h.writeState('tasks.json', tasks);
+    // The harness can report ready before dispatch commits. Future writers
+    // must wait for that lock and publish complete files, as the CLI does.
+    S.withLock(h.state, () => {
+      if (change === 'schema bump') {
+        const project = h.readState('project.json');
+        project.schema_version = 2;
+        writeState(h, 'project.json', project);
       } else {
-        h.writeState('decisions.json', { version: 1, next: 2, decisions: [{
-          id: 'D1', question: 'Future blocker?', status: 'future-pending', blocks: ['T1'],
-        }] });
+        if (change === 'unknown current task status') {
+          const tasks = h.readState('tasks.json');
+          tasks.tasks[0].status = 'future-paused';
+          writeState(h, 'tasks.json', tasks);
+        } else {
+          writeState(h, 'decisions.json', { version: 1, next: 2, decisions: [{
+            id: 'D1', question: 'Future blocker?', status: 'future-pending', blocks: ['T1'],
+          }] });
+        }
+        fs.appendFileSync(path.join(h.state, 'events.jsonl'), JSON.stringify({
+          at: new Date().toISOString(), cmd: 'future pause', task: 'T1', detail: {},
+        }) + '\n');
       }
-      fs.appendFileSync(path.join(h.state, 'events.jsonl'), JSON.stringify({
-        at: new Date().toISOString(), cmd: 'future pause', task: 'T1', detail: {},
-      }) + '\n');
-    }
-    await until(() => /supervision stopped.*worker.*finish/i.test(output), 'supervisor did not report a clean schema stop');
+    });
+    await until(() => /supervision stopped.*worker.*finish/i.test(output),
+      () => `supervisor did not report a clean schema stop:\n${output}`);
     process.kill(Number(fs.readFileSync(worker.ready, 'utf8')), 0);
   } finally {
     fs.writeFileSync(worker.finish, '');
