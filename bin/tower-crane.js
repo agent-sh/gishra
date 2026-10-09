@@ -20,7 +20,7 @@ for (const stream of [process.stdout, process.stderr]) {
   });
 }
 
-const { TowerCraneError, usage, refuse } = require('../lib/util');
+const { TowerCraneError, usage, refuse, readStdin } = require('../lib/util');
 const S = require('../lib/state');
 const P = require('../lib/project');
 const T = require('../lib/tasks');
@@ -433,7 +433,7 @@ async function main(argv) {
     // Check the resolved identity before forwarding; the broker separately
     // verifies requests against the identity it spawned.
     if (process.env.TOWER_CRANE_BROKER && !require('../lib/broker').READS.has(cmd.name)) {
-      const input = argv.includes('-') ? require('node:fs').readFileSync(0, 'utf8') : undefined;
+      const input = argv.includes('-') ? readStdin() : undefined;
       const res = await require('../lib/broker').forward(process.env.TOWER_CRANE_BROKER, argv, locate(), input);
       if (res) {
         process.stdout.write(res.stdout || '');

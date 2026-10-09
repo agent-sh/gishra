@@ -171,6 +171,26 @@ test('the shared file check enforces sorted single-line command entries with spa
   assert.match(adjacent.stderr, /blank line/);
 });
 
+test('the shared file check rejects bare stdin reads in lib and bin, and points to readStdin', (t) => {
+  const f = fixture(t);
+  f.change();
+  assert.equal(f.check().status, 0);
+  f.write('lib/probe.js', "module.exports = require('node:fs').readFileSync(0, 'utf8');\n");
+  const bare = f.check();
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /lib\/probe\.js:1 reads stdin with readFileSync\(0\); use readStdin\(\) from lib\/util\.js/);
+  f.write('lib/probe.js', "module.exports = require('./util').readStdin();\n");
+  assert.equal(f.check().status, 0);
+  f.write('bin/probe.js', "require('node:fs').readFileSync('/dev/stdin');\n");
+  const device = f.check();
+  assert.equal(device.status, 1);
+  assert.match(device.stderr, /bin\/probe\.js:1 reads stdin/);
+  f.write('bin/probe.js', "require('../lib/util').readStdin();\n");
+  assert.equal(f.check().status, 0);
+  f.write('lib/util.js', f.read('lib/util.js') + "\nconst raw = require('node:fs').readFileSync(0, 'utf8');\n");
+  assert.equal(f.check().status, 0, 'lib/util.js is where readStdin reads fd 0');
+});
+
 test('tasks add fragments instead of editing the archive or an existing change', (t) => {
   const f = fixture(t, { crlfProtected: true });
   f.write('README.md', '# changed\n');

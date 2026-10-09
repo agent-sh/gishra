@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
+const { once } = require('node:events');
 const { cachedFixture, BIN } = require('./helpers');
 
 const STUB = path.join(__dirname, 'fixtures', 'message-harness.js');
@@ -181,6 +182,51 @@ test('the bridge refuses path-selected bindings and another dispatch identity', 
   });
   assert.notEqual(mismatch.status, 0);
   assert.equal(fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'), before);
+});
+
+test('the hook bridge reads hook input from a non-blocking stdin pipe', { skip: process.platform === 'win32' && 'needs a FIFO and sh' }, async (t) => {
+  const { h, ready } = setup(t, 'command');
+  const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json']);
+  await until(ready);
+  fs.writeFileSync(ready + '.go', '');
+  assert.equal((await run).code, 0);
+  h.ok(['msg', '--to', 'worker-T1-1', 'pipe delivered message', '--agent', 'orchestrator']);
+  const bridge = path.join(__dirname, '..', 'lib', 'hook-bridge.js');
+  const preload = path.join(__dirname, 'fixtures', 'stdin-marker.js');
+  const binding = path.join(h.state, 'homes', 'worker-T1-1', 'hook.json');
+  const marker = path.join(h.base, 'stdin-read');
+  // libuv resets fds 0-2 of each child to blocking, so the FIFO reaches the
+  // bridge on fd 3 and a shell redirect. Its O_NONBLOCK flag survives, as it
+  // does on a hook runner's stdin: an empty read gives EAGAIN.
+  const fifo = path.join(h.base, 'stdin.fifo');
+  cp.execFileSync('mkfifo', [fifo]);
+  const reader = fs.openSync(fifo, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  const writer = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
+  const env = { ...h.env, TOWER_CRANE_AGENT: 'worker-T1-1', TOWER_CRANE_STATE: h.state, TOWER_CRANE_HOOK: binding, STDIN_MARKER: marker };
+  const child = cp.spawn('sh', ['-c', 'exec "$@" <&3', 'sh', process.execPath, '--require', preload, bridge, 'hook'], {
+    env, stdio: ['ignore', 'pipe', 'pipe', reader],
+  });
+  fs.closeSync(reader);
+  t.after(() => child.kill());
+  let out = '';
+  let err = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk) => { out += chunk; });
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { err += chunk; });
+  // Deliver input only once the bridge is reading, so an empty read is seen.
+  await until(marker);
+  const closed = once(child, 'close');
+  try {
+    fs.writeSync(writer, JSON.stringify({ hook_event_name: 'UserPromptSubmit' }));
+  } catch (e) {
+    // A bridge that already failed has closed its end; its exit code says why.
+    if (e.code !== 'EPIPE') throw e;
+  }
+  fs.closeSync(writer);
+  const [code] = await closed;
+  assert.equal(code, 0, err);
+  const { hookSpecificOutput } = JSON.parse(out);
+  assert.equal(hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+  assert.match(hookSpecificOutput.additionalContext, /pipe delivered message/);
 });
 
 for (const probe of ['sessions', 'reject', 'error']) {
