@@ -17,7 +17,17 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   if (path.basename(process.argv[1] || '') === 'spawn-monitor.js' && process.env.LIVE_PAUSE_FINAL) {
     const usage = require(path.join(path.dirname(process.argv[1]), 'usage-files.js'));
     const readResult = usage.readResult;
+    const readLive = usage.readLive;
     let paused = false;
+    let runningReading;
+    usage.readLive = function (...args) {
+      // Keep the final session record for reconciliation rather than a
+      // periodic sample racing the child's stream closure.
+      if (!paused && fs.existsSync(process.env.LIVE_DONE)) return runningReading;
+      const reading = readLive.apply(this, args);
+      if (!paused) runningReading = reading;
+      return reading;
+    };
     usage.readResult = function (...args) {
       if (!paused) {
         paused = true;
@@ -35,7 +45,8 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
   if (path.basename(process.argv[1] || '') === 'spawn-monitor.js' && process.env.LIVE_READS) {
     const read = fs.readFileSync;
     fs.readFileSync = function (file, ...args) {
-      if (typeof file === 'string' && /[\\/]projects[\\/].+\.jsonl$/.test(file)) {
+      const sessions = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects') + path.sep;
+      if (typeof file === 'string' && file.startsWith(sessions) && file.endsWith('.jsonl')) {
         fs.appendFileSync(process.env.LIVE_READS, `${Date.now()}\n`);
       }
       return read.call(this, file, ...args);

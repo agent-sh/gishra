@@ -244,7 +244,11 @@ for (const error of ['75', 'outage', 'codex-error', 'signal']) {
     const attempts = h.readAttempts();
     assert.equal(attempts.length, 2);
     assert.equal(attempts[0].agent, 'worker-T1-1');
-    for (const key of ['agent', 'session', 'cwd', 'claim']) assert.deepEqual(attempts[1][key], attempts[0][key]);
+    for (const key of ['agent', 'session', 'cwd']) assert.deepEqual(attempts[1][key], attempts[0][key]);
+    const { until: firstUntil, ...firstClaim } = attempts[0].claim;
+    const { until: nextUntil, ...nextClaim } = attempts[1].claim;
+    assert.deepEqual(nextClaim, firstClaim);
+    assert.ok(Date.parse(nextUntil) >= Date.parse(firstUntil), 'supervision can renew the same claim');
     assert.equal(attempts[1].retry, '1');
     assert.equal(log(h).filter((e) => e.cmd === 'spawn').length, 1);
     assert.equal(log(h).filter((e) => e.cmd === 'claim').length, 1);

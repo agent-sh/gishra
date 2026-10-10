@@ -63,8 +63,9 @@ ${wait ? 'process.exit(7);' : 'setInterval(() => {}, 1000);'}
     try { process.kill(spawned.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   };
   h.stopWorkers.push(kill);
-  await waitOnRepo(h, () => fs.existsSync(marker), 'stand-in did not claim the task');
-  assert.deepEqual(JSON.parse(fs.readFileSync(marker, 'utf8')), { agent: spawned.agent, pid: spawned.pid });
+  const started = await waitOnRepo(h, () => fs.existsSync(marker) && JSON.parse(fs.readFileSync(marker, 'utf8')),
+    'stand-in did not claim the task');
+  assert.deepEqual(started, { agent: spawned.agent, pid: spawned.pid });
   return { ...spawned, kill };
 }
 
