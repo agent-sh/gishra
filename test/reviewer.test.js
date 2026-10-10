@@ -420,6 +420,18 @@ test('a stronger model wins only when its median priced review cost is no higher
   assert.equal(model(choice(h)), 'fixture-main');
 });
 
+test('a running reviewer\'s live reading is not a cost sample until exit finalizes it', (t) => {
+  const h = setup(t, 'medium');
+  ready(h);
+  sample(h, 'sol', 100000, 50000, 60000);
+  sample(h, 'opus', 100000, 50000, 20000, 20000);
+  const tasks = h.readState('tasks.json');
+  const entry = tasks.tasks[0].spend.entries.find((e) => e.agent === 'review-opus');
+  entry.live = { state: 'live', interval_ms: 1000 };
+  h.writeState('tasks.json', tasks);
+  assert.equal(model(choice(h)), 'sol');
+});
+
 test('review selection matches Claude provider aliases to recorded provider spend', (t) => {
   const anthropic = 'fixture-claude';
   const bedrock = `global.anthropic.${anthropic}`;
