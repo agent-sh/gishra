@@ -110,7 +110,7 @@ test('serve serves the sketch and pushes a reload when the state changes', async
     assert.equal((await get(`${url}nope`)).status, 404);
 
     const reload = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('reload exceeded the hung-test timeout')), HUNG_TEST_MS); // wait-allow: allow an overlapping write during a render held at its read boundary
+      const timer = setTimeout(() => reject(new Error('reload exceeded the hung-test timeout')), HUNG_TEST_MS);
       http.get(`${url}events`, (res) => {
         assert.equal(res.headers['content-type'], 'text/event-stream');
         let buf = '';

@@ -49,9 +49,18 @@ function waitUntil(check, { paths = [], signal, subscribe, poll = true, what = '
         return dir;
       }));
       for (const dir of roots) {
-        const watcher = fs.watch(dir, { recursive: true }, probe);
-        cleanups.push(() => watcher.close());
-        watcher.on('error', finish);
+        try {
+          const watcher = fs.watch(dir, { recursive: true }, probe);
+          cleanups.push(() => watcher.close());
+          watcher.on('error', (error) => {
+            watcher.close();
+            // Node's recursive watcher can encounter intentionally restricted
+            // fixture tools. The predicate probe still observes their state.
+            if (!poll) finish(error);
+          });
+        } catch (error) {
+          if (!poll) throw error;
+        }
       }
       if (subscribe) cleanups.push(subscribe(probe, finish));
       // Processes outside our child tree and browser protocol predicates have

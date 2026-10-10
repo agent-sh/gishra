@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const net = require('node:net');
+const { EventEmitter } = require('node:events');
 const { makeRepo, ROOT } = require('./helpers');
 const { fileWritten, eventAppended, childExit, childClosed, portListening, waitUntil } = require('./signals');
 const { waitFindings } = require('../scripts/test-waits');
@@ -45,6 +46,28 @@ test('signal waits observe existing state, atomic writes, complete events, child
   controller.abort(new Error('test cancellation'));
   await assert.rejects(aborted, /test cancellation/);
   await assert.rejects(waitUntil(() => { throw new Error('probe failed'); }), /probe failed/);
+});
+
+test('file probes recover when a recursive watcher cannot access restricted fixture tools', async (t) => {
+  const h = makeRepo(t);
+  for (const mode of ['throw', 'error']) {
+    const file = path.join(h.base, mode);
+    const watcher = new EventEmitter();
+    watcher.close = () => {};
+    const denied = Object.assign(new Error('restricted fixture tool'), { code: 'EACCES' });
+    const watch = t.mock.method(fs, 'watch', () => {
+      if (mode === 'throw') throw denied;
+      queueMicrotask(() => watcher.emit('error', denied));
+      return watcher;
+    });
+    try {
+      const written = fileWritten(file, { signal: t.signal });
+      fs.writeFileSync(file, 'ready');
+      assert.equal(await written, 'ready');
+    } finally {
+      watch.mock.restore();
+    }
+  }
 });
 
 test('shared checks reject readiness budgets and require a reason on allowed timing waits', (t) => {

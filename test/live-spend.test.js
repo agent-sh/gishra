@@ -98,7 +98,7 @@ test('sub-second usage requests obey the sampling floor and unchanged readings w
   assert.equal(events(h).filter((e) => e.cmd === 'spend live' && e.detail.tokens === 1000).length, 1);
   const times = readTimes();
   assert.ok(times.length >= 2, 'the supervisor still samples an unchanged file');
-  for (let i = 1; i < times.length; i++) assert.ok(times[i] - times[i - 1] >= 950, `reads were ${times[i] - times[i - 1]}ms apart`);
+  for (let i = 1; i < times.length; i++) assert.ok(times[i] - times[i - 1] >= 950, `reads were ${times[i] - times[i - 1]}ms apart`); // wait-allow: verify the production sampling floor
 });
 
 test('an initial read error records unavailable telemetry with only its error class', async (t) => {

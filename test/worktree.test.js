@@ -300,7 +300,7 @@ for (const command of ['worktree', 'spawn']) {
     }
     assert.equal(h.git(['rev-parse', 'origin/main']), fresh);
     assert.equal(fs.readFileSync(attempts, 'utf8'), '.', 'the dispatcher fetched once before preparing workers');
-    assert.ok(Date.now() - started < 30000, 'the dispatch finishes within two fetch times'); // wait-allow: verify an orphan registration refuses without waiting for its former preparation deadline
+    assert.ok(Date.now() - started < 30000, 'the dispatch finishes within two fetch times'); // wait-allow: verify six tasks share one slow fetch rather than six sequential fetches
   });
 }
 
