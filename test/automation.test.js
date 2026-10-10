@@ -534,6 +534,11 @@ test('gates prioritize runs the last queued task first; status and inbox show th
   assert.equal((await holder).code, 2, 'the held executor finishes and drains the queue');
   const started = h.logs().filter((e) => e.cmd === 'automation' && e.detail.phase === 'running').map((e) => e.task);
   assert.deepEqual(started, ['T1', 'T4', 'T2', 'T3'], 'the prioritized T4 runs before T2 and T3, which keep their order');
+  const changes = h.logs().filter(e => e.cmd === 'setting' && e.detail.settings['gates.priority']);
+  assert.deepEqual(changes.map(e => e.detail), [{
+    command: 'gates prioritize', actor: 'orchestrator', mode: 'cli',
+    settings: { 'gates.priority': 'operational' },
+  }], 'only the successful priority change writes a setting audit');
 });
 
 // Each gate run stalls until the test writes its `release-N` file, so the test
