@@ -8,6 +8,7 @@ const cp = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const HostOnly = require('../lib/tests-host-only');
 
 function testFiles() {
   return [
@@ -48,13 +49,17 @@ const args = [
 ];
 const shard = process.env.TC_TEST_SHARD;
 if (shard) args.push(`--test-shard=${shard}`);
-args.push(...(files.length ? files : testFiles()));
+// A sandboxed run skips tests.host_only files; the tests gate runs them on the host.
+const { run, skipped } = HostOnly.split(files.length ? files : testFiles());
+if (skipped.length) console.error(`tower-crane: skipped host-only tests in this sandbox, the tests gate runs them on the host: ${skipped.join(' ')}`);
+args.push(...run);
 
 const env = { ...process.env };
 delete env.TC_TEST_SHARD;
 // A runner invoked from a test must launch a new run, not Node's recursive no-op.
 delete env.NODE_TEST_CONTEXT;
-const result = cp.spawnSync(process.execPath, args, { stdio: 'inherit', env });
+// With every file skipped there is nothing to run; node --test with no file would search the directory.
+const result = run.length ? cp.spawnSync(process.execPath, args, { stdio: 'inherit', env }) : { status: 0 };
 if (result.error) {
   console.error(result.error.message);
   process.exitCode = 1;
