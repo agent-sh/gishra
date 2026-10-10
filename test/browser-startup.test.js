@@ -7,9 +7,10 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const { makeRepo } = require('./helpers');
 
-function attempt(h, chrome, sandbox, tmp = h.base) {
+function attempt(h, chrome, sandbox, tmp = h.base, before = '') {
   const runner = path.join(h.base, 'browser-runner.js');
   fs.writeFileSync(runner, `
+${before}
 const { openBrowser, closeBrowser } = require(${JSON.stringify(path.join(__dirname, 'browser.js'))});
 const hooks = [];
 (async () => {
@@ -65,6 +66,21 @@ test('a missing browser reports its spawn error and cleans up its profile', (t) 
   assert.deepEqual(fs.readdirSync(h.base).filter((f) => f.startsWith('tower-crane-chrome-')), []);
 });
 
+test('a Chrome profile whose setup fails is removed, and the start rejects', (t) => {
+  const h = makeRepo(t);
+  // The sandboxed start creates config, cache and tmp inside the profile; a full disk fails the first.
+  const result = attempt(h, path.join(h.base, 'missing-chrome'), '1', h.base, `
+const fsModule = require('node:fs');
+const pathModule = require('node:path');
+const mkdirSync = fsModule.mkdirSync;
+fsModule.mkdirSync = function (dir, ...rest) {
+  if (pathModule.basename(dir) === 'config') throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  return mkdirSync.call(this, dir, ...rest);
+};`);
+  assert.match(result.error, /ENOSPC/);
+  assert.deepEqual(fs.readdirSync(h.base).filter((f) => f.startsWith('tower-crane-chrome-')), []);
+});
+
 test('a temp root too deep for Chrome\'s socket still starts Chrome, from a shallow profile directory', {
   skip: process.platform === 'win32' && 'browser fixture uses a shebang; Unix socket path limits do not apply on Windows',
 }, (t) => {
@@ -88,7 +104,7 @@ fs.writeFileSync(path.join(profile, 'DevToolsActivePort'), '1\\n');
 setInterval(() => {}, 1000);
 `, { mode: 0o755 });
   const result = attempt(h, chrome, '1', deep);
-  assert.doesNotMatch(result.error ?? '', /exit code|Socket path|no directory short enough/);
+  assert.doesNotMatch(result.error ?? '', /exit code|Socket path/);
   const { profile } = JSON.parse(fs.readFileSync(path.join(h.base, 'chrome.json'), 'utf8'));
   assert.equal(profile.startsWith(deep + path.sep), false, profile);
   assert.equal(fs.existsSync(profile), false, 'the shallow profile is removed with the browser');

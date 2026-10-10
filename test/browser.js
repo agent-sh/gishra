@@ -62,19 +62,30 @@ async function closeBrowser() {
 // Chrome keeps its singleton socket in the profile directory, and a Unix socket address holds 107
 // bytes. A temp root deep enough to overflow that (a gate's TMPDIR under TOWER_CRANE_TMP) moves the
 // profile to the first directory whose path fits, on disk, and the browser's teardown removes it.
-// The cache root is on-disk scratch that stays writable where /var/tmp may be read-only.
+// The cache root is on-disk scratch that stays writable where /var/tmp may be read-only. When none
+// fits, the first root is used and Chrome reports its own socket error, which names the problem.
 function profileBase() {
   const cache = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
   const bases = [process.env.TOWER_CRANE_TEST_TMP || os.tmpdir(), os.tmpdir(), cache];
   const fits = (base) => Buffer.byteLength(path.join(base, 'tower-crane-chrome-000000', 'SingletonSocket')) <= 107;
-  const base = bases.find(fits);
-  if (!base) throw new Error('no directory short enough for the Chrome profile socket; set TOWER_CRANE_TEST_TMP to a shorter path');
+  const base = bases.find(fits) || bases[0];
   fs.mkdirSync(base, { recursive: true });
   return base;
 }
 
+// The profile is removed when a start fails at any point, including its own setup; a started browser
+// removes it in close.
 async function launch() {
   const profile = fs.mkdtempSync(path.join(profileBase(), 'tower-crane-chrome-'));
+  try {
+    return await spawnChrome(profile);
+  } catch (error) {
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    throw error;
+  }
+}
+
+async function spawnChrome(profile) {
   const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-extensions'];
   const sandboxed = process.env.TOWER_CRANE_SANDBOX === '1';
   // Chrome's user/SUID sandbox cannot nest in the harness's outer sandbox.
