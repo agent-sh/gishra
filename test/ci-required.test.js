@@ -64,11 +64,11 @@ function fixture(t, withPr = true) {
   });
   const { sha } = h;
   return {
-    check({ pr = { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, runs = REQUIRED.map((name) => run(name)), ci = {} } = {}) {
+    check({ pr = { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }, runs = REQUIRED.map((name) => run(name)), ci = {}, suites: given } = {}) {
       const project = h.readState('project.json');
       h.writeState('project.json', { ...project, ci: { required: REQUIRED, capped_review: CAP_POLICY, ...ci } });
       const file = path.join(h.base, 'github.json');
-      const suites = [...new Set(runs.map((c) => c.check_suite.id))].map((id) => {
+      const suites = given ?? [...new Set(runs.map((c) => c.check_suite.id))].map((id) => {
         const linked = runs.filter((c) => c.check_suite.id === id);
         return {
           id, app: linked[0].app, status: 'completed',
@@ -223,4 +223,40 @@ test('required checks also apply to a submitted head without a PR', (t) => {
   assert.equal(missing.code, 1, missing.summary);
   assert.match(missing.summary, /missing required check runs/);
   assert.equal(h.check().code, 0);
+});
+
+test('a superseded failed run does not block: the latest run of each required check decides', (t) => {
+  // T160 at f361335: one windows shard failed on 2026-10-09 and passed on a rerun the next day.
+  const h = fixture(t);
+  const name = 'test (windows-latest, node 26, shard 2/3)';
+  const failed = { ...run(name, 'failure'), id: 114055863456, started_at: '2026-10-09T22:36:00Z' };
+  const passed = { ...run(name, 'success'), id: 114217721960, started_at: '2026-10-10T12:54:00Z' };
+  const others = REQUIRED.filter((n) => n !== name).map((n) => run(n));
+  const suite = (id, conclusion, runs) => ({ id, app: { slug: 'github-actions' }, status: 'completed', conclusion, latest_check_runs_count: runs });
+
+  // A rerun in the same suite: GitHub grades the suite by its current runs, so it is green. The stale run is listed first.
+  const rerun = h.check({ runs: [failed, ...others, passed], suites: [suite(1, 'success', REQUIRED.length)] });
+  assert.equal(rerun.code, 0, rerun.summary);
+  assert.match(rerun.summary, /CI green/);
+
+  // A reopened PR starts every workflow again in a new suite. The old suite keeps its failure with no current run.
+  const reopened = h.check({
+    runs: [
+      { ...failed, check_suite: { id: 1 } },
+      ...others.map((r) => ({ ...r, check_suite: { id: 1 }, started_at: '2026-10-09T22:36:00Z' })),
+      ...others.map((r) => ({ ...r, check_suite: { id: 2 }, started_at: '2026-10-10T12:54:00Z' })),
+      { ...passed, check_suite: { id: 2 } },
+    ],
+    suites: [suite(1, 'failure', 0), suite(2, 'success', REQUIRED.length)],
+  });
+  assert.equal(reopened.code, 0, reopened.summary);
+  assert.match(reopened.summary, /CI green/);
+
+  // The newest run decides: a later failure still blocks after an earlier success.
+  const relapse = h.check({
+    runs: [passed, { ...run(name, 'failure'), id: 114300000000, started_at: '2026-10-10T13:30:00Z' }, ...others],
+    suites: [suite(1, 'failure', REQUIRED.length)],
+  });
+  assert.equal(relapse.code, 1, relapse.summary);
+  assert.ok(relapse.summary.includes(`failing: ${name} (failure)`), relapse.summary);
 });
