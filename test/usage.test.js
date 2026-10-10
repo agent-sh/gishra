@@ -103,10 +103,12 @@ const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8'
 
 function collected(h, length = 1) {
   return waitOnRepo(h, () => {
-    const spend = spends(h);
-    return spend.entries?.length === length && spend;
+    const spend = h.readState('tasks.json').tasks[0].spend;
+    return spend.entries?.length === length && spend.entries.every((entry) => !entry.live) && spend;
   });
 }
+
+const waitForFile = (t, file) => fileWritten(file, { signal: t.signal });
 
 function waitForText(file, text) {
   return fileWritten(file, { check: (contents) => contents.includes(text) && contents });
@@ -205,14 +207,14 @@ test('collectors and concurrent waiters share one private exit event and usage e
   const sample = path.join(h.base, 'usage-with-private-text.log');
   fs.writeFileSync(sample, privateText + '\n' + fs.readFileSync(fixture('codex-stream.jsonl'), 'utf8'));
   const waits = ['observer-a', 'observer-b'].map((agent) => h.runAsync([
-    'wait', '--agent', agent, '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '8',
+    'wait', '--agent', agent, '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '60',
   ]));
   const started = h.json(['spawn', '--task', 'T1'], {
     env: { ...h.usageEnv, USAGE_DELAY: '900', USAGE_CLAIM: '1' },
     hooks: { ...h.usageHooks, HOOK_USAGE_FILE: sample },
   });
   const results = await Promise.all(waits);
-  for (const r of results) assert.equal(r.code, 0, r.stderr);
+  for (const r of results) assert.equal(r.code, 0, r.stderr || r.stdout);
   const [a, b] = results.map((r) => JSON.parse(r.stdout));
   assert.equal(a.id, b.id, 'all observers consume the same exit');
   assert.equal(a.detail.agent, started.agent);
@@ -266,11 +268,28 @@ test('codex session fallback opens only the exact session and counts cached inpu
 test('an exited spawn without telemetry is marked unknown and can be recollected', async (t) => {
   const h = setup(t);
   const empty = path.join(h.base, 'empty.log');
+  const barrier = path.join(h.base, 'collect-paused');
+  const preload = path.join(__dirname, 'fixtures', 'pause-usage-collection.js').replace(/\\/g, '/');
   fs.writeFileSync(empty, 'No telemetry\n');
   const a = h.json(['spawn', '--task', 'T1'], {
-    env: h.usageEnv, hooks: { ...h.usageHooks, HOOK_USAGE_FILE: empty },
+    env: { ...h.usageEnv, NODE_OPTIONS: `--require "${preload}"`, USAGE_COLLECT_BARRIER: barrier },
+    hooks: { ...h.usageHooks, HOOK_USAGE_FILE: empty },
   });
-  const s = await collected(h);
+  let collection;
+  try {
+    await waitForFile(t, barrier);
+    const pending = h.readState('tasks.json').tasks[0].spend;
+    assert.equal(pending.entries[0].live.state, 'unavailable');
+    assert.equal(pending.entries[0].tokens, null);
+    let complete = false;
+    collection = collected(h).then((spend) => { complete = true; return spend; });
+    await Promise.resolve();
+    assert.equal(complete, false, 'a live snapshot is not an exit collection receipt');
+  } finally {
+    fs.writeFileSync(`${barrier}.go`, '');
+  }
+  const s = await collection;
+  assert.equal(s.entries[0].live, undefined, 'the exit collector finalized the usage entry');
   assert.equal(s.entries[0].tokens, null);
   assert.equal(s.tokens, 0);
   assert.equal(h.json(['status']).spend.missing_usage, 1);

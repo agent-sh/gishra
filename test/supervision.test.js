@@ -8,6 +8,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const http = require('node:http');
+const { once } = require('node:events');
+const { createInterface } = require('node:readline');
 const { makeRepo, makeTaskRepo, BIN, HOOKS, detachedAlive } = require('./helpers');
 const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
@@ -544,19 +546,19 @@ test('serve shows the recorded run phase on the board', async (t) => {
   const h = setup(t, { failures: 0 });
   assert.equal(h.spawn().code, 0);
   const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json'], { cwd: h.repo, env: h.env });
-  const closed = new Promise((resolve) => server.on('close', resolve));
+  const closed = once(server, 'close');
+  const output = createInterface({ input: server.stdout });
+  let stderr = '';
+  server.stderr.on('data', (data) => { stderr += data; });
   try {
-    // serve prints its url once the port is bound; the runner's per-test timeout is the only deadline.
-    const url = await new Promise((resolve, reject) => {
-      let output = '';
-      server.stdout.on('data', (data) => {
-        output += data;
-        if (output.includes('\n')) resolve(JSON.parse(output.split('\n')[0]).url);
-      });
-      server.on('exit', (code) => reject(new Error(`serve exited ${code}`)));
-    });
+    const [line] = await Promise.race([
+      once(output, 'line', { signal: t.signal }),
+      closed.then(([code]) => { throw new Error(`serve exited before readiness (${code}): ${stderr}`); }),
+    ]);
+    const { url } = JSON.parse(line);
+    assert.ok(url);
     const body = await new Promise((resolve, reject) => {
-      const request = http.get(url, (response) => {
+      const request = http.get(url, { signal: t.signal }, (response) => {
         let html = '';
         response.on('data', (data) => { html += data; });
         response.on('end', () => resolve(html));
@@ -566,6 +568,7 @@ test('serve shows the recorded run phase on the board', async (t) => {
     assert.match(body, /Phase/);
     assert.match(body, /waiting/);
   } finally {
+    output.close();
     server.kill();
     await closed;
   }
