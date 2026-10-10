@@ -76,6 +76,22 @@ test('literal lexer distinguishes comments, regexes, escapes and nested template
     ['"\\x67pt-example"', '"inside"', '"otherwise"', '"after"']);
 });
 
+test('postfix updates before division cannot hide later model literals', (t) => {
+  const h = makeRepo(t);
+  fs.mkdirSync(path.join(h.repo, 'lib'));
+  const file = path.join(h.repo, 'lib', 'selection.js');
+  const id = ['gpt', 'probe-2099'].join('-');
+  for (const [update, ratio] of [['count++', 2], ['count--', 2], ['++count', 2.5], ['--count', 1.5]]) {
+    const source = `let count = 4; const ratio = ${update} / 2; module.exports = { model: ${JSON.stringify(id)}, ratio };`;
+    const context = { module: { exports: {} } };
+    require('node:vm').runInNewContext(source, context);
+    assert.equal(context.module.exports.model, id);
+    assert.equal(context.module.exports.ratio, ratio);
+    fs.writeFileSync(file, source);
+    assert.deepEqual(modelSelections(h.repo, h.env), [`lib/selection.js:1: ${id}`], update);
+  }
+});
+
 test('literal lint has no syntax-based reference exemptions', (t) => {
   const h = makeRepo(t);
   fs.mkdirSync(path.join(h.repo, 'lib'));

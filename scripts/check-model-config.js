@@ -65,6 +65,9 @@ function* literals(text) {
       if (word) {
         i += word[0].length;
         expression = /^(?:return|throw|case|typeof|void|delete|yield|await|in|of)$/.test(word[0]);
+      } else if ((char === '+' || char === '-') && text[i + 1] === char) {
+        // Postfix updates finish an operand; prefix updates still need one.
+        i += 2;
       } else {
         expression = /[=(:,[!&|?{};+\-*%<>]/.test(char);
         i++;
