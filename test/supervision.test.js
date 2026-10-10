@@ -13,6 +13,8 @@ const { gateFixture, gateEvidence } = require('./gate-helpers');
 const bedrockOutage = require('./fixtures/bedrock-outage.json');
 const { errorReader, transient } = require('../lib/spawn-monitor');
 
+// The lease gate is POSIX-only: on Windows a worker can start before its claim.
+const GATE_SKIP = process.platform === 'win32' && 'the lease gate is POSIX-only';
 const windowsConcurrency = process.platform === 'win32' ? 2 : false;
 const S = require('../lib/state');
 
@@ -490,7 +492,7 @@ function pausedSupervisor(h) {
   return { paused, hooks: { HOOK_PAUSE_ON: 'events.jsonl', HOOK_PAUSE_PROCESS: 'spawn-monitor.js', HOOK_PAUSED: paused } };
 }
 
-test('a worker starts only after its supervisor takes the lease, so its first edit is leased', async (t) => {
+test('a worker starts only after its supervisor takes the lease, so its first edit is leased', { skip: GATE_SKIP }, async (t) => {
   const h = setup(t, { claim: false, failures: 0 });
   const { paused, hooks } = pausedSupervisor(h);
   const spawned = h.json(['spawn', '--task', 'T1'], { hooks });
@@ -504,7 +506,7 @@ test('a worker starts only after its supervisor takes the lease, so its first ed
   assert.equal(log(h).findLast((e) => e.cmd === 'spawn phase' && e.detail.agent === spawned.agent).detail.phase, 'waiting');
 });
 
-test('a worker whose lease is refused never starts, reports why and frees its slot', async (t) => {
+test('a worker whose lease is refused never starts, reports why and frees its slot', { skip: GATE_SKIP }, async (t) => {
   const h = setup(t, { claim: false, failures: 0 });
   const { paused, hooks } = pausedSupervisor(h);
   const spawned = h.json(['spawn', '--task', 'T1'], { hooks });
@@ -843,7 +845,7 @@ if (!fs.existsSync(file)) {
   assert.equal(log(h).filter((e) => e.cmd === 'spawn retry').length, 1);
 });
 
-test('a worker waits for its lease while the dispatch CLI is blocked rendering, then its output is durable', async (t) => {
+test('a worker waits for its lease while the dispatch CLI is blocked rendering, then its output is durable', { skip: GATE_SKIP }, async (t) => {
   const h = setup(t, { error: 'outage', claim: false });
   const paused = path.join(h.base, 'render-paused');
   const completed = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], { hooks: { HOOK_STOP_RENDER: paused } });

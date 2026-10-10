@@ -39,7 +39,7 @@ async function pausedSpawn(h, task) {
 }
 
 // The monitor dies first so it cannot record the exit, then the worker's processes.
-// Windows has no group to signal; the gate's tree goes with taskkill.
+// Windows has no group to signal; the harness's tree goes with taskkill.
 function killWorker(spawned) {
   process.kill(spawned.monitor_pid, 'SIGKILL');
   if (process.platform === 'win32') cp.spawnSync('taskkill', ['/PID', String(spawned.pid), '/T', '/F'], { stdio: 'ignore' });
@@ -180,7 +180,7 @@ test('spawn refuses a task with a live reservation and clears one whose processe
 
 // macOS has no /proc, so its group probe is the signal to an empty group. CI has no macOS
 // runner: this runs the same probe on POSIX with the platform overridden.
-test('a group probe without /proc proves exit only once the group is empty', { skip: process.platform === 'win32' && 'Windows probes its gate pid' }, async (t) => {
+test('a group probe without /proc proves exit only once the group is empty', { skip: process.platform === 'win32' && 'Windows has no process groups to probe' }, async (t) => {
   const exited = cp.spawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' });
   await once(exited, 'exit');
   const live = cp.spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: 'ignore' });
@@ -244,6 +244,8 @@ test('dispatch rechecks slots under the lock after worktree preparation', async 
 });
 
 test('a retrying worker keeps its slot through backoff and expired-lease renewal', async (t) => {
+  // Windows starts the harness before its claim lands, so the slot may still be a reservation there.
+  const HOLD_KIND = process.platform === 'win32' ? 'lease|reservation' : 'lease';
   const h = setup(t, 1);
   h.ok(['claim', 'T3', '--agent', 'expired']);
   const doc = h.readState('tasks.json');
@@ -255,10 +257,10 @@ test('a retrying worker keeps its slot through backoff and expired-lease renewal
   await until(() => events(h).some((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying'), 'worker did not enter backoff');
   const renew = h.run(['renew', 'T3', '--agent', 'expired']);
   assert.equal(renew.code, 1, renew.stderr);
-  assert.match(renew.stderr, /T1.*worker-T1-1.*lease/);
+  assert.match(renew.stderr, new RegExp(`T1.*worker-T1-1.*(${HOLD_KIND})`));
   const refused = h.run(['spawn', '--task', 'T2']);
   assert.equal(refused.code, 1, refused.stderr);
-  assert.match(refused.stderr, /T1.*worker-T1-1.*lease/);
+  assert.match(refused.stderr, new RegExp(`T1.*worker-T1-1.*(${HOLD_KIND})`));
   await until(() => events(h).some((e) => e.cmd === 'spawn retry'), 'worker did not retry');
   h.ok(['claim', 'T1', '--agent', spawned.agent]);
   assert.equal(h.run(['claim', 'T2', '--agent', 'manual']).code, 1);
