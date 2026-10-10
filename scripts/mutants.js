@@ -139,6 +139,10 @@ const MUTANTS = [
   // merge and stacks
   { id: 'merge-moved-head', area: 'merge/stacks', file: 'lib/gates/merge.js',
     from: "  if (!sameSha(head, sha)) {\n    return res(false, `PR head moved", to: "  if (false) {\n    return res(false, `PR head moved", tests: ['test/gates/merge.test.js'] },
+  { id: 'merge-stack-refusal-no-fallback', area: 'merge/stacks', file: 'lib/gates/merge.js',
+    from: "if (!m.ok && method !== 'rebase' && ASYNC_ONLY.test(", to: "if (!m.ok && method !== 'rebase' && false && ASYNC_ONLY.test(", tests: ['test/merge-options.test.js'] },
+  { id: 'merge-async-fallback-rebase', area: 'merge/stacks', file: 'lib/gates/merge.js',
+    from: "if (!m.ok && method !== 'rebase' && ASYNC_ONLY.test(", to: "if (!m.ok && ASYNC_ONLY.test(", tests: ['test/merge-options.test.js'] },
   { id: 'stack-merge-unaccepted-lower', area: 'merge/stacks', file: 'lib/gates/merge.js',
     from: "if (t.status !== 'accepted' || (!ctx.mergedIds", to: 'if ((!ctx.mergedIds', tests: ['test/stack-merge.test.js'] },
   { id: 'stack-merge-untracked-lower', area: 'merge/stacks', file: 'lib/gates/merge.js',
