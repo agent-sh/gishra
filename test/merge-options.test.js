@@ -185,3 +185,28 @@ test('merge settings support init, clearing and atomic rejection of invalid or u
     assert.match(invalid.stderr, /merge.*must be/);
   }
 });
+
+test('a PR GitHub refuses as an unrecorded stack member squashes through the asynchronous API with the same text at the accepted head', (t) => {
+  const { h, sha } = acceptedTask(t);
+  h.env.FIXTURE_GH_STACK_REFUSAL = '1';
+  const calls = () => fs.readFileSync(h.env.FIXTURE_GH_LOG, 'utf8').trim().split('\n').map(JSON.parse);
+  // The asynchronous API cannot rebase, so a rebase keeps GitHub's refusal and posts nothing.
+  const rebase = h.run(['merge', 'T1', '--method', 'rebase', '--agent', 'orchestrator']);
+  assert.equal(rebase.code, 1, rebase.stdout);
+  assert.match(`${rebase.stdout}${rebase.stderr}`, /gh pr merge refused PR #9: GraphQL: This pull request is part of a stack/);
+  assert.equal(calls().some((args) => args.includes('POST')), false);
+  const evidence = h.json(['merge', 'T1', '--agent', 'orchestrator']);
+  assert.equal(evidence.ok, true, evidence.summary);
+  assert.match(evidence.summary, /merged PR #9 into main in acme\/demo through the asynchronous merge API at /);
+  assert.ok(evidence.ref);
+  const refused = calls().find((args) => args[1] === 'merge' && args.includes('--squash'));
+  const subject = refused[refused.indexOf('--subject') + 1];
+  const body = refused[refused.indexOf('--body') + 1];
+  assert.deepEqual(calls().filter((args) => args.includes('POST')), [
+    ['api', 'repos/acme/demo/pulls/9/merge-async', '--method', 'POST', '-f', 'merge_method=squash', '-f', `expected_head_sha=${sha}`, '-f', `commit_title=${subject}`, '-f', `commit_message=${body}`],
+  ]);
+  assert.equal(subject, 'Keep task worktrees');
+  assert.equal(body, 'Preserve the branch\nPin the accepted head');
+  assert.ok(evidence.commands.some((c) => c.command === 'gh' && c.args[1] === 'merge' && c.status === 1));
+  assert.ok(evidence.commands.some((c) => c.command === 'gh' && c.args.includes('POST') && c.status === 0));
+});
