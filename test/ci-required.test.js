@@ -260,3 +260,26 @@ test('a superseded failed run does not block: the latest run of each required ch
   assert.equal(relapse.code, 1, relapse.summary);
   assert.ok(relapse.summary.includes(`failing: ${name} (failure)`), relapse.summary);
 });
+
+test('a queued rerun newer than a success is the current run: the gate waits for it', (t) => {
+  // A queued run has no started_at yet, so the earlier success must not supersede it by its start time.
+  const h = fixture(t);
+  const name = 'test (windows-latest, node 26, shard 2/3)';
+  const passed = { ...run(name, 'success'), id: 114217721960, started_at: '2026-10-10T12:54:00Z' };
+  const queued = { ...run(name, null, 'queued'), id: 114300000000 };
+  const others = REQUIRED.filter((n) => n !== name).map((n) => run(n));
+  const suite = (id, status, conclusion, runs) => ({ id, app: { slug: 'github-actions' }, status, conclusion, latest_check_runs_count: runs });
+
+  // The rerun is queued in the same suite, which is still running.
+  const same = h.check({ runs: [passed, queued, ...others], suites: [suite(1, 'in_progress', null, REQUIRED.length)] });
+  assert.equal(same.code, 1, same.summary);
+  assert.ok(same.summary.includes(`${name} (queued)`), same.summary);
+
+  // A reopened PR queues the rerun in a new suite. The old suite's success is no longer current.
+  const reopened = h.check({
+    runs: [{ ...passed, check_suite: { id: 1 } }, ...others.map((r) => ({ ...r, check_suite: { id: 1 } })), { ...queued, check_suite: { id: 2 } }],
+    suites: [suite(1, 'completed', 'success', REQUIRED.length), suite(2, 'queued', null, 1)],
+  });
+  assert.equal(reopened.code, 1, reopened.summary);
+  assert.ok(reopened.summary.includes(`${name} (queued)`), reopened.summary);
+});
