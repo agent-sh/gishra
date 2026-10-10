@@ -1050,8 +1050,9 @@ test('a request moves only the reactions queued when it was made', async (t) => 
   assert.deepEqual(h.logs().filter((e) => e.cmd === 'automation queued').map((e) => e.task), ['T2', 'T3']);
 
   // T3's review is recorded, but no watcher has queued it when the request is made.
+  h.reviewer('T3', 'reviewer', h.sha);
   const before = fs.statSync(events).size;
-  h.ok(['evidence', 'T3', '--type', 'review', '--sha', h.sha, '--ok', '--agent', 'reviewer']);
+  h.ok(['evidence', 'T3', '--type', 'review', '--sha', h.sha, '--revision', h.revision('T3'), '--ok', '--agent', 'reviewer']);
   h.ok(['gates', 'prioritize', 'T3', '--reason', 'gate fix first', '--agent', 'orchestrator']);
   h.run(['wait', '--after', String(before), '--types', 'never', '--timeout', '0', '--agent', 'orchestrator']);
   assert.deepEqual(h.logs().filter((e) => e.cmd === 'automation queued').map((e) => e.task), ['T2', 'T3', 'T3'],
