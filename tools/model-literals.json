@@ -20,6 +20,11 @@
     "reason": "Relative import of the Claude provider routing module"
   },
   {
+    "path": "lib/spawn-monitor.js",
+    "literal": "./claude-provider",
+    "reason": "Relative import of the Claude provider routing module"
+  },
+  {
     "path": "lib/tasks.js",
     "literal": "./claude-provider",
     "reason": "Relative import of the Claude provider routing module"

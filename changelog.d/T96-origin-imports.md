@@ -1,1 +1,1 @@
-- Codex profile pricing reads the user's origin configuration, matching dispatch from isolated callers. Documentary JSON imports revoke model-lint exemptions with trailing commas or comments as well as ordinary calls.
+- Codex profile pricing reads the user's origin configuration, matching dispatch from isolated callers.

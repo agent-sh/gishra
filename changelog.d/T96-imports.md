@@ -1,2 +1,1 @@
-- Model selection lint resolves literal CommonJS requests with Node's resolver before granting documentary JSON exemptions. Extensionless and directory imports revoke the exemption for loaded JSON, while JavaScript files retain their normal precedence.
 - Escalation fixtures use fictional model IDs and pin the native rung through the shared helper.

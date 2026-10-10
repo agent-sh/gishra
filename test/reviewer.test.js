@@ -423,13 +423,14 @@ test('a stronger model wins only when its median priced review cost is no higher
 test('a running reviewer\'s live reading is not a cost sample until exit finalizes it', (t) => {
   const h = setup(t, 'medium');
   ready(h);
-  sample(h, 'sol', 100000, 50000, 60000);
-  sample(h, 'opus', 100000, 50000, 20000, 20000);
+  sample(h, 'fixture-main', 100000, 50000, 60000);
+  sample(h, 'fixture-large', 100000, 50000, 20000, 20000);
+  assert.equal(model(choice(h)), 'fixture-large');
   const tasks = h.readState('tasks.json');
-  const entry = tasks.tasks[0].spend.entries.find((e) => e.agent === 'review-opus');
+  const entry = tasks.tasks[0].spend.entries.find((e) => e.agent === 'review-fixture-large');
   entry.live = { state: 'live', interval_ms: 1000 };
   h.writeState('tasks.json', tasks);
-  assert.equal(model(choice(h)), 'sol');
+  assert.equal(model(choice(h)), 'fixture-main');
 });
 
 test('review selection matches Claude provider aliases to recorded provider spend', (t) => {
@@ -459,19 +460,23 @@ test('review selection matches Claude provider aliases to recorded provider spen
 
 test('review selection prices a Claude alias rung by the release id its spend records', (t) => {
   const [alias, release] = Object.entries(require('../lib/ladder').BUILTIN.claude_aliases)[0];
-  const h = setup(t, 'medium');
-  const bin = path.join(h.base, 'bin');
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
-  const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || '') };
-  h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--model', alias, '--clear', 'provider']);
-  h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [release]: prices['fixture-large'] } })]);
-  ready(h);
-  sample(h, 'fixture-main', 1000000, 0, 0);
-  sample(h, release, 0, 0, 1);
-  const promoted = choice(h, env);
-  assert.equal(promoted.review_rung, 'hard');
-  assert.equal(model(promoted), alias);
+  for (const configured of [alias, alias.toUpperCase(), ` ${alias} `, ` ${alias.toUpperCase()} `]) {
+    assert.equal(require('../lib/reviewer').modelOf({ harness: 'claude', model: configured }),
+      require('../lib/ladder').modelIdentity(release), configured);
+    const h = setup(t, 'medium');
+    const bin = path.join(h.base, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
+    const env = { PATH: bin + path.delimiter + (h.env.PATH || h.env.Path || '') };
+    h.ok(['ladder', 'set', 'hard', '--harness', 'claude', '--model', configured, '--clear', 'provider']);
+    h.ok(['project', 'set', '--review-policy', JSON.stringify({ prices: { ...prices, [release]: prices['fixture-large'] } })]);
+    ready(h);
+    sample(h, 'fixture-main', 1000000, 0, 0);
+    sample(h, release, 0, 0, 1);
+    const promoted = choice(h, env);
+    assert.equal(promoted.review_rung, 'hard', configured);
+    assert.equal(model(promoted), configured.trim());
+  }
 });
 
 test('native Claude alias review spend matches release-id pricing', (t) => {

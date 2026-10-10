@@ -1,1 +1,0 @@
-- Model lint treats file references only in established manifest, receipt and test-map metadata, plus resolved imports and fixture readers. Ordinary path-valued objects and file-named loop variables remain visible to the literal guard.
