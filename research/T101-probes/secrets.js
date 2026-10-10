@@ -31,6 +31,15 @@ try {
   };
   put('.cache/some-tool/bin/tool.js', '// an installed tool under the cache\n');
   put('.config/gh/hosts.yml', 'github.com:\n  user: probe\n');
+  const opencodeData = path.join(h.base, 'opencode-data');
+  fs.mkdirSync(path.join(opencodeData, 'opencode'), { recursive: true });
+  const opencodeFiles = ['auth.json', 'mcp-auth.json'].flatMap(name => {
+    const local = `.local/share/opencode/${name}`;
+    const custom = path.join(opencodeData, 'opencode', name);
+    put(local, '{"token":"synthetic-opencode-credential"}\n');
+    fs.writeFileSync(custom, '{"token":"synthetic-opencode-credential"}\n');
+    return [path.join(home, local), custom];
+  });
   const harnessFiles = ['claude-credentials', 'claude-config', 'codex-credentials', 'codex-config']
     .map(file => path.join(h.base, file));
   for (const file of harnessFiles) fs.writeFileSync(file, '[default]\nregion = us-east-1\n');
@@ -96,6 +105,7 @@ console.log('fake gh');
   env.GOOGLE_APPLICATION_CREDENTIALS = googleFiles[0];
   env.CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE = googleFiles[1];
   env.AWS_WEB_IDENTITY_TOKEN_FILE = webIdentity;
+  env.XDG_DATA_HOME = opencodeData;
   Object.assign(env, harnessCredentials);
   env.STUB_RUN = JSON.stringify([['gh', 'pr', 'view', '1']]);
   h.ok(['project', 'set', '--env_file', path.join(home, 'private.env'), '--env',
@@ -114,12 +124,12 @@ console.log('fake gh');
   const credentialPaths = ['.config/gh', '.claude', '.codex', '.docker', '.npmrc', '.netrc', '.git-credentials',
     '.config/tower-crane/config.json', '.pi/agent/auth.json', '.pi/agent/models.json', '.gemini/antigravity/mcp_oauth_tokens.json']
     .map((p) => path.join(home, p)).concat(linkedCredential, ownerDocker, childDocker, parentGh, googleFiles, harnessFiles,
-      webIdentity, profileToken, Object.values(harnessCredentials));
+      webIdentity, profileToken, Object.values(harnessCredentials), opencodeFiles);
   const reads = ['Read', 'Grep', 'Glob'].map(tool => (report.settings?.permissions?.deny || [])
     .filter(rule => rule.startsWith(`${tool}(//`)).map(rule => rule.slice(tool.length + 2, -1).replace(/\/\*\*$/, '')));
   const covered = (p, dirs) => dirs.some((d) => p === d || p.startsWith(`${d}${path.sep}`));
   const open = credentialPaths.filter((p) => !covered(p, denied) || reads.some(paths => !covered(p, paths)));
-  rec('S2', 'sandbox/secrets', 'same spawn: compare sandbox and Read/Grep/Glob denials with default stores, linked targets, overlaid configs, provider credential overrides and web-identity tokens, including a profile path with an inline comment',
+  rec('S2', 'sandbox/secrets', 'same spawn: compare sandbox and Read/Grep/Glob denials with default stores, linked targets, overlaid configs, provider credential overrides, commented AWS profile tokens and both OpenCode auth files at default and XDG data locations',
     'credential stores in the user home are unreadable inside the sandbox and to the Read tools (network allows every domain)',
     `denyRead: ${JSON.stringify(denied)}; tool deny: ${JSON.stringify(reads)}; network.allowedDomains: ${JSON.stringify(report.settings?.sandbox?.network?.allowedDomains)}; readable: ${open.map((p) => path.relative(home, p)).join(', ')}`,
     open.length ? 'CONFIRMED' : 'held');

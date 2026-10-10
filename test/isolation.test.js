@@ -104,7 +104,7 @@ process.exit(result.status ?? 1);
   runEnv.CODEX_HOME = '';
   // Credential discovery must stay inside the synthetic home unless a test
   // explicitly supplies another location.
-  for (const key of ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'PI_CODING_AGENT_DIR', 'DOCKER_CONFIG', 'CARGO_HOME',
+  for (const key of ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'PI_CODING_AGENT_DIR', 'DOCKER_CONFIG', 'CARGO_HOME',
     'KUBECONFIG', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS', 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',
     'AZURE_CONFIG_DIR', 'NPM_CONFIG_USERCONFIG', 'npm_config_userconfig',
     'PIP_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE', 'AWS_WEB_IDENTITY_TOKEN_FILE',
@@ -1017,6 +1017,60 @@ test('Google credential file overrides stay hidden across environment sources', 
     }
     fs.rmSync(path.join(wt, 'AGENTS.md'));
   }
+});
+
+test('OpenCode credential files stay hidden at default and selected data homes', { skip: NO_STUBS }, async t => {
+  const { h, u, wt } = setup(t);
+  const names = ['auth.json', 'mcp-auth.json'];
+  const files = [];
+  const put = root => {
+    const dir = path.join(root, 'opencode');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of names) {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, '{"token":"SYNTHETIC-OPENCODE-CREDENTIAL"}\n');
+      files.push(file);
+    }
+  };
+  put(path.join(u.home, '.local', 'share'));
+  const sources = ['inherited', 'project', 'rung', 'file', 'claude', 'codex'].map(label => {
+    const root = label === 'inherited' ? 'owner-data'
+      : label === 'project' ? '~/project-data' : path.join(h.base, `${label}-data`);
+    for (const dir of new Set([path.resolve(h.repo, root), path.resolve(wt, root)])) put(dir);
+    if (root.startsWith('~/')) put(path.join(u.home, root.slice(2)));
+    return { XDG_DATA_HOME: root };
+  });
+  const [inherited, project, rung, file, claude, codex] = sources;
+  // A selected directory alias must protect the real files as well.
+  const alias = path.join(h.base, 'data-alias');
+  fs.symlinkSync(rung.XDG_DATA_HOME, alias, 'dir');
+  rung.XDG_DATA_HOME = alias;
+  files.push(...names.map(name => path.join(alias, 'opencode', name)));
+  const text = env => `XDG_DATA_HOME=${JSON.stringify(env.XDG_DATA_HOME)}\n`;
+  const envFile = path.join(h.base, 'opencode-sources.env');
+  fs.writeFileSync(envFile, text(file));
+  fs.writeFileSync(path.join(u.home, '.codex', '.env'), text(codex));
+  const settingsFile = path.join(u.home, '.claude', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  Object.assign(settings.env, claude);
+  fs.writeFileSync(settingsFile, JSON.stringify(settings));
+  h.ok(['project', 'set', '--env', JSON.stringify(project), '--env_file', envFile]);
+  for (const harness of ['claude', 'codex']) await t.test(harness, () => {
+    isolated(h, 'hard', harness);
+    h.ok(['ladder', 'set', 'hard', '--env', JSON.stringify(rung)]);
+    spawn(h, u, 'hard', { ...inherited, STUB_READ: JSON.stringify(files) });
+    assertCredentialsHidden(u.report(), files);
+    if (harness === 'claude') assert.ok(u.report().reads.every(read => read.denied));
+    for (const credential of [files[0], path.join(h.repo, 'owner-data', 'opencode', 'auth.json'),
+      path.join(wt, '~', 'project-data', 'opencode', 'mcp-auth.json')]) {
+      fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${credential}\n`);
+      try {
+        const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: { ...u.env, ...inherited } });
+        assert.notEqual(refused.code, 0, 'OpenCode credential imports must be refused');
+        assert.match(refused.stderr, /house rule.*credential store/i);
+      } finally { fs.rmSync(path.join(wt, 'AGENTS.md')); }
+    }
+  });
 });
 
 test('harness token and key files stay hidden across environment sources', { skip: NO_STUBS }, async t => {
