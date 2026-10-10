@@ -83,6 +83,38 @@ test('a sandboxed claude command cannot connect to a unix socket in a denied dir
   assert.equal(connections, 0, 'nothing reached the socket');
 });
 
+test('in a real claude sandbox with sandbox.session_bus, a command connects to the bus socket', { skip: process.env.TOWER_CRANE_LIVE_CLAUDE !== '1' && 'set TOWER_CRANE_LIVE_CLAUDE=1 to run against the real claude CLI', timeout: 300000 }, async (t) => {
+  const h = makeRepo(t);
+  h.init();
+  h.ok(['task', 'add', '--title', 'Bus probe', '--acceptance', 'bus reachable']);
+  // The bus is a socket in a runtime directory of the test's own, so the probe never touches the user's session.
+  const runtime = path.join(h.base, 'runtime');
+  fs.mkdirSync(runtime);
+  const sock = path.join(runtime, 'bus');
+  const probe = path.join(results(h), 'bus-probe');
+  let connections = 0;
+  const server = net.createServer((c) => {
+    connections++;
+    c.on('error', () => {});
+    c.end();
+  });
+  await new Promise((resolve) => server.listen(sock, resolve));
+  t.after(() => server.close());
+  const script = `const n=require("net"),f=require("fs");n.connect(${JSON.stringify(sock)}).on("connect",()=>{f.writeFileSync(${JSON.stringify(probe)},"CONNECTED");process.exit(0)}).on("error",e=>{f.writeFileSync(${JSON.stringify(probe)},"ERR "+e.code);process.exit(1)})`;
+  h.ok(['project', 'set', '--session-bus', 'true']);
+  h.ok(['brief', 'set', 'T1', '-'], {
+    input: `Sandbox probe set up by the owner. Run exactly this one command with the Bash tool, then reply with its exit code. Do not use tower-crane.\n\n${node} -e '${script}'\n`,
+  });
+  h.ok(['ladder', 'set', 'small', '--harness', 'claude', '--model', process.env.TOWER_CRANE_LIVE_MODEL || 'opus', '--clear', 'profile', '--clear', 'effort']);
+  const r = await h.runAsync(['spawn', '--role', 'small', '--task', 'T1', '--wait'], {
+    env: { ...h.env, XDG_RUNTIME_DIR: runtime, DBUS_SESSION_BUS_ADDRESS: `unix:path=${sock}` },
+  });
+  assert.equal(r.code, 0, `${r.stderr}\n${agentLog(h)}`);
+  assert.ok(fs.existsSync(probe), `the command ran\n${agentLog(h)}`);
+  assert.equal(fs.readFileSync(probe, 'utf8'), 'CONNECTED', `the command reached the bus socket\n${agentLog(h)}`);
+  assert.equal(connections, 1, 'the socket accepted the command');
+});
+
 test('in a real claude sandbox a forged state edit fails and the CLI writes through the broker', { skip: process.env.TOWER_CRANE_LIVE_CLAUDE !== '1' && 'set TOWER_CRANE_LIVE_CLAUDE=1 to run against the real claude CLI', timeout: 300000 }, async (t) => {
   const h = makeRepo(t);
   h.init();
