@@ -52,6 +52,9 @@ const MUTANTS = [
   { id: 'broker-no-token', area: 'broker', file: 'lib/broker.js',
     from: 'if (!req || !sameToken(req.token, token))', to: 'if (!req)', tests: ['test/broker.test.js'] },
   // spawn and supervisor
+  { id: 'supervisor-writes-after-incompatible-state', area: 'spawn/supervisor', file: 'lib/spawn-monitor.js',
+    from: "if (committed && !incompatible && fs.existsSync(path.join(spawn.state, 'project.json'))) sampleUsage(true);",
+    to: "if (committed && fs.existsSync(path.join(spawn.state, 'project.json'))) sampleUsage(true);", tests: ['test/state-compatibility.test.js'] },
   { id: 'supervisor-retries-permanent-exit', area: 'spawn/supervisor', file: 'lib/spawn-monitor.js',
     from: '  if (code === 0) return false;\n  return providerError;', to: '  if (code === 0) return false;\n  return true;', tests: ['test/supervision.test.js'] },
   { id: 'supervisor-extra-retry', area: 'spawn/supervisor', file: 'lib/spawn-monitor.js',
