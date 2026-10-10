@@ -692,6 +692,8 @@ evidence. Its event adds `generated` and `base_sha`; gates and review at the
 old sha no longer count. `generated merge` then records `phase: pushed`.
 Mixed conflicts produce rework and a `phase: mixed` receipt with
 `{sha, revision, base_sha, branch, path, generated, remaining, regenerated, commands}`.
+Its `revision` is the new revision returned by rework; the executor refuses
+the receipt if the task changes again before that receipt is recorded.
 The checkout retains `MERGE_HEAD`, generated resolutions are staged and
 `remaining` names the hand-written conflicts. `regenerated: false` means
 source conflicts prevented generation; the worker must rerun the scripts
