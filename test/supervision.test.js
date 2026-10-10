@@ -18,8 +18,13 @@ const sketches = (h) => ['sketch.md', 'sketch.html'].map((file) => ({
   file, text: fs.readFileSync(path.join(h.state, file), 'utf8'),
 }));
 
-async function until(fn, message, timeout = 12000) {
-  const deadline = Date.now() + timeout;
+// The runner's per-test timeout (test/run.js) is the only deadline: a loaded
+// machine can take as long as the test may run, and a wait that never comes
+// true still fails with its message.
+const HUNG_TEST_MS = 300000;
+
+async function until(fn, message) {
+  const deadline = Date.now() + HUNG_TEST_MS;
   while (!fn()) {
     if (Date.now() >= deadline) assert.fail(message);
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -545,16 +550,16 @@ test('serve shows the recorded run phase on the board', async (t) => {
   assert.equal(h.spawn().code, 0);
   const server = cp.spawn(process.execPath, [BIN, 'serve', '--port', '0', '--json'], { cwd: h.repo, env: h.env });
   const closed = new Promise((resolve) => server.on('close', resolve));
-  let url;
-  let output = '';
-  server.stdout.on('data', (data) => {
-    output += data;
-    if (output.includes('\n')) url = JSON.parse(output.trim()).url;
-  });
   try {
-    // Server startup gets the same minute as other CLI calls under CI load.
-    await until(() => !!url || server.exitCode !== null, 'serve did not start', 60000);
-    assert.ok(url);
+    // serve prints its url once the port is bound; the runner's per-test timeout is the only deadline.
+    const url = await new Promise((resolve, reject) => {
+      let output = '';
+      server.stdout.on('data', (data) => {
+        output += data;
+        if (output.includes('\n')) resolve(JSON.parse(output.split('\n')[0]).url);
+      });
+      server.on('exit', (code) => reject(new Error(`serve exited ${code}`)));
+    });
     const body = await new Promise((resolve, reject) => {
       const request = http.get(url, (response) => {
         let html = '';
@@ -562,7 +567,6 @@ test('serve shows the recorded run phase on the board', async (t) => {
         response.on('end', () => resolve(html));
       });
       request.on('error', reject);
-      request.setTimeout(5000, () => request.destroy(new Error('serve request timed out')));
     });
     assert.match(body, /Phase/);
     assert.match(body, /waiting/);

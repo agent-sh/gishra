@@ -561,6 +561,10 @@ A submitted head can move at any time until acceptance or rework. Reviewers must
 
 The default method is squash. Commit text defaults to the task's `title` and `acceptance.join('\n')`; `merge ID --subject S --body B` overrides either independently without changing task state. Empty bodies and multiline text are preserved. Method `merge` uses the same text options; `rebase` omits them and refuses explicit text overrides. The command verifies the PR head matches the accepted SHA and always passes GitHub's full head SHA as `--match-head-commit`, including admin merges and merges that retain the branch. Merge command receipts record the selected text and options.
 
+The ordinary merge gate refuses cross-repository PRs and a `baseRefName` different from the task's target base (`stack.base` or the project base). In unstacked fallback, every lower task must have merged before the project base becomes the target. Only a PR still targeting its recorded dependency branch may be retargeted, followed by a fresh state, head, repository and base check. Other wrong bases are refused without a PR write. Already-merged confirmation checks the base too, on the plain path and for every stack member, where the dependency branch or the project base is accepted. Summaries name GitHub's reported base; a merge confirmed into another base records failed evidence with the merge commit and asks for inspection of what landed.
+
+For a stack member attempted in the current invocation, final confirmation requires the project base and a successful asynchronous result. The recorded dependency base is accepted only for members confirmed already merged before this invocation's attempts that have no prior audited asynchronous POST for the same repository, PR and accepted head. The gate reads command receipts from all merge events, including attempts recorded under a higher stack task. These receipts bind retries to the project base independently of stack sync. An asynchronous failure stays in the failed stack result; the member gets no successful merge evidence, while valid lower merges retain their own successful evidence.
+
 The standards profile may add gates. `--waive TYPE --reason TEXT` records an owner waiver as evidence; only an explicit `--agent owner` or `TOWER_CRANE_AGENT=owner` can waive. A waiver satisfies its gate. If the accept is still refused, the waiver is not recorded.
 
 ## decisions.json
@@ -809,6 +813,8 @@ Hook state lives in the event log, not in another agent-written state file:
 | --- | --- |
 | `hook inbox` | `{messages: [event id, ...]}` acknowledging messages delivered to this event's agent |
 | `hook progress` | `{harness, tool}`; tool activity counts as claimant progress for supervision |
+| `hook background` | `{harness, attempt}`; a Bash call with `run_in_background` started in this dispatch attempt |
+| `hook wait` | `{harness, attempt, source, reasons}`; the one hold a headless worker's stop took before submit, with source `hook-wait:<agent>:<dispatch attempt>` |
 | `hook report` | `{report}` captured assistant text |
 | `hook git-push`, `hook pr-created` | `{harness, unverified: true}`, meant for a successful shim command; an agent's own binding records it with no push or PR, so it is a hint: check GitHub or the repository before acting on it |
 | `hook stop` | `{harness, submitted, report, source}`; source is `hook-stop:<agent>:<dispatch attempt>` |
