@@ -270,10 +270,19 @@ test('a queued rerun newer than a success is the current run: the gate waits for
   const others = REQUIRED.filter((n) => n !== name).map((n) => run(n));
   const suite = (id, status, conclusion, runs) => ({ id, app: { slug: 'github-actions' }, status, conclusion, latest_check_runs_count: runs });
 
-  // The rerun is queued in the same suite, which is still running.
-  const same = h.check({ runs: [passed, queued, ...others], suites: [suite(1, 'in_progress', null, REQUIRED.length)] });
-  assert.equal(same.code, 1, same.summary);
-  assert.ok(same.summary.includes(`${name} (queued)`), same.summary);
+  // The rerun is queued in the same suite, which is still running. A success that started earlier but has a higher id
+  // is in the mix too: the verdict must hold whatever order GitHub lists the three runs in.
+  const early = { ...run(name, 'success'), id: 114400000000, started_at: '2026-10-10T11:00:00Z' };
+  const inSuite = [suite(1, 'in_progress', null, REQUIRED.length)];
+  const orders = [
+    [passed, queued, early], [passed, early, queued], [queued, passed, early],
+    [queued, early, passed], [early, passed, queued], [early, queued, passed],
+  ];
+  for (const order of orders) {
+    const same = h.check({ runs: [...order, ...others], suites: inSuite });
+    assert.equal(same.code, 1, same.summary);
+    assert.ok(same.summary.includes(`${name} (queued)`), same.summary);
+  }
 
   // A reopened PR queues the rerun in a new suite. The old suite's success is no longer current.
   const reopened = h.check({
@@ -282,4 +291,10 @@ test('a queued rerun newer than a success is the current run: the gate waits for
   });
   assert.equal(reopened.code, 1, reopened.summary);
   assert.ok(reopened.summary.includes(`${name} (queued)`), reopened.summary);
+
+  // A run that was cancelled before it started, and is older than a rerun that did start, does not block the rerun.
+  const stale = { ...run(name, 'cancelled'), id: 114100000000 };
+  const rerun = h.check({ runs: [stale, passed, ...others], suites: [suite(1, 'completed', 'success', REQUIRED.length)] });
+  assert.equal(rerun.code, 0, rerun.summary);
+  assert.match(rerun.summary, /CI green/);
 });
