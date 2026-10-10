@@ -333,7 +333,7 @@ const task = env.TOWER_CRANE_TASK;
 const state = env.TOWER_CRANE_STATE;
 for (const key of Object.keys(env)) if (key.startsWith('TOWER_CRANE_')) delete env[key];
 const r = cp.spawnSync(process.execPath, [process.argv[1], 'evidence', 'T1', '--type', 'review', '--ok', '--sha', 'abcdef1', '--state', state], {
-  env, encoding: 'utf8', timeout: 10000,
+  env, encoding: 'utf8', timeout: 10000, // wait-allow: watchdog terminates a hung fixture subprocess or test
 });
 fs.writeFileSync(process.argv[2], JSON.stringify({ agent, task, remaining: Object.keys(env).filter((key) => key.startsWith('TOWER_CRANE_')), code: r.status, stderr: r.stderr }));
 process.exit(r.status === null ? 1 : r.status);
@@ -473,7 +473,7 @@ test('the agent runs a real nested test', () => {
   h.git(['commit', '-qm', 'nested runner fixture']);
   const script = `
 const cp = require('node:child_process');
-const result = cp.spawnSync(process.execPath, ['--test', '--test-reporter=tap', ${JSON.stringify(file)}], { encoding: 'utf8', timeout: 10000 });
+const result = cp.spawnSync(process.execPath, ['--test', '--test-reporter=tap', ${JSON.stringify(file)}], { encoding: 'utf8', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
 require('node:fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({
   runnerEnv: Object.keys(process.env).filter((key) => /^NODE_TEST_/i.test(key)),
   code: result.status, stdout: result.stdout, stderr: result.stderr,

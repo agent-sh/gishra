@@ -1,6 +1,6 @@
 'use strict';
 
-const { fileWritten, waitOnRepo, waitUntil, HUNG_TEST_MS } = require('./signals');
+const { fileWritten, waitOnRepo, HUNG_TEST_MS } = require('./signals');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -207,7 +207,7 @@ test('collectors and concurrent waiters share one private exit event and usage e
   const sample = path.join(h.base, 'usage-with-private-text.log');
   fs.writeFileSync(sample, privateText + '\n' + fs.readFileSync(fixture('codex-stream.jsonl'), 'utf8'));
   const waits = ['observer-a', 'observer-b'].map((agent) => h.runAsync([
-    'wait', '--agent', agent, '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '60',
+    'wait', '--agent', agent, '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '300',
   ]));
   const started = h.json(['spawn', '--task', 'T1'], {
     env: { ...h.usageEnv, USAGE_DELAY: '900', USAGE_CLAIM: '1' },

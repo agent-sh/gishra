@@ -13,7 +13,7 @@ async function main() {
   const prompt = args.find((a) => a.includes('## Task') || a.includes('## Rework') || a.includes('Previous attempt')) || '';
   const out = { prompt, turns: [], blocked: false };
   const cli = (...argv) => {
-    const r = cp.spawnSync(process.execPath, [BIN, ...argv, '--agent', process.env.TOWER_CRANE_AGENT], { encoding: 'utf8', timeout: 15000 });
+    const r = cp.spawnSync(process.execPath, [BIN, ...argv, '--agent', process.env.TOWER_CRANE_AGENT], { encoding: 'utf8', timeout: 15000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
     if (r.status) throw new Error(r.stderr);
   };
   const event = (value) => console.log(JSON.stringify(value));
@@ -58,7 +58,7 @@ async function main() {
     const hookWith = (name, body) => {
       const command = settings.hooks[name][0].hooks[0].command;
       const text = cp.execSync(command, {
-        input: JSON.stringify({ hook_event_name: name, ...body }), encoding: 'utf8', timeout: 15000,
+        input: JSON.stringify({ hook_event_name: name, ...body }), encoding: 'utf8', timeout: 15000, // wait-allow: watchdog terminates a hung fixture subprocess or test
       }).trim();
       return text ? JSON.parse(text) : {};
     };
@@ -82,7 +82,7 @@ async function main() {
       const command = settings.hooks[name][0].hooks[0].command;
       const text = cp.execSync(command, {
         input: JSON.stringify({ hook_event_name: name, tool_name: 'Bash', agent: 'owner', task: 'T999', last_assistant_message: `last report from ${harness}` }),
-        encoding: 'utf8', timeout: 15000,
+        encoding: 'utf8', timeout: 15000, // wait-allow: watchdog terminates a hung fixture subprocess or test
       }).trim();
       return text ? JSON.parse(text) : {};
     };
@@ -161,7 +161,7 @@ async function main() {
   }
   if (process.env.MESSAGE_COMMANDS === '1') {
     const run = (tool, argv) => {
-      const r = cp.spawnSync(tool, argv, { encoding: 'utf8', timeout: 15000, shell: process.platform === 'win32' });
+      const r = cp.spawnSync(tool, argv, { encoding: 'utf8', timeout: 15000, shell: process.platform === 'win32' }); // wait-allow: watchdog terminates a hung fixture subprocess or test
       if (r.status !== 0) throw new Error(r.stderr || r.error?.message);
     };
     run('git', ['push', process.env.MESSAGE_REMOTE, 'HEAD:refs/heads/probe']);

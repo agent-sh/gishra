@@ -269,7 +269,7 @@ try {
 }
 
 for (const command of ['worktree', 'spawn']) {
-  test(`one dispatch prepares six ${command} tasks from one slow base fetch`, { timeout: 60000 }, async (t) => {
+  test(`one dispatch prepares six ${command} tasks from one slow base fetch`, { timeout: 60000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
     const h = setup(t);
     const fresh = advance(h, h.upstream, 'remote.txt');
     h.git(['push', 'origin', 'main'], h.upstream);
@@ -336,7 +336,7 @@ for (const hooks of [{ HOOK_ADD_ERROR: 'ETIMEDOUT' }, { HOOK_DIE_WORKTREE_ADD: '
 
 const waitForFile = (file) => fileWritten(file);
 
-test('a surviving post-checkout child cannot write into a replacement worktree', { timeout: 30000 }, async (t) => {
+test('a surviving post-checkout child cannot write into a replacement worktree', { timeout: 30000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
   const h = setup(t);
   const paused = path.join(h.base, 'hook-paused');
   const done = path.join(h.base, 'hook-done');

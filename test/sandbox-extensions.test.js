@@ -299,7 +299,7 @@ test('invalid or unreadable env files fail without echoing their contents', { sk
 
 test('real Codex worker writes the toolchain lock, receives a private env file, serves loopback and inherits scope limits', {
   skip: process.env.TOWER_CRANE_LIVE_CODEX !== '1' && 'set TOWER_CRANE_LIVE_CODEX=1 to run a real Codex worker',
-  timeout: 240000,
+  timeout: 240000, // wait-allow: watchdog terminates a hung fixture subprocess or test
 }, async (t) => {
   const fixtureRoot = process.env.TOWER_CRANE_TEST_TMP;
   const inside = (dir, target) => {

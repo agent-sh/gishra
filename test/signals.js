@@ -76,7 +76,7 @@ function fileWritten(file, { check = () => true, ...options } = {}) {
       return check(text) ? { text } : false;
     }
     catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-  }, { paths: [file], poll: false, what: `file written: ${file}`, ...options }).then(({ text }) => text);
+  }, { paths: [file], what: `file written: ${file}`, ...options }).then(({ text }) => text);
 }
 
 function waitOnRepo(h, check, what, options) {

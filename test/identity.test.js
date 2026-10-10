@@ -333,7 +333,7 @@ test('identity checks preserve delayed hook input on stdin', async (t) => {
     child.on('close', (code) => { exited = true; resolve(code); });
   });
   try {
-    await waitOnRepo(h, () => fs.existsSync(ready) && !exited);
+    await waitOnRepo(h, () => fs.existsSync(ready) || exited);
     assert.ok(fs.existsSync(ready), stderr || 'CLI never attempted to read stdin');
     // Keep the pipe empty while the child begins its synchronous read.
     await new Promise((resolve) => setTimeout(resolve, 50)); // wait-allow: exercise an empty nonblocking stdin pipe before supplying delayed input

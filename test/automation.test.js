@@ -173,7 +173,7 @@ test('an accepted task with green gates merges in the event reaction without an 
   const spawns = () => h.logs().filter((e) => e.cmd === 'spawn').length;
   const recorded = spawns();
   h.ok(['accept', 'T1', '--agent', 'orchestrator']);
-  const notification = JSON.parse(h.ok(['wait', '--types', 'merged', '--timeout', '5', '--agent', 'orchestrator']));
+  const notification = JSON.parse(h.ok(['wait', '--types', 'merged', '--timeout', '300', '--agent', 'orchestrator']));
   assert.equal(notification.type, 'merged', 'startup catches up accepted PRs and retains its automatic merge event');
   assert.equal(h.github().prs['7'].state, 'MERGED');
   assert.equal(spawns(), recorded);
@@ -241,7 +241,7 @@ test('startup reconciles a newly conflicting PR after a merge happened without a
   conflicting.prs['8'].mergeStateStatus = 'DIRTY';
   h.saveGithub(conflicting);
   const before = h.git(['rev-parse', 'HEAD']);
-  const event = JSON.parse(h.ok(['wait', '--types', 'rework', '--timeout', '5', '--agent', 'orchestrator']));
+  const event = JSON.parse(h.ok(['wait', '--types', 'rework', '--timeout', '300', '--agent', 'orchestrator']));
   assert.equal(event.task, 'T2');
   const task = h.readState('tasks.json').tasks[1];
   assert.equal(task.status, 'rework');
@@ -256,7 +256,7 @@ test('a matching UNKNOWN head runs submission gates during the same wait', async
   state.prs['7'].mergeable = state.prs['7'].mergeStateStatus = 'UNKNOWN';
   state.becomeMergeableAfterView = true;
   h.saveGithub(state);
-  const result = await h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0.2', '--agent', 'orchestrator']);
+  const result = await h.runAsync(['wait', '--after', '0', '--types', 'never', '--timeout', '0.2', '--agent', 'orchestrator']); // wait-allow: verify the CLI observation, filtering or timeout contract with already-published state
   assert.equal(result.code, 2, result.stderr);
   const task = h.readState('tasks.json').tasks[0];
   assert.deepEqual(task.evidence.filter((e) => ['tests', 'clean'].includes(e.type)).map((e) => [e.type, e.ok]),
@@ -718,7 +718,7 @@ for (const reason of ['unknown mergeability', 'transport error']) {
     recovered.prs['7'].mergeable = 'MERGEABLE';
     recovered.prs['7'].mergeStateStatus = 'CLEAN';
     h.saveGithub(recovered);
-    h.ok(['wait', '--types', 'merged', '--timeout', '5', '--agent', 'orchestrator']);
+    h.ok(['wait', '--types', 'merged', '--timeout', '300', '--agent', 'orchestrator']);
     assert.equal(h.readState('tasks.json').tasks[0].evidence.at(-1).type, 'merge');
     assert.equal(h.github().prs['7'].state, 'MERGED');
   });
@@ -737,7 +737,7 @@ test('startup confirms the accepted head after the executor dies between remote 
   assert.equal(h.github().prs['7'].state, 'MERGED');
   assert.equal(h.readState('tasks.json').tasks[0].evidence.some((e) => e.type === 'merge'), false);
   assert.equal(h.logs().findLast((e) => e.cmd === 'automation').detail.phase, 'running');
-  h.ok(['wait', '--types', 'merged', '--timeout', '5', '--agent', 'orchestrator']);
+  h.ok(['wait', '--types', 'merged', '--timeout', '300', '--agent', 'orchestrator']);
   const receipt = h.readState('tasks.json').tasks[0].evidence.at(-1);
   assert.equal(receipt.type, 'merge');
   assert.equal(receipt.ok, true);
@@ -1023,7 +1023,7 @@ test('two queued PRs run exactly one full suite each at their turn and none befo
   h.saveGithub(ready);
   // The wait runs both suites in this process: 55s alone and 119s with the
   // whole file running in parallel, so a shorter timeout fails under load.
-  h.ok(['wait', '--types', 'merged', '--task', 'T2', '--timeout', '120', '--agent', 'orchestrator']);
+  h.ok(['wait', '--types', 'merged', '--task', 'T2', '--timeout', '300', '--agent', 'orchestrator']);
   assert.deepEqual(h.github().calls.filter((a) => a[1] === 'merge').map((a) => a[2]), ['7', '8']);
   assert.deepEqual(h.suites().slice(suites), [{ pr7: 'OPEN' }, { pr7: 'MERGED' }],
     'T1 runs its suite before merging; T2 runs its suite only after T1 merged');

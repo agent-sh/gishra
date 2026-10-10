@@ -16,15 +16,15 @@ test('signal waits observe existing state, atomic writes, complete events, child
   fs.writeFileSync(file, 'already');
   assert.equal(await fileWritten(file, { signal: t.signal }), 'already');
   const empty = path.join(h.base, 'empty');
-  const written = fileWritten(empty, { signal: t.signal });
+  const written = fileWritten(empty, { signal: t.signal, poll: false });
   fs.writeFileSync(empty, '');
   assert.equal(await written, '');
-  const replaced = fileWritten(file, { signal: t.signal, check: (text) => text === 'replaced' && text });
+  const replaced = fileWritten(file, { signal: t.signal, poll: false, check: (text) => text === 'replaced' && text });
   fs.writeFileSync(file + '.tmp', 'replaced');
   fs.renameSync(file + '.tmp', file);
   assert.equal(await replaced, 'replaced');
   const log = path.join(h.base, 'events.jsonl');
-  const appended = eventAppended(log, (event) => event.type === 'done', { signal: t.signal });
+  const appended = eventAppended(log, (event) => event.type === 'done', { signal: t.signal, poll: false });
   fs.writeFileSync(log, '{"type":');
   fs.appendFileSync(log, '"done"}\n');
   assert.deepEqual(await appended, { type: 'done' });
@@ -54,6 +54,13 @@ test('shared checks reject readiness budgets and require a reason on allowed tim
     'assert.ok(Date.now() - started < 5000);', // wait-allow: rejected lint fixture
     'await waitFor(\n  file,\n  20000\n);', // wait-allow: rejected lint fixture
     'await new Promise((resolve) => setTimeout(\n  resolve,\n  25\n));', // wait-allow: rejected lint fixture
+    'await h.runAsync(["wait", "--timeout", "10"]);', // wait-allow: rejected lint fixture
+    'const deadline =\n  Date.now()\n  + 1000;', // wait-allow: rejected lint fixture
+    'await waitFor(ready, { timeout: 1000 });', // wait-allow: rejected lint fixture
+    'const deadline = Date.now() + 300000 / 1000;', // wait-allow: rejected lint fixture
+    'const HUNG_TEST_MS = 1000;', // wait-allow: rejected lint fixture
+    'cp.spawnSync("node", ["worker.js"], { timeout: 1000 });', // wait-allow: rejected lint fixture
+    'test("worker", { timeout: 1000 }, async () => {});', // wait-allow: rejected lint fixture
   ]) {
     assert.ok(waitFindings(source).length, source);
     const annotated = source.split('\n').map((line) => line + ' // wait-allow: verifies the production timer contract').join('\n');

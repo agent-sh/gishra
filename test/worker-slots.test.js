@@ -35,7 +35,7 @@ if (process.env.SLOT_RETRY && process.env.TOWER_CRANE_RETRY === '0') process.exi
 const timer = setInterval(() => {
   if (fs.existsSync(path.join(base, task + '.claim'))) {
     fs.unlinkSync(path.join(base, task + '.claim'));
-    const r = cp.spawnSync(process.execPath, [process.argv[2], 'claim', task], { encoding: 'utf8', timeout: 10000 });
+    const r = cp.spawnSync(process.execPath, [process.argv[2], 'claim', task], { encoding: 'utf8', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
     fs.writeFileSync(path.join(base, task + '.claimed'), JSON.stringify({ code: r.status, stderr: r.stderr }));
   }
   if (fs.existsSync(path.join(base, task + '.exit'))) {

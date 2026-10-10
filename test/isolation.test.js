@@ -342,7 +342,7 @@ test('a codex spawn on Bedrock starts with the region from the user config', { s
   const version = cp.spawnSync('codex', ['--version'], { encoding: 'utf8' });
   if (version.status !== 0) return t.diagnostic('codex is not installed; the stub alone checked startup');
   const overrides = spawned.flatMap((a, i) => (spawned[i - 1] === '-c' ? ['-c', a] : []));
-  const r = cp.spawnSync('codex', [...overrides, 'features', 'list'], { encoding: 'utf8', env: { ...process.env, CODEX_HOME: home }, timeout: 60000 });
+  const r = cp.spawnSync('codex', [...overrides, 'features', 'list'], { encoding: 'utf8', env: { ...process.env, CODEX_HOME: home }, timeout: 60000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
   assert.equal(r.status, 0, `codex refused the generated config: ${r.stderr}`);
 });
 
@@ -879,7 +879,7 @@ for (const [command, args, opts] of calls) {
   const result = cp.spawnSync(process.execPath, [
     path.join(checkout, 'bin', 'tower-crane.js'), 'spawn', '--task', 'T1', '--wait', '--json',
   ], {
-    cwd: h.repo, encoding: 'utf8', timeout: 60000,
+    cwd: h.repo, encoding: 'utf8', timeout: 60000, // wait-allow: watchdog terminates a hung fixture subprocess or test
     env: { ...u.env, STUB_RUN: JSON.stringify([
       [process.execPath, '-e', upgrade],
       ['git', 'push', '-u', 'origin', `HEAD:refs/heads/${branch}`],
@@ -923,7 +923,7 @@ test('the shim migrates a pre-T112 policy using recorded state and refuses unbou
     ...u.env, PATH: `${path.join(home, 'bin')}${path.delimiter}${u.env.PATH}`,
     TOWER_CRANE_STATE: h.state, TOWER_CRANE_TASK: 'T1', TOWER_CRANE_AGENT: 'worker-T1-1',
   };
-  const run = (args, extra = {}) => cp.spawnSync('git', args, { cwd: wt, env: { ...env, ...extra }, encoding: 'utf8', timeout: 10000 });
+  const run = (args, extra = {}) => cp.spawnSync('git', args, { cwd: wt, env: { ...env, ...extra }, encoding: 'utf8', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
   const allowed = run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]);
   assert.equal(allowed.status, 1, allowed.stderr);
   assert.match(allowed.stderr, /fixture remote unavailable/);
@@ -955,12 +955,12 @@ test('the shim migrates a pre-T112 policy using recorded state and refuses unbou
   const remote = run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]);
   assert.equal(remote.status, 126);
   assert.match(remote.stderr, /git push outside the recorded origin repository/);
-  const read = cp.spawnSync('gh', ['pr', 'view'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 });
+  const read = cp.spawnSync('gh', ['pr', 'view'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
   assert.notEqual(read.status, 126, read.stderr);
   assert.doesNotMatch(read.stderr, /tower-crane:/);
   fs.writeFileSync(policyFile, '{}\n');
   assert.equal(run(['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]).status, 126, 'missing permissions default to deny');
-  const gh = cp.spawnSync('gh', ['pr', 'create'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 });
+  const gh = cp.spawnSync('gh', ['pr', 'create'], { cwd: wt, env, encoding: 'utf8', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
   assert.equal(gh.status, 126, gh.stderr);
 });
 
@@ -1332,7 +1332,7 @@ test('a sandboxed agent changes the state only through its spawn\'s broker: as i
   assert.deepEqual(events.filter((e) => e.cmd === 'hook report').map((e) => e.detail.report), noted.map(() => 'hooked'), 'the hook payload came through stdin');
 });
 
-test('a brokered command still running when its agent exits is killed, and spawn --wait returns', { skip: NO_STUBS, timeout: 120000 }, async (t) => {
+test('a brokered command still running when its agent exits is killed, and spawn --wait returns', { skip: NO_STUBS, timeout: 120000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
   const { h, u } = setup(t);
   // Stands in for a slow brokered command: preloaded into every node process
   // the spawn starts, it holds only the CLI the broker runs for the note

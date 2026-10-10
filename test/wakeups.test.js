@@ -36,17 +36,17 @@ test('the default wait wakes on every owner event and skips bookkeeping', async 
   let after = size(h);
   h.ok(['renew', 'T1', '--agent', 'worker']);
   h.ok(['msg', '--to', 'worker', '--task', 'T1', 'owner aside to the worker', '--agent', 'owner']);
-  const owner = h.run(['wait', '--agent', 'orchestrator', '--after', String(after), '--timeout', '0.1']);
+  const owner = h.run(['wait', '--agent', 'orchestrator', '--after', String(after), '--timeout', '0.1']); // wait-allow: verify the CLI observation, filtering or timeout contract with already-published state
   assert.equal(owner.code, 0, owner.stdout || owner.stderr);
   const e = JSON.parse(owner.stdout);
   assert.equal(e.type, 'worker-message');
   assert.equal(e.agent, 'owner');
   assert.equal(e.to, 'worker');
-  const all = h.json(['wait', '--agent', 'orchestrator', '--after', String(after), '--types', 'all', '--timeout', '0.1']);
+  const all = h.json(['wait', '--agent', 'orchestrator', '--after', String(after), '--types', 'all', '--timeout', '0.1']); // wait-allow: verify the CLI observation, filtering or timeout contract with already-published state
   assert.equal(all.type, 'renew');
   after = size(h);
   h.ok(['msg', '--to', 'orchestrator-T1-1', 'addressed by name', '--agent', 'worker']);
-  const named = h.json(['wait', '--agent', 'orchestrator-T1-1', '--after', String(after), '--timeout', '0.1']);
+  const named = h.json(['wait', '--agent', 'orchestrator-T1-1', '--after', String(after), '--timeout', '0.1']); // wait-allow: verify the CLI observation, filtering or timeout contract with already-published state
   assert.equal(named.detail.text, 'addressed by name');
 });
 
@@ -111,7 +111,7 @@ for (const harness of ['claude', 'codex']) {
     assert.equal(settings.Stop[0].hooks[0].timeout, 86400, 'an orchestrator Stop outlives a long idle');
     h.ok(['msg', '--to', 'orchestrator', '--task', 'T1', 'private worker report', '--agent', 'worker']);
     const message = log(h).findLast((e) => e.cmd === 'msg').id;
-    assert.equal(h.run(['wait', '--inbox', '--observe', '--after', '0', '--types', 'never', '--timeout', '0.01', '--agent', 'orchestrator']).code, 2);
+    assert.equal(h.run(['wait', '--inbox', '--observe', '--after', '0', '--types', 'never', '--timeout', '0.01', '--agent', 'orchestrator']).code, 2); // wait-allow: verify the CLI observation, filtering or timeout contract with already-published state
     fs.writeFileSync(ready + '.go', '');
     await waitOnRepo(h, () => fs.existsSync(ready + '.stop'), 'the Stop hook');
     fs.writeFileSync(ready + '.stop.go', '');
@@ -259,7 +259,7 @@ test('serve carries owner messages to the orchestrator and its replies back with
     assert.equal(sent.status, 200, await sent.clone().text());
     const own = log(h).at(-1);
     assert.deepEqual([own.cmd, own.agent, own.to, own.task, own.detail.steer], ['msg', 'owner', 'orchestrator', 'T1', true]);
-    const woke = h.json(['wait', '--agent', 'orchestrator', '--after', String(cursor), '--timeout', '1']);
+    const woke = h.json(['wait', '--agent', 'orchestrator', '--after', String(cursor), '--timeout', '300']);
     assert.equal(woke.id, own.id);
     h.ok(['msg', '--to', 'owner', 'orchestrator reply', '--agent', 'orchestrator']);
     const reply = log(h).at(-1);

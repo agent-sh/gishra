@@ -61,16 +61,22 @@ function waitFindings(text) {
   };
   for (const [index, line] of lines.entries()) {
     if (/^\s*\/\//.test(line)) continue;
-    // Deadline arithmetic also appears inside generated child scripts.
-    const clock = /\b(?:Date|performance)\.now\(\)\s*\+\s*([^;\n]+)/.exec(line);
-    if (clock && /\b(?:const|let)\s+\w+\s*=/.test(line)) {
-      const budget = clock[1].trim();
-      if (!hungBudget(budget)) {
-        report(index, 'readiness deadline below the hung-test timeout');
-      }
-    }
+    const guard = /\b(?:const|let)\s+HUNG_TEST_MS\s*=\s*([^;]+)/.exec(line);
+    if (guard && !hungBudget(guard[1].trim())) report(index, 'hung-test backstop was shortened');
     if (/\b(?:Date|performance)\.now\(\)\s*-\s*\w+\s*[<>]=?\s*\d+/.test(line)) {
       report(index, 'elapsed wall time is a pass condition');
+    }
+    for (const match of line.matchAll(/(['"])--timeout\1\s*,\s*(['"])([\d.]+)\2/g)) {
+      if (Number(match[3]) > 0 && Number(match[3]) * 1000 < HUNG_TEST_MS) {
+        report(index, 'CLI wait has a readiness budget below the hung-test timeout');
+      }
+    }
+  }
+  // Deadline arithmetic also appears inside generated child scripts.
+  for (const match of text.matchAll(/\b(?:const|let)\s+\w+\s*=\s*(?:Date|performance)\.now\(\)\s*\+\s*([^;\n]+)/g)) {
+    const index = text.slice(0, match.index).split('\n').length - 1;
+    if (!/^\s*\/\//.test(lines[index]) && !hungBudget(match[1].trim())) {
+      report(index, 'readiness deadline below the hung-test timeout');
     }
   }
   for (const match of text.matchAll(/\b(setTimeout|until|waitFor\w*|waitUntil)\s*\(/g)) {
@@ -83,6 +89,24 @@ function waitFindings(text) {
       for (const arg of args.slice(1)) {
         const budget = /^(?:(?:ms|timeout)\s*=\s*)?(\d[\d_]*|ms|timeout)$/.exec(arg)?.[1];
         if (budget && !hungBudget(budget)) report(index, 'wait supplies a fixed readiness budget');
+        if (/^\d/.test(arg) && !hungBudget(arg)) report(index, 'wait supplies a fixed readiness budget');
+        for (const option of arg.matchAll(/\b(?:ms|timeout|timeoutMs)\s*:\s*([^,}]+)/g)) {
+          if (!hungBudget(option[1].trim())) report(index, 'wait options supply a fixed readiness budget');
+        }
+      }
+    }
+  }
+  for (const match of text.matchAll(/\b(spawnSync|execFileSync|execSync|test)\s*\(/g)) {
+    const start = match.index + match[0].lastIndexOf('(');
+    const args = callArguments(text, start);
+    const options = match[1] === 'test' ? args.slice(1, 2) : args;
+    for (const arg of options.filter((value) => value.startsWith('{'))) {
+      const from = text.indexOf(arg, start);
+      for (const budget of arg.matchAll(/\btimeout\s*:\s*(\d[\d_]*)/g)) {
+        if (!hungBudget(budget[1])) {
+          const index = text.slice(0, from + budget.index).split('\n').length - 1;
+          report(index, 'subprocess or test watchdog below the hung-test timeout');
+        }
       }
     }
   }

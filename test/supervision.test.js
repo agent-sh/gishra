@@ -1,6 +1,6 @@
 'use strict';
 
-const { waitOnRepo, HUNG_TEST_MS } = require('./signals');
+const { waitOnRepo } = require('./signals');
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
@@ -88,7 +88,7 @@ else { const timer = setInterval(() => {
   return h;
 }
 
-test('supervisor tool hook writers survive a lock held beyond 15 seconds', { timeout: 90000 }, async (t) => {
+test('supervisor tool hook writers survive a lock held beyond 15 seconds', { timeout: 90000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
   const h = makeTaskRepo(t, [{
     args: ['--title', 'Supervised tool progress', '--tier', 'easy', '--acceptance', 'tool event survives'],
     brief: 'Record tool progress.\n',

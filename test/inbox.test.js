@@ -225,7 +225,7 @@ test('new inbox items wake through wait and unchanged snapshots do not wake twic
   const h = setup(t);
   h.add('Ready');
   const before = fs.statSync(path.join(h.state, 'events.jsonl')).size;
-  const args = ['wait', '--inbox', '--observe', '--after', String(before), '--types', 'inbox item', '--timeout', '0.2', '--agent', 'orchestrator'];
+  const args = ['wait', '--inbox', '--observe', '--after', String(before), '--types', 'inbox item', '--timeout', '0.2', '--agent', 'orchestrator']; // wait-allow: verify the CLI observation, filtering or timeout contract with already-published state
   const wake = h.run(args);
   assert.equal(wake.code, 0, wake.stderr);
   assert.equal(JSON.parse(wake.stdout).detail.item, 'ready:T1');
@@ -385,7 +385,7 @@ test('GitHub-only findings wake the watcher and endpoint failures retain other f
   const id = h.add('Remote review');
   h.submit(id, 8);
   const after = () => String(fs.statSync(path.join(h.state, 'events.jsonl')).size);
-  const wait = () => h.run(['wait', '--inbox', '--observe', '--after', after(), '--types', 'inbox item', '--timeout', '0.1', '--agent', 'orchestrator']);
+  const wait = () => h.run(['wait', '--inbox', '--observe', '--after', after(), '--types', 'inbox item', '--timeout', '0.1', '--agent', 'orchestrator']); // wait-allow: verify the CLI observation, filtering or timeout contract with already-published state
   assert.equal(wait().code, 2);
   const github = h.github();
   github.revuto = { name: 'review', app: { slug: 'revuto-review' }, status: 'completed', conclusion: 'failure', output: { summary: 'Bounds check missing' } };
@@ -433,7 +433,7 @@ test('verified workers cannot use orchestrator inbox or batch tools', (t) => {
   assert.equal(result.code, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).result.isError, true);
   assert.deepEqual(h.logs(), before);
-  const wait = h.run(['wait', '--inbox', '--observe', '--after', 'now', '--timeout', '0.01', '--agent', env.TOWER_CRANE_AGENT], { env });
+  const wait = h.run(['wait', '--inbox', '--observe', '--after', 'now', '--timeout', '0.01', '--agent', env.TOWER_CRANE_AGENT], { env }); // wait-allow: verify the CLI observation, filtering or timeout contract with already-published state
   assert.equal(wait.code, 2, wait.stderr);
   assert.deepEqual(h.logs(), before, 'a worker observer emits no inbox notifications');
 });

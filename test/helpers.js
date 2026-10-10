@@ -253,21 +253,20 @@ function withHooks(ctx, opts) {
   return { cwd: ctx.repo, ...opts, env, pre };
 }
 
-// A timeout here only guards against a hung CLI; the runner's per-test timeout
-// is the backstop. Spawns that waited 15 to 23 s on a machine at load 50 to 80
-// set the 60 s floor, so a slow machine does not read as a failure.
-function run(args, { cwd, env, input, pre = [], timeout = 60000 } = {}) {
-  const r = cp.spawnSync(process.execPath, [...pre, BIN, ...args], { cwd, env, input, encoding: 'utf8', timeout: Math.max(timeout, 60000) });
+// A command shares the runner's hung-test backstop so CLI wait readiness is
+// not cut short by a separate subprocess budget.
+function run(args, { cwd, env, input, pre = [], timeout = HUNG_TEST_MS } = {}) {
+  const r = cp.spawnSync(process.execPath, [...pre, BIN, ...args], { cwd, env, input, encoding: 'utf8', timeout: Math.max(timeout, HUNG_TEST_MS) });
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '', signal: r.signal };
 }
 
 const PTY_AVAILABLE = process.platform === 'linux'
-  && cp.spawnSync('script', ['--version'], { timeout: 10000 }).status === 0;
+  && cp.spawnSync('script', ['--version'], { timeout: 10000 }).status === 0; // wait-allow: watchdog terminates a hung fixture subprocess or test
 
-function runPty(args, { cwd, env, timeout = 10000 } = {}) {
+function runPty(args, { cwd, env, timeout = HUNG_TEST_MS } = {}) {
   // script uses a shell, so quote each argument to preserve names and paths.
   const command = [process.execPath, BIN, ...args].map((s) => `'${s.replace(/'/g, "'\\''")}'`).join(' ');
-  const r = cp.spawnSync('script', ['-qec', command, '/dev/null'], { cwd, env, encoding: 'utf8', timeout });
+  const r = cp.spawnSync('script', ['-qec', command, '/dev/null'], { cwd, env, encoding: 'utf8', timeout: Math.max(timeout, HUNG_TEST_MS) });
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '', signal: r.signal };
 }
 
@@ -303,7 +302,7 @@ function detachedAlive(child) {
 function killDetached(child) {
   if (!detachedAlive(child)) return;
   if (process.platform === 'win32') {
-    cp.spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 });
+    cp.spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
   } else {
     try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   }
@@ -360,7 +359,7 @@ try {
         stopped = true;
         for (const worker of children.filter((c) => c.kind === 'worker')) killDetached(worker);
         for (const pid of JSON.parse(ready.slice(6).trim())) {
-          cp.spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 });
+          cp.spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
         }
         child.stdin.end('\n');
       }
@@ -377,7 +376,10 @@ try {
   }
   try {
     for (const child of children.filter((c) => c.kind === 'worker')) killDetached(child);
-    await waitUntil(() => monitors.every((child) => !detachedAlive(child)));
+    const deadline = Date.now() + 10000; // wait-allow: bounded teardown grace detects collectors that cannot observe their worker
+    while (monitors.some(detachedAlive) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50)); // wait-allow: teardown probe cadence during the bounded grace period
+    }
     assert.deepEqual(monitors.filter(detachedAlive).map((c) => c.pid), [], 'detached usage monitors outlived test teardown');
   } finally {
     for (const monitor of monitors) killDetached(monitor);

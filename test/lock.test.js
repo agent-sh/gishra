@@ -34,7 +34,7 @@ for (const kind of ['stale', 'empty']) {
   });
 }
 
-test('20 concurrent CLI writers survive a lock held beyond 10 seconds', { timeout: 90000 }, async (t) => {
+test('20 concurrent CLI writers survive a lock held beyond 10 seconds', { timeout: 90000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Concurrent startup', '--acceptance', 'all writes survive']);
@@ -60,7 +60,7 @@ test('20 concurrent CLI writers survive a lock held beyond 10 seconds', { timeou
   assert.deepEqual(fs.readdirSync(h.state).filter((name) => name.startsWith('lock')), []);
 });
 
-const waitForFile = (file) => fileWritten(file);
+const waitForFile = (file) => fileWritten(file, { check: (text) => text.length > 0 });
 
 // A write that is killed while it holds the lock, leaving the lock to a dead pid.
 function killHolder(h) {
@@ -153,7 +153,7 @@ test('a dead holder reclaimed at the deadline permits the waiting write', async 
   assert.deepEqual(h.readState('tasks.json').tasks.map((task) => task.title), ['after reclaim']);
 });
 
-test('prompt hook bridge and broker writes survive contention beyond the old bridge timeout', { timeout: 90000 }, async (t) => {
+test('prompt hook bridge and broker writes survive contention beyond the old bridge timeout', { timeout: 90000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Starting agent', '--acceptance', 'prompt and note survive']);

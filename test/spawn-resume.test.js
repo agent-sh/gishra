@@ -144,7 +144,7 @@ for (const harness of ['codex', 'claude']) {
     fs.writeFileSync(path.join(first.cwd, 'README.md'), '# native unfinished work\n');
     fs.writeFileSync(path.join(first.cwd, 'unfinished.txt'), 'keep native edits\n');
     h.ok(['interrupt', 'T1', '--agent', 'orchestrator']);
-    await waitOnRepo(h, () => !(detachedAlive({ pid: first.monitor_pid })));
+    await waitOnRepo(h, () => !detachedAlive({ pid: first.monitor_pid }));
     assert.equal(h.json(['task', 'show', 'T1']).spend.entries.length, 1);
     h.env.RESUME_EXIT_DELAY = '0';
     const second = h.json(['spawn', '--task', 'T1', '--wait']);
@@ -208,7 +208,7 @@ test('a detached command harness records its session and resumes with a separate
   const { h } = setup(t);
   const first = h.json(['spawn', '--task', 'T1'], { env: { RESUME_EXIT_DELAY: '2000' } });
   await waitOnRepo(h, () => events(h).some((e) => e.cmd === 'spawn session'));
-  const exit = h.json(['wait', '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '10']);
+  const exit = h.json(['wait', '--after', '0', '--task', 'T1', '--types', 'worker-exited', '--timeout', '300']);
   assert.equal(exit.detail.agent, first.agent);
   assert.equal(exit.detail.pid, first.pid);
   sendBack(h);
@@ -430,7 +430,7 @@ test('a still-running worker cannot be resumed', async (t) => {
   fs.appendFileSync(script, `\nfs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
   const first = h.json(['spawn', '--task', 'T1']);
   t.after(() => { try { process.kill(first.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; } });
-  await waitOnRepo(h, () => fs.existsSync(ready) || fs.readFileSync(ready, 'utf8') !== String(first.pid));
+  await waitOnRepo(h, () => fs.existsSync(ready) && fs.readFileSync(ready, 'utf8') === String(first.pid));
   sendBack(h);
   const result = h.run(['spawn', '--task', 'T1', '--wait']);
   assert.equal(result.code, 1, result.stderr);
@@ -524,7 +524,7 @@ test('an earlier attempt exit cannot collect or resume a live attempt with a reu
   const ready = path.join(h.base, 'live-ready');
   fs.appendFileSync(script, `\nfs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
   const live = h.json(['spawn', '--task', 'T1']);
-  await waitOnRepo(h, () => fs.existsSync(ready) || fs.readFileSync(ready, 'utf8') !== String(live.pid));
+  await waitOnRepo(h, () => fs.existsSync(ready) && fs.readFileSync(ready, 'utf8') === String(live.pid));
   h.ok(['submit', 'T1', '--sha', 'abcdef3', '--agent', live.agent]);
   h.ok(['rework', 'T1', '--reason', 'Finish next attempt']);
   const hook = path.join(h.base, 'reused-spawn.js');

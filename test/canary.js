@@ -76,7 +76,7 @@ function processListing() {
     }
   }
   if (process.platform !== 'win32') {
-    const r = cp.spawnSync('ps', ['-eww', '-o', 'args='], { encoding: 'utf8', timeout: 10000 });
+    const r = cp.spawnSync('ps', ['-eww', '-o', 'args='], { encoding: 'utf8', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
     if (r.status === 0) parts.push(r.stdout);
   }
   return parts.join('\n');
