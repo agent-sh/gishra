@@ -1,0 +1,2 @@
+- Model lint checks runtime string literals without reference masking. Every exception is an exact path and literal with a reason in `tools/model-literals.json`.
+- The model swap probe uses the software-gate test runner and deadline, isolates fixture cache paths and keeps Chrome socket paths short.
