@@ -1275,14 +1275,16 @@ function startupContexts(h, withRules) {
     assert.equal(detail.receives_prompt, true);
     assert.equal(detail.prompt_bytes, Buffer.byteLength(report.prompt));
     assert.equal(detail.prompt_tokens, Math.ceil(detail.prompt_bytes / 4));
-    assert.equal(report.prompt.includes('## House rules'), withRules);
+    assert.equal(report.prompt.includes('## House rules'), detail.rules.length > 0);
     if (withRules) {
       assert.ok(detail.rules.some((r) => r.path === path.join(h.base, 'AGENTS.md') && r.loaded === 'read'));
       for (const rule of detail.rules) assert.ok(report.prompt.includes(rule.path));
     } else {
-      assert.deepEqual(detail.rules, []);
-      assert.equal(detail.rules_bytes, 0);
-      assert.equal(detail.rules_tokens, 0);
+      // A temp root beneath another checkout can inherit that checkout's rules.
+      assert.equal(detail.rules.some((rule) => rule.path === path.join(h.base, 'AGENTS.md')), false);
+      for (const rule of detail.rules) assert.ok(report.prompt.includes(rule.path));
+      assert.equal(detail.rules_bytes, detail.rules.reduce((bytes, rule) => bytes + rule.bytes, 0));
+      assert.equal(detail.rules_tokens, Math.ceil(detail.rules_bytes / 4));
     }
   }
 }

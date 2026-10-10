@@ -91,7 +91,9 @@ test('shared checks reject readiness budgets and require a reason on allowed tim
   assert.equal(run().status, 0);
 });
 
-test('child exit is observable while inherited output is held, and close waits for its final bytes', async (t) => {
+test('child exit is observable while inherited output is held, and close waits for its final bytes', {
+  skip: process.platform === 'win32' && 'inherited output handles do not survive a forced parent exit',
+}, async (t) => {
   const h = makeRepo(t);
   const release = path.join(h.base, 'release');
   const writer = `

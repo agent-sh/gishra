@@ -102,7 +102,7 @@ function waitFindings(text) {
       }
     }
   }
-  for (const match of text.matchAll(/\b(spawnSync|execFileSync|execSync|test)\s*\(/g)) {
+  for (const match of text.matchAll(/\b(spawn|spawnSync|execFile|execFileSync|exec|execSync|test)\s*\(/g)) {
     const start = match.index + match[0].lastIndexOf('(');
     const args = callArguments(text, start);
     const options = match[1] === 'test' ? args.slice(1, 2) : args;

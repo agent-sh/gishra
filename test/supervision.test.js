@@ -722,8 +722,8 @@ setInterval(() => {}, 1000);
 `;
   h.ok(['ladder', 'set', 'easy', '--command', JSON.stringify([process.execPath, '-e', script, BIN, pids, terminated, '{prompt}'])]);
   const spawned = h.json(['spawn', '--task', 'T1']);
-  await waitOnRepo(h, () => fs.existsSync(pids), 'process group did not start');
-  const group = JSON.parse(fs.readFileSync(pids, 'utf8'));
+  const group = await waitOnRepo(h, () => fs.existsSync(pids) && JSON.parse(fs.readFileSync(pids, 'utf8')),
+    'process group did not start');
   t.after(() => {
     try { process.kill(-group[0], 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   });

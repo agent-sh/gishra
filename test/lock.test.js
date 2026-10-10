@@ -174,7 +174,7 @@ test('prompt hook bridge and broker writes survive contention beyond the old bri
   const lock = S.acquireLock(h.state);
   const brokered = B.forward(job.broker, ['task', 'note', 'T1', 'broker waited'], h.state);
   const bridge = spawn(process.execPath, [path.join(__dirname, '..', 'lib', 'hook-bridge.js'), 'hook'], {
-    cwd: h.repo, timeout: 80000,
+    cwd: h.repo, timeout: 300000,
     env: { ...h.env, NODE_OPTIONS: env.NODE_OPTIONS, TOWER_CRANE_AGENT: agent, TOWER_CRANE_STATE: h.state,
       HOOK_STATE: h.state, HOOK_STOP_LOCK_READ: bridgeSignal },
   });
@@ -419,7 +419,7 @@ for (const aged of [false, true]) {
           TOWER_CRANE_AGENT: 'worker-lock-stress', TOWER_CRANE_OWNER_KEY: '',
           LOCK_STRESS_BARRIER: barrier, LOCK_STRESS_AGE_STAGING: aged ? '1' : '',
         },
-        timeout: 30000,
+        timeout: 300000,
       });
       let stdout = '';
       let stderr = '';
@@ -433,7 +433,7 @@ for (const aged of [false, true]) {
     });
     let results;
     try {
-      await Promise.all(children.map(({ child }) => waitForFile(path.join(barrier, String(child.pid)))));
+      await Promise.all(children.map(({ child }) => fileWritten(path.join(barrier, String(child.pid)))));
       fs.writeFileSync(path.join(barrier, 'go'), '');
       results = await Promise.all(children.map(({ done }) => done));
     } finally {

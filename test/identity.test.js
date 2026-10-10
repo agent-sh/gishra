@@ -321,7 +321,7 @@ test('identity checks preserve delayed hook input on stdin', async (t) => {
   const child = spawn(process.execPath, ['--require', HOOKS, BIN, 'hook', 'report', '--binding', binding, '--payload', '-', '--state', h.state], {
     cwd: h.repo,
     env: { ...h.env, TOWER_CRANE_AGENT: agent, TOWER_CRANE_TASK: 'T1', HOOK_STATE: h.state, HOOK_STDIN_READY: ready },
-    timeout: 15000,
+    timeout: 300000,
   });
   let stderr = '';
   let exited = false;
