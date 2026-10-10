@@ -7,9 +7,10 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const { makeRepo } = require('./helpers');
 
-function attempt(h, chrome, sandbox) {
+function attempt(h, chrome, sandbox, tmp = h.base, before = '') {
   const runner = path.join(h.base, 'browser-runner.js');
   fs.writeFileSync(runner, `
+${before}
 const { openBrowser, closeBrowser } = require(${JSON.stringify(path.join(__dirname, 'browser.js'))});
 const hooks = [];
 (async () => {
@@ -24,7 +25,7 @@ const hooks = [];
 })().catch((e) => { console.error(e); process.exitCode = 1; });
 `);
   const r = cp.spawnSync(process.execPath, [runner], {
-    env: { ...h.env, TOWER_CRANE_TEST_CHROME: chrome, TOWER_CRANE_TEST_TMP: h.base, TOWER_CRANE_SANDBOX: sandbox, CHROME_REPORT: path.join(h.base, 'chrome.json') },
+    env: { ...h.env, TOWER_CRANE_TEST_CHROME: chrome, TOWER_CRANE_TEST_TMP: tmp, TOWER_CRANE_SANDBOX: sandbox, CHROME_REPORT: path.join(h.base, 'chrome.json') },
     encoding: 'utf8', timeout: 15000,
   });
   assert.equal(r.status, 0, `${r.error || ''}\n${r.stderr}`);
@@ -63,6 +64,51 @@ test('a missing browser reports its spawn error and cleans up its profile', (t) 
   const result = attempt(h, path.join(h.base, 'missing-chrome'), '1');
   assert.match(result.error, /Chrome.*ENOENT/s);
   assert.deepEqual(fs.readdirSync(h.base).filter((f) => f.startsWith('tower-crane-chrome-')), []);
+});
+
+test('a Chrome profile whose setup fails is removed, and the start rejects', (t) => {
+  const h = makeRepo(t);
+  // The sandboxed start creates config, cache and tmp inside the profile; a full disk fails the first.
+  const result = attempt(h, path.join(h.base, 'missing-chrome'), '1', h.base, `
+const fsModule = require('node:fs');
+const pathModule = require('node:path');
+const mkdirSync = fsModule.mkdirSync;
+fsModule.mkdirSync = function (dir, ...rest) {
+  if (pathModule.basename(dir) === 'config') throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  return mkdirSync.call(this, dir, ...rest);
+};`);
+  assert.match(result.error, /ENOSPC/);
+  assert.deepEqual(fs.readdirSync(h.base).filter((f) => f.startsWith('tower-crane-chrome-')), []);
+});
+
+test('a temp root too deep for Chrome\'s socket still starts Chrome, from a shallow profile directory', {
+  skip: process.platform === 'win32' && 'browser fixture uses a shebang; Unix socket path limits do not apply on Windows',
+}, (t) => {
+  const h = makeRepo(t);
+  // A gate's TMPDIR sits under TOWER_CRANE_TMP, which can be deeper than the socket path allows.
+  const deep = path.join(h.base, ...Array.from({ length: 4 }, (_, i) => `${i}-${'d'.repeat(30)}`));
+  fs.mkdirSync(deep, { recursive: true });
+  const chrome = path.join(h.base, 'chrome');
+  fs.writeFileSync(chrome, `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const profile = process.argv.find((arg) => arg.startsWith('--user-data-dir=')).slice('--user-data-dir='.length);
+// Chrome's singleton socket must fit a Unix socket address (107 bytes).
+if (Buffer.byteLength(path.join(profile, 'SingletonSocket')) > 107) {
+  console.error('Socket path too long');
+  process.exit(1);
+}
+fs.writeFileSync(process.env.CHROME_REPORT, JSON.stringify({ profile }));
+// An invalid DevTools endpoint makes openBrowser reject after a successful launch.
+fs.writeFileSync(path.join(profile, 'DevToolsActivePort'), '1\\n');
+setInterval(() => {}, 1000);
+`, { mode: 0o755 });
+  const result = attempt(h, chrome, '1', deep);
+  assert.doesNotMatch(result.error ?? '', /exit code|Socket path/);
+  const { profile } = JSON.parse(fs.readFileSync(path.join(h.base, 'chrome.json'), 'utf8'));
+  assert.equal(profile.startsWith(deep + path.sep), false, profile);
+  assert.equal(fs.existsSync(profile), false, 'the shallow profile is removed with the browser');
+  assert.deepEqual(fs.readdirSync(deep).filter((f) => f.startsWith('tower-crane-chrome-')), []);
 });
 
 for (const sandbox of ['0', '1']) {
