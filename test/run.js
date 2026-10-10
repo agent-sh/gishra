@@ -8,7 +8,6 @@ const cp = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const HostOnly = require('../lib/tests-host-only');
 
 function testFiles() {
   return [
@@ -49,8 +48,12 @@ const args = [
 ];
 const shard = process.env.TC_TEST_SHARD;
 if (shard) args.push(`--test-shard=${shard}`);
-// A sandboxed run skips tests.host_only files; the tests gate runs them on the host.
-const { run, skipped } = HostOnly.split(files.length ? files : testFiles());
+// A sandboxed run skips tests.host_only files; the tests gate runs them on the host. Only a sandbox
+// loads the helper, so an ordinary run needs no lib/ modules.
+const selected = files.length ? files : testFiles();
+const { run, skipped } = process.env.TOWER_CRANE_SANDBOX === '1'
+  ? require('../lib/tests-host-only').split(selected, process.env)
+  : { run: selected, skipped: [] };
 if (skipped.length) console.error(`tower-crane: skipped host-only tests in this sandbox, the tests gate runs them on the host: ${skipped.join(' ')}`);
 args.push(...run);
 
