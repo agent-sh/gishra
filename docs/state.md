@@ -10,6 +10,15 @@ When claim or worker spawn readiness depends on an existing stack PR, Tower Cran
 
 For an unlinked dependent whose lower members all have merge evidence, linking retargets its PR to the project base, removes `stack` and `stack_disabled`, and emits `stack complete` with the former parent, new base and PR number. Its sha is unchanged. Rework notes append only to an existing brief; a brief removed during the append is treated as absent.
 
+The shared generated-conflict preflight runs before automatic refresh from
+merge, worktree preparation and spawn. It can also retire a linked dependent
+whose lower members all have confirmed merge evidence. It uses the same
+snapshot and PR validation as ordinary completed-chain retirement, emitting
+`stack complete` before generated repair. This prevents synchronization from
+requesting worker rework first. Generated-only conflicts receive a new
+submitted head; mixed conflicts retain a prepared merge; unconfirmed remote
+conflicts wait. Other stacks keep their existing automatic sync behavior.
+
 `github_stack` holds the unmodified `pull_request.stack` object (or the payload's top-level `stack`) from a trusted payload passed to `stack webhook`, or null when the payload has no stack. The repository and PR number must match a known task. Task show and board sheets expose this metadata separately from Tower Crane's local dependency chain. Webhook metadata does not satisfy a gate, change a submitted head, accept a task or prove a merge.
 
 Stack merges record ordinary `merge` evidence and matching gate audit events for each confirmed task at its own submitted sha and revision. Their command receipts include the remote membership query, every PR head check, bottom-up asynchronous merge requests (`gh api repos/{owner}/{repo}/pulls/{n}/merge-async --method POST` with `merge_method=merge` and `expected_head_sha`) and their status polls, upper PR retargeting and the confirmations. Merge commits keep every accepted head as an ancestor of the project base; the submitted shas remain unchanged. A refused or queued member stops later merges; confirmed accepted lower members retain successful evidence even when the target fails. Terminal POST or job failures retain their reason across status and PR read errors. Unless the PR is confirmed merged at its accepted head, the failure is reported when the PR is read open or when the confirmation deadline expires. Branches are retained while merging a linked chain. Sync emits `stack sync` events for the affected tasks with `ok`, `head`, the parsed abort `reason`, and `failure` (`conflict`, `tool`, or null on success). A moved branch or an explicit conflict report emits rework and appends its reason to the task's brief. A tooling or transport failure preserves unchanged submissions, claims, briefs, gate evidence and stack metadata; the next refresh retries it. A branch moved before a failed push still requires rework. Refresh deferred for a live worker or dirty worktree emits `stack sync deferred`; it does not change the claim. PR linking uses `stack dispatch`, `stack link`, `stack readiness`, `stack unavailable` and `stack link failed` events. An open PR whose head GitHub moved after a lower stack merge, the requested task or a dependent above it, records a `stack head` event with its old and new sha and returns to submitted.
@@ -643,11 +652,50 @@ Trusted watchers and dispatch supervisors consume lifecycle events as
 software reactions. They run submission gates, dispatch review after the
 tracked worker exits, accept independent passing review, merge accepted
 PRs with green gates, and detect conflicting outstanding PRs after merges.
-Conflict rework names the files and preserves the worker branch. Native
+Conflict rework names the hand-written files. Generated-file repair can
+advance the worker branch or leave a mixed merge prepared. Native
 workers without an exit record need explicit review dispatch.
 Tests, cleanup and source verification run when the submitted PR head
 matches, even with unknown mergeability. CI, review dispatch and merging
 retain their mergeability guards.
+
+Generated outputs are declared by the fetched base's `package.json`
+`tower-crane.generated` mapping, from exact relative file paths to npm script
+names or `{script, blocks}`. Blocks use paired HTML `NAME:start` and
+`NAME:end` comments; only their bodies are generated. Whole-file add/add
+outputs require only the two branch versions. Partially generated documents
+require an ancestor version to preserve hand-written text. See docs/cli.md for
+the merge and regeneration contract. A matching GitHub conflict authorizes
+the trusted automation executor to merge into an idle, clean task checkout
+outside worker sandboxes and push without force. Other executors, live
+workers, dirty checkouts and moved local or remote heads defer repair.
+Trial conflicts involving generated outputs also defer when GitHub has not
+confirmed a conflict at the matching submitted head, including stale clean
+or unknown mergeability. Queue head checks wait without a merge gate or head
+suite; post-merge sweeps leave the task unchanged. Subsequent reactions retry,
+and mixed conflicts receive generated pre-resolution only after confirmation.
+
+`generated merge` records `phase: prepared` before a generated-only push,
+with `{previous_sha, sha, revision, base_sha, branch, path, generated, commands}`.
+It also records `destination_sha`, a SHA-256 digest of the verified origin push
+URL. The URL itself is not stored. The PR head repository must match the project;
+the push destination must resolve to that same PR. Every push re-verifies it
+and matches the digest, then uses the verified destination explicitly.
+`commands` records generation command strings, exit statuses and summaries.
+A prepared receipt retries the same commit after a failed push, or confirms
+it after a push whose executor stopped before updating state.
+The following automatic `submit` changes the sha and returns an accepted
+task to `submitted`, preserving `submitted_by`, revision and historical
+evidence. Its event adds `generated` and `base_sha`; gates and review at the
+old sha no longer count. `generated merge` then records `phase: pushed`.
+Mixed conflicts produce rework and a `phase: mixed` receipt with
+`{sha, revision, base_sha, branch, path, generated, remaining, regenerated, commands}`.
+The checkout retains `MERGE_HEAD`, generated resolutions are staged and
+`remaining` names the hand-written conflicts. `regenerated: false` means
+source conflicts prevented generation; the worker must rerun the scripts
+after resolving them. A generator failure in a generated-only merge aborts
+the merge, restores the clean checkout and retains the submitted head.
+Generators cannot change hand-written text outside declared blocks.
 
 `ci completed` records a `ci-completed` hint with `sha` and `revision`.
 The host delivers completion hints directly or through `ci webhook`

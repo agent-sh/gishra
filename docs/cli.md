@@ -183,6 +183,16 @@ Retries also require the project base when an earlier audited merge event contai
 
 After a lower merge, or when a later `worktree` or `spawn` observes main or a dependency moving, Tower Crane refreshes upper worktrees through `gh stack sync`. A dependent prepared before its PR is linked is revalidated at each `worktree` and `spawn`: when its dependency was resubmitted, a branch with no work of its own moves onto the new dependency head, and a branch with its own commits is refused until it contains that head (merge it in, or remove the worktree and branch). Every worktree in that stack must be idle and clean; otherwise refresh is deferred and an event names the blocker. Unknown remote PRs must be recorded before sync. Sync snapshots the project, stack members and their events under a short state lock, runs gh and Git unlocked, then re-takes the lock to compare and apply. Changes to the project or affected tasks refuse application and preserve current claims; unrelated task writes are retained. Git may already have moved branches when application is refused, so inspect their heads before retrying. The allowed gh-stack extension owns its rebases and atomic lease-protected pushes under the dispatcher's policy. An explicit conflict report sends outstanding tasks to rework with the failure in their briefs. A changed branch also goes to rework and needs a new submission and gates, even if sync then fails to push; evidence for the old head remains historical. Tooling and transport errors, including failures listing worktrees or an unavailable extension, record the parsed abort reason and preserve unchanged submissions and gates. The next refresh retries the linked stack. A failed sync exits 1 and reports whether work needs rework or a later retry.
 
+Before every automatic synchronization, including after a confirmed merge
+and from `worktree` or `spawn`, submitted or accepted upper heads are checked
+against the fetched project base. Stacks
+with declared generated conflicts defer synchronization. When all lower
+dependencies have merged, the completed dependency is retired with the normal PR head, branch,
+repository and base checks. Its PR is retargeted to main and the generated
+repair path runs first. Generated-only repairs keep the upper task submitted;
+mixed repairs prepare its merge before rework. Unknown mergeability defers
+repair without invoking stack sync. Unaffected stacks still synchronize.
+
 Stacks require the GitHub repository setting and the gh-stack extension (v0.2.0 or newer). A missing extension (gh exits non-zero pointing at the gh-stack extension), a disabled stacks endpoint, or `gh stack` exit 9 falls back to ordinary dispatch for accepted dependencies. Submitted dependencies wait for acceptance when stacks are unavailable. Generic 404s are reported as errors without disabling stacks; 5xx responses and network errors require retry and do not mark stacks disabled. If linking or merging becomes unavailable after dispatch, the branch is retained and the task is marked for ordinary merging: lower tasks must land before its PR can target main. A refused stack merge reports that fallback and the next merge uses the ordinary gate. Authentication and other unexpected failures are reported rather than treated as disabled stacks.
 
 Stacks support only PRs in the same repository, one chain per stack, merge commits and no auto-merge or admin bypass. The repository must allow merge commits. Linked stacks default to `--method merge`; explicit squash and rebase methods are refused because they remove accepted dependency heads from the base ancestry. A repository requiring `--admin` uses the owner's `merge.admin` policy, `stack unstack ID`, then ordinary `merge ID` on the lower tasks first. Ordinary merges accept `--method squash|merge|rebase` and retain `--match-head-commit`. Admin policy is refused for a linked stack. The webhook command consumes an already authenticated payload; it is not a public HTTP webhook receiver.
@@ -279,17 +289,69 @@ or existing fallback tick retries it within the wait's timeout.
 Filters apply to the returned event, not to the software reactions.
 
 After a confirmed merge, outstanding submitted or accepted PRs are checked
-against their fetched base in temporary detached worktrees. Conflicts send
-the task to rework with Git's filenames in its note and brief. Trial merges
-do not resolve conflicts or update worker branches. Unknown PR heads,
+against their fetched base in temporary detached worktrees. Hand-written
+conflicts send the task to rework with Git's filenames in its note and brief.
+Generated conflicts follow the repair path below. Unknown PR heads,
 unknown mergeability and failed GitHub transport cannot authorize merging.
+
+Repositories declare generated outputs in `package.json`:
+
+```json
+{
+  "scripts": { "docs:generate": "node scripts/cli-docs.js" },
+  "tower-crane": {
+    "generated": {
+      "generated.txt": "docs:generate",
+      "docs/cli.md": { "script": "docs:generate", "blocks": ["commands:Run"] }
+    }
+  }
+}
+```
+
+The mapping uses exact repository-relative file paths and existing npm script
+names. A string declares an entire generated file, including add/add outputs
+with no ancestor blob. `blocks` declares only the
+bodies between `<!-- NAME:start -->` and `<!-- NAME:end -->`; text outside
+those markers remains hand-written. Every declared marker must occur exactly
+once in all three merge versions. Tower Crane's own mapping lists every
+command-table block in `docs/cli.md`. Deletions, renames, symlinks and missing
+markers remain worker conflicts.
+
+Only the fetched base's mapping authorizes repair. When GitHub reports an
+open PR `CONFLICTING` or `DIRTY` at the submitted head, automation merges the
+fetched base into its idle, clean task worktree outside the worker sandbox.
+It pre-resolves declared outputs, runs their npm scripts, stages every
+declared output of those scripts, commits and pushes normally. A generated-only
+merge keeps the task submitted, preserves its submitter and revision, and
+runs gates again at the new sha. An accepted task returns to submitted for
+fresh gates and review. There is no rework or worker dispatch for that repair.
+If a queue head check or post-merge sweep finds generated conflicts before
+GitHub confirms them at the submitted head, the task keeps its status, sha
+and checkout. The queue waits and later reactions retry. Mixed conflicts also
+wait, so their generated resolutions can be prepared before worker rework.
+Dirty or moved branches and live workers defer it. Generator failures abort
+generated-only merges and restore the clean checkout, including removing new
+untracked files from that attempt; push failures retain a prepared merge for
+retry. Generation must preserve text outside declared blocks. Before changing
+the branch and again before pushing, automation verifies the PR head repository
+and the single origin push destination against the project and PR. Fork heads
+and mismatched or changed push destinations defer repair.
+
+For mixed conflicts, the task goes to rework with its merge already prepared.
+Generated files are staged; only hand-written conflicts remain unresolved,
+including text outside generated blocks in the same file. The note and brief
+name the worktree, remaining files and scripts to rerun before committing.
+If a generator cannot run until source conflicts are resolved, the merge
+keeps the branch's generated bodies staged and the worker reruns the scripts
+after resolving the hand-written files.
 
 Accepted PRs merge through a merge queue in the order of their `accept`
 events. A stack is one entry, ordered by its lowest unmerged task: it holds
 that task and the accepted, linked tasks directly above it, and an upper
 task whose lower task is not accepted waits outside the line. Only the head
 of the line runs anything. A head GitHub reports `CONFLICTING` or `DIRTY`
-goes to rework with its files and leaves the line. Unknown mergeability
+uses generated-file repair or goes to rework with its hand-written files
+and leaves the line. Unknown mergeability
 stops the line until a later reaction. A head the queue cannot advance (a
 closed or unreadable PR, a moved or differently merged head, failing gates, a refused
 merge or head check) is reported once in a `queue skipped` event and passed
@@ -335,8 +397,9 @@ again and checks again if it moved; `gh pr merge --match-head-commit` pins the h
 but nothing pins the base, so a push to the base in the seconds between
 that fetch and the merge call is not checked. A branch protection rule that
 requires up-to-date branches closes that window. Hosted CI evidence comes
-from GitHub's `pull_request` run, which already tests the merge ref; never
-merge the base into a PR to refresh evidence or pick up a workflow change.
+from GitHub's `pull_request` run, which already tests the merge ref. Merge
+the base into a PR only for conflict repair, never to refresh evidence or
+pick up a workflow change.
 One executor drains the queue; a reaction that finds it busy records a
 request, and the executor makes another pass before releasing. Manual
 `merge ID` bypasses the queue and its head check: it keeps only the merge
