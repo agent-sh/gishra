@@ -205,8 +205,8 @@ function context(t, base) {
         catch (e) { if (e.code === 'ENOENT') return []; throw e; }
       }) : [];
     },
-    cleanup: async () => {
-      try { await stopDetached(ctx.detached()); }
+    cleanup: async ({ monitorGraceMs } = {}) => {
+      try { await stopDetached(ctx.detached(), monitorGraceMs); }
       finally { fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
     },
     run: (args, opts = {}) => run(args, withHooks(ctx, opts)),
@@ -309,7 +309,7 @@ function killDetached(child) {
   }
 }
 
-async function stopDetached(children) {
+async function stopDetached(children, monitorGraceMs) {
   const monitors = children.filter((c) => c.kind === 'monitor');
   if (process.platform === 'win32' && monitors.length) {
     // Retain native handles before stopping workers. A PID can be reused
@@ -375,14 +375,18 @@ try {
     assert.deepEqual(JSON.parse(stdout.trim().split('\n').at(-1)), [], 'detached usage monitors outlived test teardown');
     return;
   }
+  let grace;
+  const controller = new AbortController();
   try {
     for (const child of children.filter((c) => c.kind === 'worker')) killDetached(child);
-    const deadline = Date.now() + 10000; // wait-allow: bounded teardown grace detects collectors that cannot observe their worker
-    while (monitors.some(detachedAlive) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50)); // wait-allow: teardown probe cadence during the bounded grace period
+    if (monitorGraceMs !== undefined) {
+      grace = setTimeout(() => controller.abort(new Error('detached usage monitors outlived test teardown')), monitorGraceMs); // wait-allow: deliberate teardown-failure tests supply their observation grace
     }
-    assert.deepEqual(monitors.filter(detachedAlive).map((c) => c.pid), [], 'detached usage monitors outlived test teardown');
+    await waitUntil(() => monitors.every((child) => !detachedAlive(child)), {
+      signal: controller.signal, what: 'detached usage monitors outlived test teardown',
+    });
   } finally {
+    clearTimeout(grace);
     for (const monitor of monitors) killDetached(monitor);
     await waitUntil(() => monitors.every((child) => !detachedAlive(child)));
     assert.ok(monitors.every((c) => !detachedAlive(c)), 'usage monitors survived forced cleanup');

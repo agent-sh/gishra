@@ -79,6 +79,11 @@ function waitFindings(text) {
       report(index, 'readiness deadline below the hung-test timeout');
     }
   }
+  for (const match of text.matchAll(/\bmonitorGraceMs\s*:\s*([^,}]+)/g)) {
+    if (!hungBudget(match[1].trim())) {
+      report(text.slice(0, match.index).split('\n').length - 1, 'teardown has a fixed observation budget');
+    }
+  }
   for (const elapsed of text.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*(?:Date|performance)\.now\(\)\s*-\s*\w+/g)) {
     const comparisons = new RegExp(`\\b${elapsed[1]}\\s*<\\s*(\\d[\\d_]*)`, 'g');
     for (const match of text.matchAll(comparisons)) {

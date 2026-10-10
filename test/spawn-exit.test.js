@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
-const { cachedFixture, BIN, HOOKS, runPty, PTY_AVAILABLE, detachedAlive } = require('./helpers');
+const { makeRepo, cachedFixture, BIN, HOOKS, runPty, PTY_AVAILABLE, detachedAlive } = require('./helpers');
 
 const PRIVATE_LOG = 'prompt: synthetic private instruction\ncredential: synthetic-secret-for-recovery-test';
 
@@ -155,6 +155,38 @@ test('teardown observes a monitor exit recorded after its PID snapshot', {
   assert.equal(process.kill(child.pid, 0), true, 'teardown killed a reused PID');
 });
 
+test('ordinary teardown waits for a monitor exit even when the wall clock jumps', {
+  skip: process.platform === 'win32' && 'Windows teardown waits on native process handles',
+}, async (t) => {
+  const h = makeRepo(t);
+  const ready = path.join(h.base, 'ready');
+  const release = path.join(h.base, 'release');
+  const child = cp.spawn(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    const watcher = fs.watch(${JSON.stringify(h.base)}, () => {
+      if (fs.existsSync(${JSON.stringify(release)})) process.exit(0);
+    });
+    fs.writeFileSync(${JSON.stringify(ready)}, '');
+  `], { detached: true, stdio: 'ignore' });
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  t.after(async () => { child.kill('SIGKILL'); await closed; });
+  await waitOnRepo(h, () => fs.existsSync(ready), 'monitor did not start');
+  const dir = path.join(h.base, 'detached');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, `${child.pid}.json`), JSON.stringify({ pid: child.pid, kind: 'monitor' }));
+  let clock = 0;
+  const now = t.mock.method(Date, 'now', () => (clock += 20000));
+  try {
+    const cleaned = h.cleanup();
+    queueMicrotask(() => fs.writeFileSync(release, ''));
+    await cleaned;
+    await closed;
+    assert.equal(child.exitCode, 0, 'ordinary teardown observes natural completion');
+  } finally {
+    now.mock.restore();
+  }
+});
+
 test('teardown waits for OS termination after a monitor marks its exit', async (t) => {
   const h = setup(t);
   const dir = path.join(h.base, 'detached');
@@ -192,7 +224,7 @@ process.exit(0);
   assert.equal(child.kill(0), true, 'monitor must still be running inside the exit listener');
   if (process.platform === 'win32') await h.cleanup();
   else {
-    await assert.rejects(h.cleanup(), /detached usage monitors outlived test teardown/);
+    await assert.rejects(h.cleanup({ monitorGraceMs: 10000 }), /detached usage monitors outlived test teardown/); // wait-allow: the held exit listener must exceed teardown's observation grace
     await closed;
   }
   assert.equal(child.kill(0), false, 'cleanup returned before the original monitor terminated');
