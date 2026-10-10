@@ -252,8 +252,8 @@ fs.readFileSync = function(file, ...args) {
 });
 
 for (const change of ['schema bump', 'unknown current task status', 'unknown blocking decision status']) {
-// Windows starts the harness before its claim, so a drain that refuses the claim stops a worker that has no lease yet.
-test(`${change} drains the supervisor without killing an edit`, { skip: process.platform === 'win32' && 'the lease gate is POSIX-only' }, async (t) => {
+// A drain that refuses the claim stops a worker that has no lease yet, before its harness starts.
+test(`${change} drains the supervisor without killing an edit`, async (t) => {
   const h = fixture(t);
   const worker = heldWorker(h);
   let output = '';

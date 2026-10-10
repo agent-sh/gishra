@@ -2,7 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const cp = require('node:child_process');
 const fs = require('node:fs');
+const { once } = require('node:events');
 const path = require('node:path');
 const { cachedFixture, BIN } = require('./helpers');
 const P = require('../lib/processes');
@@ -34,6 +36,19 @@ async function pausedSpawn(h, task) {
   const spawned = h.json(['spawn', '--task', task], { hooks: { HOOK_PAUSE_ON: 'events.jsonl', HOOK_PAUSE_PROCESS: 'spawn-monitor.js', HOOK_PAUSED: paused } });
   await until(() => fs.existsSync(paused), 'supervisor did not pause');
   return { spawned, release: () => fs.writeFileSync(`${paused}.go`, '') };
+}
+
+// The monitor dies first so it cannot record the exit, then the worker's processes.
+// Windows has no group to signal; the gate's tree goes with taskkill.
+function killWorker(spawned) {
+  process.kill(spawned.monitor_pid, 'SIGKILL');
+  if (process.platform === 'win32') cp.spawnSync('taskkill', ['/PID', String(spawned.pid), '/T', '/F'], { stdio: 'ignore' });
+  else process.kill(-spawned.pid, 'SIGKILL');
+}
+
+function workerGone(spawned) {
+  return P.processState({ host: spawned.host, pid: spawned.monitor_pid }) === 'exited'
+    && P.processGroupState({ host: spawned.host, pid: spawned.pid }) === 'exited';
 }
 
 function controlledHarness(h) {
@@ -146,8 +161,7 @@ test('a failed launch holds no slot, and an exited worker frees its slot once re
   h.ok(['claim', 'T2', '--agent', 'manual']);
 });
 
-// Linux only: the group probe reads /proc, so elsewhere the reservation stays held.
-test('spawn refuses a task with a live reservation and clears one whose processes are gone', { skip: process.platform !== 'linux' && 'the process-group probe reads /proc' }, async (t) => {
+test('spawn refuses a task with a live reservation and clears one whose processes are gone', async (t) => {
   const h = setup(t, 2, 2);
   controlledHarness(h);
   const { spawned } = await pausedSpawn(h, 'T1');
@@ -155,17 +169,43 @@ test('spawn refuses a task with a live reservation and clears one whose processe
   assert.equal(refused.code, 1, refused.stderr);
   assert.match(refused.stderr, /T1.*worker-T1-1.*reservation/);
   assert.equal(events(h).filter((e) => e.cmd === 'spawn').length, 1, 'the refused spawn records nothing');
-  // The monitor dies first so it cannot record the exit, then the worker's group.
-  process.kill(spawned.monitor_pid, 'SIGKILL');
-  process.kill(-spawned.pid, 'SIGKILL');
-  const gone = () => P.processState({ host: spawned.host, pid: spawned.monitor_pid }) === 'exited'
-    && P.processGroupState({ host: spawned.host, pid: spawned.pid }) === 'exited';
-  await until(gone, 'worker processes did not exit');
+  killWorker(spawned);
+  await until(() => workerGone(spawned), 'worker processes did not exit');
   const replacement = h.json(['spawn', '--task', 'T1']);
   assert.equal(replacement.agent, 'worker-T1-2');
   assert.ok(events(h).some((e) => e.cmd === 'reservation clear' && e.detail.agent === spawned.agent && e.detail.attempt === spawned.attempt),
     'the cleared reservation is recorded');
   fs.writeFileSync(path.join(h.base, 'T1.exit'), '');
+});
+
+// macOS has no /proc, so its group probe is the signal to an empty group. CI has no macOS
+// runner: this runs the same probe on POSIX with the platform overridden.
+test('a group probe without /proc proves exit only once the group is empty', { skip: process.platform === 'win32' && 'Windows probes its gate pid' }, async (t) => {
+  const exited = cp.spawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' });
+  await once(exited, 'exit');
+  const live = cp.spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: 'ignore' });
+  t.after(() => { try { process.kill(-live.pid, 'SIGKILL'); } catch { /* already gone */ } });
+  const real = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  try {
+    assert.equal(P.processGroupState({ pid: exited.pid }), 'exited');
+    assert.equal(P.processGroupState({ pid: live.pid }), 'unknown');
+  } finally {
+    Object.defineProperty(process, 'platform', real);
+  }
+});
+
+test('a dead reservation frees the only worker slot before the first capacity check', async (t) => {
+  const h = setup(t, 1, 2);
+  controlledHarness(h);
+  const { spawned } = await pausedSpawn(h, 'T1');
+  killWorker(spawned);
+  await until(() => workerGone(spawned), 'worker processes did not exit');
+  const replacement = h.json(['spawn', '--task', 'T2']);
+  assert.equal(replacement.agent, 'worker-T2-1');
+  assert.ok(events(h).some((e) => e.cmd === 'reservation clear' && e.detail.agent === spawned.agent),
+    'the dead reservation is cleared under the lock before the slot is counted');
+  fs.writeFileSync(path.join(h.base, 'T2.exit'), '');
 });
 
 test('reviewer dispatch is unaffected when worker reservations fill the limit', async (t) => {
@@ -204,8 +244,6 @@ test('dispatch rechecks slots under the lock after worktree preparation', async 
 });
 
 test('a retrying worker keeps its slot through backoff and expired-lease renewal', async (t) => {
-  // Windows starts the harness before its claim lands, so the slot may still be a reservation there.
-  const HOLD_KIND = process.platform === 'win32' ? 'lease|reservation' : 'lease';
   const h = setup(t, 1);
   h.ok(['claim', 'T3', '--agent', 'expired']);
   const doc = h.readState('tasks.json');
@@ -217,10 +255,10 @@ test('a retrying worker keeps its slot through backoff and expired-lease renewal
   await until(() => events(h).some((e) => e.cmd === 'spawn phase' && e.detail.phase === 'retrying'), 'worker did not enter backoff');
   const renew = h.run(['renew', 'T3', '--agent', 'expired']);
   assert.equal(renew.code, 1, renew.stderr);
-  assert.match(renew.stderr, new RegExp(`T1.*worker-T1-1.*(${HOLD_KIND})`));
+  assert.match(renew.stderr, /T1.*worker-T1-1.*lease/);
   const refused = h.run(['spawn', '--task', 'T2']);
   assert.equal(refused.code, 1, refused.stderr);
-  assert.match(refused.stderr, new RegExp(`T1.*worker-T1-1.*(${HOLD_KIND})`));
+  assert.match(refused.stderr, /T1.*worker-T1-1.*lease/);
   await until(() => events(h).some((e) => e.cmd === 'spawn retry'), 'worker did not retry');
   h.ok(['claim', 'T1', '--agent', spawned.agent]);
   assert.equal(h.run(['claim', 'T2', '--agent', 'manual']).code, 1);
