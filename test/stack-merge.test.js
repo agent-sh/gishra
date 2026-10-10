@@ -165,7 +165,7 @@ test('an unaccepted lower task, unknown remote lower PR, or auto-merge prevents 
   const ci = f.h.run(['check', 'ci', 'T1']);
   assert.equal(ci.code, 0, ci.stdout + ci.stderr);
   f.h.reviewer('T1', 'independent-reviewer', f.sha);
-  f.h.ok(['evidence', 'T1', '--type', 'review', '--ok', '--sha', f.sha, '--agent', 'independent-reviewer', '--summary', 'checked']);
+  f.h.ok(['evidence', 'T1', '--revision', f.h.revision('T1'), '--type', 'review', '--ok', '--sha', f.sha, '--agent', 'independent-reviewer', '--summary', 'checked']);
   const lower = f.h.json(['task', 'show', 'T1']);
   assert.equal(lower.status, 'submitted');
   assert.equal(lower.gates.ok, true, 'passing receipts still need an acceptance');
@@ -542,7 +542,7 @@ test('lower acceptance cannot hide failing current gate evidence', (t) => {
   f.accept('T1');
   f.accept('T2');
   f.h.reviewer('T1', 'reviewer-independent', f.sha);
-  f.h.ok(['evidence', 'T1', '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
+  f.h.ok(['evidence', 'T1', '--revision', f.h.revision('T1'), '--type', 'review', '--fail', '--sha', f.sha, '--agent', 'reviewer-independent']);
   assert.match(f.h.run(['merge', 'T2']).stdout, /T1.*passing gates/);
   assert.deepEqual(routes(f), []);
 });
