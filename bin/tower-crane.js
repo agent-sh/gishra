@@ -75,7 +75,7 @@ const SETTINGS = {
   'ci-capped-review': str('JSON', 'array of {app, pattern}: a matching check run of that app is a nonblocking capped review; [] or null clears the list'),
   'ci-local': str('JSON', 'local CI {command: argv, timeout: seconds, by_kind?: overrides}; null restores hosted CI'),
   'merge-keep-branch': str('JSON', 'true keeps merged task branches for retained worktrees; false or null restores deletion'),
-  'session-bus': str('JSON', 'operational: true lets claude worker sandboxes reach the user session bus, so systemd-run --user works; false turns it off (docs/state.md#projectjson)'),
+  'session-bus': str('JSON', 'owner-required: true lets claude worker sandboxes reach the user session bus, which lifts their confinement; false turns it off (docs/state.md#projectjson)'),
   'merge-admin': str('JSON', 'owner-required: true uses gh --admin for solely owned repos; false or null disables it'),
   'decision-delegation': str('JSON', 'owner only: allow the orchestrator to answer technical decisions; null clears'),
   'review-policy': str('JSON', 'operational (orchestrator or owner): review diff limits and canonical model prices; null clears the policy'),
