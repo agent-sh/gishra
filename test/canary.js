@@ -82,8 +82,8 @@ function processListing() {
   return parts.join('\n');
 }
 
-// Readiness is the write itself, including files with empty contents.
-const waitFor = (file) => fileWritten(file);
+// Empty files signal events; PID markers need content after file creation.
+const waitFor = (file, { nonempty = false } = {}) => fileWritten(file, { check: (text) => !nonempty || text });
 
 function assertNoHits(hits, what) {
   assert.deepEqual(hits.map((h) => `${h.label} in ${h.where}`), [], `secret canaries leaked into ${what}`);
