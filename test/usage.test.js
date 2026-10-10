@@ -1,5 +1,7 @@
 'use strict';
 
+const { fileWritten, waitOnRepo, waitUntil, HUNG_TEST_MS } = require('./signals');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -99,25 +101,15 @@ function setup(t, harness = 'codex') {
 const spends = (h) => h.json(['task', 'show', 'T1']).spend;
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 
-async function collected(h, length = 1, timeout = 15000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
+function collected(h, length = 1) {
+  return waitOnRepo(h, () => {
     const spend = spends(h);
-    if (spend.entries?.length === length) return spend;
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  throw new Error('usage was not collected within 15 s');
+    return spend.entries?.length === length && spend;
+  });
 }
 
-async function waitForText(file, text, timeout = 15000) {
-  const deadline = Date.now() + timeout;
-  let contents = '';
-  while (Date.now() < deadline) {
-    contents = fs.readFileSync(file, 'utf8');
-    if (contents.includes(text)) return contents;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error(`${file} did not contain ${text} within ${timeout} ms`);
+function waitForText(file, text) {
+  return fileWritten(file, { check: (contents) => contents.includes(text) && contents });
 }
 
 test('native usage uses one CLI call and preserves rung metadata across ladder changes', (t) => {
@@ -171,12 +163,11 @@ test('completed processes cannot leave teardown targeting a reused pid', async (
     env: { ...h.usageEnv, USAGE_DELAY: '100' }, hooks: h.usageHooks,
   });
   await collected(h);
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
+  await waitOnRepo(h, () => {
     const tracked = h.detached();
-    if (!tracked.some((child) => child.kind === 'worker') && tracked.filter((child) => child.kind === 'monitor').every((child) => child.exited)) break;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+    return !tracked.some((child) => child.kind === 'worker')
+      && tracked.filter((child) => child.kind === 'monitor').every((child) => child.exited);
+  });
   const tracked = h.detached();
   assert.equal(tracked.filter((child) => child.kind === 'worker').length, 0);
   const monitors = tracked.filter((child) => child.kind === 'monitor');
@@ -204,10 +195,7 @@ test('detached exits record both spawns exactly once and keep dispatch metadata'
   assert.equal(events(h).filter((e) => e.cmd === 'spend').length, 2);
   const monitors = h.detached().filter((c) => c.kind === 'monitor');
   assert.equal(monitors.length, 2, 'both collectors are tracked for teardown');
-  const deadline = Date.now() + 3000;
-  while (monitors.some(detachedAlive) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await waitOnRepo(h, () => !(monitors.some(detachedAlive)));
   assert.ok(monitors.every((c) => !detachedAlive(c)), 'collectors exit after recording usage');
 });
 
@@ -340,7 +328,7 @@ test('detached accounting retries a lock held across the first collection attemp
   h.json(['spawn', '--task', 'T1'], { env: { ...h.usageEnv, USAGE_DELAY: '1000' }, hooks: h.usageHooks });
   const S = require('../lib/state');
   const lock = S.acquireLock(h.state);
-  const timer = setTimeout(() => S.releaseLock(lock), S.LOCK_WAIT_MS + 3000);
+  const timer = setTimeout(() => S.releaseLock(lock), S.LOCK_WAIT_MS + 3000); // wait-allow: hold the state lock beyond the production accounting timeout
   t.after(() => { clearTimeout(timer); S.releaseLock(lock); });
   const s = await collected(h, 1, S.LOCK_WAIT_MS * 3);
   assert.equal(s.tokens, 24816);
@@ -399,7 +387,7 @@ async function runMonitor(t, h, detail, { clock = false, env = {} } = {}) {
     if (child.exitCode === null && child.signalCode === null) child.kill();
     await closed;
   });
-  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 3000);
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, HUNG_TEST_MS); // wait-allow: hold the state lock beyond the production accounting timeout
   try {
     const code = await closed;
     return { code: timedOut ? 'timeout' : code, stderr };

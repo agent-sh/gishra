@@ -1,5 +1,7 @@
 'use strict';
 
+const { fileWritten } = require('./signals');
+
 // Secret canaries: unique random values placed where an owner keeps secrets
 // (rung and project env, an env_file, a harness credential), then searched
 // for in every file, event, output and process listing a run leaves. A hit
@@ -80,17 +82,8 @@ function processListing() {
   return parts.join('\n');
 }
 
-// The file's text once it exists, or null after ms; read, not checked first.
-async function waitFor(file, ms = 20000) {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    try { return fs.readFileSync(file, 'utf8'); } catch (e) {
-      if (e.code !== 'ENOENT') throw e;
-    }
-    if (Date.now() >= deadline) return null;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
+// Readiness is the write itself, including files with empty contents.
+const waitFor = (file) => fileWritten(file);
 
 function assertNoHits(hits, what) {
   assert.deepEqual(hits.map((h) => `${h.label} in ${h.where}`), [], `secret canaries leaked into ${what}`);

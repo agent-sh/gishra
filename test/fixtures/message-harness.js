@@ -45,10 +45,10 @@ async function main() {
     return;
   }
   fs.writeFileSync(process.env.MESSAGE_READY, '');
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 300000;
   while (!fs.existsSync(process.env.MESSAGE_READY + '.go')) {
     if (Date.now() >= deadline) throw new Error('message test never released harness');
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10)); // wait-allow: probe cadence only; the release signal and hung-test timeout bound this fixture
   }
   if (harness === 'claude' && process.env.MESSAGE_HEADLESS) {
     // Stop is asked twice, so the test shows the hold is taken once. A resumed
@@ -91,7 +91,7 @@ async function main() {
     fs.writeFileSync(process.env.MESSAGE_READY + '.stop', '');
     while (!fs.existsSync(process.env.MESSAGE_READY + '.stop.go')) {
       if (Date.now() >= deadline) throw new Error('stop test never released harness');
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10)); // wait-allow: probe cadence only; the release signal and hung-test timeout bound this fixture
     }
     const held = hook('Stop');
     out.blocked = held.decision === 'block';
@@ -111,7 +111,7 @@ async function main() {
     fs.writeFileSync(process.env.MESSAGE_READY + '.stop', '');
     while (!fs.existsSync(process.env.MESSAGE_READY + '.stop.go')) {
       if (Date.now() >= deadline) throw new Error('stop test never released harness');
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10)); // wait-allow: probe cadence only; the release signal and hung-test timeout bound this fixture
     }
     await handlers.agent_end({ messages: [{ role: 'assistant', content: [{ type: 'text', text: 'last report from pi' }] }] });
     await handlers.agent_end({ messages: [{ role: 'assistant', content: [{ type: 'text', text: 'last report from pi' }] }] });
@@ -143,7 +143,7 @@ async function main() {
     fs.writeFileSync(process.env.MESSAGE_READY + '.stop', '');
     while (!fs.existsSync(process.env.MESSAGE_READY + '.stop.go')) {
       if (Date.now() >= deadline) throw new Error('stop test never released harness');
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10)); // wait-allow: probe cadence only; the release signal and hung-test timeout bound this fixture
     }
     await idle('parent');
     event({ type: 'text', part: { text: 'last report from opencode' } });

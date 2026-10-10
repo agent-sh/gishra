@@ -1,5 +1,7 @@
 'use strict';
 
+const { waitOnRepo } = require('./signals');
+
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -16,13 +18,7 @@ function setFallbacks(h, routes, rung = 'easy') {
   fs.writeFileSync(h.userConfig, JSON.stringify({ ladder: { [rung]: { fallbacks: routes } } }));
 }
 
-async function until(fn, message) {
-  const deadline = Date.now() + 12000;
-  while (!fn()) {
-    if (Date.now() >= deadline) assert.fail(message);
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-}
+
 
 function setup(t, { reason = 'outage', primaryHarness = 'codex', nextHarness = 'codex', chain = false,
   rung = 'easy', webMcp, fallbackWebMcp } = {}) {
@@ -98,7 +94,7 @@ for (const nextHarness of ['codex', 'claude']) {
     const exited = JSON.parse(result.stdout);
     assert.equal(exited.detail.agent, spawned.agent);
     assert.equal(exited.detail.code, 0);
-    await until(() => events(h).filter((e) => e.cmd === 'spend').length === 2, 'route usage receipts were not recorded');
+    await waitOnRepo(h, () => events(h).filter((e) => e.cmd === 'spend').length === 2, 'route usage receipts were not recorded');
     const attempts = h.attempts();
     assert.deepEqual(attempts.map((a) => a.model), ['first', 'first', 'first', 'second']);
     assert.deepEqual(attempts.map((a) => a.retry), ['0', '1', '2', '0']);
@@ -230,7 +226,7 @@ test('rework during a live fallback refuses a second worker until the previous a
   const wake = await waiting;
   assert.equal(wake.code, 0, wake.stderr);
   // The harness truncates and rewrites attempts.json between fallback routes.
-  await until(() => {
+  await waitOnRepo(h, () => {
     try {
       return h.attempts().length === 4;
     } catch (error) {
@@ -247,7 +243,7 @@ test('rework during a live fallback refuses a second worker until the previous a
   }
   assert.equal(events(h).filter((e) => e.cmd === 'spawn').length, 1);
   assert.equal(h.attempts().length, 4);
-  await until(() => events(h).some((e) => e.cmd === 'spawn exit'), 'fallback worker did not exit');
+  await waitOnRepo(h, () => events(h).some((e) => e.cmd === 'spawn exit'), 'fallback worker did not exit');
   const preview = h.json(['spawn', '--task', 'T1', '--dry-run'], { env: h.spawnEnv });
   assert.equal(preview.resumed, false);
 });
@@ -476,7 +472,7 @@ test('a detached switch wakes a live waiter, keeps its lease, and collects route
   assert.deepEqual(h.json(['status']).exited_claims, []);
   assert.equal(h.json(['task', 'show', 'T1']).claim.agent, spawn.agent);
   assert.equal(h.run(['release', 'T1', '--agent', 'recovery', '--reason', 'too early']).code, 1);
-  await until(() => h.json(['task', 'show', 'T1']).spend.entries?.length === 2, 'detached route usage was not collected');
+  await waitOnRepo(h, () => h.json(['task', 'show', 'T1']).spend.entries?.length === 2, 'detached route usage was not collected');
   const task = h.json(['task', 'show', 'T1']);
   assert.equal(task.run.phase, 'waiting');
   assert.deepEqual(task.spend.entries.map((e) => [e.model, e.tokens]), [['first', 39], ['second', 13]]);

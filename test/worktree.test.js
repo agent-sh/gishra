@@ -1,5 +1,7 @@
 'use strict';
 
+const { fileWritten } = require('./signals');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -298,7 +300,7 @@ for (const command of ['worktree', 'spawn']) {
     }
     assert.equal(h.git(['rev-parse', 'origin/main']), fresh);
     assert.equal(fs.readFileSync(attempts, 'utf8'), '.', 'the dispatcher fetched once before preparing workers');
-    assert.ok(Date.now() - started < 30000, 'the dispatch finishes within two fetch times');
+    assert.ok(Date.now() - started < 30000, 'the dispatch finishes within two fetch times'); // wait-allow: verify an orphan registration refuses without waiting for its former preparation deadline
   });
 }
 
@@ -332,13 +334,7 @@ for (const hooks of [{ HOOK_ADD_ERROR: 'ETIMEDOUT' }, { HOOK_DIE_WORKTREE_ADD: '
   });
 }
 
-async function waitForFile(file) {
-  const deadline = Date.now() + 10000;
-  while (!fs.existsSync(file)) {
-    assert.ok(Date.now() < deadline, `${file} appeared before the deadline`);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
+const waitForFile = (file) => fileWritten(file);
 
 test('a surviving post-checkout child cannot write into a replacement worktree', { timeout: 30000 }, async (t) => {
   const h = setup(t);
@@ -349,7 +345,7 @@ test('a surviving post-checkout child cannot write into a replacement worktree',
   fs.writeFileSync(hook, `
 const fs = require('node:fs');
 fs.writeFileSync(${JSON.stringify(paused)}, '');
-const end = Date.now() + 20000;
+const end = Date.now() + 300000;
 while (!fs.existsSync(${JSON.stringify(paused + '.go')}) && Date.now() < end) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
 }

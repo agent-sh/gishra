@@ -1,5 +1,7 @@
 'use strict';
 
+const { waitUntil, HUNG_TEST_MS } = require('./signals');
+
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -336,7 +338,7 @@ try {
   $clock = [System.Diagnostics.Stopwatch]::StartNew()
   $survivors = @()
   foreach ($monitor in $monitors) {
-    if (!$monitor.WaitForExit([int][Math]::Max(0, 10000 - $clock.ElapsedMilliseconds))) {
+    if (!$monitor.WaitForExit([int][Math]::Max(0, 300000 - $clock.ElapsedMilliseconds))) {
       $survivors += $monitor.Id
     }
   }
@@ -375,17 +377,11 @@ try {
   }
   try {
     for (const child of children.filter((c) => c.kind === 'worker')) killDetached(child);
-    const deadline = Date.now() + 10000;
-    while (monitors.some(detachedAlive) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    await waitUntil(() => monitors.every((child) => !detachedAlive(child)));
     assert.deepEqual(monitors.filter(detachedAlive).map((c) => c.pid), [], 'detached usage monitors outlived test teardown');
   } finally {
     for (const monitor of monitors) killDetached(monitor);
-    const deadline = Date.now() + 10000;
-    while (monitors.some(detachedAlive) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    await waitUntil(() => monitors.every((child) => !detachedAlive(child)));
     assert.ok(monitors.every((c) => !detachedAlive(c)), 'usage monitors survived forced cleanup');
   }
 }

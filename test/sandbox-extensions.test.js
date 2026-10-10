@@ -352,7 +352,7 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
     '}',
     'if (!limited) throw new Error("agent did not inherit CPUQuota=200% and MemoryMax=8G");',
     'const server = net.createServer(c => c.end("loopback"));',
-    'const deadline = setTimeout(() => { console.error("loopback timeout"); process.exit(1); }, 10000);',
+    'const deadline = setTimeout(() => { console.error("loopback timeout"); process.exit(1); }, 10000);', // wait-allow: hung-child backstop for the live sandbox network probe
     'server.on("error", e => { throw e; });',
     'server.listen(0, "127.0.0.1", () => {',
     '  let text = "";',

@@ -3,6 +3,7 @@
 const cp = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+async function main() {
 const bin = process.argv[2];
 const mode = process.argv[3];
 const task = process.env.TOWER_CRANE_TASK;
@@ -31,13 +32,13 @@ if (mode === 'worker' || mode === 'auto' && taskState.status !== 'submitted') {
   if (process.env.AUTOMATION_WORKER_HOLD) {
     const hold = process.env.AUTOMATION_WORKER_HOLD;
     fs.writeFileSync(hold, '');
-    const deadline = Date.now() + 60000;
-    while (!fs.existsSync(`${hold}.go`) && Date.now() < deadline) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
+    await require('../signals').fileWritten(`${hold}.go`, { check: () => true });
     if (!fs.existsSync(`${hold}.go`)) throw new Error('worker release was not delivered');
   }
 } else {
   run(['evidence', task, '--type', 'review', '--sha', pr.headRefOid, '--ok']);
 }
 console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }));
+}
+
+main().catch((error) => { console.error(error); process.exitCode = 1; });

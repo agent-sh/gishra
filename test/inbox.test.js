@@ -1,5 +1,7 @@
 'use strict';
 
+const { waitOnRepo } = require('./signals');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -124,7 +126,7 @@ test('one fixture exposes every inbox kind and resolving commands clear their co
   assert.equal(merges.length, 1);
   assert.equal(merges[0][merges[0].indexOf('--match-head-commit') + 1], h.sha);
   const worker = path.join(h.base, 'worker.js');
-  fs.writeFileSync(worker, 'setTimeout(() => {}, 60000);\n');
+  fs.writeFileSync(worker, 'setInterval(() => {}, 1000);\n');
   h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, worker, '{prompt}']), '--clear', 'profile', '--clear', 'effort']);
   const dispatch = h.run(['spawn', '--ready', '--agent', 'orchestrator', '--json']);
   assert.equal(dispatch.code, 0, dispatch.stdout + dispatch.stderr);
@@ -179,7 +181,7 @@ test('ready dispatch respects worker slots and unobservable processes cannot be 
   assert.deepEqual(h.json(['release', '--dead', '--agent', 'orchestrator']).results, []);
   assert.deepEqual(h.readState('tasks.json'), before);
   const worker = path.join(h.base, 'worker.js');
-  fs.writeFileSync(worker, 'setTimeout(() => {}, 60000);\n');
+  fs.writeFileSync(worker, 'setInterval(() => {}, 1000);\n');
   h.ok(['ladder', 'set', 'medium', '--harness', 'command', '--command', JSON.stringify([process.execPath, worker, '{prompt}']), '--clear', 'profile', '--clear', 'effort']);
   const dispatch = h.run(['spawn', '--ready', '--agent', 'orchestrator', '--json']);
   assert.equal(dispatch.code, 0, dispatch.stdout + dispatch.stderr);
@@ -314,11 +316,7 @@ test('accepted batch waits for the queue, merges capped and crashed revuto check
     return result;
   });
   try {
-    const deadline = Date.now() + 10000;
-    while (!h.logs().some((e) => e.cmd === 'merge queue' && e.detail.phase === 'requested')) {
-      assert.ok(Date.now() < deadline, 'batch requested the busy queue');
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await waitOnRepo(h, () => h.logs().some((e) => e.cmd === 'merge queue' && e.detail.phase === 'requested'));
     assert.equal(settled, false, 'batch waits until the queue is released');
     assert.equal(h.github().calls.filter((a) => a[1] === 'merge').length, 0);
   } finally {

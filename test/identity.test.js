@@ -1,5 +1,7 @@
 'use strict';
 
+const { waitOnRepo } = require('./signals');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -331,13 +333,10 @@ test('identity checks preserve delayed hook input on stdin', async (t) => {
     child.on('close', (code) => { exited = true; resolve(code); });
   });
   try {
-    const deadline = Date.now() + 10000;
-    while (!fs.existsSync(ready) && !exited && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitOnRepo(h, () => fs.existsSync(ready) && !exited);
     assert.ok(fs.existsSync(ready), stderr || 'CLI never attempted to read stdin');
     // Keep the pipe empty while the child begins its synchronous read.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50)); // wait-allow: exercise an empty nonblocking stdin pipe before supplying delayed input
     child.stdin.end(JSON.stringify({ report: 'Delayed input' }));
     assert.equal(await done, 0, stderr);
     const rows = events(h).trim().split('\n').map(JSON.parse);

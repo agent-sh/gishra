@@ -1,5 +1,7 @@
 'use strict';
 
+const { fileWritten, eventAppended, HUNG_TEST_MS } = require('./signals');
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -35,7 +37,7 @@ function setup(t, flags = []) {
   return h;
 }
 
-function child(t, h, args, hooks = {}, ms = 60000) {
+function child(t, h, args, hooks = {}, ms = HUNG_TEST_MS) {
   const p = cp.spawn(process.execPath, ['--require', HOOKS, BIN, ...args], {
     cwd: h.repo, env: { ...h.env, HOOK_STATE: h.state, ...hooks },
   });
@@ -44,7 +46,7 @@ function child(t, h, args, hooks = {}, ms = 60000) {
   p.stdout.on('data', (d) => { stdout += d; });
   p.stderr.on('data', (d) => { stderr += d; });
   // A failure bound only; waiters time out first and report it.
-  const timer = setTimeout(() => p.kill(), ms);
+  const timer = setTimeout(() => p.kill(), HUNG_TEST_MS); // wait-allow: stagger concurrent operations to exercise both race orderings
   const result = once(p, 'close').then(([code]) => {
     clearTimeout(timer);
     return { code, stdout, stderr };
@@ -54,15 +56,7 @@ function child(t, h, args, hooks = {}, ms = 60000) {
   return c;
 }
 
-async function created(file) {
-  const deadline = Date.now() + 5000;
-  // Notifications can be queued behind synchronous CLI setup on Windows.
-  // Readiness is the file itself, including when the event arrives late.
-  while (!fs.existsSync(file)) {
-    if (Date.now() >= deadline) throw new Error(`file not created: ${file}`);
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-}
+const created = (file) => fileWritten(file);
 
 // A waiter runs software reactions unless it observes. Each test chooses, so a
 // test asserting on manual commands never races an automatic one by accident.
@@ -224,11 +218,8 @@ test('a manual merge racing the merge queue under another task\'s reaction: one 
     const jitter = { HOOK_JITTER_MS: '15' };
     const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--after', after, '--task', upper, '--types', 'merged', '--timeout', '30'], jitter);
     // Start near the queue's move from the lower task to the upper one.
-    const deadline = Date.now() + 20000;
-    while (!log(h).some((e) => e.type === 'merged' && e.task === lower) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    await new Promise((resolve) => setTimeout(resolve, (i % 5) * 120));
+    await eventAppended(path.join(h.state, 'events.jsonl'), (event) => event.type === 'merged' && event.task === lower, { signal: t.signal });
+    await new Promise((resolve) => setTimeout(resolve, (i % 5) * 120)); // wait-allow: stagger concurrent operations to exercise both race orderings
     const manual = await h.runAsync(['merge', upper], { hooks: jitter });
     assert.equal(manual.code, 0, `${upper}: ${manual.stderr}`);
     await event(automatic, 'merged', upper);
@@ -278,7 +269,7 @@ test('a manual merge racing an automatic merge of the same task: one merges, the
     // either side reaches GitHub first.
     const after = String(fs.statSync(path.join(h.state, 'events.jsonl')).size);
     const automatic = child(t, h, ['wait', '--agent', 'orchestrator', '--after', after, '--task', id, '--types', 'merged', '--timeout', '30']);
-    await new Promise((resolve) => setTimeout(resolve, i % 2 ? 0 : (i % 10) * 20));
+    await new Promise((resolve) => setTimeout(resolve, i % 2 ? 0 : (i % 10) * 20)); // wait-allow: stagger concurrent operations to exercise both race orderings
     const manual = await h.runAsync(['merge', id]);
     assert.equal(manual.code, 0, `${id}: ${manual.stderr}`);
     const woke = await event(automatic, 'merged', id);
@@ -576,7 +567,7 @@ test('an observer waiting for the state lock does not block its timeout', async 
   const r = h.run(['wait', '--agent', 'orchestrator', '--types', 'stall', '--timeout', '0.1'], { hooks });
   assert.equal(r.code, 2, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), { type: 'timeout', offset: fs.statSync(path.join(h.state, 'events.jsonl')).size });
-  assert.ok(performance.now() - before < 2000, 'timeout is not held by the lock retry deadline');
+  assert.ok(performance.now() - before < 2000, 'timeout is not held by the lock retry deadline'); // wait-allow: verify the CLI timeout is independent of state-lock contention
   fs.writeFileSync(`${paused}.go`, '');
   assert.equal((await writer.result).code, 0);
 });
@@ -595,7 +586,7 @@ test('startup reconciliation with an active PR does not hold a timeout behind th
     const result = h.run(['wait', '--agent', 'orchestrator', '--types', 'never', '--timeout', '0.1']);
     assert.equal(result.code, 2, result.stderr);
     assert.equal(JSON.parse(result.stdout).type, 'timeout');
-    assert.ok(performance.now() - before < 2000, 'reconciliation waits for another notification rather than blocking');
+    assert.ok(performance.now() - before < 2000, 'reconciliation waits for another notification rather than blocking'); // wait-allow: verify reconciliation does not block the CLI timeout
     assert.equal(log(h).filter((e) => e.cmd === 'automation reconcile').length, 0);
   } finally {
     fs.writeFileSync(`${paused}.go`, '');
@@ -788,7 +779,7 @@ test('serve preserves an owner comment fragmented inside UTF-8 bytes', async (t)
     req.on('error', reject);
     req.write(body.subarray(0, split));
     // Deliver the continuation as another network chunk, splitting the emoji.
-    setTimeout(() => req.end(body.subarray(split)), 25);
+    setTimeout(() => req.end(body.subarray(split)), 25); // wait-allow: stagger concurrent operations to exercise both race orderings
   });
   assert.equal(reply.status, 200);
   assert.equal(reply.body.text, text);
