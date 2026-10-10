@@ -32,6 +32,7 @@ function futureState(h) {
       at: new Date().toISOString(), agent: 'future', source: 'future', minutes: 0,
       tokens: null, input: null, cached: null, output: null,
       rung: 'expert', harness: 'future-harness', provider: 'future-provider', model: null, profile: null,
+      live: { state: 'future-reading', interval_ms: 1000, error: 'FutureReadError', future_field: { keep: true } },
     }] },
   });
   writeState(h, 'tasks.json', tasks);
@@ -71,7 +72,7 @@ setInterval(() => {
 `;
   h.ok(['ladder', 'set', 'easy', '--harness', 'command',
     '--command', JSON.stringify([process.execPath, '-e', script, '{prompt}']),
-    '--clear', 'profile', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 0, stall_ms: 60000 })]);
+    '--clear', 'profile', '--clear', 'model', '--clear', 'effort', '--supervision', JSON.stringify({ retries: 0, stall_ms: 60000 })]);
   return { ready, finish, edited };
 }
 
@@ -262,6 +263,7 @@ test(`${change} drains the supervisor without killing an edit`, { skip: process.
   child.stdout.resume();
   child.stderr.on('data', (data) => { output += data; });
   const running = new Promise((resolve) => child.on('close', (code) => resolve({ code, stderr: output })));
+  let liveBeforeExit;
   try {
     await until(() => fs.existsSync(worker.ready), 'worker did not start');
     // The harness can report ready before dispatch commits. Future writers
@@ -289,6 +291,7 @@ test(`${change} drains the supervisor without killing an edit`, { skip: process.
     await until(() => /supervision stopped.*worker.*finish/i.test(output),
       () => `supervisor did not report a clean schema stop:\n${output}`);
     process.kill(Number(fs.readFileSync(worker.ready, 'utf8')), 0);
+    liveBeforeExit = S.readEvents(h.state).filter((e) => e.cmd === 'spend live');
   } finally {
     fs.writeFileSync(worker.finish, '');
   }
@@ -296,5 +299,7 @@ test(`${change} drains the supervisor without killing an edit`, { skip: process.
   assert.equal(result.code, 1, result.stderr);
   assert.equal(fs.readFileSync(worker.edited, 'utf8'), 'edit finished');
   assert.doesNotMatch(result.stderr, /supervisor failed/);
+  assert.deepEqual(S.readEvents(h.state).filter((e) => e.cmd === 'spend live'), liveBeforeExit,
+    'an incompatible supervisor does not write a final live-spend snapshot');
 });
 }

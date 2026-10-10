@@ -65,8 +65,9 @@ cp.spawnSync = function stackGh(command, args, opts) {
   const posted = asyncPath && !asyncPath[2] && args[args.indexOf('--method') + 1] === 'POST';
   const mergeOf = args[0] === 'pr' && args[1] === 'merge' ? Number(args[2]) : posted ? Number(asyncPath[1]) : null;
   if (mergeOf && data.moveOnMerge && (!data.moveOnMerge.onPr || mergeOf === data.moveOnMerge.onPr)) {
-    const { pr, head } = data.moveOnMerge;
-    data.prs[pr].headRefOid = head;
+    const { pr, head, base } = data.moveOnMerge;
+    if (head !== undefined) data.prs[pr].headRefOid = head;
+    if (base !== undefined) data.prs[pr].baseRefName = base;
     delete data.moveOnMerge;
   }
   const land = (pr, parents, subject, deleteBranch) => {

@@ -222,6 +222,9 @@ test('owner-required changes by the orchestrator open one decision and change no
     assert.equal(d.id, `D${opened}`);
     assert.equal(d.asked_by, 'orchestrator');
     assert.deepEqual(d.escalation.settings, escalation);
+    assert.deepEqual(d.answerers, []);
+    assert.equal(d.technical, false);
+    assert.equal(d.answer_rule, null);
     const e = events(h).at(-1);
     assert.equal(e.cmd, 'ask');
     assert.deepEqual(e.detail.escalation.settings, escalation);
