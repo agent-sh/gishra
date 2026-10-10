@@ -214,6 +214,10 @@ Every spawn refreshes sibling-path entries in the requested agy settings. These 
 | | |
 | `msg --to NAME [--task ID] [--steer] TEXT` | send a worker message through the event log |
 | | |
+| `orchestrator release` | holding orchestrator session only: clear the lease so another session can write; refuses another session even when it uses the same agent name |
+| | |
+| `orchestrator takeover` | owner only: explicitly clear the orchestrator lease; the next orchestrator write acquires it. Records the previous holder |
+| | |
 | `owner-done ID [--note T]` | the owner did what `needs_owner` asked; clears it. Operational: the orchestrator or the owner |
 | | |
 | `owner-key` | the owner, explicitly and at a terminal or with the current key, creates the key under the project's recorded `owner_config_dir` and prints `created PATH` or `exists PATH`; never prints the key. An unbound project requires a terminal owner to record the directory first. `TOWER_CRANE_OWNER_KEY` with its contents stands in for a terminal ([Agent identity](state.md#agent-identity)) |
