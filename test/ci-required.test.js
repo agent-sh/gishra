@@ -247,7 +247,7 @@ test('a superseded failed run does not block: the latest run of each required ch
       ...others.map((r) => ({ ...r, check_suite: { id: 2 }, started_at: '2026-10-10T12:54:00Z' })),
       { ...passed, check_suite: { id: 2 } },
     ],
-    suites: [suite(1, 'failure', 0), suite(2, 'success', REQUIRED.length)],
+    suites: [suite(1, 'failure', REQUIRED.length), suite(2, 'success', REQUIRED.length)],
   });
   assert.equal(reopened.code, 0, reopened.summary);
   assert.match(reopened.summary, /CI green/);
@@ -259,6 +259,26 @@ test('a superseded failed run does not block: the latest run of each required ch
   });
   assert.equal(relapse.code, 1, relapse.summary);
   assert.ok(relapse.summary.includes(`failing: ${name} (failure)`), relapse.summary);
+});
+
+test('an unfinished or partly read suite blocks even when its runs were superseded', (t) => {
+  const h = fixture(t);
+  const name = 'test (windows-latest, node 26, shard 2/3)';
+  const old = { ...run(name, 'success'), id: 114055863456, started_at: '2026-10-09T22:36:00Z', check_suite: { id: 1 } };
+  const current = { ...run(name, 'success'), id: 114217721960, started_at: '2026-10-10T12:54:00Z', check_suite: { id: 2 } };
+  const others = REQUIRED.filter((n) => n !== name).map((n) => ({ ...run(n), check_suite: { id: 2 } }));
+  const suite = (id, status, conclusion, runs) => ({ id, app: { slug: 'github-actions' }, status, conclusion, latest_check_runs_count: runs });
+  const passing = suite(2, 'completed', 'success', REQUIRED.length);
+
+  // The old suite has not finished, so more of its runs may still come.
+  const running = h.check({ runs: [old, current, ...others], suites: [suite(1, 'in_progress', null, 1), passing] });
+  assert.equal(running.code, 1, running.summary);
+  assert.match(running.summary, /check suites not green.*in_progress/);
+
+  // The old suite failed and reports two runs, but only one was read, so the other one is unknown.
+  const partial = h.check({ runs: [old, current, ...others], suites: [suite(1, 'completed', 'failure', 2), passing] });
+  assert.equal(partial.code, 1, partial.summary);
+  assert.match(partial.summary, /check suites not green.*failure, 2 runs/);
 });
 
 test('a queued rerun newer than a success is the current run: the gate waits for it', (t) => {
