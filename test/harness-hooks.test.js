@@ -283,3 +283,54 @@ test('refused commands without a context placeholder retain messages', (t) => {
   assert.equal(fs.existsSync(ready), false);
   assert.ok(!events(h).some((e) => e.cmd === 'hook inbox' && e.detail.messages.length));
 });
+
+// Stop holds a worker that still holds its task when the turn ends with a background
+// job or an empty final message, once. The stop index is the held one (-1 for none).
+// A pending job sends the orchestrator no note.
+const HEADLESS = [
+  ['background', 0, null],
+  ['silent', 0, /stopped without submit/],
+  ['resumed', 1, /stopped without submit/],
+  ['submitted', -1, /stopped after submit/],
+  ['reported', -1, /stopped without submit/],
+];
+for (const [mode, heldAt, note] of HEADLESS) {
+  const expected = heldAt >= 0 ? 'holds the unsubmitted worker once, in the foreground' : 'does not hold';
+  test(`headless claude ${mode}: Stop ${expected}`, async (t) => {
+    const { h, ready, out } = setup(t, 'claude');
+    const run = h.runAsync(['spawn', '--task', 'T1', '--wait', '--json'], { env: { MESSAGE_HEADLESS: mode } });
+    await until(ready);
+    fs.writeFileSync(ready + '.go', '');
+    const result = await run;
+    assert.equal(result.code, 0, result.stderr);
+    JSON.parse(fs.readFileSync(out)).stops.forEach((stop, i) => {
+      if (i !== heldAt) {
+        assert.equal(stop.decision, undefined, `stop ${i} is not held`);
+        return;
+      }
+      assert.equal(stop.decision, 'block');
+      assert.match(stop.reason, /tower-crane wait --task T1 --timeout SEC/);
+      assert.match(stop.reason, /foreground/);
+    });
+    const audit = events(h);
+    const waits = audit.filter((e) => e.cmd === 'hook wait');
+    assert.equal(waits.length, heldAt >= 0 ? 1 : 0, 'the hold is taken once');
+    if (mode === 'background' || mode === 'submitted') {
+      assert.ok(audit.some((e) => e.cmd === 'hook background' && e.agent === 'worker-T1-1'), 'background start missing');
+    }
+    const notes = audit.filter((e) => e.cmd === 'msg' && e.detail.to === 'orchestrator' && /stopped/.test(e.detail.text));
+    if (note) {
+      assert.equal(notes.length, 1, 'the orchestrator hears one stop note');
+      assert.match(notes[0].detail.text, note);
+      if (mode === 'resumed') {
+        // The earlier turn's report still reaches the orchestrator, and the empty stop holds after it.
+        assert.match(notes[0].detail.text, /last report from claude/);
+        assert.ok(audit.indexOf(notes[0]) < audit.indexOf(waits[0]), 'the first stop note precedes the hold');
+      } else if (heldAt >= 0) {
+        assert.ok(audit.indexOf(waits[0]) < audit.indexOf(notes[0]), 'the hold must come before the note');
+      }
+    } else {
+      assert.equal(notes.length, 0, 'a pending job sends no stop note');
+    }
+  });
+}
