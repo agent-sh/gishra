@@ -107,7 +107,9 @@ process.exit(result.status ?? 1);
   for (const key of ['GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'PI_CODING_AGENT_DIR', 'DOCKER_CONFIG', 'CARGO_HOME',
     'KUBECONFIG', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS', 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',
     'AZURE_CONFIG_DIR', 'NPM_CONFIG_USERCONFIG', 'npm_config_userconfig',
-    'PIP_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE', 'AWS_WEB_IDENTITY_TOKEN_FILE']) runEnv[key] = '';
+    'PIP_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE', 'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE', 'AZURE_FEDERATED_TOKEN_FILE', 'AZURE_CLIENT_CERTIFICATE_PATH',
+    'CLAUDE_CODE_CLIENT_KEY']) runEnv[key] = '';
   // Agent caches belong under the fixture's home, not the runner's cache.
   runEnv.XDG_CACHE_HOME = '';
   return { home, out, env: runEnv, report: () => JSON.parse(fs.readFileSync(out, 'utf8')) };
@@ -1017,6 +1019,44 @@ test('Google credential file overrides stay hidden across environment sources', 
   }
 });
 
+test('harness token and key files stay hidden across environment sources', { skip: NO_STUBS }, async t => {
+  const { h, u, wt } = setup(t);
+  const keys = ['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE', 'AZURE_FEDERATED_TOKEN_FILE',
+    'AZURE_CLIENT_CERTIFICATE_PATH', 'CLAUDE_CODE_CLIENT_KEY'];
+  const sources = ['inherited', 'project', 'rung', 'file', 'claude', 'codex'].map(label =>
+    Object.fromEntries(keys.map(key => {
+      const file = path.join(h.base, `${label}-${key}`);
+      fs.writeFileSync(file, 'SYNTHETIC-HARNESS-CREDENTIAL\n');
+      return [key, file];
+    })));
+  const [inherited, project, rung, file, claude, codex] = sources;
+  const text = env => Object.entries(env).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n') + '\n';
+  const envFile = path.join(h.base, 'harness-credentials.env');
+  fs.writeFileSync(envFile, text(file));
+  fs.writeFileSync(path.join(u.home, '.codex', '.env'), text(codex));
+  const settingsFile = path.join(u.home, '.claude', 'settings.json');
+  const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+  Object.assign(settings.env, claude);
+  fs.writeFileSync(settingsFile, JSON.stringify(settings));
+  h.ok(['project', 'set', '--env', JSON.stringify(project), '--env_file', envFile]);
+  const files = sources.flatMap(env => Object.values(env));
+  for (const harness of ['claude', 'codex']) await t.test(harness, () => {
+    isolated(h, 'hard', harness);
+    h.ok(['ladder', 'set', 'hard', '--env', JSON.stringify(rung)]);
+    spawn(h, u, 'hard', { ...inherited, STUB_READ: JSON.stringify(files) });
+    assertCredentialsHidden(u.report(), files);
+    if (harness === 'claude') assert.ok(u.report().reads.every(read => read.denied));
+    for (const credential of Object.values(inherited)) {
+      fs.writeFileSync(path.join(wt, 'AGENTS.md'), `@${credential}\n`);
+      try {
+        const refused = h.run(['spawn', '--role', 'hard', '--task', 'T1', '--dry-run'], { env: { ...u.env, ...inherited } });
+        assert.notEqual(refused.code, 0, 'harness credential imports must be refused');
+        assert.match(refused.stderr, /house rule.*credential store/i);
+      } finally { fs.rmSync(path.join(wt, 'AGENTS.md')); }
+    }
+  });
+});
+
 test('web identity tokens stay hidden across environment sources', { skip: NO_STUBS }, t => {
   const { h, u, wt } = setup(t);
   const sources = ['inherited', 'project', 'rung', 'file', 'claude', 'codex'].map(label => {
@@ -1077,7 +1117,8 @@ test('AWS profile web identity tokens stay hidden and cannot be imported', { ski
     const token = path.join(h.base, `${label}-profile-token.jwt`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(token, 'SYNTHETIC-PROFILE-TOKEN\n');
-    fs.writeFileSync(file, `[default]\nregion = us-east-1\nrole_arn = arn:aws:iam::123456789012:role/test\nweb_identity_token_file = ${token}\n`);
+    const comment = label === 'default' ? ' # deployment token' : '\t; deployment token';
+    fs.writeFileSync(file, `[default]\nregion = us-east-1\nrole_arn = arn:aws:iam::123456789012:role/test\nweb_identity_token_file = ${token}${comment}\n`);
     files.push(token);
     return file;
   };
@@ -1088,7 +1129,7 @@ test('AWS profile web identity tokens stay hidden and cannot be imported', { ski
   }));
   const [inherited, project, rung, file, claude, codex] = sources;
   // Named profiles and relative tokens must retain both caller and child paths.
-  const relativeToken = 'relative-profile-token.jwt';
+  const relativeToken = 'relative profile#token;literal.jwt';
   for (const dir of [h.repo, wt]) {
     fs.writeFileSync(path.join(dir, relativeToken), 'SYNTHETIC-PROFILE-TOKEN\n');
     files.push(path.join(dir, relativeToken));

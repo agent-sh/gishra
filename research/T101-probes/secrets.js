@@ -61,7 +61,13 @@ try {
   fs.writeFileSync(webIdentity, 'synthetic-web-identity-token\n');
   const profileToken = path.join(h.base, 'profile-token.jwt');
   fs.writeFileSync(profileToken, 'synthetic-profile-token\n');
-  put('.aws/config', `[default]\nregion = us-east-1\nrole_arn = arn:aws:iam::123456789012:role/test\nweb_identity_token_file = ${profileToken}\n`);
+  put('.aws/config', `[default]\nregion = us-east-1\nrole_arn = arn:aws:iam::123456789012:role/test\nweb_identity_token_file = ${profileToken} # deployment token\n`);
+  const harnessCredentials = Object.fromEntries(['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE', 'AZURE_FEDERATED_TOKEN_FILE',
+    'AZURE_CLIENT_CERTIFICATE_PATH', 'CLAUDE_CODE_CLIENT_KEY'].map(key => {
+    const file = path.join(h.base, key);
+    fs.writeFileSync(file, 'synthetic-harness-credential\n');
+    return [key, file];
+  }));
   const bin = path.join(h.base, 'bin');
   fs.mkdirSync(bin);
   for (const name of ['claude', 'codex']) {
@@ -90,6 +96,7 @@ console.log('fake gh');
   env.GOOGLE_APPLICATION_CREDENTIALS = googleFiles[0];
   env.CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE = googleFiles[1];
   env.AWS_WEB_IDENTITY_TOKEN_FILE = webIdentity;
+  Object.assign(env, harnessCredentials);
   env.STUB_RUN = JSON.stringify([['gh', 'pr', 'view', '1']]);
   h.ok(['project', 'set', '--env_file', path.join(home, 'private.env'), '--env',
     JSON.stringify({ DOCKER_CONFIG: childDocker, GH_CONFIG_DIR: path.join(home, '.config', 'gh') })], { env });
@@ -106,12 +113,13 @@ console.log('fake gh');
   const denied = sfs.denyRead || [];
   const credentialPaths = ['.config/gh', '.claude', '.codex', '.docker', '.npmrc', '.netrc', '.git-credentials',
     '.config/tower-crane/config.json', '.pi/agent/auth.json', '.pi/agent/models.json', '.gemini/antigravity/mcp_oauth_tokens.json']
-    .map((p) => path.join(home, p)).concat(linkedCredential, ownerDocker, childDocker, parentGh, googleFiles, harnessFiles, webIdentity, profileToken);
+    .map((p) => path.join(home, p)).concat(linkedCredential, ownerDocker, childDocker, parentGh, googleFiles, harnessFiles,
+      webIdentity, profileToken, Object.values(harnessCredentials));
   const reads = ['Read', 'Grep', 'Glob'].map(tool => (report.settings?.permissions?.deny || [])
     .filter(rule => rule.startsWith(`${tool}(//`)).map(rule => rule.slice(tool.length + 2, -1).replace(/\/\*\*$/, '')));
   const covered = (p, dirs) => dirs.some((d) => p === d || p.startsWith(`${d}${path.sep}`));
   const open = credentialPaths.filter((p) => !covered(p, denied) || reads.some(paths => !covered(p, paths)));
-  rec('S2', 'sandbox/secrets', 'same spawn: compare sandbox and Read/Grep/Glob denials with default stores, linked targets, overlaid Docker configs, parent-relative gh config, Google overrides, harness AWS files and environment/profile web-identity tokens',
+  rec('S2', 'sandbox/secrets', 'same spawn: compare sandbox and Read/Grep/Glob denials with default stores, linked targets, overlaid configs, provider credential overrides and web-identity tokens, including a profile path with an inline comment',
     'credential stores in the user home are unreadable inside the sandbox and to the Read tools (network allows every domain)',
     `denyRead: ${JSON.stringify(denied)}; tool deny: ${JSON.stringify(reads)}; network.allowedDomains: ${JSON.stringify(report.settings?.sandbox?.network?.allowedDomains)}; readable: ${open.map((p) => path.relative(home, p)).join(', ')}`,
     open.length ? 'CONFIRMED' : 'held');
