@@ -22,7 +22,7 @@ If the owner's successful write satisfies a request's fields, it retires the mat
 
 For budgets, retirement matches the requested hours and tokens even if writing them now lowers or repeats the current limit. The owner setting 20, then the approved amount 10, then 5 leaves no approval the orchestrator can reuse to restore 10. Authorization and audit still use the current raise/lower classification.
 
-Use `project set --budget-hours null` or `--budget-tokens null` to remove a limit. Removing a finite limit is owner-required: the orchestrator's command opens a decision and must be rerun after approval. The same flags accept `null` during `init`.
+Use `project set --budget-hours null` or `--budget-tokens null` to remove a project limit; use `task update ID` with the same flags for a task limit. Removing a finite limit is owner-required: the orchestrator's command opens a decision and must be rerun after approval. Task and project budget requests have distinct targets. The same flags accept `null` during `init`.
 
 For personal fallbacks, the owner writes the whole replacement list. A write of the requested list retires its approval even if only an operational field differs or the list is unchanged; the audit still describes the actual field changes. A different file, rung or replacement list does not satisfy the request.
 
