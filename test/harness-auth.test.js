@@ -8,7 +8,7 @@ const { makeTaskRepo } = require('./helpers');
 
 const events = (h) => fs.readFileSync(path.join(h.state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
 const fixture = path.join(__dirname, 'fixtures', 'fallback-harness.js').replace(/\\/g, '/');
-const clock = path.join(__dirname, 'fixtures', 'clock.js').replace(/\\/g, '/');
+const clock = path.join(__dirname, 'fixtures', 'shifted-clock.js').replace(/\\/g, '/');
 const supervision = { retries: 2, backoff_ms: 10, max_backoff_ms: 20, stall_ms: 60000 };
 const owner = (h) => events(h).filter((e) => e.cmd === 'msg' && e.detail.to === 'owner');
 const health = (h, source) => events(h).filter((e) => e.cmd === 'harness health' && (!source || e.detail.source === source));
@@ -41,7 +41,7 @@ function setup(t, { tier = 'easy', tasks = ['T1'], fallbacks = [] } = {}) {
     TOWER_CRANE_TEST_LOGIN_FLAG: h.loginFlag,
   };
   h.spawnTask = (id, env = h.spawnEnv) => h.run(['spawn', '--task', id, '--wait'], { env });
-  // Dispatch and the supervisor read the clock through the test seam, so a pause can age past its probe interval.
+  // The shifted clock stamps events and reads intervals on one clock, so a pause can age past its probe interval.
   h.later = (minutes) => ({ ...h.spawnEnv, NODE_OPTIONS: `${h.spawnEnv.NODE_OPTIONS} --require "${clock}"`, TOWER_CRANE_TEST_NOW: String(Date.now() + minutes * 60000) });
   h.attempts = () => (fs.existsSync(h.file) ? JSON.parse(fs.readFileSync(h.file, 'utf8')) : []);
   return h;
@@ -139,6 +139,22 @@ test('a fallback never revisits a harness that its own login failure paused', (t
   assert.deepEqual(h.attempts().map((a) => [a.harness, a.model]), [['claude', 'first'], ['command', 'second']]);
   assert.deepEqual(health(h).map((e) => e.detail.harness), ['claude', 'command']);
   assert.equal(owner(h).length, 2);
+});
+
+test('a paused fallback takes its probe interval only when it runs, not when its primary is dispatched', (t) => {
+  const h = setup(t, { tasks: ['T1', 'T2'], fallbacks: [{ harness: 'command', command: ['{cwd}/scripts/fallback', '--model', 'second', '{prompt}'] }] });
+  commandFallback(h);
+  h.spawnEnv.TOWER_CRANE_TEST_FALLBACK_CHAIN = '1';
+  assert.notEqual(h.spawnTask('T1').code, 0);
+  // Re-login clears claude's check, but the login still fails on the next spawn; command is past its interval and runs as the fallback.
+  fs.writeFileSync(h.loginFlag, '');
+  delete h.spawnEnv.TOWER_CRANE_TEST_FALLBACK_CHAIN;
+  h.spawnEnv.TOWER_CRANE_TEST_LOGIN_BROKEN = '1';
+  const result = h.run(['spawn', '--task', 'T2', '--wait'], { env: h.later(6) });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(h.attempts().map((a) => [a.harness, a.model]), [['claude', 'first'], ['command', 'second'], ['claude', 'first'], ['command', 'second']]);
+  assert.deepEqual(health(h).filter((e) => e.detail.harness === 'command').map((e) => [e.detail.status, e.detail.source]),
+    [['unavailable', 'exit'], ['unavailable', 'probe'], ['available', 'spawn']]);
 });
 
 test('a harness without a login check takes one spawn per interval as its probe, and a clean exit clears the pause', (t) => {

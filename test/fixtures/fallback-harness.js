@@ -83,9 +83,9 @@ if (path.resolve(process.argv[1] || '') !== __filename) {
     console.log(JSON.stringify({ type: 'result', is_error: false, model,
       usage: { input_tokens: 20, output_tokens: 4 } }));
   }
-  // A login flag file stands for a completed re-login: the primary route then works.
+  // A login flag file stands for a completed re-login: the primary route then works, unless the login is broken despite it.
   const relogged = Boolean(process.env.TOWER_CRANE_TEST_LOGIN_FLAG) && fs.existsSync(process.env.TOWER_CRANE_TEST_LOGIN_FLAG);
-  if (model === 'first' && !relogged || model === 'second' && process.env.TOWER_CRANE_TEST_FALLBACK_CHAIN
+  if (model === 'first' && (!relogged || process.env.TOWER_CRANE_TEST_LOGIN_BROKEN) || model === 'second' && process.env.TOWER_CRANE_TEST_FALLBACK_CHAIN
     || providerTest && provider === process.env.TOWER_CRANE_TEST_FAIL_PROVIDER) {
     if (process.env.TOWER_CRANE_TEST_FALLBACK_REASON === 'refusal') {
       console.log(JSON.stringify(harness === 'codex'
