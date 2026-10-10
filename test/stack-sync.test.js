@@ -110,7 +110,9 @@ fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(/(<!-- commands:Run:s
       assert.equal(task.status, 'rework');
       assert.equal(h.git(['diff', '--name-only', '--diff-filter=U'], f.upper.wt.path), 'hand.txt');
       assert.match(fs.readFileSync(path.join(f.upper.wt.path, 'docs', 'cli.md'), 'utf8'), /upper\/main/);
-      assert.ok(events().some((e) => e.task === 'T2' && e.cmd === 'generated merge' && e.detail.phase === 'mixed'));
+      const receipt = events().findLast((e) => e.task === 'T2' && e.cmd === 'generated merge' && e.detail.phase === 'mixed');
+      assert.ok(receipt);
+      assert.equal(receipt.detail.revision, task.revision);
     } else {
       assert.equal(task.status, 'submitted');
       assert.equal(events().some((e) => e.task === 'T2' && e.cmd === 'rework' && /stack sync|conflicts with/.test(e.detail.reason)), false);
@@ -132,6 +134,7 @@ fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(/(<!-- commands:Run:s
 test('lower merge refreshes upper worktrees with gh stack sync and conflicts send upper work to rework', (t) => {
   const f = stacked(t);
   const { wt, sha } = f.upper;
+  f.h.reviewer('T2', 'reviewer', sha);
   f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--revision', f.h.revision('T2'), '--agent', 'reviewer',
     '--summary', 'Resolve the upper conflict', '--ref', 'stack-conflict-review']);
   const before = f.h.json(['task', 'show', 'T2']);
@@ -185,6 +188,7 @@ require('node:fs').writeFileSync(process.argv[1], process.argv[2]);
   assert.equal(afterExpiry.detail.previous_revision, before.revision);
   f.h.ok(['claim', 'T2', '--agent', spawned.agent]);
   f.h.ok(['submit', 'T2', '--sha', sha, '--agent', spawned.agent]);
+  f.h.reviewer('T2', 'reviewer-next', sha);
   f.h.ok(['evidence', 'T2', '--type', 'review', '--fail', '--sha', sha, '--revision', f.h.revision('T2'), '--agent', 'reviewer-next',
     '--summary', 'Resolve the next review']);
   assert.equal(f.h.run(['stack', 'sync', 'T2']).code, 1);
