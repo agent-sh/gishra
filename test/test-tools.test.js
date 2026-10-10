@@ -61,7 +61,7 @@ test('mutation fallback requires a green baseline in a copy containing all test 
   `;
   const run = () => cp.spawnSync(process.execPath, [
     path.join(ROOT, 'scripts/mutants.js'), '--root', h.repo, '--jobs', '1', '--only', 'stack-merge-unaccepted-lower',
-  ], { env: { ...h.env, TOWER_CRANE_TEST_TMP: h.base }, encoding: 'utf8', timeout: 60000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
+  ], { env: { ...h.env, TOWER_CRANE_TEST_TMP: h.base }, encoding: 'utf8', timeout: 300000 });
 
   write('test/fallback.test.js', baseline + `
     test('unaccepted lower', () => {

@@ -34,7 +34,7 @@ for (const kind of ['stale', 'empty']) {
   });
 }
 
-test('20 concurrent CLI writers survive a lock held beyond 10 seconds', { timeout: 90000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
+test('20 concurrent CLI writers survive a lock held beyond 10 seconds', { timeout: 300000 }, async (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Concurrent startup', '--acceptance', 'all writes survive']);
@@ -153,7 +153,7 @@ test('a dead holder reclaimed at the deadline permits the waiting write', async 
   assert.deepEqual(h.readState('tasks.json').tasks.map((task) => task.title), ['after reclaim']);
 });
 
-test('prompt hook bridge and broker writes survive contention beyond the old bridge timeout', { timeout: 90000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
+test('prompt hook bridge and broker writes survive contention beyond the old bridge timeout', { timeout: 300000 }, async (t) => {
   const h = makeRepo(t);
   h.init();
   h.ok(['task', 'add', '--title', 'Starting agent', '--acceptance', 'prompt and note survive']);
@@ -227,7 +227,7 @@ test('a held lock makes a write wait its bound, then exit 3 without writing', as
     const waited = Date.now() - started; // wait-allow: verify stale or dead locks are broken without waiting for the live-holder timeout
     assert.equal(r.code, 3, r.stderr);
     assert.match(r.stderr, new RegExp(`locked by pid ${holderPid} `));
-    assert.ok(waited >= 950 && waited < 5000, `waited ${waited} ms`);
+    assert.ok(waited >= 950 && waited < 5000, `waited ${waited} ms`); // wait-allow: verify the configured one-second lock timeout
     assert.equal(h.readState('tasks.json').tasks.length, 0);
     assert.deepEqual(h.json(['task', 'list']), [], 'reads do not need the lock');
   } finally {
@@ -489,7 +489,7 @@ test('continuous staging cleanup times out with exit 3 and bounded backoff', (t)
   });
   const waited = Date.now() - started; // wait-allow: verify stale or dead locks are broken without waiting for the live-holder timeout
   assert.equal(result.code, 3, result.stderr);
-  assert.ok(waited >= 950 && waited < 5000, `waited ${waited} ms`);
+  assert.ok(waited >= 950 && waited < 5000, `waited ${waited} ms`); // wait-allow: verify the configured one-second lock timeout
   assert.doesNotMatch(result.stderr, /ENOENT/);
   const names = fs.readFileSync(attempts, 'utf8').trim().split('\n');
   assert.ok(names.length >= 5 && names.length <= 400, `${names.length} attempts: cleanup retries back off`);
@@ -515,7 +515,7 @@ test('a stale lock that cannot be removed still times out with exit 3', (t) => {
   });
   const waited = Date.now() - started; // wait-allow: verify stale or dead locks are broken without waiting for the live-holder timeout
   assert.equal(r.code, 3, `exit ${r.code} (signal ${r.signal}) after ${waited} ms: ${r.stderr}`);
-  assert.ok(waited >= 950 && waited < 5000, `waited ${waited} ms`);
+  assert.ok(waited >= 950 && waited < 5000, `waited ${waited} ms`); // wait-allow: verify the configured one-second lock timeout
   assert.match(r.stderr, /locked by pid \d+ .*which is gone, but its lock could not be removed \(EPERM\); remove .*lock by hand/);
   const tries = fs.readFileSync(attempts, 'utf8').length;
   assert.ok(tries >= 5 && tries <= 400, `${tries} removal attempts: it backs off between them`);

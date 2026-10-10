@@ -63,7 +63,7 @@ process.exit(${code});
 
 const waitFor = (file) => fileWritten(file);
 
-test('two preparations overlap a gate removal without pruning their initializing registrations', { timeout: 30000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
+test('two preparations overlap a gate removal without pruning their initializing registrations', { timeout: 300000 }, async (t) => {
   const h = makeRepo(t);
   const script = path.join(h.base, 'gate.js');
   const ready = path.join(h.base, 'gate-ready');

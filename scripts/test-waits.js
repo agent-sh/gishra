@@ -79,6 +79,12 @@ function waitFindings(text) {
       report(index, 'readiness deadline below the hung-test timeout');
     }
   }
+  for (const elapsed of text.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*(?:Date|performance)\.now\(\)\s*-\s*\w+/g)) {
+    const comparisons = new RegExp(`\\b${elapsed[1]}\\s*<\\s*(\\d[\\d_]*)`, 'g');
+    for (const match of text.matchAll(comparisons)) {
+      if (!hungBudget(match[1])) report(text.slice(0, match.index).split('\n').length - 1, 'elapsed wall time is a pass condition');
+    }
+  }
   for (const match of text.matchAll(/\b(setTimeout|until|waitFor\w*|waitUntil)\s*\(/g)) {
     const index = text.slice(0, match.index).split('\n').length - 1;
     if (/^\s*\/\//.test(lines[index])) continue;

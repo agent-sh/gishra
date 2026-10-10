@@ -509,7 +509,8 @@ test('MCP discovery works before project initialization and tool errors remain J
     { id: 4, method: 'ping' },
   ].map((r) => JSON.stringify({ jsonrpc: '2.0', ...r })).join('\n') + '\n';
   for (const cwd of [h.repo, h.base]) {
-    const result = h.run(['mcp', '--agent', 'orchestrator'], { cwd, input });
+    // A temp root inside another checkout must not discover that project's state.
+    const result = h.run(['mcp', '--agent', 'orchestrator'], { cwd, input, env: { TOWER_CRANE_STATE: h.state } });
     assert.equal(result.code, 0, result.stderr);
     const replies = result.stdout.trim().split('\n').map(JSON.parse);
     assert.deepEqual(replies.map((r) => r.id), [1, 2, 3, 4]);

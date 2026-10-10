@@ -188,7 +188,7 @@ test('confirmed merge gate wakes; a failed gate never produces merged', async (t
   fs.cpSync(path.join(ROOT, 'lib'), path.join(dir, 'lib'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'lib', 'gates', 'merge.js'), 'exports.run = async () => ({ ok: false, summary: "refused merge" });\n');
   const result = await waiting(t, h, { automation: false, args: ['--types', 'merged'] });
-  const r = cp.spawnSync(process.execPath, [path.join(dir, 'bin', 'tower-crane.js'), 'merge', 'T1'], { cwd: h.repo, env: h.env, encoding: 'utf8', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
+  const r = cp.spawnSync(process.execPath, [path.join(dir, 'bin', 'tower-crane.js'), 'merge', 'T1'], { cwd: h.repo, env: h.env, encoding: 'utf8', timeout: 300000 });
   assert.equal(r.status, 1, r.stderr);
   assert.ok(!log(h).some((e) => e.type === 'merged'));
   h.ok(['merge', 'T1']);

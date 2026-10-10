@@ -1,6 +1,6 @@
 'use strict';
 
-const { childExit, waitOnRepo } = require('./signals');
+const { childClosed, waitOnRepo } = require('./signals');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -9,7 +9,7 @@ const cp = require('node:child_process');
 const path = require('node:path');
 const { makeRepo, BIN } = require('./helpers');
 
-const waitForExit = childExit;
+const waitForExit = childClosed;
 
 function waitForImportedTitle(h, title) {
   return waitOnRepo(h, () => h.readState('tasks.json').tasks.some((task) => task.title === title));

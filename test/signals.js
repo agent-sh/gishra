@@ -111,6 +111,22 @@ function childExit(child, options) {
   });
 }
 
+const closedChildren = new WeakMap();
+function childClosed(child, options) {
+  return waitUntil(() => closedChildren.get(child)
+    || ((child.exitCode !== null || child.signalCode !== null)
+      && (!child.stdout || child.stdout.closed) && (!child.stderr || child.stderr.closed)
+      ? { code: child.exitCode, signal: child.signalCode } : false), {
+    ...options, poll: false,
+    subscribe: (probe, fail) => {
+      const closed = (code, signal) => { closedChildren.set(child, { code, signal }); void probe(); };
+      child.on('close', closed);
+      child.on('error', fail);
+      return () => { child.off('close', closed); child.off('error', fail); };
+    },
+  });
+}
+
 function portListening(port, host = '127.0.0.1', options) {
   let socket;
   return waitUntil(() => new Promise((resolve, reject) => {
@@ -127,4 +143,4 @@ function portListening(port, host = '127.0.0.1', options) {
   });
 }
 
-module.exports = { HUNG_TEST_MS, waitUntil, waitOnRepo, fileWritten, eventAppended, childExit, portListening };
+module.exports = { HUNG_TEST_MS, waitUntil, waitOnRepo, fileWritten, eventAppended, childExit, childClosed, portListening };

@@ -7,7 +7,7 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const net = require('node:net');
 const { makeRepo, ROOT } = require('./helpers');
-const { fileWritten, eventAppended, childExit, portListening, waitUntil } = require('./signals');
+const { fileWritten, eventAppended, childExit, childClosed, portListening, waitUntil } = require('./signals');
 const { waitFindings } = require('../scripts/test-waits');
 
 test('signal waits observe existing state, atomic writes, complete events, child exits and listening ports', async (t) => {
@@ -29,7 +29,10 @@ test('signal waits observe existing state, atomic writes, complete events, child
   fs.appendFileSync(log, '"done"}\n');
   assert.deepEqual(await appended, { type: 'done' });
   const child = cp.spawn(process.execPath, ['-e', 'process.exit(7)']);
+  const closed = childClosed(child, { signal: t.signal });
   assert.deepEqual(await childExit(child, { signal: t.signal }), { code: 7, signal: null });
+  assert.deepEqual(await closed, { code: 7, signal: null });
+  assert.deepEqual(await childClosed(child, { signal: t.signal }), { code: 7, signal: null });
   await assert.rejects(childExit(cp.spawn(path.join(h.base, 'missing-command')), { signal: t.signal }), /ENOENT/);
   assert.deepEqual(await childExit(child, { signal: t.signal }), { code: 7, signal: null });
   const server = net.createServer((socket) => socket.end());
@@ -61,6 +64,7 @@ test('shared checks reject readiness budgets and require a reason on allowed tim
     'const HUNG_TEST_MS = 1000;', // wait-allow: rejected lint fixture
     'cp.spawnSync("node", ["worker.js"], { timeout: 1000 });', // wait-allow: rejected lint fixture
     'test("worker", { timeout: 1000 }, async () => {});', // wait-allow: rejected lint fixture
+    'const elapsed = Date.now() - started;\nassert.ok(elapsed < 1000);', // wait-allow: rejected lint fixture
   ]) {
     assert.ok(waitFindings(source).length, source);
     const annotated = source.split('\n').map((line) => line + ' // wait-allow: verifies the production timer contract').join('\n');
@@ -85,4 +89,42 @@ test('shared checks reject readiness budgets and require a reason on allowed tim
   assert.match(rejected.stderr, /test\/wait.test.js:1 readiness deadline/);
   fs.writeFileSync(bad, 'const deadline = Date.now() + 1000; // wait-allow: tests a production timeout\n'); // wait-allow: allowed lint fixture
   assert.equal(run().status, 0);
+});
+
+test('child exit is observable while inherited output is held, and close waits for its final bytes', async (t) => {
+  const h = makeRepo(t);
+  const release = path.join(h.base, 'release');
+  const writer = `
+    const fs = require('node:fs');
+    const file = ${JSON.stringify(release)};
+    let done = false;
+    const watcher = fs.watch(require('node:path').dirname(file), check);
+    function check() {
+      if (done || !fs.existsSync(file)) return;
+      done = true;
+      process.stdout.write('final output');
+      watcher.close();
+    }
+    check();
+  `;
+  const parent = cp.spawn(process.execPath, ['-e', `
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(writer)}], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+    }).unref();
+    process.exit(0);
+  `]);
+  let output = '';
+  let drained = false;
+  const nativeClose = new Promise((resolve) => parent.once('close', resolve));
+  parent.stdout.on('data', (data) => { output += data; });
+  const closed = childClosed(parent, { signal: t.signal }).then((result) => { drained = true; return result; });
+  try {
+    assert.equal((await childExit(parent, { signal: t.signal })).code, 0);
+    assert.equal(drained, false, 'the descendant retains the output pipe');
+  } finally {
+    fs.writeFileSync(release, '');
+    await nativeClose;
+  }
+  assert.equal((await closed).code, 0);
+  assert.equal(output, 'final output');
 });

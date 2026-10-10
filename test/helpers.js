@@ -261,7 +261,7 @@ function run(args, { cwd, env, input, pre = [], timeout = HUNG_TEST_MS } = {}) {
 }
 
 const PTY_AVAILABLE = process.platform === 'linux'
-  && cp.spawnSync('script', ['--version'], { timeout: 10000 }).status === 0; // wait-allow: watchdog terminates a hung fixture subprocess or test
+  && cp.spawnSync('script', ['--version'], { timeout: 300000 }).status === 0;
 
 function runPty(args, { cwd, env, timeout = HUNG_TEST_MS } = {}) {
   // script uses a shell, so quote each argument to preserve names and paths.
@@ -270,7 +270,7 @@ function runPty(args, { cwd, env, timeout = HUNG_TEST_MS } = {}) {
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '', signal: r.signal };
 }
 
-function runAsync(args, { cwd, env, pre = [] } = {}) {
+function runAsync(args, { cwd, env, pre = [], onSpawn } = {}) {
   return new Promise((resolve) => {
     const child = cp.spawn(process.execPath, [...pre, BIN, ...args], { cwd, env });
     let stdout = '';
@@ -278,6 +278,7 @@ function runAsync(args, { cwd, env, pre = [] } = {}) {
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
     child.on('close', (code) => resolve({ code, stdout, stderr }));
+    onSpawn?.(child);
   });
 }
 
@@ -302,7 +303,7 @@ function detachedAlive(child) {
 function killDetached(child) {
   if (!detachedAlive(child)) return;
   if (process.platform === 'win32') {
-    cp.spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
+    cp.spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 300000 });
   } else {
     try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   }
@@ -359,7 +360,7 @@ try {
         stopped = true;
         for (const worker of children.filter((c) => c.kind === 'worker')) killDetached(worker);
         for (const pid of JSON.parse(ready.slice(6).trim())) {
-          cp.spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 10000 }); // wait-allow: watchdog terminates a hung fixture subprocess or test
+          cp.spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 300000 });
         }
         child.stdin.end('\n');
       }

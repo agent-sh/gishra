@@ -1,6 +1,6 @@
 'use strict';
 
-const { fileWritten } = require('./signals');
+const { fileWritten, childExit } = require('./signals');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -269,7 +269,7 @@ try {
 }
 
 for (const command of ['worktree', 'spawn']) {
-  test(`one dispatch prepares six ${command} tasks from one slow base fetch`, { timeout: 60000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
+  test(`one dispatch prepares six ${command} tasks from one slow base fetch`, { timeout: 300000 }, async (t) => {
     const h = setup(t);
     const fresh = advance(h, h.upstream, 'remote.txt');
     h.git(['push', 'origin', 'main'], h.upstream);
@@ -336,7 +336,7 @@ for (const hooks of [{ HOOK_ADD_ERROR: 'ETIMEDOUT' }, { HOOK_DIE_WORKTREE_ADD: '
 
 const waitForFile = (file) => fileWritten(file);
 
-test('a surviving post-checkout child cannot write into a replacement worktree', { timeout: 30000 }, async (t) => { // wait-allow: watchdog terminates a hung fixture subprocess or test
+test('a surviving post-checkout child cannot write into a replacement worktree', { timeout: 300000 }, async (t) => {
   const h = setup(t);
   const paused = path.join(h.base, 'hook-paused');
   const done = path.join(h.base, 'hook-done');
@@ -355,11 +355,12 @@ fs.writeFileSync(${JSON.stringify(done)}, '');
   const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
   const script = path.join(h.repo, '.git', 'hooks', 'post-checkout');
   fs.writeFileSync(script, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(hook)}\n`, { mode: 0o755 });
-  const first = h.runAsync(['worktree', 'T1'], { hooks: { HOOK_ADD_PID: cliPid } });
+  let cli;
+  const first = h.runAsync(['worktree', 'T1'], { hooks: { HOOK_ADD_PID: cliPid }, onSpawn: (child) => { cli = child; } });
   try {
     await waitForFile(paused);
-    process.kill(Number(fs.readFileSync(cliPid, 'utf8')), 'SIGKILL');
-    assert.notEqual((await first).code, 0);
+    cli.kill('SIGKILL');
+    assert.notEqual((await childExit(cli, { signal: t.signal })).code, 0);
     const retry = h.run(['worktree', 'T1']);
     assert.equal(retry.code, 1, retry.stderr);
     assert.match(retry.stderr, /worktree.*unfinished/);
