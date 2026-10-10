@@ -383,3 +383,45 @@ test('real Codex worker writes the toolchain lock, receives a private env file, 
   noFileSecrets(h.state);
   assert.ok(!result.stdout.includes(SECRET_KEY) && !result.stderr.includes(SECRET));
 });
+
+test('claude: sandbox.session_bus grants the bus socket alone, read and write, and off it grants nothing', { skip: NO_STUBS }, (t) => {
+  const h = setup(t, 'claude');
+  const bin = path.join(h.base, 'bin');
+  fs.mkdirSync(bin);
+  // The runtime directory is the test's own, so the host's session bus never matters.
+  const runtime = path.join(h.base, 'runtime');
+  fs.mkdirSync(runtime);
+  const bus = path.join(fs.realpathSync(runtime), 'bus');
+  const out = path.join(h.base, 'result.json');
+  const stub = [
+    `#!${process.execPath}`, "'use strict';",
+    'const fs = require("node:fs"), path = require("node:path");',
+    'const settings = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, "settings.json"), "utf8"));',
+    `fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify({ sandbox: settings.sandbox, env: { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } }));`,
+    'console.log("bus probe passed");', '',
+  ].join('\n');
+  fs.writeFileSync(path.join(bin, 'claude'), stub, { mode: 0o755 });
+  const env = { ...h.env, XDG_RUNTIME_DIR: runtime, DBUS_SESSION_BUS_ADDRESS: `unix:path=${bus}`,
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: '' };
+  const spawnSeen = () => {
+    h.ok(['spawn', '--task', 'T1', '--wait'], { env });
+    return JSON.parse(fs.readFileSync(out, 'utf8'));
+  };
+
+  const off = spawnSeen();
+  assert.ok(!off.sandbox.filesystem.allowRead.includes(bus), 'off by default: no read grant');
+  assert.ok(!off.sandbox.filesystem.allowWrite.includes(bus), 'off by default: no write grant');
+
+  assert.equal(h.run(['project', 'set', '--session-bus', 'maybe']).code, 2);
+  h.ok(['project', 'set', '--session-bus', 'true']);
+  const on = spawnSeen();
+  assert.ok(on.sandbox.filesystem.allowRead.includes(bus), 'the sandbox reads the bus socket');
+  assert.ok(on.sandbox.filesystem.allowWrite.includes(bus), 'the sandbox writes the bus socket');
+  assert.ok(on.sandbox.filesystem.denyRead.includes(fs.realpathSync(runtime)), 'the rest of the runtime directory stays denied');
+  assert.deepEqual(on.sandbox.filesystem.allowWrite.filter((p) => p.startsWith(fs.realpathSync(runtime))), [bus], 'only the socket is writable under the runtime directory');
+  assert.deepEqual(on.env, { XDG_RUNTIME_DIR: runtime, DBUS_SESSION_BUS_ADDRESS: `unix:path=${bus}` });
+
+  h.ok(['project', 'set', '--session-bus', 'false']);
+  assert.ok(!spawnSeen().sandbox.filesystem.allowRead.includes(bus), 'false turns the grant off again');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(h.state, 'project.json'), 'utf8')).sandbox, undefined);
+});
